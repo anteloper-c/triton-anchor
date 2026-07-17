@@ -134,6 +134,33 @@ def copy_results(run_dir: Path, target_dir: Path) -> Path | None:
     return target_dir
 
 
+def write_fallback_results(run_dir: Path, target_dir: Path, args: argparse.Namespace) -> Path:
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    copied = []
+    for file_name in ("local-ci.log", "result.json"):
+        source = run_dir / file_name
+        if source.is_file():
+            shutil.copy2(source, target_dir / file_name)
+            copied.append(file_name)
+
+    artifact_dir_text = discover_artifact_dir(run_dir / "local-ci.log") or "unavailable"
+    summary_lines = [
+        "schema: triton-anchor-local-ci/v2",
+        f"status: {args.exit_code}",
+        f"target_sha: {args.sha}",
+        f"branch: {args.source_branch}",
+        f"run_id: {args.run_id}",
+        f"artifact_dir: {artifact_dir_text}",
+        "note: artifact directory was unavailable; published host-side local-ci logs.",
+        f"copied_files: {', '.join(copied) if copied else 'none'}",
+    ]
+    (target_dir / "delivery-summary.txt").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+    return target_dir
+
+
 def post_commit_comment(owner: str, repo: str, sha: str, token: str, body: str) -> None:
     path_owner = urllib.parse.quote(owner, safe="")
     path_repo = urllib.parse.quote(repo, safe="")
@@ -162,8 +189,8 @@ def main() -> int:
     args = parse_args()
     token = os.getenv("GITEE_TOKEN", "")
     if not token:
-        print("GITEE_TOKEN is not set; skip publishing Gitee result branch and commit comment.")
-        return 0
+        print("GITEE_TOKEN is not set; cannot publish Gitee result branch.", file=sys.stderr)
+        return 1
 
     results_owner = args.results_owner or args.owner
     results_repo = args.results_repo or args.repo
@@ -211,7 +238,9 @@ def main() -> int:
             run_git(["checkout", "-q", "--orphan", args.results_branch], worktree, git_env)
 
         target_dir = worktree / rel_dir
-        copy_results(run_dir, target_dir)
+        if copy_results(run_dir, target_dir) is None:
+            print("Artifact result directory was unavailable; publishing fallback host logs.", file=sys.stderr)
+            write_fallback_results(run_dir, target_dir, args)
 
         latest_dir = worktree / "runs" / safe_branch / args.sha
         latest_dir.mkdir(parents=True, exist_ok=True)
@@ -241,7 +270,10 @@ def main() -> int:
         f"- Exit code: {args.exit_code}\n"
         f"- Logs: {result_url}\n"
     )
-    post_commit_comment(args.owner, args.repo, args.sha, token, comment_body)
+    try:
+        post_commit_comment(args.owner, args.repo, args.sha, token, comment_body)
+    except Exception as exc:
+        print(f"Warning: Gitee commit comment failed after results were published: {exc}", file=sys.stderr)
     return 0
 
 

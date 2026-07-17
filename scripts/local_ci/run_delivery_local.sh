@@ -11,6 +11,7 @@ if [[ "${LOCAL_CI_SCRIPT_STAGED:-0}" != "1" ]]; then
   exec "${staged_dir}/run_delivery_local.sh" "$@"
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 target_sha="${1:?usage: run_delivery_local.sh <commit-sha>}"
 
 WORKSPACE="${WORKSPACE:-/workspace}"
@@ -30,8 +31,13 @@ RUN_FLAGGEMS_TESTS="${RUN_FLAGGEMS_TESTS:-false}"
 FLAGGEMS_CLONE_DIR="${FLAGGEMS_CLONE_DIR:-${WORKSPACE}/FlagGems}"
 FLAGGEMS_REF="${FLAGGEMS_REF:-}"
 FLAGGEMS_PIP_PACKAGES="${FLAGGEMS_PIP_PACKAGES:-scipy pytest}"
+FLAGGEMS_TEST_MODE="${FLAGGEMS_TEST_MODE:-sample}"
+FLAGGEMS_SAMPLE_SIZE="${FLAGGEMS_SAMPLE_SIZE:-6}"
+FLAGGEMS_RANDOM_SEED="${FLAGGEMS_RANDOM_SEED:-}"
 FLAGGEMS_TEST_OP="${FLAGGEMS_TEST_OP:-abs}"
-FLAGGEMS_TEST_COMMAND="${FLAGGEMS_TEST_COMMAND:-cd ${FLAGGEMS_CLONE_DIR} && python3 -m pytest -s tests/test_unary_pointwise_ops.py -m ${FLAGGEMS_TEST_OP} --record=log}"
+FLAGGEMS_TEST_COMMAND="${FLAGGEMS_TEST_COMMAND:-}"
+FLAGGEMS_WHITELIST="${FLAGGEMS_WHITELIST:-${LOCAL_CI_RUNNER_DIR:-${SCRIPT_DIR}}/flaggems_pass_whitelist.tsv}"
+FLAGGEMS_FULL_LIST="${FLAGGEMS_FULL_LIST:-${LOCAL_CI_RUNNER_DIR:-${SCRIPT_DIR}}/flaggems_all_ops.tsv}"
 INSTALL_FLAGGEMS_PACKAGES="${INSTALL_FLAGGEMS_PACKAGES:-1}"
 LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-${WORKSPACE}/llvm-release}"
 PPL_ROOT="${PPL_ROOT:-${WORKSPACE}/ppl-release}"
@@ -43,10 +49,11 @@ FRONTEND_BUILD_COMMAND="${FRONTEND_BUILD_COMMAND:-}"
 LOCAL_CI_ARTIFACT_ROOT="${LOCAL_CI_ARTIFACT_ROOT:-${WORKSPACE}/local-ci-artifacts}"
 run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 DELIVERY_ARTIFACT_DIR="${DELIVERY_ARTIFACT_DIR:-${LOCAL_CI_ARTIFACT_ROOT}/${run_stamp}-${target_sha:0:12}}"
+FLAGGEMS_SELECTED_FILE="${FLAGGEMS_SELECTED_FILE:-${DELIVERY_ARTIFACT_DIR}/flaggems-selected.txt}"
 
 export WORKSPACE ANCHOR_DIR BACKEND_PROFILE EXPECTED_TRITON_BACKEND BACKEND_PATH
 export BACKEND_ENVSETUP BACKEND_ENVSETUP_ARGS BACKEND_TEST_COMMAND
-export RUN_FLAGGEMS_TESTS FLAGGEMS_CLONE_DIR FLAGGEMS_REF FLAGGEMS_PIP_PACKAGES FLAGGEMS_TEST_OP FLAGGEMS_TEST_COMMAND
+export RUN_FLAGGEMS_TESTS FLAGGEMS_CLONE_DIR FLAGGEMS_REF FLAGGEMS_PIP_PACKAGES FLAGGEMS_TEST_MODE FLAGGEMS_SAMPLE_SIZE FLAGGEMS_RANDOM_SEED FLAGGEMS_TEST_OP FLAGGEMS_TEST_COMMAND FLAGGEMS_WHITELIST FLAGGEMS_FULL_LIST FLAGGEMS_SELECTED_FILE
 export LLVM_BUILD_DIR PPL_ROOT PYTHON_BIN PYTHON_VENV_ACTIVATE GITHUB_SHA="${target_sha}" GITHUB_REF="refs/heads/${GITEE_BRANCH}"
 
 mkdir -p "${DELIVERY_ARTIFACT_DIR}"
@@ -194,6 +201,12 @@ write_summary() {
     echo "flaggems_enabled: ${RUN_FLAGGEMS_TESTS}"
     echo "flaggems_dir: ${FLAGGEMS_CLONE_DIR}"
     echo "flaggems_commit: $(git_commit "${FLAGGEMS_CLONE_DIR}")"
+    echo "flaggems_test_mode: ${FLAGGEMS_TEST_MODE}"
+    echo "flaggems_sample_size: ${FLAGGEMS_SAMPLE_SIZE}"
+    echo "flaggems_random_seed: ${FLAGGEMS_RANDOM_SEED}"
+    echo "flaggems_whitelist: ${FLAGGEMS_WHITELIST}"
+    echo "flaggems_full_list: ${FLAGGEMS_FULL_LIST}"
+    echo "flaggems_selected_file: ${FLAGGEMS_SELECTED_FILE}"
     echo "flaggems_test_op: ${FLAGGEMS_TEST_OP}"
     echo "flaggems_test_command: ${FLAGGEMS_TEST_COMMAND}"
     echo "llvm_build_dir: ${LLVM_BUILD_DIR}"
@@ -223,6 +236,9 @@ setup_gitee_git_auth
 git fetch --prune gitee "${GITEE_BRANCH}"
 git checkout --detach "${target_sha}"
 git reset --hard "${target_sha}"
+cleanup_gitee_git_auth
+unset GITEE_TOKEN GITEE_USERNAME GIT_ASKPASS
+LOCAL_CI_GIT_ASKPASS=""
 
 cat <<EOF
 Local CI commit: ${target_sha}
@@ -315,6 +331,29 @@ if [[ "${RUN_FLAGGEMS_TESTS}" == "true" ]]; then
       run_logged flaggems-deps "${PYTHON_BIN}" -m pip install ${FLAGGEMS_PIP_PACKAGES}
     fi
   fi
+  if [[ -z "${FLAGGEMS_TEST_COMMAND}" ]]; then
+    flaggems_selector="${LOCAL_CI_RUNNER_DIR:-${SCRIPT_DIR}}/select_flaggems_tests.py"
+    if [[ ! -f "${flaggems_selector}" ]]; then
+      echo "FlagGems selector does not exist: ${flaggems_selector}" >&2
+      exit 1
+    fi
+    FLAGGEMS_TEST_COMMAND="$(${PYTHON_BIN} "${flaggems_selector}" \
+      --mode "${FLAGGEMS_TEST_MODE}" \
+      --sample-size "${FLAGGEMS_SAMPLE_SIZE}" \
+      --seed "${FLAGGEMS_RANDOM_SEED}" \
+      --op "${FLAGGEMS_TEST_OP}" \
+      --whitelist "${FLAGGEMS_WHITELIST}" \
+      --full-list "${FLAGGEMS_FULL_LIST}" \
+      --flaggems-dir "${FLAGGEMS_CLONE_DIR}" \
+      --python-bin "${PYTHON_BIN}" \
+      --selected-output "${FLAGGEMS_SELECTED_FILE}")"
+    export FLAGGEMS_TEST_COMMAND
+    echo "Generated FlagGems command (${FLAGGEMS_TEST_MODE}): ${FLAGGEMS_TEST_COMMAND}"
+    if [[ -f "${FLAGGEMS_SELECTED_FILE}" ]]; then
+      cat "${FLAGGEMS_SELECTED_FILE}"
+    fi
+  fi
+
   export FLAGGEMS_ROOT="${FLAGGEMS_CLONE_DIR}"
   source_backend_env
   (cd "${BACKEND_PATH}" && run_logged flaggems bash -lc "${FLAGGEMS_TEST_COMMAND}")

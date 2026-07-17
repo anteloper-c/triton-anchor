@@ -23,7 +23,8 @@ The Gitee CI relay is intentionally separate from the normal source mirror. One 
 
 ```text
 ci/push/<github-branch>   exact SHA dispatched by a GitHub push
-ci/pr-<number>            exact PR head SHA dispatched by a GitHub PR event
+ci/pr-<number>/<branch>   exact PR head SHA dispatched by a GitHub PR event, including fork PRs
+ci/full/<github-branch>   manual full FlagGems run for a GitHub branch
 local-ci-results          local runner results only
 ```
 
@@ -69,7 +70,9 @@ BACKEND_TEST_COMMAND="python3 tests/test_smoke.py && python3 tests/test_jit.py"
 PYTHON_VENV_ACTIVATE="/opt/venv/bin/activate"
 RUN_FLAGGEMS_TESTS="true"
 FLAGGEMS_PIP_PACKAGES="scipy pytest"
-FLAGGEMS_TEST_OP="abs"
+FLAGGEMS_TEST_MODE="sample"
+FLAGGEMS_SAMPLE_SIZE="6"
+FLAGGEMS_RANDOM_SEED=""
 FLAGGEMS_TEST_COMMAND=""
 ```
 
@@ -80,7 +83,7 @@ GITEE_REPO_URL="https://gitee.com/likehupochuan/triton-anchor-local-ci-results.g
 GITEE_OWNER="likehupochuan"
 GITEE_REPO="triton-anchor-local-ci-results"
 GITEE_POLL_ALL_BRANCHES="1"
-GITEE_BRANCH_INCLUDE_REGEX="^ci/(pr-[0-9]+|push/.+)$"
+GITEE_BRANCH_INCLUDE_REGEX="^ci/(pr-[0-9]+/.+|push/.+|full/.+)$"
 
 GITEE_RESULTS_OWNER="likehupochuan"
 GITEE_RESULTS_REPO="triton-anchor-local-ci-results"
@@ -93,9 +96,11 @@ Existing server installations must update `scripts/local_ci/config.env`; changin
 
 Set `GITEE_TOKEN` for a private relay and for result publishing. The token needs read/write access to the relay repository. The old Gitee commit status API route is not used because Gitee rejects that endpoint with HTTP 405.
 
+For automatic fork PRs, do not expose the write-capable `GITEE_TOKEN` to the Docker container that runs PR code. Leave `LOCAL_CI_ALLOW_WRITE_TOKEN_IN_CONTAINER=0`. If the relay repository is private, set `LOCAL_CI_CONTAINER_GITEE_TOKEN` to a read-only token that can fetch `ci/*`; if the relay is public/readable, leave it empty.
+
 The runner activates `/opt/venv/bin/activate` before running `uv build` or `uv pip install`. Set `PYTHON_VENV_ACTIVATE` to another path, or empty, if a different container layout is used.
 
-Set `RUN_FLAGGEMS_TESTS=true` to run the local FlagGems check. The default command runs only the `abs` operator through the current Sophgo script. Change `FLAGGEMS_TEST_OP` for another unary marker, or set `FLAGGEMS_TEST_COMMAND` directly for another file or script.
+Set `RUN_FLAGGEMS_TESTS=true` to run the local FlagGems check. Regular local CI uses `FLAGGEMS_TEST_MODE=sample`: it selects `FLAGGEMS_SAMPLE_SIZE=6` operators from the 36-op pass whitelist in `flaggems_pass_whitelist.tsv` with category-balanced sampling based on the attachment-5 `category` column. Manual full runs use `FLAGGEMS_TEST_MODE=full` through the `ci/full/*` task ref and run attachment-5 operators 1-127 from `flaggems_all_ops.tsv`. Set `FLAGGEMS_TEST_COMMAND` to bypass the selector completely.
 
 ## Run
 
@@ -123,15 +128,15 @@ Container-side artifacts:
 /workspace/local-ci-artifacts
 ```
 
-Published results are stored on `local-ci-results` under `runs/<safe-task-ref>/<commit>/<run-id>/`. The result directory intentionally keeps only `delivery-summary.txt`, `frontend-install.log`, `frontend-smoke.log`, `backend-rebuild.log`, `backend-smoke-jit.log`, and `flaggems.log`. Full local logs remain under `/workspace/local-ci-artifacts`.
+Published results are stored on `local-ci-results` under `runs/<safe-task-ref>/<commit>/<run-id>/`. The result directory intentionally keeps only `delivery-summary.txt`, `frontend-install.log`, `frontend-smoke.log`, `backend-rebuild.log`, `backend-smoke-jit.log`, `flaggems.log`, and `flaggems-selected.txt`. Full local logs remain under `/workspace/local-ci-artifacts`.
 
 ## GitHub Workflows
 
-`Dispatch Local CI via Gitee` is the only automatic push/PR entry point. Pushes to `main` and `jiwang-delivery-ci` create `ci/push/*`; same-repository PR events create `ci/pr-*`. Fork PRs are rejected because GitHub does not expose repository Gitee credentials to them.
+`Dispatch Local CI via Gitee` is the only automatic push/PR entry point. Pushes to `main` and `jiwang-delivery-ci` create `ci/push/*`; PR events, including fork PRs, create `ci/pr-*/*`. It uses `pull_request_target` so the trusted base-branch workflow can access the Gitee relay credentials, but it only fetches `refs/pull/<PR>/head` and pushes that exact commit to Gitee; it must not run PR code on the GitHub-hosted runner. Manual dispatch with `flaggems_mode=full` creates `ci/full/*` and reports to the separate `${LOCAL_CI_CONTEXT}/full` status context.
 
 `Receive Local CI Result` polls the existing result protocol and writes `pending`, `success`, or `failure` to the original GitHub SHA. A receiver waits up to 20,400 seconds by default, then starts the next attempt. Four attempts preserve the coworker workflow's long-running handoff behavior without changing the local runner.
 
-`Local CI Bridge` is retained as a manual query and scheduled reconciliation fallback. It checks configured push branch heads and open same-repository PRs using the same `ci/*` task-ref mapping, so a delayed or cancelled receiver does not permanently lose a final status.
+`Local CI Bridge` is retained as a manual query and scheduled reconciliation fallback. It checks configured push branch heads and open PRs using the same `ci/*` task-ref mapping, including fork PR heads, so a delayed or cancelled receiver does not permanently lose a final status.
 
 Configure these GitHub repository variables if the defaults change:
 

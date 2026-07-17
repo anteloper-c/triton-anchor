@@ -198,14 +198,13 @@ def list_open_pr_targets(limit: int) -> list[Target]:
             if not isinstance(head, dict):
                 continue
             repo = head.get("repo")
-            if not isinstance(repo, dict) or repo.get("full_name") != github_repo():
-                print(f"Skip fork PR #{item.get('number')}: local CI only supports same-repository PRs")
-                continue
+            head_repo = repo.get("full_name") if isinstance(repo, dict) else ""
             branch = head.get("ref")
             sha = head.get("sha")
             number = item.get("number")
             if isinstance(branch, str) and isinstance(sha, str) and isinstance(number, int):
-                targets.append(Target(branch, f"ci/pr-{number}", sha, f"PR #{number}"))
+                source_label = f"{head_repo}:{branch}" if head_repo and head_repo != github_repo() else branch
+                targets.append(Target(branch, f"ci/pr-{number}/{branch}", sha, f"PR #{number} {source_label}"))
         if len(payload) < per_page:
             break
         page += 1
