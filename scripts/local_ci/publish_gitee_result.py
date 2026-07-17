@@ -116,6 +116,16 @@ PUBLISHED_ARTIFACT_FILES = (
     "compile-time-comparison.json",
     "compile-time-comparison.md",
     "compile-time-comparison.log",
+    "pass-profile.log",
+    "pass-profile.json",
+    "pass-profile-events.csv",
+    "pass-profile-summary.csv",
+    "pass-profile-hotspots.md",
+    "pass-profile-base.json",
+    "pass-profile-comparison.json",
+    "pass-profile-comparison.csv",
+    "pass-profile-comparison.md",
+    "pass-profile-comparison.log",
 )
 
 
@@ -162,6 +172,33 @@ def publish_compile_time_cache(worktree: Path, result_dir: Path | None, sha: str
     source_csv = result_dir / "compile-benchmark.csv"
     if source_csv.is_file():
         shutil.copy2(source_csv, cache_dir / "latest.csv")
+    return cache_dir
+
+
+def publish_pass_profile_cache(worktree: Path, result_dir: Path | None, sha: str) -> Path | None:
+    if result_dir is None:
+        return None
+    source_json = result_dir / "pass-profile.json"
+    if not source_json.is_file():
+        return None
+
+    try:
+        document = json.loads(source_json.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        print(f"Cannot publish pass-profile cache from {source_json}: {exc}", file=sys.stderr)
+        return None
+    metadata = document.get("metadata", {}) if isinstance(document, dict) else {}
+    profile = metadata.get("backend_profile") or metadata.get("backend") or "default"
+    cache_dir = worktree / "pass-profile" / "by-sha" / sha / safe_path_part(str(profile))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_json, cache_dir / "latest.json")
+    for source_name, target_name in (
+        ("pass-profile-summary.csv", "latest-summary.csv"),
+        ("pass-profile-events.csv", "latest-events.csv"),
+    ):
+        source = result_dir / source_name
+        if source.is_file():
+            shutil.copy2(source, cache_dir / target_name)
     return cache_dir
 
 
@@ -246,6 +283,9 @@ def main() -> int:
         compile_cache_dir = publish_compile_time_cache(worktree, copied_result_dir, args.sha)
         if compile_cache_dir is not None:
             print(f"Prepared compile-time cache: {compile_cache_dir.relative_to(worktree)}")
+        pass_profile_cache_dir = publish_pass_profile_cache(worktree, copied_result_dir, args.sha)
+        if pass_profile_cache_dir is not None:
+            print(f"Prepared pass-profile cache: {pass_profile_cache_dir.relative_to(worktree)}")
 
         latest_dir = worktree / "runs" / safe_branch / args.sha
         latest_dir.mkdir(parents=True, exist_ok=True)
@@ -257,6 +297,8 @@ def main() -> int:
             "Result directories are stored under runs/<branch>/<commit>/<run-id>/.\n\n"
             "Compile-time baselines are stored under "
             "compile-time/by-sha/<commit>/<backend-profile>/latest.json.\n"
+            "Pass-profile baselines are stored under "
+            "pass-profile/by-sha/<commit>/<backend-profile>/latest.json.\n"
         )
 
         run_git(["add", "-A"], worktree, git_env)

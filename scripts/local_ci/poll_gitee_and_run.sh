@@ -37,6 +37,7 @@ LOCAL_CI_CONTAINER="${LOCAL_CI_CONTAINER:-triton-anchor-dev}"
 LOCAL_CI_WORKSPACE_HOST="${LOCAL_CI_WORKSPACE_HOST:-/root/projects/test/workspace}"
 BACKEND_PROFILE="${BACKEND_PROFILE:-sophgo-cmodel}"
 RUN_COMPILE_BENCHMARK="${RUN_COMPILE_BENCHMARK:-true}"
+RUN_PASS_PROFILE="${RUN_PASS_PROFILE:-true}"
 export GITEE_TOKEN GITEE_USERNAME GITEE_WEB_URL GITEE_RESULTS_WEB_URL WORKSPACE LOCAL_CI_WORKSPACE_HOST LOCAL_CI_CONFIG LOCAL_CI_CONTAINER
 
 mkdir -p "${LOCAL_CI_STATE_DIR}"
@@ -143,11 +144,12 @@ stage_runner_scripts() {
   printf '%s' "${staged_dir}"
 }
 
-compile_baseline_exists() {
-  local sha="$1"
+cached_benchmark_exists() {
+  local kind="$1"
+  local sha="$2"
   local safe_profile
   safe_profile="$(safe_path_part "${BACKEND_PROFILE}")"
-  local rel_path="compile-time/by-sha/${sha}/${safe_profile}/latest.json"
+  local rel_path="${kind}/by-sha/${sha}/${safe_profile}/latest.json"
   local checkout_dir
   checkout_dir="$(mktemp -d "${LOCAL_CI_STATE_DIR}/baseline-check.XXXXXX")"
   local status=1
@@ -163,6 +165,14 @@ compile_baseline_exists() {
 
   rm -rf "${checkout_dir}"
   return "${status}"
+}
+
+compile_baseline_exists() {
+  cached_benchmark_exists "compile-time" "$1"
+}
+
+pass_profile_baseline_exists() {
+  cached_benchmark_exists "pass-profile" "$1"
 }
 
 run_once() {
@@ -201,32 +211,50 @@ run_once() {
 
   local base_branch=""
   local base_sha=""
-  if [[ "${RUN_COMPILE_BENCHMARK}" == "true" && "${branch}" =~ ^ci/pr-([0-9]+)$ ]]; then
+  if [[ ("${RUN_COMPILE_BENCHMARK}" == "true" || "${RUN_PASS_PROFILE}" == "true") \
+    && "${branch}" =~ ^ci/pr-([0-9]+)$ ]]; then
     base_branch="ci/base/pr-${BASH_REMATCH[1]}"
     base_sha="$(latest_sha "${base_branch}")"
     if [[ -z "${base_sha}" ]]; then
-      echo "No base SHA found for ${branch}; compile comparison will report a warning." >&2
-    elif compile_baseline_exists "${base_sha}"; then
-      echo "Using cached compile-time baseline for ${base_sha}."
+      echo "No base SHA found for ${branch}; performance comparisons will report a warning." >&2
     else
-      local base_run_id
-      base_run_id="$(date -u +%Y%m%dT%H%M%SZ)-${base_sha:0:12}-base"
-      local base_run_dir="${LOCAL_CI_STATE_DIR}/runs/$(safe_path_part "${base_branch}")/${base_run_id}"
-      mkdir -p "${base_run_dir}"
-      echo "Compile-time baseline missing for ${base_sha}; running base task once."
+      local missing_baseline=0
+      if [[ "${RUN_COMPILE_BENCHMARK}" == "true" ]]; then
+        if compile_baseline_exists "${base_sha}"; then
+          echo "Using cached compile-time baseline for ${base_sha}."
+        else
+          echo "Compile-time baseline missing for ${base_sha}."
+          missing_baseline=1
+        fi
+      fi
+      if [[ "${RUN_PASS_PROFILE}" == "true" ]]; then
+        if pass_profile_baseline_exists "${base_sha}"; then
+          echo "Using cached pass-profile baseline for ${base_sha}."
+        else
+          echo "Pass-profile baseline missing for ${base_sha}."
+          missing_baseline=1
+        fi
+      fi
+      if [[ "${missing_baseline}" == "1" ]]; then
+        local base_run_id
+        base_run_id="$(date -u +%Y%m%dT%H%M%SZ)-${base_sha:0:12}-base"
+        local base_run_dir="${LOCAL_CI_STATE_DIR}/runs/$(safe_path_part "${base_branch}")/${base_run_id}"
+        mkdir -p "${base_run_dir}"
+        echo "Running base task once to populate missing performance baseline(s) for ${base_sha}."
 
-      local base_status=0
-      set +e
-      LOCAL_CI_BASE_SHA="" LOCAL_CI_BASE_REF="" GITEE_BRANCH="${base_branch}" \
-        "${LOCAL_CI_RUNNER_DIR}/run_in_container.sh" "${base_sha}" "${base_branch}" 2>&1 |
-        tee "${base_run_dir}/local-ci.log"
-      base_status=${PIPESTATUS[0]}
-      set -e
-      echo "{\"sha\":\"${base_sha}\",\"status\":${base_status},\"run_dir\":\"${base_run_dir}\"}" \
-        > "${base_run_dir}/result.json"
-      publish_result "${base_sha}" "${base_status}" "${base_run_id}" "${base_run_dir}" "${base_branch}" || true
-      if [[ ${base_status} -ne 0 ]]; then
-        echo "Base task failed; continuing candidate task with a missing-baseline warning." >&2
+        local base_status=0
+        set +e
+        LOCAL_CI_BASE_SHA="" LOCAL_CI_BASE_REF="" GITEE_BRANCH="${base_branch}" \
+          "${LOCAL_CI_RUNNER_DIR}/run_in_container.sh" "${base_sha}" "${base_branch}" 2>&1 |
+          tee "${base_run_dir}/local-ci.log"
+        base_status=${PIPESTATUS[0]}
+        set -e
+        echo "{\"sha\":\"${base_sha}\",\"status\":${base_status},\"run_dir\":\"${base_run_dir}\"}" \
+          > "${base_run_dir}/result.json"
+        publish_result "${base_sha}" "${base_status}" "${base_run_id}" "${base_run_dir}" "${base_branch}" || true
+        if [[ ${base_status} -ne 0 ]]; then
+          echo "Base task failed; continuing candidate task with a missing-baseline warning." >&2
+        fi
       fi
     fi
   fi

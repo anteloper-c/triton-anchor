@@ -26,6 +26,7 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "TRITON_DISABLE_RESHAPE_ENCODING_INFERENCE",
     "TRITON_ENABLE_LLVM_DEBUG",
     "TRITON_LLVM_DEBUG_ONLY",
+    "TRITON_ANCHOR_PROFILE",
     "USE_TTGIR_LOC",
     "NVPTX_ENABLE_DUMP",
     // clang-format on
@@ -64,6 +65,11 @@ inline bool getBoolEnv(const std::string &env) {
   std::transform(str.begin(), str.end(), str.begin(),
                  [](unsigned char c) { return std::tolower(c); });
   return str == "on" || str == "true" || str == "1";
+}
+
+inline bool isPassTimingEnabled() {
+  return getBoolEnv("MLIR_ENABLE_TIMING") ||
+         getBoolEnv("TRITON_ANCHOR_PROFILE");
 }
 
 inline std::optional<bool> isEnvValueBool(std::string str) {

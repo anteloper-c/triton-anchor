@@ -1665,7 +1665,7 @@ void init_triton_ir(py::module &&m) {
           ::llvm::setCurrentDebugTypes(debugTypes.data(), debugTypes.size());
         }
 
-        bool haveTiming = ::triton::tools::getBoolEnv("MLIR_ENABLE_TIMING");
+        bool haveTiming = ::triton::tools::isPassTimingEnabled();
         if (haveTiming) {
           self.enableTiming();
         }

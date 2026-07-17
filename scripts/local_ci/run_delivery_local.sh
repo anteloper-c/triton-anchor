@@ -52,6 +52,15 @@ COMPILE_BENCHMARK_WARMUP="${COMPILE_BENCHMARK_WARMUP:-1}"
 COMPILE_BENCHMARK_THRESHOLD="${COMPILE_BENCHMARK_THRESHOLD:-0.20}"
 COMPILE_BENCHMARK_TIMEOUT="${COMPILE_BENCHMARK_TIMEOUT:-30m}"
 COMPILE_TIME_STATUS="disabled"
+RUN_PASS_PROFILE="${RUN_PASS_PROFILE:-true}"
+PASS_PROFILE_KERNELS="${PASS_PROFILE_KERNELS:-${COMPILE_BENCHMARK_KERNELS}}"
+PASS_PROFILE_REPEAT="${PASS_PROFILE_REPEAT:-3}"
+PASS_PROFILE_WARMUP="${PASS_PROFILE_WARMUP:-1}"
+PASS_PROFILE_THRESHOLD="${PASS_PROFILE_THRESHOLD:-0.20}"
+PASS_PROFILE_MIN_BASE_MS="${PASS_PROFILE_MIN_BASE_MS:-1.0}"
+PASS_PROFILE_MIN_DELTA_MS="${PASS_PROFILE_MIN_DELTA_MS:-1.0}"
+PASS_PROFILE_TIMEOUT="${PASS_PROFILE_TIMEOUT:-30m}"
+PASS_PROFILE_STATUS="disabled"
 MAX_JOBS="${MAX_JOBS:-1}"
 CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-1}"
 NINJAFLAGS="${NINJAFLAGS:--j1}"
@@ -222,6 +231,31 @@ fetch_compile_baseline() {
   echo "Loaded compile-time baseline for ${sha}: ${rel_path}"
 }
 
+fetch_pass_profile_baseline() {
+  local sha="$1"
+  local output="$2"
+  local safe_profile
+  safe_profile="$(safe_path_part "${BACKEND_PROFILE}")"
+  local rel_path="pass-profile/by-sha/${sha}/${safe_profile}/latest.json"
+
+  if git remote get-url gitee-results >/dev/null 2>&1; then
+    git remote set-url gitee-results "${GITEE_RESULTS_REPO_URL}"
+  else
+    git remote add gitee-results "${GITEE_RESULTS_REPO_URL}"
+  fi
+  if ! git fetch -q --depth=1 gitee-results \
+    "refs/heads/${GITEE_RESULTS_BRANCH}:refs/remotes/gitee-results/${GITEE_RESULTS_BRANCH}"; then
+    echo "Pass-profile results branch is not available: ${GITEE_RESULTS_BRANCH}" >&2
+    return 1
+  fi
+  if ! git show "gitee-results/${GITEE_RESULTS_BRANCH}:${rel_path}" > "${output}"; then
+    rm -f "${output}"
+    echo "No cached pass-profile baseline at ${rel_path}" >&2
+    return 1
+  fi
+  echo "Loaded pass-profile baseline for ${sha}: ${rel_path}"
+}
+
 run_compile_benchmark() {
   if [[ "${RUN_COMPILE_BENCHMARK}" != "true" ]]; then
     COMPILE_TIME_STATUS="disabled"
@@ -271,6 +305,62 @@ run_compile_benchmark() {
   fi
 }
 
+run_pass_profile() {
+  if [[ "${RUN_PASS_PROFILE}" != "true" ]]; then
+    PASS_PROFILE_STATUS="disabled"
+    return 0
+  fi
+  if [[ ! -f "${LOCAL_CI_RUNNER_DIR}/pass_profile_benchmark.py" ]]; then
+    echo "Pass profile script is missing from the trusted runner snapshot." >&2
+    return 1
+  fi
+  if [[ ! -f "${LOCAL_CI_RUNNER_DIR}/compare_pass_profile.py" ]]; then
+    echo "Pass profile comparison script is missing from the trusted runner snapshot." >&2
+    return 1
+  fi
+
+  local candidate_json="${DELIVERY_ARTIFACT_DIR}/pass-profile.json"
+  local candidate_events_csv="${DELIVERY_ARTIFACT_DIR}/pass-profile-events.csv"
+  local candidate_summary_csv="${DELIVERY_ARTIFACT_DIR}/pass-profile-summary.csv"
+  local hotspots_md="${DELIVERY_ARTIFACT_DIR}/pass-profile-hotspots.md"
+  export FLAGGEMS_ROOT="${FLAGGEMS_CLONE_DIR}"
+  source_backend_env
+  run_logged pass-profile timeout "${PASS_PROFILE_TIMEOUT}" \
+    "${PYTHON_BIN}" "${LOCAL_CI_RUNNER_DIR}/pass_profile_benchmark.py" \
+      --backend "${EXPECTED_TRITON_BACKEND:-sophgo}" \
+      --vendor "${EXPECTED_TRITON_BACKEND:-sophgo}" \
+      --flaggems-root "${FLAGGEMS_CLONE_DIR}" \
+      --kernels "${PASS_PROFILE_KERNELS}" \
+      --repeat "${PASS_PROFILE_REPEAT}" \
+      --warmup "${PASS_PROFILE_WARMUP}" \
+      --output-json "${candidate_json}" \
+      --output-events-csv "${candidate_events_csv}" \
+      --output-summary-csv "${candidate_summary_csv}" \
+      --output-hotspots-markdown "${hotspots_md}"
+
+  PASS_PROFILE_STATUS="pass"
+  if [[ -n "${LOCAL_CI_BASE_SHA}" ]]; then
+    local baseline_json="${DELIVERY_ARTIFACT_DIR}/pass-profile-base.json"
+    fetch_pass_profile_baseline "${LOCAL_CI_BASE_SHA}" "${baseline_json}" || true
+    "${PYTHON_BIN}" "${LOCAL_CI_RUNNER_DIR}/compare_pass_profile.py" \
+      --baseline-json "${baseline_json}" \
+      --candidate-json "${candidate_json}" \
+      --base-sha "${LOCAL_CI_BASE_SHA}" \
+      --candidate-sha "${target_sha}" \
+      --kernels "${PASS_PROFILE_KERNELS}" \
+      --threshold "${PASS_PROFILE_THRESHOLD}" \
+      --min-base-ms "${PASS_PROFILE_MIN_BASE_MS}" \
+      --min-delta-ms "${PASS_PROFILE_MIN_DELTA_MS}" \
+      --output-json "${DELIVERY_ARTIFACT_DIR}/pass-profile-comparison.json" \
+      --output-csv "${DELIVERY_ARTIFACT_DIR}/pass-profile-comparison.csv" \
+      --output-markdown "${DELIVERY_ARTIFACT_DIR}/pass-profile-comparison.md" \
+      2>&1 | tee "${DELIVERY_ARTIFACT_DIR}/pass-profile-comparison.log"
+    PASS_PROFILE_STATUS="$("${PYTHON_BIN}" -c \
+      'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["status"])' \
+      "${DELIVERY_ARTIFACT_DIR}/pass-profile-comparison.json")"
+  fi
+}
+
 git_commit() {
   local repo="$1"
   git -C "${repo}" rev-parse HEAD 2>/dev/null || true
@@ -302,6 +392,8 @@ write_summary() {
     echo "artifact_dir: ${DELIVERY_ARTIFACT_DIR}"
     echo "compile_time_status: ${COMPILE_TIME_STATUS}"
     echo "compile_time_threshold: ${COMPILE_BENCHMARK_THRESHOLD}"
+    echo "pass_profile_status: ${PASS_PROFILE_STATUS}"
+    echo "pass_profile_threshold: ${PASS_PROFILE_THRESHOLD}"
   } > "${DELIVERY_ARTIFACT_DIR}/delivery-summary.txt"
   set -e
 }
@@ -403,7 +495,8 @@ if [[ -n "${BACKEND_TEST_COMMAND}" ]]; then
   (cd "${BACKEND_PATH}" && run_logged backend-smoke-jit bash -lc "${BACKEND_TEST_COMMAND}")
 fi
 
-if [[ ("${RUN_FLAGGEMS_TESTS}" == "true" || "${RUN_COMPILE_BENCHMARK}" == "true") \
+if [[ ("${RUN_FLAGGEMS_TESTS}" == "true" || "${RUN_COMPILE_BENCHMARK}" == "true" \
+  || "${RUN_PASS_PROFILE}" == "true") \
   && "${INSTALL_FLAGGEMS_PACKAGES}" != "0" && -n "${FLAGGEMS_PIP_PACKAGES}" ]]; then
   if use_uv; then
     run_logged flaggems-deps uv pip install ${FLAGGEMS_PIP_PACKAGES}
@@ -427,5 +520,6 @@ if [[ "${RUN_FLAGGEMS_TESTS}" == "true" ]]; then
 fi
 
 run_compile_benchmark
+run_pass_profile
 
 echo "Local CI finished successfully. Artifacts are in ${DELIVERY_ARTIFACT_DIR}"
