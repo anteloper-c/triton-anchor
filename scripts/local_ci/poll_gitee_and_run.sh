@@ -19,7 +19,7 @@ GITEE_REPO="${GITEE_REPO:-triton-anchor-local-ci-results}"
 GITEE_BRANCH="${GITEE_BRANCH:-ci/push/jiwang-delivery-ci}"
 GITEE_BRANCHES="${GITEE_BRANCHES:-${GITEE_BRANCH}}"
 GITEE_POLL_ALL_BRANCHES="${GITEE_POLL_ALL_BRANCHES:-1}"
-GITEE_BRANCH_INCLUDE_REGEX="${GITEE_BRANCH_INCLUDE_REGEX:-^ci/(pr-[0-9]+|push/.+)$}"
+GITEE_BRANCH_INCLUDE_REGEX="${GITEE_BRANCH_INCLUDE_REGEX:-^ci/(pr-[0-9]+/.+|push/.+|full/.+)$}"
 GITEE_TOKEN="${GITEE_TOKEN:-}"
 LOCAL_CI_STATE_DIR="${LOCAL_CI_STATE_DIR:-/root/projects/test/local-ci-state}"
 LOCAL_CI_POLL_INTERVAL="${LOCAL_CI_POLL_INTERVAL:-60}"
@@ -99,6 +99,14 @@ branch_is_enabled() {
     return 1
   fi
   return 0
+}
+
+flaggems_mode_for_branch() {
+  local branch="$1"
+  case "${branch}" in
+    ci/full/*) printf 'full' ;;
+    *) printf '%s' "${FLAGGEMS_TEST_MODE:-sample}" ;;
+  esac
 }
 
 publish_result() {
@@ -209,10 +217,14 @@ run_once() {
   export LOCAL_CI_RUNNER_DIR
   echo "Runner script snapshot: ${LOCAL_CI_RUNNER_DIR}"
 
+  local flaggems_test_mode
+  flaggems_test_mode="$(flaggems_mode_for_branch "${branch}")"
+  echo "FlagGems test mode: ${flaggems_test_mode}"
+
   local base_branch=""
   local base_sha=""
   if [[ ("${RUN_COMPILE_BENCHMARK}" == "true" || "${RUN_PASS_PROFILE}" == "true") \
-    && "${branch}" =~ ^ci/pr-([0-9]+)$ ]]; then
+    && "${branch}" =~ ^ci/pr-([0-9]+)/.+$ ]]; then
     base_branch="ci/base/pr-${BASH_REMATCH[1]}"
     base_sha="$(latest_sha "${base_branch}")"
     if [[ -z "${base_sha}" ]]; then
@@ -245,6 +257,7 @@ run_once() {
         local base_status=0
         set +e
         LOCAL_CI_BASE_SHA="" LOCAL_CI_BASE_REF="" GITEE_BRANCH="${base_branch}" \
+          FLAGGEMS_TEST_MODE="${flaggems_test_mode}" \
           "${LOCAL_CI_RUNNER_DIR}/run_in_container.sh" "${base_sha}" "${base_branch}" 2>&1 |
           tee "${base_run_dir}/local-ci.log"
         base_status=${PIPESTATUS[0]}
@@ -262,20 +275,35 @@ run_once() {
   local status=0
   set +e
   LOCAL_CI_BASE_SHA="${base_sha}" LOCAL_CI_BASE_REF="${base_branch}" GITEE_BRANCH="${branch}" \
+    FLAGGEMS_TEST_MODE="${flaggems_test_mode}" \
     "${LOCAL_CI_RUNNER_DIR}/run_in_container.sh" "${sha}" "${branch}" 2>&1 |
     tee "${run_dir}/local-ci.log"
   status=${PIPESTATUS[0]}
   set -e
 
-  if [[ ${status} -eq 0 ]]; then
+  echo "{\"sha\":\"${sha}\",\"status\":${status},\"run_dir\":\"${run_dir}\"}" > "${run_dir}/result.json"
+
+  local publish_status=0
+  set +e
+  publish_result "${sha}" "${status}" "${run_id}" "${run_dir}" "${branch}"
+  publish_status=$?
+  set -e
+
+  if [[ ${publish_status} -eq 0 ]]; then
     echo "${sha}" > "${last_file}"
+    if [[ ${status} -eq 0 ]]; then
+      echo "local-ci passed and result was published; marked ${sha} processed."
+    else
+      echo "local-ci failed and result was published; marked ${sha} processed."
+    fi
   else
-    echo "local-ci failed; ${sha} was not marked processed and will be retried." >&2
+    echo "local-ci result publish failed; ${sha} was not marked processed and will be retried." >&2
   fi
 
-  echo "{\"sha\":\"${sha}\",\"status\":${status},\"run_dir\":\"${run_dir}\"}" > "${run_dir}/result.json"
-  publish_result "${sha}" "${status}" "${run_id}" "${run_dir}" "${branch}" || true
-  return "${status}"
+  if [[ ${status} -ne 0 ]]; then
+    return "${status}"
+  fi
+  return "${publish_status}"
 }
 
 run_all_once() {
@@ -295,9 +323,10 @@ if [[ "${1:-}" == "--once" ]]; then
 fi
 
 while true; do
-  run_all_once || true
+  loop_status=0
+  run_all_once || loop_status=$?
   if [[ "${LOCAL_CI_ONCE}" == "1" ]]; then
-    break
+    exit "${loop_status}"
   fi
   sleep "${LOCAL_CI_POLL_INTERVAL}"
 done

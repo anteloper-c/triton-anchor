@@ -5,7 +5,7 @@ on:
     branches:
       - main
       - jiwang-delivery-ci
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
@@ -19,6 +19,14 @@ on:
         required: false
         default: ""
         type: string
+      flaggems_mode:
+        description: "FlagGems mode for manual dispatch"
+        required: false
+        default: "sample"
+        type: choice
+        options:
+          - sample
+          - full
 
 permissions:
   actions: write
@@ -26,7 +34,7 @@ permissions:
   statuses: write
 
 concurrency:
-  group: dispatch-local-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref_name || inputs.source_branch }}
+  group: dispatch-local-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref_name || inputs.source_branch }}-${{ inputs.flaggems_mode || 'sample' }}
   cancel-in-progress: true
 
 jobs:
@@ -45,43 +53,110 @@ jobs:
       RECEIVER_WAIT_SECONDS: ${{ vars.LOCAL_CI_RECEIVER_WAIT_SECONDS || '20400' }}
 
     steps:
-      - name: Check pull request source
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-        run: |
-          echo "::error::Local CI only supports PR branches from this repository. Fork PRs cannot use repository Gitee credentials."
-          exit 1
-
       - name: Resolve task metadata
         id: meta
         env:
           EVENT_SHA: ${{ github.event.pull_request.head.sha || inputs.commit_sha || github.sha }}
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
           EVENT_SOURCE_BRANCH: ${{ github.event.pull_request.head.ref || inputs.source_branch || github.ref_name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REQUESTED_FLAGGEMS_MODE: ${{ inputs.flaggems_mode || 'sample' }}
         run: |
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            task_ref="ci/pr-${PR_NUMBER}"
+          set -euo pipefail
+
+          flaggems_mode="sample"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            flaggems_mode="${REQUESTED_FLAGGEMS_MODE:-sample}"
+          fi
+          case "${flaggems_mode}" in
+            sample|full) ;;
+            *)
+              echo "::error::Unsupported FlagGems mode: ${flaggems_mode}"
+              exit 1
+              ;;
+          esac
+
+          context="${CONTEXT}"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request_target" ]; then
+            task_ref="ci/pr-${PR_NUMBER}/${EVENT_SOURCE_BRANCH}"
             base_task_ref="ci/base/pr-${PR_NUMBER}"
+            base_fetch_ref="refs/heads/${EVENT_BASE_BRANCH}"
+          elif [ "${flaggems_mode}" = "full" ]; then
+            task_ref="ci/full/${EVENT_SOURCE_BRANCH}"
+            base_task_ref=""
+            base_fetch_ref=""
+            context="${CONTEXT}/full"
           else
             task_ref="ci/push/${EVENT_SOURCE_BRANCH}"
             base_task_ref=""
+            base_fetch_ref=""
           fi
 
+          if ! git check-ref-format "refs/heads/${task_ref}"; then
+            echo "::error::Generated Gitee task ref is not a valid git branch: ${task_ref}"
+            exit 1
+          fi
+
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request_target" ]; then
+            fetch_ref="refs/pull/${PR_NUMBER}/head"
+            source_label="${PR_HEAD_REPO}:${EVENT_SOURCE_BRANCH}"
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            fetch_ref="${GITHUB_REF}"
+            source_label="${EVENT_SOURCE_BRANCH}"
+          else
+            fetch_ref="refs/heads/${EVENT_SOURCE_BRANCH}"
+            source_label="${EVENT_SOURCE_BRANCH}"
+          fi
           {
             echo "sha=${EVENT_SHA}"
             echo "base_sha=${EVENT_BASE_SHA}"
             echo "source_branch=${EVENT_SOURCE_BRANCH}"
+            echo "source_label=${source_label}"
             echo "task_ref=${task_ref}"
             echo "base_task_ref=${base_task_ref}"
+            echo "base_fetch_ref=${base_fetch_ref}"
+            echo "fetch_ref=${fetch_ref}"
+            echo "flaggems_mode=${flaggems_mode}"
+            echo "context=${context}"
             echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Checkout exact task commit
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.meta.outputs.sha }}
-          fetch-depth: 0
-          submodules: false
+      - name: Fetch exact task commit
+        env:
+          SHA: ${{ steps.meta.outputs.sha }}
+          FETCH_REF: ${{ steps.meta.outputs.fetch_ref }}
+          BASE_SHA: ${{ steps.meta.outputs.base_sha }}
+          BASE_FETCH_REF: ${{ steps.meta.outputs.base_fetch_ref }}
+        run: |
+          set -euo pipefail
+
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${SHA}" ]; then
+            git fetch --no-tags origin "+${FETCH_REF}:refs/local-ci/task"
+          else
+            git fetch --no-tags --depth=1 origin "+${FETCH_REF}:refs/local-ci/task"
+          fi
+
+          if [ -n "${BASE_SHA}" ]; then
+            git fetch --no-tags --depth=1 origin "+${BASE_FETCH_REF}:refs/local-ci/base"
+            actual_base_sha="$(git rev-parse refs/local-ci/base)"
+            if [ "${actual_base_sha}" != "${BASE_SHA}" ]; then
+              echo "::error::Fetched PR base ${actual_base_sha}, expected ${BASE_SHA}"
+              exit 1
+            fi
+          fi
+
+          git checkout --detach "${SHA}"
+
+          actual_sha="$(git rev-parse HEAD)"
+          if [ "${actual_sha}" != "${SHA}" ]; then
+            echo "::error::Fetched ${actual_sha}, expected ${SHA}"
+            exit 1
+          fi
 
       - name: Push task ref to CI relay repository
         env:
@@ -115,7 +190,7 @@ jobs:
 
           if [ -n "${BASE_SHA}" ] && [ -n "${BASE_TASK_REF}" ]; then
             GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
-              git push --force gitee-ci "${BASE_SHA}:refs/heads/${BASE_TASK_REF}"
+              git push --force gitee-ci "refs/local-ci/base:refs/heads/${BASE_TASK_REF}"
           fi
 
       - name: Mark local CI pending
@@ -123,11 +198,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.meta.outputs.sha }}
           TASK_REF: ${{ steps.meta.outputs.task_ref }}
+          STATUS_CONTEXT: ${{ steps.meta.outputs.context }}
+          FLAGGEMS_MODE: ${{ steps.meta.outputs.flaggems_mode }}
         run: |
           gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${SHA}" \
             -f state=pending \
-            -f context="${CONTEXT}" \
-            -f description="local CI task queued on Gitee" \
+            -f context="${STATUS_CONTEXT}" \
+            -f description="local CI ${FLAGGEMS_MODE} task queued on Gitee" \
             -f target_url="${GITEE_CI_WEB_URL}/tree/${TASK_REF}"
 
       - name: Start result receiver
@@ -137,6 +214,7 @@ jobs:
           SOURCE_BRANCH: ${{ steps.meta.outputs.source_branch }}
           TASK_REF: ${{ steps.meta.outputs.task_ref }}
           STARTED_AT: ${{ steps.meta.outputs.started_at }}
+          STATUS_CONTEXT: ${{ steps.meta.outputs.context }}
         run: |
           gh workflow run receive-local-ci-result.yml \
             --repo "${GITHUB_REPOSITORY}" \
@@ -144,6 +222,7 @@ jobs:
             -f sha="${SHA}" \
             -f source_branch="${SOURCE_BRANCH}" \
             -f task_ref="${TASK_REF}" \
+            -f context="${STATUS_CONTEXT}" \
             -f attempt="1" \
             -f started_at="${STARTED_AT}" \
             -f wait_seconds="${RECEIVER_WAIT_SECONDS}"
@@ -153,8 +232,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.meta.outputs.sha }}
+          STATUS_CONTEXT: ${{ steps.meta.outputs.context || env.CONTEXT }}
         run: |
           gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${SHA}" \
             -f state=error \
-            -f context="${CONTEXT}" \
+            -f context="${STATUS_CONTEXT}" \
             -f description="failed to dispatch local CI task"

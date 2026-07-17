@@ -15,6 +15,11 @@ on:
         description: Gitee task branch containing the exact commit
         required: true
         type: string
+      context:
+        description: GitHub commit status context to update
+        required: false
+        default: ""
+        type: string
       attempt:
         description: Receiver continuation attempt
         required: true
@@ -44,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
-      CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
+      CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
       SHA: ${{ inputs.sha }}
       SOURCE_BRANCH: ${{ inputs.source_branch }}
       TASK_REF: ${{ inputs.task_ref }}
@@ -113,6 +118,7 @@ jobs:
                   -f sha="${SHA}" \
                   -f source_branch="${SOURCE_BRANCH}" \
                   -f task_ref="${TASK_REF}" \
+                  -f context="${CONTEXT}" \
                   -f attempt="${next_attempt}" \
                   -f started_at="${STARTED_AT}" \
                   -f wait_seconds="${WAIT_SECONDS}"; then
