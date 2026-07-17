@@ -135,14 +135,11 @@ jobs:
           git init .
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
 
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${SHA}" ]; then
-            git fetch --no-tags origin "+${FETCH_REF}:refs/local-ci/task"
-          else
-            git fetch --no-tags --depth=1 origin "+${FETCH_REF}:refs/local-ci/task"
-          fi
+          # Gitee rejects relay updates when the pushed commit has shallow ancestry.
+          git fetch --no-tags origin "+${FETCH_REF}:refs/local-ci/task"
 
           if [ -n "${BASE_SHA}" ]; then
-            git fetch --no-tags --depth=1 origin "+${BASE_FETCH_REF}:refs/local-ci/base"
+            git fetch --no-tags origin "+${BASE_FETCH_REF}:refs/local-ci/base"
             actual_base_sha="$(git rev-parse refs/local-ci/base)"
             if [ "${actual_base_sha}" != "${BASE_SHA}" ]; then
               echo "::error::Fetched PR base ${actual_base_sha}, expected ${BASE_SHA}"
