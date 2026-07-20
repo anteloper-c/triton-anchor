@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -127,6 +128,15 @@ PUBLISHED_ARTIFACT_FILES = (
     "pass-profile-comparison.csv",
     "pass-profile-comparison.md",
     "pass-profile-comparison.log",
+    "ir-serialization.log",
+    "ir-serialization.json",
+    "ir-serialization.csv",
+    "ir-serialization-summary.md",
+    "ir-serialization-base.json",
+    "ir-serialization-comparison.json",
+    "ir-serialization-comparison.csv",
+    "ir-serialization-comparison.md",
+    "ir-serialization-comparison.log",
 )
 
 
@@ -201,6 +211,156 @@ def publish_pass_profile_cache(worktree: Path, result_dir: Path | None, sha: str
         if source.is_file():
             shutil.copy2(source, cache_dir / target_name)
     return cache_dir
+
+
+def publish_ir_serialization_cache(
+    worktree: Path, result_dir: Path | None, sha: str
+) -> Path | None:
+    if result_dir is None:
+        return None
+    source_json = result_dir / "ir-serialization.json"
+    if not source_json.is_file():
+        return None
+
+    try:
+        document = json.loads(source_json.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        print(
+            f"Cannot publish IR serialization cache from {source_json}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    metadata = document.get("metadata", {}) if isinstance(document, dict) else {}
+    profile = metadata.get("backend_profile") or metadata.get("backend") or "default"
+    cache_dir = (
+        worktree
+        / "ir-serialization"
+        / "by-sha"
+        / sha
+        / safe_path_part(str(profile))
+    )
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_json, cache_dir / "latest.json")
+    for source_name, target_name in (
+        ("ir-serialization.csv", "latest.csv"),
+        ("ir-serialization-summary.md", "latest.md"),
+    ):
+        source = result_dir / source_name
+        if source.is_file():
+            shutil.copy2(source, cache_dir / target_name)
+    return cache_dir
+
+
+def ir_dashboard_rows(worktree: Path) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    cache_root = worktree / "ir-serialization" / "by-sha"
+    if not cache_root.is_dir():
+        return rows
+
+    for result_file in cache_root.glob("*/*/latest.json"):
+        try:
+            document = json.loads(result_file.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            print(f"Skipping invalid IR dashboard input {result_file}: {exc}", file=sys.stderr)
+            continue
+        if not isinstance(document, dict):
+            continue
+        metadata = document.get("metadata", {})
+        summary = document.get("summary", {})
+        if not isinstance(metadata, dict) or not isinstance(summary, dict):
+            continue
+        sha = result_file.parents[1].name
+        profile = result_file.parent.name
+        generated_at = str(metadata.get("generated_at") or "")
+        for kernel, kernel_data in summary.items():
+            if not isinstance(kernel_data, dict):
+                continue
+            metrics = kernel_data.get("metrics", {})
+            if not isinstance(metrics, dict):
+                continue
+
+            def median(metric: str) -> float | None:
+                value = metrics.get(metric, {})
+                value = value.get("median_ms") if isinstance(value, dict) else None
+                return float(value) if isinstance(value, (int, float)) else None
+
+            rows.append(
+                {
+                    "generated_at": generated_at,
+                    "sha": sha,
+                    "profile": profile,
+                    "kernel": str(kernel),
+                    "module_count": kernel_data.get("module_count"),
+                    "ir_bytes": kernel_data.get("ir_bytes"),
+                    "serialize_median_ms": median("serialize"),
+                    "deserialize_median_ms": median("deserialize"),
+                    "roundtrip_median_ms": median("roundtrip"),
+                    "result_path": str(result_file.relative_to(worktree)).replace("\\", "/"),
+                }
+            )
+    rows.sort(
+        key=lambda row: (
+            str(row["generated_at"]),
+            str(row["sha"]),
+            str(row["profile"]),
+            str(row["kernel"]),
+        ),
+        reverse=True,
+    )
+    return rows
+
+
+def write_ir_serialization_dashboard(worktree: Path, limit: int = 100) -> tuple[Path, Path]:
+    rows = ir_dashboard_rows(worktree)[:limit]
+    dashboard_dir = worktree / "ir-serialization"
+    dashboard_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = dashboard_dir / "dashboard.csv"
+    fieldnames = [
+        "generated_at",
+        "sha",
+        "profile",
+        "kernel",
+        "module_count",
+        "ir_bytes",
+        "serialize_median_ms",
+        "deserialize_median_ms",
+        "roundtrip_median_ms",
+        "result_path",
+    ]
+    with csv_path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows({key: row.get(key) for key in fieldnames} for row in rows)
+
+    def format_ms(value: object) -> str:
+        return f"{value:.3f}" if isinstance(value, (int, float)) else "n/a"
+
+    lines = [
+        "# IR serialization performance dashboard",
+        "",
+        "Latest SHA-indexed measurements, newest first. Times are medians in milliseconds.",
+        "",
+        "| Time (UTC) | Commit | Profile | Kernel | Modules | IR bytes | Serialize | Deserialize | Round-trip |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in rows:
+        short_sha = str(row["sha"])[:12]
+        result_link = str(row["result_path"])
+        if result_link.startswith("ir-serialization/"):
+            result_link = result_link[len("ir-serialization/") :]
+        lines.append(
+            f"| {row['generated_at'] or 'unknown'} | [`{short_sha}`]({result_link}) | "
+            f"{row['profile']} | {row['kernel']} | {row['module_count']} | {row['ir_bytes']} | "
+            f"{format_ms(row['serialize_median_ms'])} | "
+            f"{format_ms(row['deserialize_median_ms'])} | "
+            f"{format_ms(row['roundtrip_median_ms'])} |"
+        )
+    if not rows:
+        lines.append("| n/a | n/a | n/a | n/a | 0 | 0 | n/a | n/a | n/a |")
+    markdown_path = dashboard_dir / "dashboard.md"
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return markdown_path, csv_path
+
 
 def write_fallback_results(run_dir: Path, target_dir: Path, args: argparse.Namespace) -> Path:
     if target_dir.exists():
@@ -317,6 +477,20 @@ def main() -> int:
         pass_profile_cache_dir = publish_pass_profile_cache(worktree, copied_result_dir, args.sha)
         if pass_profile_cache_dir is not None:
             print(f"Prepared pass-profile cache: {pass_profile_cache_dir.relative_to(worktree)}")
+        ir_serialization_cache_dir = publish_ir_serialization_cache(
+            worktree, copied_result_dir, args.sha
+        )
+        if ir_serialization_cache_dir is not None:
+            print(
+                "Prepared IR serialization cache: "
+                f"{ir_serialization_cache_dir.relative_to(worktree)}"
+            )
+        dashboard_markdown, dashboard_csv = write_ir_serialization_dashboard(worktree)
+        print(
+            "Updated IR serialization dashboard: "
+            f"{dashboard_markdown.relative_to(worktree)}, "
+            f"{dashboard_csv.relative_to(worktree)}"
+        )
 
         latest_dir = worktree / "runs" / safe_branch / args.sha
         latest_dir.mkdir(parents=True, exist_ok=True)
@@ -330,6 +504,10 @@ def main() -> int:
             "compile-time/by-sha/<commit>/<backend-profile>/latest.json.\n"
             "Pass-profile baselines are stored under "
             "pass-profile/by-sha/<commit>/<backend-profile>/latest.json.\n"
+            "IR serialization baselines are stored under "
+            "ir-serialization/by-sha/<commit>/<backend-profile>/latest.json.\n\n"
+            "IR serialization dashboard: [dashboard.md](ir-serialization/dashboard.md) "
+            "([CSV](ir-serialization/dashboard.csv)).\n"
         )
 
         run_git(["add", "-A"], worktree, git_env)

@@ -35,6 +35,7 @@ class LocalCIResult:
     run_id: str
     compile_time_status: str
     pass_profile_status: str
+    ir_serialization_status: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -262,6 +263,7 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
         run_id,
         parse_summary_value(summary, "compile_time_status"),
         parse_summary_value(summary, "pass_profile_status"),
+        parse_summary_value(summary, "ir_serialization_status"),
     )
 
 
@@ -284,6 +286,8 @@ def sync_target(args: argparse.Namespace, target: Target, set_pending: bool) -> 
                     warnings.append("compile-time")
                 if result.pass_profile_status == "warning":
                     warnings.append("pass-profile")
+                if result.ir_serialization_status == "warning":
+                    warnings.append("IR serialization")
                 if warnings:
                     description = "Gitee local CI passed with " + ", ".join(warnings) + " warning"
                 post_github_status(target.sha, "success", args.context, description, result.target_url)

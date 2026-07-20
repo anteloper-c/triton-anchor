@@ -38,6 +38,7 @@ LOCAL_CI_WORKSPACE_HOST="${LOCAL_CI_WORKSPACE_HOST:-/root/projects/test/workspac
 BACKEND_PROFILE="${BACKEND_PROFILE:-sophgo-cmodel}"
 RUN_COMPILE_BENCHMARK="${RUN_COMPILE_BENCHMARK:-true}"
 RUN_PASS_PROFILE="${RUN_PASS_PROFILE:-true}"
+RUN_IR_SERIALIZATION_BENCHMARK="${RUN_IR_SERIALIZATION_BENCHMARK:-true}"
 export GITEE_TOKEN GITEE_USERNAME GITEE_WEB_URL GITEE_RESULTS_WEB_URL WORKSPACE LOCAL_CI_WORKSPACE_HOST LOCAL_CI_CONFIG LOCAL_CI_CONTAINER
 
 mkdir -p "${LOCAL_CI_STATE_DIR}"
@@ -183,6 +184,10 @@ pass_profile_baseline_exists() {
   cached_benchmark_exists "pass-profile" "$1"
 }
 
+ir_serialization_baseline_exists() {
+  cached_benchmark_exists "ir-serialization" "$1"
+}
+
 run_once() {
   local branch="$1"
   local sha
@@ -223,7 +228,8 @@ run_once() {
 
   local base_branch=""
   local base_sha=""
-  if [[ ("${RUN_COMPILE_BENCHMARK}" == "true" || "${RUN_PASS_PROFILE}" == "true") \
+  if [[ ("${RUN_COMPILE_BENCHMARK}" == "true" || "${RUN_PASS_PROFILE}" == "true" \
+    || "${RUN_IR_SERIALIZATION_BENCHMARK}" == "true") \
     && "${branch}" =~ ^ci/pr-([0-9]+)/.+$ ]]; then
     base_branch="ci/base/pr-${BASH_REMATCH[1]}"
     base_sha="$(latest_sha "${base_branch}")"
@@ -244,6 +250,14 @@ run_once() {
           echo "Using cached pass-profile baseline for ${base_sha}."
         else
           echo "Pass-profile baseline missing for ${base_sha}."
+          missing_baseline=1
+        fi
+      fi
+      if [[ "${RUN_IR_SERIALIZATION_BENCHMARK}" == "true" ]]; then
+        if ir_serialization_baseline_exists "${base_sha}"; then
+          echo "Using cached IR serialization baseline for ${base_sha}."
+        else
+          echo "IR serialization baseline missing for ${base_sha}."
           missing_baseline=1
         fi
       fi

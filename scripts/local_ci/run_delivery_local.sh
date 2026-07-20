@@ -67,6 +67,16 @@ PASS_PROFILE_MIN_BASE_MS="${PASS_PROFILE_MIN_BASE_MS:-1.0}"
 PASS_PROFILE_MIN_DELTA_MS="${PASS_PROFILE_MIN_DELTA_MS:-1.0}"
 PASS_PROFILE_TIMEOUT="${PASS_PROFILE_TIMEOUT:-30m}"
 PASS_PROFILE_STATUS="disabled"
+RUN_IR_SERIALIZATION_BENCHMARK="${RUN_IR_SERIALIZATION_BENCHMARK:-true}"
+IR_SERIALIZATION_KERNELS="${IR_SERIALIZATION_KERNELS:-${COMPILE_BENCHMARK_KERNELS}}"
+IR_SERIALIZATION_REPEAT="${IR_SERIALIZATION_REPEAT:-20}"
+IR_SERIALIZATION_WARMUP="${IR_SERIALIZATION_WARMUP:-3}"
+IR_SERIALIZATION_METRICS="${IR_SERIALIZATION_METRICS:-serialize,deserialize}"
+IR_SERIALIZATION_THRESHOLD="${IR_SERIALIZATION_THRESHOLD:-0.20}"
+IR_SERIALIZATION_MIN_BASE_MS="${IR_SERIALIZATION_MIN_BASE_MS:-0.05}"
+IR_SERIALIZATION_MIN_DELTA_MS="${IR_SERIALIZATION_MIN_DELTA_MS:-0.05}"
+IR_SERIALIZATION_TIMEOUT="${IR_SERIALIZATION_TIMEOUT:-30m}"
+IR_SERIALIZATION_STATUS="disabled"
 MAX_JOBS="${MAX_JOBS:-1}"
 CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-1}"
 NINJAFLAGS="${NINJAFLAGS:--j1}"
@@ -263,6 +273,31 @@ fetch_pass_profile_baseline() {
   echo "Loaded pass-profile baseline for ${sha}: ${rel_path}"
 }
 
+fetch_ir_serialization_baseline() {
+  local sha="$1"
+  local output="$2"
+  local safe_profile
+  safe_profile="$(safe_path_part "${BACKEND_PROFILE}")"
+  local rel_path="ir-serialization/by-sha/${sha}/${safe_profile}/latest.json"
+
+  if git remote get-url gitee-results >/dev/null 2>&1; then
+    git remote set-url gitee-results "${GITEE_RESULTS_REPO_URL}"
+  else
+    git remote add gitee-results "${GITEE_RESULTS_REPO_URL}"
+  fi
+  if ! git fetch -q --depth=1 gitee-results \
+    "refs/heads/${GITEE_RESULTS_BRANCH}:refs/remotes/gitee-results/${GITEE_RESULTS_BRANCH}"; then
+    echo "IR serialization results branch is not available: ${GITEE_RESULTS_BRANCH}" >&2
+    return 1
+  fi
+  if ! git show "gitee-results/${GITEE_RESULTS_BRANCH}:${rel_path}" > "${output}"; then
+    rm -f "${output}"
+    echo "No cached IR serialization baseline at ${rel_path}" >&2
+    return 1
+  fi
+  echo "Loaded IR serialization baseline for ${sha}: ${rel_path}"
+}
+
 run_compile_benchmark() {
   if [[ "${RUN_COMPILE_BENCHMARK}" != "true" ]]; then
     COMPILE_TIME_STATUS="disabled"
@@ -372,6 +407,64 @@ run_pass_profile() {
   fi
 }
 
+run_ir_serialization_benchmark() {
+  if [[ "${RUN_IR_SERIALIZATION_BENCHMARK}" != "true" ]]; then
+    IR_SERIALIZATION_STATUS="disabled"
+    return 0
+  fi
+  IR_SERIALIZATION_STATUS="error"
+  if [[ ! -f "${LOCAL_CI_RUNNER_DIR}/ir_serialization_benchmark.py" ]]; then
+    echo "IR serialization benchmark is missing from the trusted runner snapshot." >&2
+    return 1
+  fi
+  if [[ ! -f "${LOCAL_CI_RUNNER_DIR}/compare_ir_serialization.py" ]]; then
+    echo "IR serialization comparison is missing from the trusted runner snapshot." >&2
+    return 1
+  fi
+
+  local candidate_json="${DELIVERY_ARTIFACT_DIR}/ir-serialization.json"
+  local candidate_csv="${DELIVERY_ARTIFACT_DIR}/ir-serialization.csv"
+  local candidate_markdown="${DELIVERY_ARTIFACT_DIR}/ir-serialization-summary.md"
+  export FLAGGEMS_ROOT="${FLAGGEMS_CLONE_DIR}"
+  source_backend_env
+  run_logged ir-serialization timeout "${IR_SERIALIZATION_TIMEOUT}" \
+    "${PYTHON_BIN}" "${LOCAL_CI_RUNNER_DIR}/ir_serialization_benchmark.py" \
+      --backend "${EXPECTED_TRITON_BACKEND:-sophgo}" \
+      --vendor "${EXPECTED_TRITON_BACKEND:-sophgo}" \
+      --flaggems-root "${FLAGGEMS_CLONE_DIR}" \
+      --kernels "${IR_SERIALIZATION_KERNELS}" \
+      --repeat "${IR_SERIALIZATION_REPEAT}" \
+      --warmup "${IR_SERIALIZATION_WARMUP}" \
+      --output-json "${candidate_json}" \
+      --output-csv "${candidate_csv}" \
+      --output-markdown "${candidate_markdown}"
+
+  IR_SERIALIZATION_STATUS="pass"
+  if [[ -n "${LOCAL_CI_BASE_SHA}" ]]; then
+    local baseline_json="${DELIVERY_ARTIFACT_DIR}/ir-serialization-base.json"
+    if [[ ! -f "${baseline_json}" ]]; then
+      echo "IR serialization baseline was not prefetched for ${LOCAL_CI_BASE_SHA}; comparison will report a warning." >&2
+    fi
+    "${PYTHON_BIN}" "${LOCAL_CI_RUNNER_DIR}/compare_ir_serialization.py" \
+      --baseline-json "${baseline_json}" \
+      --candidate-json "${candidate_json}" \
+      --base-sha "${LOCAL_CI_BASE_SHA}" \
+      --candidate-sha "${target_sha}" \
+      --kernels "${IR_SERIALIZATION_KERNELS}" \
+      --metrics "${IR_SERIALIZATION_METRICS}" \
+      --threshold "${IR_SERIALIZATION_THRESHOLD}" \
+      --min-base-ms "${IR_SERIALIZATION_MIN_BASE_MS}" \
+      --min-delta-ms "${IR_SERIALIZATION_MIN_DELTA_MS}" \
+      --output-json "${DELIVERY_ARTIFACT_DIR}/ir-serialization-comparison.json" \
+      --output-csv "${DELIVERY_ARTIFACT_DIR}/ir-serialization-comparison.csv" \
+      --output-markdown "${DELIVERY_ARTIFACT_DIR}/ir-serialization-comparison.md" \
+      2>&1 | tee "${DELIVERY_ARTIFACT_DIR}/ir-serialization-comparison.log"
+    IR_SERIALIZATION_STATUS="$("${PYTHON_BIN}" -c \
+      'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["status"])' \
+      "${DELIVERY_ARTIFACT_DIR}/ir-serialization-comparison.json")"
+  fi
+}
+
 git_commit() {
   local repo="$1"
   git -C "${repo}" rev-parse HEAD 2>/dev/null || true
@@ -411,6 +504,8 @@ write_summary() {
     echo "compile_time_threshold: ${COMPILE_BENCHMARK_THRESHOLD}"
     echo "pass_profile_status: ${PASS_PROFILE_STATUS}"
     echo "pass_profile_threshold: ${PASS_PROFILE_THRESHOLD}"
+    echo "ir_serialization_status: ${IR_SERIALIZATION_STATUS}"
+    echo "ir_serialization_threshold: ${IR_SERIALIZATION_THRESHOLD}"
   } > "${DELIVERY_ARTIFACT_DIR}/delivery-summary.txt"
   set -e
 }
@@ -446,6 +541,11 @@ if [[ -n "${LOCAL_CI_BASE_SHA}" ]]; then
     fetch_pass_profile_baseline \
       "${LOCAL_CI_BASE_SHA}" \
       "${DELIVERY_ARTIFACT_DIR}/pass-profile-base.json" || true
+  fi
+  if [[ "${RUN_IR_SERIALIZATION_BENCHMARK}" == "true" ]]; then
+    fetch_ir_serialization_baseline \
+      "${LOCAL_CI_BASE_SHA}" \
+      "${DELIVERY_ARTIFACT_DIR}/ir-serialization-base.json" || true
   fi
 fi
 
@@ -530,7 +630,7 @@ if [[ -n "${BACKEND_TEST_COMMAND}" ]]; then
 fi
 
 if [[ ("${RUN_FLAGGEMS_TESTS}" == "true" || "${RUN_COMPILE_BENCHMARK}" == "true" \
-  || "${RUN_PASS_PROFILE}" == "true") \
+  || "${RUN_PASS_PROFILE}" == "true" || "${RUN_IR_SERIALIZATION_BENCHMARK}" == "true") \
   && "${INSTALL_FLAGGEMS_PACKAGES}" != "0" && -n "${FLAGGEMS_PIP_PACKAGES}" ]]; then
   if use_uv; then
     run_logged flaggems-deps uv pip install ${FLAGGEMS_PIP_PACKAGES}
@@ -578,5 +678,6 @@ fi
 
 run_compile_benchmark
 run_pass_profile
+run_ir_serialization_benchmark
 
 echo "Local CI finished successfully. Artifacts are in ${DELIVERY_ARTIFACT_DIR}"

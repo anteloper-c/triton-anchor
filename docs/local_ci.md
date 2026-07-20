@@ -16,6 +16,7 @@ GitHub push/PR
   -> source backend env
   -> run backend smoke/JIT and optional FlagGems
   -> benchmark add, mm, softmax, and layernorm compile time
+  -> quantify TTIR serialization/deserialization overhead
   -> compare PR head against the cached result for its base SHA
   -> publish selected logs to local-ci-results in the same relay repository
   -> receiver writes the result to GitHub commit status
@@ -56,11 +57,11 @@ Prepared inside the container:
 The runner does not pull backend source code. Backend source and dependencies must already exist in the container, but the backend wheel is rebuilt for every tested frontend commit. For another backend, prepare it in the container first, then change `BACKEND_PATH`, `BACKEND_ENVSETUP_ARGS`, and the test commands in `scripts/local_ci/config.env`.
 
 For a PR, the poller reads `ci/base/pr-<number>`. If
-`compile-time/by-sha/<base-sha>/<backend-profile>/latest.json` already exists on
-`local-ci-results`, it reuses that result. Otherwise it runs the base commit
-once, publishes its compile-time result, and then runs the PR head. The base
-ref is excluded from normal branch discovery, so it does not create a second
-independent GitHub CI status.
+the SHA-indexed compile-time, pass-profile, and IR-serialization baselines
+already exist on `local-ci-results`, it reuses them. Otherwise it runs the base
+commit once, publishes the missing performance baselines, and then runs the PR
+head. The base ref is excluded from normal branch discovery, so it does not
+create a second independent GitHub CI status.
 
 ## Configure
 
@@ -120,6 +121,26 @@ statuses have no warning state, so a warning is published as `success` with
 the description `Gitee local CI passed with compile-time warning`; the detailed
 comparison is linked from the Gitee result directory.
 
+IR serialization regression defaults:
+
+```bash
+RUN_IR_SERIALIZATION_BENCHMARK="true"
+IR_SERIALIZATION_KERNELS="add,mm,softmax,layernorm"
+IR_SERIALIZATION_REPEAT="20"
+IR_SERIALIZATION_WARMUP="3"
+IR_SERIALIZATION_METRICS="serialize,deserialize"
+IR_SERIALIZATION_THRESHOLD="0.20"
+IR_SERIALIZATION_MIN_BASE_MS="0.05"
+IR_SERIALIZATION_MIN_DELTA_MS="0.05"
+IR_SERIALIZATION_TIMEOUT="30m"
+```
+
+This comparison is slowdown-only. It warns when a selected median grows by
+more than 20%, provided the base median and absolute increase exceed the noise
+floors. Missing base data is a warning. See
+[`ir_serialization_profiling.md`](ir_serialization_profiling.md) for the exact
+measurement boundary.
+
 Existing server installations must update `scripts/local_ci/config.env`; changing `config.example.env` does not overwrite a local configuration. In particular, point `GITEE_REPO_URL` at the relay repository and enable the `ci/*` filter above.
 
 Set `GITEE_TOKEN` for a private relay and for result publishing. The token needs read/write access to the relay repository. The old Gitee commit status API route is not used because Gitee rejects that endpoint with HTTP 405.
@@ -158,7 +179,7 @@ Container-side artifacts:
 
 Published results are stored on `local-ci-results` under
 `runs/<safe-task-ref>/<commit>/<run-id>/`. The result directory keeps selected
-build, smoke/JIT, FlagGems, compile-time, and pass-profile artifacts, including
+build, smoke/JIT, FlagGems, compile-time, pass-profile, and IR-serialization artifacts, including
 `flaggems-selected.txt`. Full local logs remain under
 `/workspace/local-ci-artifacts`. If the container artifact directory cannot be
 mapped back to the host, the publisher writes a fallback summary plus the
@@ -174,12 +195,26 @@ comparison reports. Stable SHA-indexed baseline copies are written to:
 compile-time/by-sha/<commit>/<backend-profile>/latest.json
 compile-time/by-sha/<commit>/<backend-profile>/latest.csv
 pass-profile/by-sha/<commit>/<backend-profile>/latest.json
+ir-serialization/by-sha/<commit>/<backend-profile>/latest.json
+ir-serialization/by-sha/<commit>/<backend-profile>/latest.csv
+ir-serialization/by-sha/<commit>/<backend-profile>/latest.md
 ```
+
+The publisher rebuilds `ir-serialization/dashboard.md` and
+`ir-serialization/dashboard.csv` on every result publication. The dashboard
+lists recent per-kernel medians across SHA and backend profile, with links to
+the immutable SHA-indexed JSON data.
 
 These directories are parallel to the existing `runs/` directory. Existing
 result repositories do not need migration.
 
 ## GitHub Workflows
+
+`IR Serialization Performance Regression Contract` is a lightweight
+GitHub-hosted job in `delivery-ci.yml`. It validates the comparison, cache, and
+dashboard code without requiring Sophgo dependencies. The actual performance
+measurement runs in the prepared local server container and is reported by the
+existing Gitee result receiver.
 
 `Dispatch Local CI via Gitee` is the only automatic push/PR entry point.
 Pushes to `main` and `jiwang-delivery-ci` create `ci/push/*`; PR events,
