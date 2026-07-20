@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Triton Anchor Backend CI</title>
+    <link rel="icon" type="image/png" href="assets/triton-anchor-logo.png">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <img src="assets/triton-anchor-logo.png" alt="Triton Anchor" class="brand-logo">
+        <div>
+          <p class="brand-kicker">TRITON ANCHOR</p>
+          <h1>Backend CI Status</h1>
+        </div>
+      </div>
+      <div class="header-meta">
+        <span id="dataMode" class="mode-badge">Loading</span>
+        <span id="generatedAt">--</span>
+      </div>
+    </header>
+
+    <nav class="view-tabs" aria-label="Dashboard views">
+      <button class="tab-button active" type="button" data-view="operators">全量算子测试</button>
+      <button class="tab-button" type="button" data-view="performance">后端与性能</button>
+    </nav>
+
+    <main>
+      <section id="operatorsView" class="view active" aria-labelledby="operatorHeading">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">MANUAL FULL TEST</p>
+            <h2 id="operatorHeading">全量算子测试</h2>
+          </div>
+          <div class="run-identity">
+            <span id="fullRunBackend">--</span>
+            <code id="fullRunSha">-------</code>
+          </div>
+        </div>
+
+        <div id="operatorMetrics" class="metric-band" aria-label="Full test summary"></div>
+
+        <div class="toolbar">
+          <label class="search-control">
+            <span>搜索算子</span>
+            <input id="operatorSearch" type="search" placeholder="例如 add、softmax" autocomplete="off">
+          </label>
+
+          <div class="segmented-control" aria-label="Status filter">
+            <button type="button" class="segment active" data-status="all">全部</button>
+            <button type="button" class="segment" data-status="exception">仅异常</button>
+            <button type="button" class="segment" data-status="failed">失败</button>
+            <button type="button" class="segment" data-status="timeout">超时</button>
+            <button type="button" class="segment" data-status="passed">通过</button>
+          </div>
+
+          <label class="select-control">
+            <span>失败阶段</span>
+            <select id="stageFilter">
+              <option value="all">全部阶段</option>
+            </select>
+          </label>
+
+          <label class="select-control page-size-control">
+            <span>每页</span>
+            <select id="pageSize">
+              <option value="25">25</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+              <option value="all">全部</option>
+            </select>
+          </label>
+
+          <div class="download-actions">
+            <a id="downloadRawCsv" class="button secondary" href="#" download>下载原始 CSV</a>
+            <button id="downloadFilteredCsv" class="button primary" type="button">下载当前结果</button>
+          </div>
+        </div>
+
+        <div class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th class="number-column">序号</th>
+                <th>算子名称</th>
+                <th>状态</th>
+                <th>失败阶段</th>
+                <th>耗时</th>
+                <th>测试时间</th>
+              </tr>
+            </thead>
+            <tbody id="operatorRows"></tbody>
+          </table>
+          <div id="operatorEmpty" class="empty-state" hidden>没有符合当前条件的算子。</div>
+        </div>
+
+        <div class="pagination">
+          <p id="rowCount">--</p>
+          <div class="pagination-actions">
+            <button id="previousPage" type="button" class="button secondary">上一页</button>
+            <span id="pageIndicator">--</span>
+            <button id="nextPage" type="button" class="button secondary">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="performanceView" class="view" aria-labelledby="performanceHeading">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">LATEST BACKEND RESULTS</p>
+            <h2 id="performanceHeading">后端状态与性能</h2>
+          </div>
+        </div>
+
+        <div class="table-shell backend-table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th>后端</th>
+                <th>总体</th>
+                <th>交付测试</th>
+                <th>编译时间</th>
+                <th>Pass</th>
+                <th>IR 开销</th>
+                <th>版本</th>
+                <th>更新时间</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="backendRows"></tbody>
+          </table>
+        </div>
+
+        <div class="performance-layout">
+          <section class="performance-panel" aria-labelledby="compileHeading">
+            <div class="panel-heading">
+              <h3 id="compileHeading">Kernel 编译时间</h3>
+              <span id="performanceBackend" class="panel-context">--</span>
+            </div>
+            <div id="compileMetrics" class="performance-list"></div>
+          </section>
+
+          <section class="performance-panel" aria-labelledby="passHeading">
+            <div class="panel-heading">
+              <h3 id="passHeading">Pass 热点</h3>
+              <span>Median</span>
+            </div>
+            <div id="passMetrics" class="performance-list"></div>
+          </section>
+
+          <section class="performance-panel" aria-labelledby="irHeading">
+            <div class="panel-heading">
+              <h3 id="irHeading">IR 序列化开销</h3>
+              <span>Median</span>
+            </div>
+            <div id="irMetrics" class="performance-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="loadError" class="load-error" hidden>
+        <h2>数据加载失败</h2>
+        <p id="loadErrorMessage"></p>
+      </section>
+    </main>
+
+    <footer>
+      <span>Triton Anchor Backend CI</span>
+      <span id="schemaVersion">--</span>
+    </footer>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>
