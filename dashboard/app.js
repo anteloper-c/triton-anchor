@@ -100,7 +100,12 @@ async function loadData() {
 
 function renderHeader() {
   const mode = state.manifest.mode || "unknown";
-  const modeLabels = { mock: "演示数据", live: "实时数据", historical: "历史数据" };
+  const modeLabels = {
+    mock: "演示数据",
+    live: "实时数据",
+    mixed: "实时 CI / 演示算子",
+    historical: "历史数据",
+  };
   $("#dataMode").textContent = modeLabels[mode] || mode;
   $("#generatedAt").textContent = `数据更新：${formatDate(state.manifest.generated_at)}`;
   $("#schemaVersion").textContent = state.manifest.schema;
@@ -217,6 +222,10 @@ function renderBackends() {
 }
 
 function renderPerformanceList(target, rows, valueKey, maxValue, formatter) {
+  if (!rows.length) {
+    $(target).innerHTML = '<div class="empty-state">当前结果中暂无该项数据。</div>';
+    return;
+  }
   $(target).innerHTML = rows
     .map((row) => {
       const value = Number(row[valueKey] || 0);
@@ -245,7 +254,10 @@ function renderPerformance() {
     "candidate_ms",
     Math.max(...compileRows.map((row) => Number(row.candidate_ms || 0))),
     (row) => {
-      const delta = Number(row.delta_percent || 0);
+      if (row.delta_percent === null || row.delta_percent === undefined) {
+        return `${Number(row.candidate_ms).toFixed(1)} ms <span>无历史基线</span>`;
+      }
+      const delta = Number(row.delta_percent);
       const deltaClass = delta > 0 ? "delta-up" : delta < 0 ? "delta-down" : "";
       const sign = delta > 0 ? "+" : "";
       return `${Number(row.candidate_ms).toFixed(1)} ms <span class="${deltaClass}">${sign}${delta.toFixed(1)}%</span>`;

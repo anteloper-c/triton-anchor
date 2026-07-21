@@ -48,9 +48,17 @@ class DashboardContractTest(unittest.TestCase):
     def test_performance_contract_contains_required_sections(self):
         document = read_json(DATA_DIR / "performance.json")
         self.assertEqual(document["schema"], "triton-anchor-performance-summary/v1")
-        self.assertTrue(document["compile_time"]["kernels"])
-        self.assertTrue(document["pass_profile"]["hotspots"])
-        self.assertTrue(document["ir_serialization"]["metrics"])
+        sections = (
+            document["compile_time"]["kernels"],
+            document["pass_profile"]["hotspots"],
+            document["ir_serialization"]["metrics"],
+        )
+        for rows in sections:
+            self.assertIsInstance(rows, list)
+        if document.get("data_mode") == "mock":
+            self.assertTrue(all(sections))
+        else:
+            self.assertTrue(any(sections))
 
     def test_site_entrypoints_exist(self):
         for relative_path in ("dashboard/index.html", "dashboard/styles.css", "dashboard/app.js"):

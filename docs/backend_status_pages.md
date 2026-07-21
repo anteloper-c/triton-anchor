@@ -91,11 +91,21 @@ Schema: `triton-anchor-performance-summary/v1`. The three required sections are:
 The page displays values from this file without embedding benchmark-specific
 logic. Future metric fields can be added without changing existing fields.
 
-## Demo data
+## Data modes
 
-The committed data is explicitly marked with `mode: mock`. The operator rows
-come from a historical CSV and are present only to validate rendering, filters,
-and downloads. They do not represent the current backend result.
+The committed data is marked with `mode: mock` so pull requests can validate
+the page without depending on Gitee. A production Pages deployment changes the
+manifest to `mode: mixed`:
+
+- Full operator rows remain the committed demonstration data until the manual
+  full-test publisher provides a stable result pointer.
+- Backend health is generated from the newest
+  `runs/ci_push_jiwang-delivery-ci/<sha>/<run-id>` result.
+- Performance is generated from the newest run containing each metric. A newer
+  failed delivery therefore changes backend health immediately without erasing
+  the last valid compile-time or Pass measurements.
+- Missing metrics are shown as unavailable. Mock values are never relabeled as
+  live results.
 
 Regenerate the demo conversion with:
 
@@ -106,11 +116,20 @@ python scripts/dashboard/build_mock_full_test.py \
   --output-csv dashboard/data/full-test.csv
 ```
 
-## Replacing demo data with Gitee results
+## Gitee result synchronization
 
-The production Pages workflow should clone the Gitee `local-ci-results` branch
-into a temporary directory. A normalization step then writes the same five files
-under `_site/data/` and sets `manifest.json` to `mode: live`.
+For a deployment, `.github/workflows/backend-status-pages.yml` shallow-clones
+the public Gitee `local-ci-results` branch and runs:
+
+```bash
+python scripts/dashboard/sync_gitee_results.py \
+  --results-dir "$RUNNER_TEMP/gitee-results" \
+  --output-dir dashboard/data \
+  --source-branch ci/push/jiwang-delivery-ci
+```
+
+The script rewrites only `backend-status.json`, `performance.json`, and the
+manifest metadata. It does not modify the full operator files.
 
 Recommended stable Gitee inputs:
 
@@ -128,6 +147,16 @@ a completed manually triggered full test. It should update backend status only
 for an approved `main` result. Per-PR data remains available in run history and
 must not overwrite the dashboard's stable status pointers.
 
+Repository variables can override the defaults:
+
+| Variable | Default |
+| --- | --- |
+| `GITEE_RESULTS_REPO_URL` | `https://gitee.com/likehupochuan/triton-anchor-local-ci-results.git` |
+| `GITEE_RESULTS_BRANCH` | `local-ci-results` |
+| `GITEE_RESULTS_WEB_URL` | `https://gitee.com/likehupochuan/triton-anchor-local-ci-results` |
+| `DASHBOARD_SOURCE_BRANCH` | `ci/push/jiwang-delivery-ci` |
+| `LOCAL_CI_BACKEND_PROFILE` | `sophgo-cmodel` |
+
 ## Deployment
 
 The repository workflow `.github/workflows/backend-status-pages.yml` validates
@@ -138,5 +167,9 @@ settings, select:
 Settings -> Pages -> Build and deployment -> Source -> GitHub Actions
 ```
 
-Pull requests validate the site but do not deploy it. Pushes to `main` and
-manual workflow dispatches deploy the current static data.
+Pull requests validate the committed fallback data but do not deploy it.
+Pushes to `main`, pushes to `jiwang-delivery-ci`, and manual workflow dispatches
+deploy data freshly read from Gitee. When the GitHub result receiver observes a
+completed local-CI result, it also dispatches the Pages workflow immediately.
+The last successful Pages deployment remains online if Gitee cannot be fetched
+or normalized.
