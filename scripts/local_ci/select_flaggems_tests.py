@@ -222,7 +222,9 @@ def main() -> int:
         *test_files,
         "-m",
         marker_expr,
-        "--record=log",
+        "--ref",
+        "cpu",
+        "-vs",
     ]
     command = f"cd {shlex.quote(args.flaggems_dir)} && " + " ".join(shlex.quote(part) for part in pytest_parts)
     write_selected(args.selected_output, selected, args, command)

@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--python-bin", default=sys.executable)
     parser.add_argument("--artifact-dir", required=True)
     parser.add_argument("--selected-output", default="")
-    parser.add_argument("--pytest-args", default="--record=log")
+    parser.add_argument("--pytest-args", default="--ref cpu -vs")
     parser.add_argument("--idle-timeout-seconds", type=int, default=180)
     parser.add_argument("--total-timeout-seconds", type=int, default=6000)
     parser.add_argument("--clear-cache", choices=("0", "1"), default="1")

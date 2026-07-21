@@ -2,10 +2,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TASK_FLAGGEMS_TEST_MODE="${FLAGGEMS_TEST_MODE:-}"
 CONFIG_FILE="${LOCAL_CI_CONFIG:-${SCRIPT_DIR}/config.env}"
 if [[ -f "${CONFIG_FILE}" ]]; then
   # shellcheck disable=SC1090
   source "${CONFIG_FILE}"
+fi
+if [[ -n "${TASK_FLAGGEMS_TEST_MODE}" ]]; then
+  FLAGGEMS_TEST_MODE="${TASK_FLAGGEMS_TEST_MODE}"
 fi
 
 sha="${1:?usage: run_in_container.sh <commit-sha> [source-branch]}"

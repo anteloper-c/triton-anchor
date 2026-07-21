@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import os
 import re
@@ -352,7 +353,20 @@ def sync_target(args: argparse.Namespace, target: Target, set_pending: bool) -> 
     deadline = time.monotonic() + timeout
 
     while True:
-        result = read_local_ci_result(args, target, gitee_token)
+        try:
+            result = read_local_ci_result(args, target, gitee_token)
+        except (
+            TimeoutError,
+            ConnectionError,
+            ConnectionResetError,
+            http.client.RemoteDisconnected,
+            urllib.error.URLError,
+        ) as exc:
+            print(
+                f"Transient error while checking Gitee local CI result for {target.label}: {exc}",
+                file=sys.stderr,
+            )
+            result = None
         if result is not None:
             post_stage_statuses(args, target, result)
             write_github_outputs(result)

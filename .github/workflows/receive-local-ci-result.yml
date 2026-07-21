@@ -62,7 +62,7 @@ jobs:
       ATTEMPT: ${{ inputs.attempt }}
       STARTED_AT: ${{ inputs.started_at }}
       WAIT_SECONDS: ${{ inputs.wait_seconds }}
-      MAX_ATTEMPTS: ${{ vars.LOCAL_CI_RECEIVER_MAX_ATTEMPTS || '4' }}
+      MAX_ATTEMPTS: ${{ vars.LOCAL_CI_RECEIVER_MAX_ATTEMPTS || '6' }}
       POLL_INTERVAL_SECONDS: ${{ vars.LOCAL_CI_BRIDGE_POLL_INTERVAL_SECONDS || '60' }}
       RECEIVER_REF: ${{ vars.LOCAL_CI_RECEIVER_REF || github.event.repository.default_branch }}
       GITEE_RESULTS_OWNER: ${{ vars.GITEE_RESULTS_OWNER || vars.GITEE_OWNER || 'likehupochuan' }}
