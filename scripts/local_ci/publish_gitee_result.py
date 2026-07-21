@@ -111,6 +111,9 @@ PUBLISHED_ARTIFACT_FILES = (
     "backend-smoke-jit.log",
     "flaggems.log",
     "flaggems-selected.txt",
+    "flaggems-summary.csv",
+    "flaggems-summary.json",
+    "flaggems-summary.md",
     "compile-benchmark.log",
     "compile-benchmark.json",
     "compile-benchmark.csv",
@@ -156,6 +159,12 @@ def copy_results(run_dir: Path, target_dir: Path) -> Path | None:
         if source.is_file():
             shutil.copy2(source, target_dir / file_name)
             copied.append(file_name)
+
+    for dir_name in ("flaggems",):
+        source = artifact_dir / dir_name
+        if source.is_dir():
+            shutil.copytree(source, target_dir / dir_name, dirs_exist_ok=True)
+            copied.append(f"{dir_name}/")
 
     if not copied:
         shutil.rmtree(target_dir)

@@ -45,9 +45,15 @@ concurrency:
   cancel-in-progress: ${{ inputs.attempt == '1' }}
 
 jobs:
-  receive-local-ci-result:
+  receive:
+    name: Wait for local CI result
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    outputs:
+      result_ready: ${{ steps.bridge.outputs.result_ready }}
+      overall_status: ${{ steps.bridge.outputs.overall_status }}
+      target_url: ${{ steps.bridge.outputs.target_url }}
+      stage_results: ${{ steps.bridge.outputs.stage_results }}
     env:
       CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
       SHA: ${{ inputs.sha }}
@@ -78,6 +84,7 @@ jobs:
         run: python -m py_compile scripts/local_ci/bridge_gitee_to_github_status.py
 
       - name: Wait for Gitee local CI result
+        id: bridge
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -106,8 +113,8 @@ jobs:
               exit 0
               ;;
             10)
-              # The bridge already published the local CI failure status.
-              exit 1
+              # The bridge published the failure details; stage jobs report them below.
+              exit 0
               ;;
             3)
               if [ "${ATTEMPT}" -lt "${MAX_ATTEMPTS}" ]; then
@@ -143,3 +150,58 @@ jobs:
             -f context="${CONTEXT}" \
             -f description="${description}"
           exit 1
+
+  stage-results:
+    name: Local CI / ${{ matrix.name }}
+    needs: receive
+    if: ${{ always() && needs.receive.outputs.result_ready == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: overall
+            name: Overall
+          - key: frontend_smoke
+            name: Frontend smoke
+          - key: backend_smoke_jit
+            name: Backend smoke and JIT
+          - key: flaggems
+            name: FlagGems
+          - key: compile_time
+            name: Compile-time performance
+          - key: pass_profile
+            name: Pass profiling
+          - key: ir_serialization
+            name: IR serialization
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report ${{ matrix.name }}
+        env:
+          STAGE_KEY: ${{ matrix.key }}
+          STAGE_NAME: ${{ matrix.name }}
+          STAGE_RESULTS: ${{ needs.receive.outputs.stage_results }}
+          TARGET_URL: ${{ needs.receive.outputs.target_url }}
+        run: |
+          status="$(python3 -c 'import json, os; print(json.loads(os.environ["STAGE_RESULTS"]).get(os.environ["STAGE_KEY"], "not_reported"))')"
+          {
+            echo "### ${STAGE_NAME}"
+            echo
+            echo "- Status: \`${status}\`"
+            if [ -n "${TARGET_URL}" ]; then
+              echo "- [Gitee artifacts](${TARGET_URL})"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          case "${status}" in
+            pass|success|warning)
+              exit 0
+              ;;
+            disabled|not_run|skipped|not_reported|"")
+              echo "${STAGE_NAME} was not run."
+              exit 0
+              ;;
+            *)
+              echo "${STAGE_NAME} failed with status: ${status}" >&2
+              exit 1
+              ;;
+          esac

@@ -19,6 +19,15 @@ from dataclasses import dataclass
 RESULT_NOT_READY_EXIT_CODE = 3
 RESULT_FAILED_EXIT_CODE = 10
 
+REPORTABLE_STAGES = (
+    ("frontend_smoke", "frontend_smoke_status", "frontend-smoke", "Frontend smoke"),
+    ("backend_smoke_jit", "backend_smoke_jit_status", "backend-smoke-jit", "Backend smoke and JIT"),
+    ("flaggems", "flaggems_status", "flaggems", "FlagGems"),
+    ("compile_time", "compile_time_status", "compile-time", "Compile-time performance"),
+    ("pass_profile", "pass_profile_status", "pass-profile", "Pass profiling"),
+    ("ir_serialization", "ir_serialization_status", "ir-serialization", "IR serialization"),
+)
+
 
 @dataclass(frozen=True)
 class Target:
@@ -36,6 +45,7 @@ class LocalCIResult:
     compile_time_status: str
     pass_profile_status: str
     ir_serialization_status: str
+    stage_statuses: dict[str, str]
 
 
 def parse_args() -> argparse.Namespace:
@@ -257,14 +267,79 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
         print(f"Gitee local CI run exists but summary is missing for {target.label}: {summary_path}")
         return None
 
+    stage_statuses = {
+        stage_id: parse_summary_value(summary, summary_key)
+        for stage_id, summary_key, _, _ in REPORTABLE_STAGES
+    }
     return LocalCIResult(
         parse_summary_status(summary),
         gitee_result_url(args.gitee_web_url, args.gitee_results_branch, rel_dir),
         run_id,
-        parse_summary_value(summary, "compile_time_status"),
-        parse_summary_value(summary, "pass_profile_status"),
-        parse_summary_value(summary, "ir_serialization_status"),
+        stage_statuses["compile_time"],
+        stage_statuses["pass_profile"],
+        stage_statuses["ir_serialization"],
+        stage_statuses,
     )
+
+
+def stage_github_state(status: str) -> str | None:
+    normalized = status.strip().lower()
+    if normalized in {"pass", "success", "warning"}:
+        return "success"
+    if normalized in {"fail", "failure", "error", "timeout", "aborted"}:
+        return "failure"
+    return None
+
+
+def post_stage_statuses(
+    args: argparse.Namespace, target: Target, result: LocalCIResult
+) -> None:
+    for stage_id, _, context_suffix, label in REPORTABLE_STAGES:
+        stage_status = result.stage_statuses.get(stage_id, "")
+        state = stage_github_state(stage_status)
+        if state is None:
+            continue
+        description = f"{label}: {stage_status}"
+        try:
+            post_github_status(
+                target.sha,
+                state,
+                f"{args.context}/{context_suffix}",
+                description,
+                result.target_url,
+            )
+        except Exception as exc:
+            print(
+                f"Warning: failed to publish {label} status: {exc}",
+                file=sys.stderr,
+            )
+
+
+def write_github_outputs(result: LocalCIResult | None) -> None:
+    output_path = os.getenv("GITHUB_OUTPUT", "")
+    if not output_path:
+        return
+    if result is None:
+        values = {
+            "result_ready": "false",
+            "overall_status": "not_ready",
+            "target_url": "",
+            "run_id": "",
+            "stage_results": "{}",
+        }
+    else:
+        overall_status = "pass" if result.exit_code == 0 else "fail"
+        stage_results = {"overall": overall_status, **result.stage_statuses}
+        values = {
+            "result_ready": "true",
+            "overall_status": overall_status,
+            "target_url": result.target_url,
+            "run_id": result.run_id,
+            "stage_results": json.dumps(stage_results, separators=(",", ":")),
+        }
+    with open(output_path, "a", encoding="utf-8") as stream:
+        for key, value in values.items():
+            stream.write(f"{key}={value}\n")
 
 
 def sync_target(args: argparse.Namespace, target: Target, set_pending: bool) -> LocalCIResult | None:
@@ -279,15 +354,15 @@ def sync_target(args: argparse.Namespace, target: Target, set_pending: bool) -> 
     while True:
         result = read_local_ci_result(args, target, gitee_token)
         if result is not None:
+            post_stage_statuses(args, target, result)
+            write_github_outputs(result)
             if result.exit_code == 0:
                 description = "Gitee local CI passed"
-                warnings = []
-                if result.compile_time_status == "warning":
-                    warnings.append("compile-time")
-                if result.pass_profile_status == "warning":
-                    warnings.append("pass-profile")
-                if result.ir_serialization_status == "warning":
-                    warnings.append("IR serialization")
+                warnings = [
+                    label
+                    for stage_id, _, _, label in REPORTABLE_STAGES
+                    if result.stage_statuses.get(stage_id) == "warning"
+                ]
                 if warnings:
                     description = "Gitee local CI passed with " + ", ".join(warnings) + " warning"
                 post_github_status(target.sha, "success", args.context, description, result.target_url)
@@ -305,6 +380,7 @@ def sync_target(args: argparse.Namespace, target: Target, set_pending: bool) -> 
 
         if timeout == 0 or time.monotonic() >= deadline:
             print(f"No available Gitee local CI result for {target.label}; leaving GitHub status pending.")
+            write_github_outputs(None)
             return None
 
         sleep_seconds = min(interval, max(1, int(deadline - time.monotonic())))

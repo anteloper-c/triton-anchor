@@ -40,6 +40,10 @@ FLAGGEMS_SAMPLE_SIZE="${FLAGGEMS_SAMPLE_SIZE:-6}"
 FLAGGEMS_RANDOM_SEED="${FLAGGEMS_RANDOM_SEED:-}"
 FLAGGEMS_TEST_OP="${FLAGGEMS_TEST_OP:-abs}"
 FLAGGEMS_TEST_COMMAND="${FLAGGEMS_TEST_COMMAND:-}"
+FLAGGEMS_PYTEST_ARGS="${FLAGGEMS_PYTEST_ARGS:---record=log}"
+FLAGGEMS_IDLE_TIMEOUT_SECONDS="${FLAGGEMS_IDLE_TIMEOUT_SECONDS:-180}"
+FLAGGEMS_TOTAL_TIMEOUT_SECONDS="${FLAGGEMS_TOTAL_TIMEOUT_SECONDS:-6000}"
+FLAGGEMS_CLEAR_CACHE="${FLAGGEMS_CLEAR_CACHE:-1}"
 FLAGGEMS_WHITELIST="${FLAGGEMS_WHITELIST:-${LOCAL_CI_RUNNER_DIR:-${SCRIPT_DIR}}/flaggems_pass_whitelist.tsv}"
 FLAGGEMS_FULL_LIST="${FLAGGEMS_FULL_LIST:-${LOCAL_CI_RUNNER_DIR:-${SCRIPT_DIR}}/flaggems_all_ops.tsv}"
 INSTALL_FLAGGEMS_PACKAGES="${INSTALL_FLAGGEMS_PACKAGES:-1}"
@@ -57,7 +61,7 @@ COMPILE_BENCHMARK_REPEAT="${COMPILE_BENCHMARK_REPEAT:-5}"
 COMPILE_BENCHMARK_WARMUP="${COMPILE_BENCHMARK_WARMUP:-1}"
 COMPILE_BENCHMARK_THRESHOLD="${COMPILE_BENCHMARK_THRESHOLD:-0.20}"
 COMPILE_BENCHMARK_TIMEOUT="${COMPILE_BENCHMARK_TIMEOUT:-30m}"
-COMPILE_TIME_STATUS="disabled"
+COMPILE_TIME_STATUS="not_run"
 RUN_PASS_PROFILE="${RUN_PASS_PROFILE:-true}"
 PASS_PROFILE_KERNELS="${PASS_PROFILE_KERNELS:-${COMPILE_BENCHMARK_KERNELS}}"
 PASS_PROFILE_REPEAT="${PASS_PROFILE_REPEAT:-3}"
@@ -66,7 +70,7 @@ PASS_PROFILE_THRESHOLD="${PASS_PROFILE_THRESHOLD:-0.20}"
 PASS_PROFILE_MIN_BASE_MS="${PASS_PROFILE_MIN_BASE_MS:-1.0}"
 PASS_PROFILE_MIN_DELTA_MS="${PASS_PROFILE_MIN_DELTA_MS:-1.0}"
 PASS_PROFILE_TIMEOUT="${PASS_PROFILE_TIMEOUT:-30m}"
-PASS_PROFILE_STATUS="disabled"
+PASS_PROFILE_STATUS="not_run"
 RUN_IR_SERIALIZATION_BENCHMARK="${RUN_IR_SERIALIZATION_BENCHMARK:-true}"
 IR_SERIALIZATION_KERNELS="${IR_SERIALIZATION_KERNELS:-${COMPILE_BENCHMARK_KERNELS}}"
 IR_SERIALIZATION_REPEAT="${IR_SERIALIZATION_REPEAT:-20}"
@@ -76,7 +80,16 @@ IR_SERIALIZATION_THRESHOLD="${IR_SERIALIZATION_THRESHOLD:-0.20}"
 IR_SERIALIZATION_MIN_BASE_MS="${IR_SERIALIZATION_MIN_BASE_MS:-0.05}"
 IR_SERIALIZATION_MIN_DELTA_MS="${IR_SERIALIZATION_MIN_DELTA_MS:-0.05}"
 IR_SERIALIZATION_TIMEOUT="${IR_SERIALIZATION_TIMEOUT:-30m}"
-IR_SERIALIZATION_STATUS="disabled"
+IR_SERIALIZATION_STATUS="not_run"
+FRONTEND_BUILD_STATUS="not_run"
+FRONTEND_SMOKE_STATUS="not_run"
+BACKEND_REBUILD_STATUS="not_run"
+BACKEND_SMOKE_JIT_STATUS="not_run"
+FLAGGEMS_STATUS="disabled"
+if [[ "${RUN_FLAGGEMS_TESTS}" == "true" ]]; then
+  FLAGGEMS_STATUS="not_run"
+fi
+LOCAL_CI_RESULT_STATUS=0
 MAX_JOBS="${MAX_JOBS:-1}"
 CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-1}"
 NINJAFLAGS="${NINJAFLAGS:--j1}"
@@ -87,7 +100,7 @@ FLAGGEMS_SELECTED_FILE="${FLAGGEMS_SELECTED_FILE:-${DELIVERY_ARTIFACT_DIR}/flagg
 
 export WORKSPACE ANCHOR_DIR BACKEND_PROFILE EXPECTED_TRITON_BACKEND BACKEND_PATH
 export BACKEND_ENVSETUP BACKEND_ENVSETUP_ARGS BACKEND_TEST_COMMAND
-export RUN_FLAGGEMS_TESTS FLAGGEMS_CLONE_DIR FLAGGEMS_REF FLAGGEMS_PIP_PACKAGES FLAGGEMS_TEST_MODE FLAGGEMS_SAMPLE_SIZE FLAGGEMS_RANDOM_SEED FLAGGEMS_TEST_OP FLAGGEMS_TEST_COMMAND FLAGGEMS_WHITELIST FLAGGEMS_FULL_LIST FLAGGEMS_SELECTED_FILE
+export RUN_FLAGGEMS_TESTS FLAGGEMS_CLONE_DIR FLAGGEMS_REF FLAGGEMS_PIP_PACKAGES FLAGGEMS_TEST_MODE FLAGGEMS_SAMPLE_SIZE FLAGGEMS_RANDOM_SEED FLAGGEMS_TEST_OP FLAGGEMS_TEST_COMMAND FLAGGEMS_PYTEST_ARGS FLAGGEMS_IDLE_TIMEOUT_SECONDS FLAGGEMS_TOTAL_TIMEOUT_SECONDS FLAGGEMS_CLEAR_CACHE FLAGGEMS_WHITELIST FLAGGEMS_FULL_LIST FLAGGEMS_SELECTED_FILE
 export LLVM_BUILD_DIR PPL_ROOT PYTHON_BIN PYTHON_VENV_ACTIVATE GITHUB_SHA="${target_sha}" GITHUB_REF="refs/heads/${GITEE_BRANCH}"
 export BACKEND_PROFILE MAX_JOBS CMAKE_BUILD_PARALLEL_LEVEL NINJAFLAGS UV_LINK_MODE
 
@@ -133,6 +146,54 @@ run_logged() {
   "$@" 2>&1 | tee "${log_file}"
 }
 
+mark_stage_failed() {
+  local status_var="$1"
+  local stage_name="$2"
+  local message="$3"
+  printf -v "${status_var}" '%s' "fail"
+  LOCAL_CI_RESULT_STATUS=1
+  echo "${stage_name} failed: ${message}" >&2
+}
+
+run_recorded_stage() {
+  local status_var="$1"
+  local stage_name="$2"
+  shift 2
+
+  local stage_exit=0
+  set +e
+  "$@"
+  stage_exit=$?
+  set -e
+
+  if [[ ${stage_exit} -eq 0 ]]; then
+    if [[ "${!status_var}" == "not_run" || "${!status_var}" == "running" ]]; then
+      printf -v "${status_var}" '%s' "pass"
+    fi
+    echo "${stage_name} status: ${!status_var}"
+  else
+    mark_stage_failed "${status_var}" "${stage_name}" "exit ${stage_exit}"
+  fi
+  return 0
+}
+
+run_recorded_stage_in_dir() {
+  local status_var="$1"
+  local stage_name="$2"
+  local directory="$3"
+  local log_name="$4"
+  shift 4
+  run_recorded_stage "${status_var}" "${stage_name}" \
+    run_logged_in_dir "${directory}" "${log_name}" "$@"
+}
+
+run_logged_in_dir() {
+  local directory="$1"
+  local log_name="$2"
+  shift 2
+  (cd "${directory}" && run_logged "${log_name}" "$@")
+}
+
 rebuild_backend() {
   if [[ ! -d "${BACKEND_PATH}" ]]; then
     echo "Backend path does not exist: ${BACKEND_PATH}" >&2
@@ -176,7 +237,7 @@ source_python_venv() {
   fi
   if [[ ! -f "${PYTHON_VENV_ACTIVATE}" ]]; then
     echo "Python venv activate script does not exist: ${PYTHON_VENV_ACTIVATE}" >&2
-    exit 1
+    return 1
   fi
   echo "Sourcing Python venv: ${PYTHON_VENV_ACTIVATE}"
   set +u
@@ -205,7 +266,7 @@ source_backend_env() {
   fi
   if [[ ! -f "${setup_script}" ]]; then
     echo "Backend envsetup script does not exist: ${setup_script}" >&2
-    exit 1
+    return 1
   fi
   echo "Sourcing backend envsetup: ${setup_script} ${BACKEND_ENVSETUP_ARGS}"
   set +u
@@ -303,20 +364,26 @@ run_compile_benchmark() {
     COMPILE_TIME_STATUS="disabled"
     return 0
   fi
+  COMPILE_TIME_STATUS="running"
   if [[ ! -f "${LOCAL_CI_RUNNER_DIR}/compile_benchmark.py" ]]; then
     echo "Compile benchmark script is missing from the trusted runner snapshot." >&2
+    COMPILE_TIME_STATUS="fail"
     return 1
   fi
   if [[ ! -f "${LOCAL_CI_RUNNER_DIR}/compare_compile_time.py" ]]; then
     echo "Compile comparison script is missing from the trusted runner snapshot." >&2
+    COMPILE_TIME_STATUS="fail"
     return 1
   fi
 
   local candidate_json="${DELIVERY_ARTIFACT_DIR}/compile-benchmark.json"
   local candidate_csv="${DELIVERY_ARTIFACT_DIR}/compile-benchmark.csv"
   export FLAGGEMS_ROOT="${FLAGGEMS_CLONE_DIR}"
-  source_backend_env
-  run_logged compile-benchmark timeout "${COMPILE_BENCHMARK_TIMEOUT}" \
+  if ! source_backend_env; then
+    COMPILE_TIME_STATUS="fail"
+    return 1
+  fi
+  if ! run_logged compile-benchmark timeout "${COMPILE_BENCHMARK_TIMEOUT}" \
     "${PYTHON_BIN}" "${LOCAL_CI_RUNNER_DIR}/compile_benchmark.py" \
       --backend "${EXPECTED_TRITON_BACKEND:-sophgo}" \
       --vendor "${EXPECTED_TRITON_BACKEND:-sophgo}" \
@@ -325,7 +392,10 @@ run_compile_benchmark() {
       --repeat "${COMPILE_BENCHMARK_REPEAT}" \
       --warmup "${COMPILE_BENCHMARK_WARMUP}" \
       --output-json "${candidate_json}" \
-      --output-csv "${candidate_csv}"
+      --output-csv "${candidate_csv}"; then
+    COMPILE_TIME_STATUS="fail"
+    return 1
+  fi
 
   COMPILE_TIME_STATUS="pass"
   if [[ -n "${LOCAL_CI_BASE_SHA}" ]]; then
@@ -333,7 +403,7 @@ run_compile_benchmark() {
     if [[ ! -f "${baseline_json}" ]]; then
       echo "Compile-time baseline was not prefetched for ${LOCAL_CI_BASE_SHA}; comparison will report a warning." >&2
     fi
-    "${PYTHON_BIN}" "${LOCAL_CI_RUNNER_DIR}/compare_compile_time.py" \
+    if ! "${PYTHON_BIN}" "${LOCAL_CI_RUNNER_DIR}/compare_compile_time.py" \
       --baseline-json "${baseline_json}" \
       --candidate-json "${candidate_json}" \
       --base-sha "${LOCAL_CI_BASE_SHA}" \
@@ -342,11 +412,20 @@ run_compile_benchmark() {
       --threshold "${COMPILE_BENCHMARK_THRESHOLD}" \
       --output-json "${DELIVERY_ARTIFACT_DIR}/compile-time-comparison.json" \
       --output-markdown "${DELIVERY_ARTIFACT_DIR}/compile-time-comparison.md" \
-      2>&1 | tee "${DELIVERY_ARTIFACT_DIR}/compile-time-comparison.log"
-    COMPILE_TIME_STATUS="$("${PYTHON_BIN}" -c \
+      2>&1 | tee "${DELIVERY_ARTIFACT_DIR}/compile-time-comparison.log"; then
+      COMPILE_TIME_STATUS="fail"
+      return 1
+    fi
+    local comparison_status=""
+    if ! comparison_status="$("${PYTHON_BIN}" -c \
       'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["status"])' \
-      "${DELIVERY_ARTIFACT_DIR}/compile-time-comparison.json")"
+      "${DELIVERY_ARTIFACT_DIR}/compile-time-comparison.json")"; then
+      COMPILE_TIME_STATUS="fail"
+      return 1
+    fi
+    COMPILE_TIME_STATUS="${comparison_status}"
   fi
+  return 0
 }
 
 run_pass_profile() {
@@ -354,12 +433,15 @@ run_pass_profile() {
     PASS_PROFILE_STATUS="disabled"
     return 0
   fi
+  PASS_PROFILE_STATUS="running"
   if [[ ! -f "${LOCAL_CI_RUNNER_DIR}/pass_profile_benchmark.py" ]]; then
     echo "Pass profile script is missing from the trusted runner snapshot." >&2
+    PASS_PROFILE_STATUS="fail"
     return 1
   fi
   if [[ ! -f "${LOCAL_CI_RUNNER_DIR}/compare_pass_profile.py" ]]; then
     echo "Pass profile comparison script is missing from the trusted runner snapshot." >&2
+    PASS_PROFILE_STATUS="fail"
     return 1
   fi
 
@@ -368,8 +450,11 @@ run_pass_profile() {
   local candidate_summary_csv="${DELIVERY_ARTIFACT_DIR}/pass-profile-summary.csv"
   local hotspots_md="${DELIVERY_ARTIFACT_DIR}/pass-profile-hotspots.md"
   export FLAGGEMS_ROOT="${FLAGGEMS_CLONE_DIR}"
-  source_backend_env
-  run_logged pass-profile timeout "${PASS_PROFILE_TIMEOUT}" \
+  if ! source_backend_env; then
+    PASS_PROFILE_STATUS="fail"
+    return 1
+  fi
+  if ! run_logged pass-profile timeout "${PASS_PROFILE_TIMEOUT}" \
     "${PYTHON_BIN}" "${LOCAL_CI_RUNNER_DIR}/pass_profile_benchmark.py" \
       --backend "${EXPECTED_TRITON_BACKEND:-sophgo}" \
       --vendor "${EXPECTED_TRITON_BACKEND:-sophgo}" \
@@ -380,7 +465,10 @@ run_pass_profile() {
       --output-json "${candidate_json}" \
       --output-events-csv "${candidate_events_csv}" \
       --output-summary-csv "${candidate_summary_csv}" \
-      --output-hotspots-markdown "${hotspots_md}"
+      --output-hotspots-markdown "${hotspots_md}"; then
+    PASS_PROFILE_STATUS="fail"
+    return 1
+  fi
 
   PASS_PROFILE_STATUS="pass"
   if [[ -n "${LOCAL_CI_BASE_SHA}" ]]; then
@@ -388,7 +476,7 @@ run_pass_profile() {
     if [[ ! -f "${baseline_json}" ]]; then
       echo "Pass-profile baseline was not prefetched for ${LOCAL_CI_BASE_SHA}; comparison will report a warning." >&2
     fi
-    "${PYTHON_BIN}" "${LOCAL_CI_RUNNER_DIR}/compare_pass_profile.py" \
+    if ! "${PYTHON_BIN}" "${LOCAL_CI_RUNNER_DIR}/compare_pass_profile.py" \
       --baseline-json "${baseline_json}" \
       --candidate-json "${candidate_json}" \
       --base-sha "${LOCAL_CI_BASE_SHA}" \
@@ -400,11 +488,20 @@ run_pass_profile() {
       --output-json "${DELIVERY_ARTIFACT_DIR}/pass-profile-comparison.json" \
       --output-csv "${DELIVERY_ARTIFACT_DIR}/pass-profile-comparison.csv" \
       --output-markdown "${DELIVERY_ARTIFACT_DIR}/pass-profile-comparison.md" \
-      2>&1 | tee "${DELIVERY_ARTIFACT_DIR}/pass-profile-comparison.log"
-    PASS_PROFILE_STATUS="$("${PYTHON_BIN}" -c \
+      2>&1 | tee "${DELIVERY_ARTIFACT_DIR}/pass-profile-comparison.log"; then
+      PASS_PROFILE_STATUS="fail"
+      return 1
+    fi
+    local comparison_status=""
+    if ! comparison_status="$("${PYTHON_BIN}" -c \
       'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["status"])' \
-      "${DELIVERY_ARTIFACT_DIR}/pass-profile-comparison.json")"
+      "${DELIVERY_ARTIFACT_DIR}/pass-profile-comparison.json")"; then
+      PASS_PROFILE_STATUS="fail"
+      return 1
+    fi
+    PASS_PROFILE_STATUS="${comparison_status}"
   fi
+  return 0
 }
 
 run_ir_serialization_benchmark() {
@@ -412,13 +509,15 @@ run_ir_serialization_benchmark() {
     IR_SERIALIZATION_STATUS="disabled"
     return 0
   fi
-  IR_SERIALIZATION_STATUS="error"
+  IR_SERIALIZATION_STATUS="running"
   if [[ ! -f "${LOCAL_CI_RUNNER_DIR}/ir_serialization_benchmark.py" ]]; then
     echo "IR serialization benchmark is missing from the trusted runner snapshot." >&2
+    IR_SERIALIZATION_STATUS="fail"
     return 1
   fi
   if [[ ! -f "${LOCAL_CI_RUNNER_DIR}/compare_ir_serialization.py" ]]; then
     echo "IR serialization comparison is missing from the trusted runner snapshot." >&2
+    IR_SERIALIZATION_STATUS="fail"
     return 1
   fi
 
@@ -426,8 +525,11 @@ run_ir_serialization_benchmark() {
   local candidate_csv="${DELIVERY_ARTIFACT_DIR}/ir-serialization.csv"
   local candidate_markdown="${DELIVERY_ARTIFACT_DIR}/ir-serialization-summary.md"
   export FLAGGEMS_ROOT="${FLAGGEMS_CLONE_DIR}"
-  source_backend_env
-  run_logged ir-serialization timeout "${IR_SERIALIZATION_TIMEOUT}" \
+  if ! source_backend_env; then
+    IR_SERIALIZATION_STATUS="fail"
+    return 1
+  fi
+  if ! run_logged ir-serialization timeout "${IR_SERIALIZATION_TIMEOUT}" \
     "${PYTHON_BIN}" "${LOCAL_CI_RUNNER_DIR}/ir_serialization_benchmark.py" \
       --backend "${EXPECTED_TRITON_BACKEND:-sophgo}" \
       --vendor "${EXPECTED_TRITON_BACKEND:-sophgo}" \
@@ -437,7 +539,10 @@ run_ir_serialization_benchmark() {
       --warmup "${IR_SERIALIZATION_WARMUP}" \
       --output-json "${candidate_json}" \
       --output-csv "${candidate_csv}" \
-      --output-markdown "${candidate_markdown}"
+      --output-markdown "${candidate_markdown}"; then
+    IR_SERIALIZATION_STATUS="fail"
+    return 1
+  fi
 
   IR_SERIALIZATION_STATUS="pass"
   if [[ -n "${LOCAL_CI_BASE_SHA}" ]]; then
@@ -445,7 +550,7 @@ run_ir_serialization_benchmark() {
     if [[ ! -f "${baseline_json}" ]]; then
       echo "IR serialization baseline was not prefetched for ${LOCAL_CI_BASE_SHA}; comparison will report a warning." >&2
     fi
-    "${PYTHON_BIN}" "${LOCAL_CI_RUNNER_DIR}/compare_ir_serialization.py" \
+    if ! "${PYTHON_BIN}" "${LOCAL_CI_RUNNER_DIR}/compare_ir_serialization.py" \
       --baseline-json "${baseline_json}" \
       --candidate-json "${candidate_json}" \
       --base-sha "${LOCAL_CI_BASE_SHA}" \
@@ -458,11 +563,20 @@ run_ir_serialization_benchmark() {
       --output-json "${DELIVERY_ARTIFACT_DIR}/ir-serialization-comparison.json" \
       --output-csv "${DELIVERY_ARTIFACT_DIR}/ir-serialization-comparison.csv" \
       --output-markdown "${DELIVERY_ARTIFACT_DIR}/ir-serialization-comparison.md" \
-      2>&1 | tee "${DELIVERY_ARTIFACT_DIR}/ir-serialization-comparison.log"
-    IR_SERIALIZATION_STATUS="$("${PYTHON_BIN}" -c \
+      2>&1 | tee "${DELIVERY_ARTIFACT_DIR}/ir-serialization-comparison.log"; then
+      IR_SERIALIZATION_STATUS="fail"
+      return 1
+    fi
+    local comparison_status=""
+    if ! comparison_status="$("${PYTHON_BIN}" -c \
       'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["status"])' \
-      "${DELIVERY_ARTIFACT_DIR}/ir-serialization-comparison.json")"
+      "${DELIVERY_ARTIFACT_DIR}/ir-serialization-comparison.json")"; then
+      IR_SERIALIZATION_STATUS="fail"
+      return 1
+    fi
+    IR_SERIALIZATION_STATUS="${comparison_status}"
   fi
+  return 0
 }
 
 git_commit() {
@@ -500,6 +614,11 @@ write_summary() {
     echo "llvm_build_dir: ${LLVM_BUILD_DIR}"
     echo "ppl_root: ${PPL_ROOT}"
     echo "artifact_dir: ${DELIVERY_ARTIFACT_DIR}"
+    echo "frontend_build_status: ${FRONTEND_BUILD_STATUS}"
+    echo "frontend_smoke_status: ${FRONTEND_SMOKE_STATUS}"
+    echo "backend_rebuild_status: ${BACKEND_REBUILD_STATUS}"
+    echo "backend_smoke_jit_status: ${BACKEND_SMOKE_JIT_STATUS}"
+    echo "flaggems_status: ${FLAGGEMS_STATUS}"
     echo "compile_time_status: ${COMPILE_TIME_STATUS}"
     echo "compile_time_threshold: ${COMPILE_BENCHMARK_THRESHOLD}"
     echo "pass_profile_status: ${PASS_PROFILE_STATUS}"
@@ -510,8 +629,24 @@ write_summary() {
   set -e
 }
 
+finalize_running_statuses() {
+  local status_var
+  for status_var in \
+    FRONTEND_BUILD_STATUS FRONTEND_SMOKE_STATUS BACKEND_REBUILD_STATUS \
+    BACKEND_SMOKE_JIT_STATUS FLAGGEMS_STATUS COMPILE_TIME_STATUS \
+    PASS_PROFILE_STATUS IR_SERIALIZATION_STATUS; do
+    if [[ "${!status_var}" == "running" ]]; then
+      printf -v "${status_var}" '%s' "fail"
+    fi
+  done
+}
+
 on_exit() {
   local status="$?"
+  if [[ ${status} -eq 0 && ${LOCAL_CI_RESULT_STATUS} -ne 0 ]]; then
+    status="${LOCAL_CI_RESULT_STATUS}"
+  fi
+  finalize_running_statuses
   cleanup_gitee_git_auth
   write_summary "${status}"
   exit "${status}"
@@ -573,6 +708,7 @@ if [[ -z "${FRONTEND_BUILD_COMMAND}" ]]; then
   fi
 fi
 mkdir -p "${ANCHOR_DIR}/dist"
+FRONTEND_BUILD_STATUS="running"
 echo "Cleaning old frontend wheels under ${ANCHOR_DIR}/dist"
 rm -f "${ANCHOR_DIR}"/dist/*.whl
 
@@ -601,9 +737,12 @@ run_logged verify-triton-anchor-import "${PYTHON_BIN}" - <<'PY'
 import triton_anchor
 print("triton-anchor loaded", getattr(triton_anchor, "__version__", "unknown"))
 PY
+FRONTEND_BUILD_STATUS="pass"
 
-(cd "${ANCHOR_DIR}" && run_logged frontend-smoke "${PYTHON_BIN}" tests/test_smoke.py)
+run_recorded_stage_in_dir FRONTEND_SMOKE_STATUS "Frontend smoke" \
+  "${ANCHOR_DIR}" frontend-smoke "${PYTHON_BIN}" tests/test_smoke.py
 
+BACKEND_REBUILD_STATUS="running"
 source_backend_env
 rebuild_backend
 source_python_venv
@@ -624,9 +763,13 @@ assert expected in backends, f"Expected backend {expected!r} was not discovered"
 print(f"expected backend discovered: {expected}")
 PY
 fi
+BACKEND_REBUILD_STATUS="pass"
 
 if [[ -n "${BACKEND_TEST_COMMAND}" ]]; then
-  (cd "${BACKEND_PATH}" && run_logged backend-smoke-jit bash -lc "${BACKEND_TEST_COMMAND}")
+  run_recorded_stage_in_dir BACKEND_SMOKE_JIT_STATUS "Backend smoke and JIT" \
+    "${BACKEND_PATH}" backend-smoke-jit bash -lc "${BACKEND_TEST_COMMAND}"
+else
+  BACKEND_SMOKE_JIT_STATUS="disabled"
 fi
 
 if [[ ("${RUN_FLAGGEMS_TESTS}" == "true" || "${RUN_COMPILE_BENCHMARK}" == "true" \
@@ -640,44 +783,53 @@ if [[ ("${RUN_FLAGGEMS_TESTS}" == "true" || "${RUN_COMPILE_BENCHMARK}" == "true"
 fi
 
 if [[ "${RUN_FLAGGEMS_TESTS}" == "true" ]]; then
+  FLAGGEMS_STATUS="running"
   if [[ ! -d "${FLAGGEMS_CLONE_DIR}" ]]; then
-    echo "FlagGems repo does not exist: ${FLAGGEMS_CLONE_DIR}" >&2
-    exit 1
-  fi
-  if [[ -n "${FLAGGEMS_REF}" ]]; then
-    git -C "${FLAGGEMS_CLONE_DIR}" checkout "${FLAGGEMS_REF}"
-  fi
-  if [[ -z "${FLAGGEMS_TEST_COMMAND}" ]]; then
-    flaggems_selector="${LOCAL_CI_RUNNER_DIR:-${SCRIPT_DIR}}/select_flaggems_tests.py"
-    if [[ ! -f "${flaggems_selector}" ]]; then
-      echo "FlagGems selector does not exist: ${flaggems_selector}" >&2
-      exit 1
+    mark_stage_failed FLAGGEMS_STATUS "FlagGems" "repo does not exist: ${FLAGGEMS_CLONE_DIR}"
+  elif [[ -n "${FLAGGEMS_REF}" ]] && ! git -C "${FLAGGEMS_CLONE_DIR}" checkout "${FLAGGEMS_REF}"; then
+    mark_stage_failed FLAGGEMS_STATUS "FlagGems" "cannot checkout ${FLAGGEMS_REF}"
+  else
+    export FLAGGEMS_ROOT="${FLAGGEMS_CLONE_DIR}"
+    if ! source_backend_env; then
+      mark_stage_failed FLAGGEMS_STATUS "FlagGems" "backend environment setup failed"
+    elif [[ -n "${FLAGGEMS_TEST_COMMAND}" ]]; then
+      run_recorded_stage_in_dir FLAGGEMS_STATUS "FlagGems" \
+        "${BACKEND_PATH}" flaggems bash -lc "${FLAGGEMS_TEST_COMMAND}"
+    else
+      flaggems_runner="${LOCAL_CI_RUNNER_DIR:-${SCRIPT_DIR}}/batch_test_flaggems.py"
+      if [[ ! -f "${flaggems_runner}" ]]; then
+        mark_stage_failed FLAGGEMS_STATUS "FlagGems" \
+          "batch runner does not exist: ${flaggems_runner}"
+      else
+        run_recorded_stage FLAGGEMS_STATUS "FlagGems" run_logged flaggems \
+          "${PYTHON_BIN}" "${flaggems_runner}" \
+            --mode "${FLAGGEMS_TEST_MODE}" \
+            --sample-size "${FLAGGEMS_SAMPLE_SIZE}" \
+            --seed "${FLAGGEMS_RANDOM_SEED}" \
+            --op "${FLAGGEMS_TEST_OP}" \
+            --whitelist "${FLAGGEMS_WHITELIST}" \
+            --full-list "${FLAGGEMS_FULL_LIST}" \
+            --flaggems-dir "${FLAGGEMS_CLONE_DIR}" \
+            --python-bin "${PYTHON_BIN}" \
+            --artifact-dir "${DELIVERY_ARTIFACT_DIR}" \
+            --selected-output "${FLAGGEMS_SELECTED_FILE}" \
+            --pytest-args="${FLAGGEMS_PYTEST_ARGS}" \
+            --idle-timeout-seconds "${FLAGGEMS_IDLE_TIMEOUT_SECONDS}" \
+            --total-timeout-seconds "${FLAGGEMS_TOTAL_TIMEOUT_SECONDS}" \
+            --clear-cache "${FLAGGEMS_CLEAR_CACHE}"
+      fi
     fi
-    FLAGGEMS_TEST_COMMAND="$(${PYTHON_BIN} "${flaggems_selector}" \
-      --mode "${FLAGGEMS_TEST_MODE}" \
-      --sample-size "${FLAGGEMS_SAMPLE_SIZE}" \
-      --seed "${FLAGGEMS_RANDOM_SEED}" \
-      --op "${FLAGGEMS_TEST_OP}" \
-      --whitelist "${FLAGGEMS_WHITELIST}" \
-      --full-list "${FLAGGEMS_FULL_LIST}" \
-      --flaggems-dir "${FLAGGEMS_CLONE_DIR}" \
-      --python-bin "${PYTHON_BIN}" \
-      --selected-output "${FLAGGEMS_SELECTED_FILE}")"
-    export FLAGGEMS_TEST_COMMAND
-    echo "Generated FlagGems command (${FLAGGEMS_TEST_MODE}): ${FLAGGEMS_TEST_COMMAND}"
-    if [[ -f "${FLAGGEMS_SELECTED_FILE}" ]]; then
-      cat "${FLAGGEMS_SELECTED_FILE}"
-    fi
   fi
-
-  export FLAGGEMS_ROOT="${FLAGGEMS_CLONE_DIR}"
-  source_backend_env
-  (cd "${BACKEND_PATH}" && run_logged flaggems bash -lc "${FLAGGEMS_TEST_COMMAND}")
-
+else
+  FLAGGEMS_STATUS="disabled"
 fi
 
-run_compile_benchmark
-run_pass_profile
-run_ir_serialization_benchmark
+run_recorded_stage COMPILE_TIME_STATUS "Compile-time benchmark" run_compile_benchmark
+run_recorded_stage PASS_PROFILE_STATUS "Pass profile" run_pass_profile
+run_recorded_stage IR_SERIALIZATION_STATUS "IR serialization" run_ir_serialization_benchmark
 
+if [[ ${LOCAL_CI_RESULT_STATUS} -ne 0 ]]; then
+  echo "Local CI finished with one or more failed stages. Artifacts are in ${DELIVERY_ARTIFACT_DIR}" >&2
+  exit "${LOCAL_CI_RESULT_STATUS}"
+fi
 echo "Local CI finished successfully. Artifacts are in ${DELIVERY_ARTIFACT_DIR}"

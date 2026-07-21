@@ -93,7 +93,6 @@ def marker_aliases(entry: Entry) -> list[str]:
 
 def attach_discovered_files(entries: list[Entry], marker_files: dict[str, list[str]]) -> list[Entry]:
     resolved: list[Entry] = []
-    missing: list[str] = []
     for entry in entries:
         chosen_marker = ""
         files: list[str] = []
@@ -103,12 +102,15 @@ def attach_discovered_files(entries: list[Entry], marker_files: dict[str, list[s
                 files = marker_files[alias]
                 break
         if not files:
-            missing.append(f"{entry.op}({entry.marker})")
+            print(
+                f"warning: no pytest marker found for {entry.op}({entry.marker}); "
+                "the batch runner will record this operator separately",
+                file=sys.stderr,
+            )
+            resolved.append(entry)
             continue
         for test_file in files:
             resolved.append(Entry(entry.category, entry.op, chosen_marker, test_file))
-    if missing:
-        raise ValueError("No pytest marker found for full FlagGems ops: " + ", ".join(missing))
     return resolved
 
 
@@ -208,7 +210,7 @@ def write_selected(path_text: str, selected: list[Entry], args: argparse.Namespa
 def main() -> int:
     args = parse_args()
     selected = select_entries(args)
-    test_files = unique_in_order([entry.test_file for entry in selected])
+    test_files = unique_in_order([entry.test_file for entry in selected if entry.test_file])
     markers = unique_in_order([entry.marker for entry in selected])
     marker_expr = " or ".join(markers)
 
