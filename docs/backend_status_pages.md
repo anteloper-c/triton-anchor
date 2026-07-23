@@ -94,18 +94,22 @@ logic. Future metric fields can be added without changing existing fields.
 ## Data modes
 
 The committed data is marked with `mode: mock` so pull requests can validate
-the page without depending on Gitee. A production Pages deployment changes the
-manifest to `mode: mixed`:
+the page without depending on Gitee. A production Pages deployment reads two
+independent result streams:
 
-- Full operator rows remain the committed demonstration data until the manual
-  full-test publisher provides a stable result pointer.
-- Backend health is generated from the newest
-  `runs/ci_push_jiwang-delivery-ci/<sha>/<run-id>` result.
-- Performance is generated from the newest run containing each metric. A newer
-  failed delivery therefore changes backend health immediately without erasing
-  the last valid compile-time or Pass measurements.
-- Missing metrics are shown as unavailable. Mock values are never relabeled as
-  live results.
+- Full operator rows are generated from the newest completed manual run under
+  `runs/ci_full_main/<sha>/<run-id>`.
+- Backend health is generated from the newest main-branch push result under
+  `runs/ci_push_jiwang-delivery-ci/<sha>/<run-id>`.
+- Performance is generated only from main-branch push results. PR results under
+  `runs/ci_pr-*` never replace the dashboard compile-time, Pass, or IR values.
+- Missing performance metrics are shown as unavailable. Mock values are never
+  relabeled as live results.
+
+When a valid manual full result exists, all three sections are live and the
+manifest uses `mode: live`. If no manual full result exists, the committed
+operator demonstration data remains in place and the manifest uses
+`mode: mixed`.
 
 Regenerate the demo conversion with:
 
@@ -125,27 +129,27 @@ the public Gitee `local-ci-results` branch and runs:
 python scripts/dashboard/sync_gitee_results.py \
   --results-dir "$RUNNER_TEMP/gitee-results" \
   --output-dir dashboard/data \
-  --source-branch ci/push/jiwang-delivery-ci
+  --source-branch ci/push/jiwang-delivery-ci \
+  --full-test-source-branch ci/full/main
 ```
 
-The script rewrites only `backend-status.json`, `performance.json`, and the
-manifest metadata. It does not modify the full operator files.
+The script always rewrites `backend-status.json`, `performance.json`, and the
+manifest metadata. When a valid `flaggems-summary.json` exists in the newest
+manual full run, it also rewrites `full-test.json` and the downloadable
+UTF-8-BOM `full-test.csv`.
 
-Recommended stable Gitee inputs:
+Gitee inputs used by the current normalizer:
 
 ```text
-dashboard-data/full-test/latest.json
-dashboard-data/full-test/latest.csv
-backend-status/<backend-profile>/latest.json
-compile-time/by-sha/<sha>/<backend-profile>/latest.json
-pass-profile/by-sha/<sha>/<backend-profile>/latest.json
-ir-serialization/by-sha/<sha>/<backend-profile>/latest.json
+runs/ci_full_main/<sha>/<run-id>/flaggems-summary.json
+runs/ci_push_jiwang-delivery-ci/<sha>/<run-id>/delivery-summary.txt
+runs/ci_push_jiwang-delivery-ci/<sha>/<run-id>/compile-benchmark.json
+runs/ci_push_jiwang-delivery-ci/<sha>/<run-id>/pass-profile.json
+runs/ci_push_jiwang-delivery-ci/<sha>/<run-id>/ir-serialization.json
 ```
 
-The result publisher should update `dashboard-data/full-test/latest.*` only for
-a completed manually triggered full test. It should update backend status only
-for an approved `main` result. Per-PR data remains available in run history and
-must not overwrite the dashboard's stable status pointers.
+The run ID timestamp selects the newest qualifying result. Per-PR data remains
+available in run history but is not scanned for dashboard performance.
 
 Repository variables can override the defaults:
 
@@ -155,6 +159,7 @@ Repository variables can override the defaults:
 | `GITEE_RESULTS_BRANCH` | `local-ci-results` |
 | `GITEE_RESULTS_WEB_URL` | `https://gitee.com/likehupochuan/triton-anchor-local-ci-results` |
 | `DASHBOARD_SOURCE_BRANCH` | `ci/push/jiwang-delivery-ci` |
+| `DASHBOARD_FULL_TEST_SOURCE_BRANCH` | `ci/full/main` |
 | `LOCAL_CI_BACKEND_PROFILE` | `sophgo-cmodel` |
 
 ## Deployment
@@ -170,6 +175,8 @@ Settings -> Pages -> Build and deployment -> Source -> GitHub Actions
 Pull requests validate the committed fallback data but do not deploy it.
 Pushes to `main`, pushes to `jiwang-delivery-ci`, and manual workflow dispatches
 deploy data freshly read from Gitee. When the GitHub result receiver observes a
-completed local-CI result, it also dispatches the Pages workflow immediately.
-The last successful Pages deployment remains online if Gitee cannot be fetched
-or normalized.
+completed main-branch push or manual full result, it dispatches the Pages
+workflow immediately. PR task results still update the PR commit status, but do
+not trigger a Pages deployment and never replace the dashboard performance
+source. The last successful Pages deployment remains online if Gitee cannot be
+fetched or normalized.

@@ -40,6 +40,72 @@ def write_run(root: Path, sha: str, run_id: str, status: int) -> Path:
     return run
 
 
+def write_full_run(root: Path, sha: str, run_id: str) -> Path:
+    run = root / "runs" / "ci_full_main" / sha / run_id
+    run.mkdir(parents=True)
+    (run / "delivery-summary.txt").write_text(
+        "\n".join(
+            (
+                "schema: triton-anchor-local-ci/v2",
+                "status: 1",
+                f"target_sha: {sha}",
+                "branch: ci/full/main",
+                "backend_profile: sophgo-cmodel",
+                "flaggems_status: fail",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    write_json(
+        run / "flaggems-summary.json",
+        {
+            "schema": "triton-anchor-local-ci/flaggems-v1",
+            "mode": "full",
+            "summary": {
+                "total": 3,
+                "passed": 1,
+                "failed": 1,
+                "timed_out": 1,
+                "status": "fail",
+            },
+            "results": [
+                {
+                    "index": 1,
+                    "op": "add",
+                    "test_status": "success",
+                    "first_failed_stage": "all passed",
+                    "started_at": "10:00:00",
+                    "duration_seconds": 1.25,
+                    "exit_code": 0,
+                    "timeout_reason": "",
+                },
+                {
+                    "index": 2,
+                    "op": "dropout",
+                    "test_status": "failed",
+                    "first_failed_stage": "Linalg generation",
+                    "started_at": "10:01:00",
+                    "duration_seconds": 2.5,
+                    "exit_code": -6,
+                    "timeout_reason": "",
+                },
+                {
+                    "index": 3,
+                    "op": "erf",
+                    "test_status": "timeout",
+                    "first_failed_stage": "timeout",
+                    "started_at": "10:02:00",
+                    "duration_seconds": 3.75,
+                    "exit_code": -9,
+                    "timeout_reason": "idle",
+                },
+            ],
+        },
+    )
+    return run
+
+
 class DashboardSyncTest(unittest.TestCase):
     def test_latest_run_sets_health_and_latest_metrics_remain_available(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -118,6 +184,94 @@ class DashboardSyncTest(unittest.TestCase):
                 "add / TritonToLinalg",
             )
             self.assertEqual(performance["ir_serialization"]["metrics"], [])
+
+    def test_full_test_uses_manual_run_without_replacing_mainline_performance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "dashboard-data"
+            output.mkdir()
+            write_json(
+                output / "manifest.json",
+                {
+                    "schema": "triton-anchor-dashboard-manifest/v1",
+                    "mode": "mock",
+                    "sources": {
+                        "full_test": "full-test.json",
+                        "backend_status": "backend-status.json",
+                        "performance": "performance.json",
+                    },
+                    "downloads": {"full_test_csv": "full-test.csv"},
+                },
+            )
+
+            main_sha = "3" * 40
+            main_run = write_run(
+                root, main_sha, "20260722T010000Z-333333333333", 0
+            )
+            write_json(
+                main_run / "compile-benchmark.json",
+                {
+                    "metadata": {"kernels": ["add"]},
+                    "summary": {
+                        "add": {
+                            "all_correct": True,
+                            "compile_est": {"median_ms": 8.5},
+                        }
+                    },
+                },
+            )
+
+            pr_sha = "5" * 40
+            pr_run = (
+                root
+                / "runs"
+                / "ci_pr-9_feature"
+                / pr_sha
+                / "20260723T015000Z-555555555555"
+            )
+            pr_run.mkdir(parents=True)
+            write_json(
+                pr_run / "compile-benchmark.json",
+                {
+                    "metadata": {"kernels": ["add"]},
+                    "summary": {
+                        "add": {
+                            "all_correct": True,
+                            "compile_est": {"median_ms": 99.0},
+                        }
+                    },
+                },
+            )
+
+            full_sha = "4" * 40
+            write_full_run(root, full_sha, "20260723T020000Z-444444444444")
+
+            SYNC.sync_dashboard(root, output)
+
+            manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+            backend = json.loads(
+                (output / "backend-status.json").read_text(encoding="utf-8")
+            )
+            performance = json.loads(
+                (output / "performance.json").read_text(encoding="utf-8")
+            )
+            full_test = json.loads(
+                (output / "full-test.json").read_text(encoding="utf-8")
+            )
+            full_csv = (output / "full-test.csv").read_bytes()
+
+            self.assertEqual(manifest["mode"], "live")
+            self.assertEqual(manifest["data_modes"]["full_test"], "live")
+            self.assertEqual(backend["backends"][0]["sha"], main_sha)
+            self.assertEqual(performance["sha"], main_sha)
+            self.assertEqual(full_test["run"]["sha"], full_sha)
+            self.assertEqual(full_test["run"]["branch"], "ci/full/main")
+            self.assertEqual(
+                [row["status"] for row in full_test["operators"]],
+                ["passed", "failed", "timeout"],
+            )
+            self.assertEqual(full_test["operators"][0]["duration_ms"], 1250.0)
+            self.assertTrue(full_csv.startswith(b"\xef\xbb\xbf"))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@ name: Backend Status Pages
 
 on:
   push:
-    branches: [jiwang-delivery-ci, main,feat/backend-status-pages]
+    branches: [jiwang-delivery-ci, main, feat/backend-status-pages]
     paths:
       - "dashboard/**"
       - "scripts/dashboard/**"
@@ -43,6 +43,7 @@ jobs:
           GITEE_RESULTS_BRANCH: ${{ vars.GITEE_RESULTS_BRANCH || 'local-ci-results' }}
           GITEE_RESULTS_WEB_URL: ${{ vars.GITEE_RESULTS_WEB_URL || 'https://gitee.com/likehupochuan/triton-anchor-local-ci-results' }}
           DASHBOARD_SOURCE_BRANCH: ${{ vars.DASHBOARD_SOURCE_BRANCH || 'ci/push/jiwang-delivery-ci' }}
+          DASHBOARD_FULL_TEST_SOURCE_BRANCH: ${{ vars.DASHBOARD_FULL_TEST_SOURCE_BRANCH || 'ci/full/main' }}
           BACKEND_PROFILE: ${{ vars.LOCAL_CI_BACKEND_PROFILE || 'sophgo-cmodel' }}
         run: |
           git clone --depth 1 --branch "${GITEE_RESULTS_BRANCH}" \
@@ -51,6 +52,7 @@ jobs:
             --results-dir "${RUNNER_TEMP}/gitee-results" \
             --output-dir dashboard/data \
             --source-branch "${DASHBOARD_SOURCE_BRANCH}" \
+            --full-test-source-branch "${DASHBOARD_FULL_TEST_SOURCE_BRANCH}" \
             --profile "${BACKEND_PROFILE}" \
             --results-branch "${GITEE_RESULTS_BRANCH}" \
             --results-web-url "${GITEE_RESULTS_WEB_URL}"

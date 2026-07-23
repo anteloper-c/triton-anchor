@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 import statistics
@@ -15,6 +16,7 @@ from typing import Any, Iterable
 
 
 DEFAULT_SOURCE_BRANCH = "ci/push/jiwang-delivery-ci"
+DEFAULT_FULL_TEST_SOURCE_BRANCH = "ci/full/main"
 DEFAULT_PROFILE = "sophgo-cmodel"
 DEFAULT_RESULTS_WEB_URL = (
     "https://gitee.com/likehupochuan/triton-anchor-local-ci-results"
@@ -44,6 +46,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--results-dir", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--source-branch", default=DEFAULT_SOURCE_BRANCH)
+    parser.add_argument(
+        "--full-test-source-branch", default=DEFAULT_FULL_TEST_SOURCE_BRANCH
+    )
     parser.add_argument("--profile", default=DEFAULT_PROFILE)
     parser.add_argument("--backend-name", default="Sophgo")
     parser.add_argument("--results-branch", default="local-ci-results")
@@ -211,6 +216,105 @@ def latest_valid_run(runs: Iterable[Run], file_name: str) -> tuple[Run | None, d
 
 def number(value: object) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
+
+
+def normalize_operator_status(row: dict[str, Any]) -> str:
+    raw_status = str(row.get("test_status") or "").strip().lower()
+    status_map = {
+        "success": "passed",
+        "passed": "passed",
+        "pass": "passed",
+        "\u6210\u529f": "passed",
+        "failure": "failed",
+        "failed": "failed",
+        "fail": "failed",
+        "error": "failed",
+        "\u5931\u8d25": "failed",
+        "timeout": "timeout",
+        "timed_out": "timeout",
+        "\u8d85\u65f6": "timeout",
+    }
+    if raw_status in status_map:
+        return status_map[raw_status]
+    if row.get("timeout_reason"):
+        return "timeout"
+    exit_code = row.get("exit_code")
+    if exit_code == 0:
+        return "passed"
+    if isinstance(exit_code, int):
+        return "timeout" if exit_code == -9 else "failed"
+    return "unknown"
+
+
+def full_test_document(
+    runs: list[Run],
+    backend_name: str,
+    profile: str,
+    web_url: str,
+    results_branch: str,
+) -> tuple[dict[str, Any] | None, Run | None]:
+    run, source = latest_valid_run(runs, "flaggems-summary.json")
+    if run is None or source is None:
+        return None, None
+    source_rows = source.get("results")
+    if not isinstance(source_rows, list):
+        return None, None
+
+    operators: list[dict[str, Any]] = []
+    for fallback_index, source_row in enumerate(source_rows, start=1):
+        if not isinstance(source_row, dict):
+            continue
+        name = str(source_row.get("op") or source_row.get("marker") or "").strip()
+        if not name:
+            continue
+        status = normalize_operator_status(source_row)
+        raw_stage = str(source_row.get("first_failed_stage") or "").strip()
+        stage_is_success = raw_stage.lower() in {
+            "",
+            "pass",
+            "passed",
+            "success",
+            "\u5168\u90e8\u901a\u8fc7",
+        }
+        duration_seconds = number(source_row.get("duration_seconds"))
+        operators.append(
+            {
+                "index": int(source_row.get("index") or fallback_index),
+                "name": name,
+                "status": status,
+                "failure_stage": None if status == "passed" or stage_is_success else raw_stage,
+                "duration_ms": (
+                    round(duration_seconds * 1000.0, 3)
+                    if duration_seconds is not None
+                    else None
+                ),
+                "tested_at": str(source_row.get("started_at") or "").strip(),
+            }
+        )
+
+    if not operators:
+        return None, None
+
+    document = {
+        "schema": "triton-anchor-full-test/v1",
+        "data_mode": "live",
+        "source_schema": source.get("schema", ""),
+        "source_summary": source.get("summary", {}),
+        "run": {
+            "id": run.run_id,
+            "trigger": "manual",
+            "state": "completed",
+            "backend": f"{backend_name} CModel",
+            "profile": profile,
+            "sha": run.sha,
+            "branch": run.source_branch,
+            "started_at": run.tested_at,
+            "finished_at": "",
+            "result_url": result_url(run, web_url, results_branch),
+        },
+        "operators": operators,
+    }
+    return document, run
 
 
 def nested_number(document: dict[str, Any] | None, *keys: str) -> float | None:
@@ -409,38 +513,86 @@ def write_json(path: Path, document: dict[str, Any]) -> None:
     )
 
 
+def write_full_test_csv(path: Path, document: dict[str, Any]) -> None:
+    status_labels = {
+        "passed": "\u901a\u8fc7",
+        "failed": "\u5931\u8d25",
+        "timeout": "\u8d85\u65f6",
+        "unknown": "\u672a\u77e5",
+    }
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "\u5e8f\u53f7",
+                "\u7b97\u5b50\u540d\u79f0",
+                "\u6d4b\u8bd5\u72b6\u6001",
+                "\u5931\u8d25\u9636\u6bb5",
+                "\u8017\u65f6(ms)",
+                "\u6d4b\u8bd5\u65f6\u95f4",
+            ]
+        )
+        for row in document["operators"]:
+            writer.writerow(
+                [
+                    row["index"],
+                    row["name"],
+                    status_labels.get(row["status"], row["status"]),
+                    row["failure_stage"] or "",
+                    row["duration_ms"] if row["duration_ms"] is not None else "",
+                    row["tested_at"],
+                ]
+            )
+
+
 def sync_dashboard(
     results_dir: Path,
     output_dir: Path,
     source_branch: str = DEFAULT_SOURCE_BRANCH,
+    full_test_source_branch: str = DEFAULT_FULL_TEST_SOURCE_BRANCH,
     profile: str = DEFAULT_PROFILE,
     backend_name: str = "Sophgo",
     results_branch: str = "local-ci-results",
     results_web_url: str = DEFAULT_RESULTS_WEB_URL,
 ) -> None:
-    runs = discover_runs(results_dir, source_branch)
-    if not runs:
+    main_runs = discover_runs(results_dir, source_branch)
+    if not main_runs:
         raise RuntimeError(f"No Gitee CI runs found for {source_branch!r}")
+    full_test_runs = discover_runs(results_dir, full_test_source_branch)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(
         output_dir / "backend-status.json",
-        backend_document(runs, backend_name, profile, results_web_url, results_branch),
+        backend_document(
+            main_runs, backend_name, profile, results_web_url, results_branch
+        ),
     )
     write_json(
         output_dir / "performance.json",
-        performance_document(runs, backend_name, profile, results_web_url, results_branch),
+        performance_document(
+            main_runs, backend_name, profile, results_web_url, results_branch
+        ),
     )
 
     manifest_path = output_dir / "manifest.json"
     manifest = read_json(manifest_path)
     if manifest is None:
         raise RuntimeError(f"Dashboard manifest is missing or invalid: {manifest_path}")
-    manifest["mode"] = "mixed"
+    full_test, _ = full_test_document(
+        full_test_runs, backend_name, profile, results_web_url, results_branch
+    )
+    if full_test is not None:
+        write_json(output_dir / "full-test.json", full_test)
+        write_full_test_csv(output_dir / "full-test.csv", full_test)
+        full_test_mode = "live"
+    else:
+        full_test_mode = "mock"
+
+    manifest["mode"] = "live" if full_test_mode == "live" else "mixed"
     manifest["generated_at"] = datetime.now(timezone.utc).isoformat().replace(
         "+00:00", "Z"
     )
     manifest["data_modes"] = {
-        "full_test": "mock",
+        "full_test": full_test_mode,
         "backend_status": "live",
         "performance": "live",
     }
@@ -450,13 +602,14 @@ def sync_dashboard(
 def main() -> int:
     args = parse_args()
     sync_dashboard(
-        args.results_dir.resolve(),
-        args.output_dir.resolve(),
-        args.source_branch,
-        args.profile,
-        args.backend_name,
-        args.results_branch,
-        args.results_web_url,
+        results_dir=args.results_dir.resolve(),
+        output_dir=args.output_dir.resolve(),
+        source_branch=args.source_branch,
+        full_test_source_branch=args.full_test_source_branch,
+        profile=args.profile,
+        backend_name=args.backend_name,
+        results_branch=args.results_branch,
+        results_web_url=args.results_web_url,
     )
     return 0
 

@@ -153,7 +153,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          DASHBOARD_MAIN_TASK_REF: ${{ vars.DASHBOARD_SOURCE_BRANCH || 'ci/push/jiwang-delivery-ci' }}
+          DASHBOARD_FULL_TEST_TASK_REF: ${{ vars.DASHBOARD_FULL_TEST_SOURCE_BRANCH || 'ci/full/main' }}
         run: |
+          if [[ "${TASK_REF}" != "${DASHBOARD_MAIN_TASK_REF}" \
+            && "${TASK_REF}" != "${DASHBOARD_FULL_TEST_TASK_REF}" ]]; then
+            echo "Skip Pages refresh for non-dashboard task: ${TASK_REF}"
+            exit 0
+          fi
           gh workflow run backend-status-pages.yml \
             --repo "${REPO}" \
             --ref "${RECEIVER_REF}"
