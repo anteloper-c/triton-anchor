@@ -152,6 +152,8 @@ The runner activates `/opt/venv/bin/activate`, explicitly uninstalls the existin
 
 Set `RUN_FLAGGEMS_TESTS=true` to run the local FlagGems check. Regular local CI uses `FLAGGEMS_TEST_MODE=sample`: it selects one operator from each of the 8 categories in the 59-op pass whitelist in `flaggems_pass_whitelist.tsv`. Values of `FLAGGEMS_SAMPLE_SIZE` below the category count are raised to the category count; values above it add more randomly selected whitelist operators. Sample and full modes both discover pytest markers and test files from the checked-out FlagGems tree before invoking the same per-operator command with `--ref cpu -vs`. Manual full runs use `FLAGGEMS_TEST_MODE=full` through the `ci/full/*` task ref and run attachment-5 operators 1-127 from `flaggems_all_ops.tsv`. Set `FLAGGEMS_TEST_COMMAND` to bypass the selector completely.
 
+Each operator has a 300-second idle timeout based on log growth. Sample and single modes keep a strict 6000-second total timeout. Full mode treats 6000 seconds as a soft deadline: when at least one new pytest node completed since the previous deadline, it extends the deadline by 1800 seconds, up to the absolute 14400-second hard limit. The JSON and Markdown reports include the observed completed-node count, timeout reason, and extension count.
+
 ## Run
 
 Run one discovery pass:

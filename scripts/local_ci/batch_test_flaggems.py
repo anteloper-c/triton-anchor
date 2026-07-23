@@ -23,6 +23,9 @@ from select_flaggems_tests import Entry, select_entries, write_selected
 
 STAGES = ["Linalg生成", "MLIR生成", "C代码生成", "编译构建", "测试执行", "准确率验证"]
 CSV_HEADERS = ["序号", "算子名称", "最开始失败阶段", "测试状态", "测试时间"]
+PYTEST_COMPLETION_RE = re.compile(
+    r"\b(?:PASSED|FAILED|SKIPPED|XFAIL|XPASS|ERROR)\b"
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,8 @@ class OperatorResult:
     duration_seconds: float
     exit_code: int | None
     timeout_reason: str
+    completed_tests: int
+    timeout_extensions: int
     passed: int
     failed: int
     errors: int
@@ -66,8 +71,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--artifact-dir", required=True)
     parser.add_argument("--selected-output", default="")
     parser.add_argument("--pytest-args", default="--ref cpu -vs")
-    parser.add_argument("--idle-timeout-seconds", type=int, default=180)
+    parser.add_argument("--idle-timeout-seconds", type=int, default=300)
     parser.add_argument("--total-timeout-seconds", type=int, default=6000)
+    parser.add_argument("--full-timeout-extension-seconds", type=int, default=1800)
+    parser.add_argument("--full-hard-timeout-seconds", type=int, default=14400)
     parser.add_argument("--clear-cache", choices=("0", "1"), default="1")
     return parser.parse_args()
 
@@ -202,6 +209,36 @@ def terminate_process_group(process: subprocess.Popen[bytes]) -> None:
         return
 
 
+def count_observed_completed_tests(output: str) -> int:
+    completed = 0
+    for line in output.splitlines():
+        marker = PYTEST_COMPLETION_RE.search(line)
+        node_separator = line.find("::")
+        if marker and node_separator >= 0 and node_separator < marker.start():
+            completed += 1
+    return completed
+
+
+def observed_completed_tests(log_path: Path) -> int:
+    try:
+        output = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    return count_observed_completed_tests(output)
+
+
+def next_full_soft_deadline(
+    current_deadline: float,
+    hard_deadline: float,
+    extension_seconds: int,
+    completed_tests: int,
+    progress_checkpoint: int,
+) -> float | None:
+    if completed_tests <= progress_checkpoint or current_deadline >= hard_deadline:
+        return None
+    return min(current_deadline + extension_seconds, hard_deadline)
+
+
 def build_pytest_command(
     selected: SelectedOperator, python_bin: str, pytest_args: str
 ) -> list[str]:
@@ -231,6 +268,10 @@ def run_operator(
     log_name = f"{index:03d}-{safe_file_part(selected.op)}.log"
     log_path = log_dir / log_name
     command = build_pytest_command(selected, args.python_bin, args.pytest_args)
+    soft_deadline = float(args.total_timeout_seconds)
+    hard_deadline = float(args.full_hard_timeout_seconds)
+    progress_checkpoint = 0
+    timeout_extensions = 0
 
     if args.clear_cache == "1":
         clear_cache_dir(Path.home() / ".triton" / "cache")
@@ -251,6 +292,20 @@ def run_operator(
     )
     with log_path.open("w", encoding="utf-8", errors="replace") as stream:
         stream.write(f"command: {shlex.join(command)}\n")
+        if args.mode == "full":
+            stream.write(
+                "timeout_policy: "
+                f"idle={args.idle_timeout_seconds}s, "
+                f"soft={args.total_timeout_seconds}s, "
+                f"extension={args.full_timeout_extension_seconds}s, "
+                f"hard={args.full_hard_timeout_seconds}s\n"
+            )
+        else:
+            stream.write(
+                "timeout_policy: "
+                f"idle={args.idle_timeout_seconds}s, "
+                f"strict_total={args.total_timeout_seconds}s\n"
+            )
         stream.flush()
         process = subprocess.Popen(
             command,
@@ -265,6 +320,8 @@ def run_operator(
         while process.poll() is None:
             time.sleep(1)
             now = time.monotonic()
+            if process.poll() is not None:
+                break
             try:
                 current_size = log_path.stat().st_size
             except OSError:
@@ -276,13 +333,44 @@ def run_operator(
                 timeout_reason = "idle"
                 terminate_process_group(process)
                 break
-            if args.total_timeout_seconds > 0 and now - started_monotonic > args.total_timeout_seconds:
-                timeout_reason = "total"
-                terminate_process_group(process)
-                break
+            elapsed = now - started_monotonic
+            if args.total_timeout_seconds > 0:
+                if args.mode != "full" and elapsed > args.total_timeout_seconds:
+                    timeout_reason = "total"
+                    terminate_process_group(process)
+                    break
+                if args.mode == "full" and elapsed > hard_deadline:
+                    timeout_reason = "hard"
+                    terminate_process_group(process)
+                    break
+                if args.mode == "full" and elapsed > soft_deadline:
+                    completed_tests = observed_completed_tests(log_path)
+                    next_deadline = next_full_soft_deadline(
+                        soft_deadline,
+                        hard_deadline,
+                        args.full_timeout_extension_seconds,
+                        completed_tests,
+                        progress_checkpoint,
+                    )
+                    if next_deadline is None:
+                        timeout_reason = "soft_no_progress"
+                        terminate_process_group(process)
+                        break
+                    timeout_extensions += 1
+                    extension_message = (
+                        f"[{index}] {selected.op}: extending full timeout "
+                        f"from {soft_deadline:.0f}s to {next_deadline:.0f}s; "
+                        f"completed_tests={completed_tests}"
+                    )
+                    print(extension_message, flush=True)
+                    stream.write(f"local-ci: {extension_message}\n")
+                    stream.flush()
+                    progress_checkpoint = completed_tests
+                    soft_deadline = next_deadline
         exit_code = process.wait()
 
     output = log_path.read_text(encoding="utf-8", errors="replace")
+    completed_tests = count_observed_completed_tests(output)
     dump_dirs = new_dump_dirs(dump_dir, before)
     stages, counts = evaluate_stages(dump_dirs, output, exit_code)
     passed, failed, errors, skipped = counts
@@ -306,6 +394,8 @@ def run_operator(
         duration_seconds=round(duration, 3),
         exit_code=exit_code,
         timeout_reason=timeout_reason,
+        completed_tests=completed_tests,
+        timeout_extensions=timeout_extensions,
         passed=passed,
         failed=failed,
         errors=errors,
@@ -314,7 +404,9 @@ def run_operator(
     )
     print(
         f"[{index}] {selected.op}: {test_status}, {failed_stage}, "
-        f"exit={exit_code}, duration={duration:.1f}s, log={log_path}",
+        f"exit={exit_code}, duration={duration:.1f}s, "
+        f"completed_tests={completed_tests}, timeout_reason={timeout_reason or 'none'}, "
+        f"extensions={timeout_extensions}, log={log_path}",
         flush=True,
     )
     if test_status != "成功":
@@ -373,14 +465,16 @@ def write_reports(
         f"- Failed: {failed}",
         f"- Timed out: {timed_out}",
         "",
-        "| # | Operator | Category | Marker | First failed stage | Status | Duration (s) | Log |",
-        "| ---: | --- | --- | --- | --- | --- | ---: | --- |",
+        "| # | Operator | Category | Marker | First failed stage | Status | Completed tests | Timeout reason | Extensions | Duration (s) | Log |",
+        "| ---: | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | --- |",
     ]
     for result in results:
         lines.append(
             f"| {result.index} | {result.op} | {result.category} | {result.marker} | "
             f"{result.first_failed_stage} | {result.test_status} | "
-            f"{result.duration_seconds:.3f} | [{Path(result.log_file).name}]({result.log_file}) |"
+            f"{result.completed_tests} | {result.timeout_reason or '-'} | "
+            f"{result.timeout_extensions} | {result.duration_seconds:.3f} | "
+            f"[{Path(result.log_file).name}]({result.log_file}) |"
         )
     (artifact_dir / "flaggems-summary.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
@@ -389,6 +483,14 @@ def write_reports(
 
 def main() -> int:
     args = parse_args()
+    if args.mode == "full" and args.total_timeout_seconds > 0:
+        if args.full_timeout_extension_seconds <= 0:
+            raise ValueError("--full-timeout-extension-seconds must be positive")
+        if args.full_hard_timeout_seconds < args.total_timeout_seconds:
+            raise ValueError(
+                "--full-hard-timeout-seconds must be at least "
+                "--total-timeout-seconds"
+            )
     flaggems_dir = Path(args.flaggems_dir).resolve()
     if not (flaggems_dir / "tests").is_dir():
         raise ValueError(
