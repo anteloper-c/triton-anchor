@@ -9,5 +9,10 @@
   },
   "downloads": {
     "full_test_csv": "full-test.csv"
+  },
+  "display": {
+    "backend_ids": [
+      "sophgo-cmodel"
+    ]
   }
 }

@@ -18,7 +18,6 @@
         </div>
       </div>
       <div class="header-meta">
-        <span id="dataMode" class="mode-badge">Loading</span>
         <span id="generatedAt">--</span>
       </div>
     </header>
@@ -76,7 +75,7 @@
 
           <div class="download-actions">
             <a id="downloadRawCsv" class="button secondary" href="#" download>下载原始 CSV</a>
-            <button id="downloadFilteredCsv" class="button primary" type="button">下载当前结果</button>
+            <button id="downloadFilteredXlsx" class="button primary" type="button">下载当前结果（Excel）</button>
           </div>
         </div>
 
@@ -89,7 +88,6 @@
                 <th>状态</th>
                 <th>失败阶段</th>
                 <th>耗时</th>
-                <th>测试时间</th>
               </tr>
             </thead>
             <tbody id="operatorRows"></tbody>
@@ -172,6 +170,7 @@
       <span id="schemaVersion">--</span>
     </footer>
 
+    <script src="xlsx.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>

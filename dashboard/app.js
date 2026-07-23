@@ -99,14 +99,6 @@ async function loadData() {
 }
 
 function renderHeader() {
-  const mode = state.manifest.mode || "unknown";
-  const modeLabels = {
-    mock: "演示数据",
-    live: "实时数据",
-    mixed: "实时 CI / 演示算子",
-    historical: "历史数据",
-  };
-  $("#dataMode").textContent = modeLabels[mode] || mode;
   $("#generatedAt").textContent = `数据更新：${formatDate(state.manifest.generated_at)}`;
   $("#schemaVersion").textContent = state.manifest.schema;
   $("#fullRunBackend").textContent = state.fullTest.run.backend;
@@ -182,7 +174,6 @@ function renderOperators() {
           <td>${statusBadge(row.status)}</td>
           <td>${escapeHtml(row.failure_stage || "--")}</td>
           <td>${formatDuration(row.duration_ms)}</td>
-          <td>${escapeHtml(row.tested_at || "--")}</td>
         </tr>`,
     )
     .join("");
@@ -198,7 +189,12 @@ function renderOperators() {
 }
 
 function renderBackends() {
-  $("#backendRows").innerHTML = state.backends.backends
+  const configuredIds = state.manifest.display?.backend_ids;
+  const visibleIds = Array.isArray(configuredIds) ? new Set(configuredIds) : null;
+  const visibleBackends = state.backends.backends.filter(
+    (backend) => !visibleIds || visibleIds.has(backend.id),
+  );
+  $("#backendRows").innerHTML = visibleBackends
     .map((backend) => {
       const tests = backend.tests || {};
       const resultUrl = safeExternalUrl(backend.result_url);
@@ -279,29 +275,21 @@ function renderPerformance() {
   );
 }
 
-function csvCell(value) {
-  const text = String(value ?? "");
-  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-}
-
-function downloadFilteredCsv() {
-  const header = ["序号", "算子名称", "测试状态", "失败阶段", "耗时(ms)", "测试时间"];
-  const body = filteredOperators().map((row) =>
-    [row.index, row.name, statusLabels[normalizeStatus(row.status)], row.failure_stage, row.duration_ms, row.tested_at]
-      .map(csvCell)
-      .join(","),
+function downloadFilteredXlsx() {
+  const headers = ["序号", "算子名称", "测试状态", "失败阶段", "耗时(ms)"];
+  const rows = filteredOperators().map((row) => [
+    row.index,
+    row.name,
+    statusLabels[normalizeStatus(row.status)] || row.status,
+    row.failure_stage,
+    row.duration_ms,
+  ]);
+  window.TritonXlsx.downloadWorkbook(
+    `operator-results-${state.status}.xlsx`,
+    "算子测试结果",
+    headers,
+    rows,
   );
-  const blob = new Blob(["\ufeff", [header.join(","), ...body].join("\r\n")], {
-    type: "text/csv;charset=utf-8",
-  });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `operator-results-${state.status}.csv`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
 }
 
 function bindEvents() {
@@ -344,7 +332,7 @@ function bindEvents() {
     state.page += 1;
     renderOperators();
   });
-  $("#downloadFilteredCsv").addEventListener("click", downloadFilteredCsv);
+  $("#downloadFilteredXlsx").addEventListener("click", downloadFilteredXlsx);
 }
 
 async function initialize() {

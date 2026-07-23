@@ -22,6 +22,14 @@ class DashboardContractTest(unittest.TestCase):
         for relative_path in manifest["downloads"].values():
             self.assertTrue((DATA_DIR / relative_path).is_file(), relative_path)
 
+    def test_visible_backends_are_configured_without_removing_backend_data(self):
+        manifest = read_json(DATA_DIR / "manifest.json")
+        document = read_json(DATA_DIR / "backend-status.json")
+        backend_ids = {row["id"] for row in document["backends"]}
+        visible_ids = manifest["display"]["backend_ids"]
+        self.assertEqual(visible_ids, ["sophgo-cmodel"])
+        self.assertTrue(set(visible_ids).issubset(backend_ids))
+
     def test_full_test_operators_have_stable_shape(self):
         document = read_json(DATA_DIR / "full-test.json")
         self.assertEqual(document["schema"], "triton-anchor-full-test/v1")
@@ -61,7 +69,12 @@ class DashboardContractTest(unittest.TestCase):
             self.assertTrue(any(sections))
 
     def test_site_entrypoints_exist(self):
-        for relative_path in ("dashboard/index.html", "dashboard/styles.css", "dashboard/app.js"):
+        for relative_path in (
+            "dashboard/index.html",
+            "dashboard/styles.css",
+            "dashboard/xlsx.js",
+            "dashboard/app.js",
+        ):
             self.assertTrue((ROOT / relative_path).is_file(), relative_path)
 
 

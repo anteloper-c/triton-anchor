@@ -6,7 +6,7 @@ The dashboard publishes two independent result views:
 
 1. The latest manually triggered full operator test. This is the primary view
    and supports operator search, status and failure-stage filters, exception-only
-   display, pagination, and CSV download.
+   display, pagination, raw CSV download, and filtered Excel download.
 2. The latest backend health and performance summaries, including delivery
    smoke, compile-time regression, Pass profiling, and IR serialization.
 
@@ -21,6 +21,7 @@ dashboard/
 ├── index.html
 ├── styles.css
 ├── app.js
+├── xlsx.js
 ├── assets/
 │   └── triton-anchor-logo.png
 └── data/
@@ -70,12 +71,18 @@ Schema: `triton-anchor-full-test/v1`.
 
 Allowed operator states are `passed`, `failed`, `timeout`, and `unknown`.
 The downloadable CSV must use UTF-8 with BOM so Chinese column names open
-correctly in Excel.
+correctly in Excel. The page keeps `tested_at` in the data contract for
+traceability but does not display it in the operator table. The current
+filtered result is generated in the browser as an Office Open XML `.xlsx`
+workbook without an external JavaScript dependency.
 
 ### Backend status
 
 Schema: `triton-anchor-backend-status-list/v1`. Each row contains one backend's
 latest qualifying `main` result. PR runs must not replace this pointer.
+The committed manifest currently sets `display.backend_ids` to
+`["sophgo-cmodel"]`, so only Sophgo is visible. Other backend records and the
+list-shaped contract remain available for later enablement.
 
 Allowed overall states are `success`, `warning`, `failure`, `pending`, `stale`,
 and `unknown`.
