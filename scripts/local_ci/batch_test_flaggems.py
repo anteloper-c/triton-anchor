@@ -56,7 +56,7 @@ class OperatorResult:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("sample", "full", "single"), default="sample")
-    parser.add_argument("--sample-size", type=int, default=6)
+    parser.add_argument("--sample-size", type=int, default=8)
     parser.add_argument("--seed", default="")
     parser.add_argument("--op", default="")
     parser.add_argument("--whitelist", required=True)
@@ -202,6 +202,22 @@ def terminate_process_group(process: subprocess.Popen[bytes]) -> None:
         return
 
 
+def build_pytest_command(
+    selected: SelectedOperator, python_bin: str, pytest_args: str
+) -> list[str]:
+    return [
+        python_bin,
+        "-u",
+        "-m",
+        "pytest",
+        "-s",
+        *selected.test_files,
+        "-m",
+        selected.marker,
+        *shlex.split(pytest_args),
+    ]
+
+
 def run_operator(
     selected: SelectedOperator,
     index: int,
@@ -214,17 +230,7 @@ def run_operator(
     started_monotonic = time.monotonic()
     log_name = f"{index:03d}-{safe_file_part(selected.op)}.log"
     log_path = log_dir / log_name
-    command = [
-        args.python_bin,
-        "-u",
-        "-m",
-        "pytest",
-        "-s",
-        *selected.test_files,
-        "-m",
-        selected.marker,
-        *shlex.split(args.pytest_args),
-    ]
+    command = build_pytest_command(selected, args.python_bin, args.pytest_args)
 
     if args.clear_cache == "1":
         clear_cache_dir(Path.home() / ".triton" / "cache")

@@ -10,7 +10,8 @@ GitHub push/PR
   -> for a PR, also dispatch its base SHA to ci/base/pr-<number>
   -> poll Gitee CI relay
   -> enter existing Docker
-  -> checkout/build/install frontend
+  -> delete the old frontend checkout and fresh-clone the exact task ref
+  -> uninstall the old frontend distribution, then build/install from scratch
   -> run triton-anchor/tests/test_smoke.py
   -> rebuild backend wheel against the newly installed frontend
   -> source backend env
@@ -42,19 +43,19 @@ host config/state:    /opt/local-ci/config.env, /root/projects/test/local-ci-sta
 container workspace:  /workspace
 ```
 
-Keep the runner checkout separate from the code checkout under test. The runner checkout tracks the trusted branch that owns `scripts/local_ci`; set `LOCAL_CI_SCRIPT_DIR` to that fixed script directory. For each task, the host poller copies `LOCAL_CI_SCRIPT_DIR` into a per-run snapshot under `LOCAL_CI_STATE_DIR/runner/<run-id>/`, then `run_in_container.sh` copies that snapshot into the Docker container. The container workspace `/workspace/triton-anchor` is reset to the dispatched `ci/*` task commit for each PR or push. PR branches do not need to contain local CI scripts.
+Keep the runner checkout separate from the code checkout under test. The runner checkout tracks the trusted branch that owns `scripts/local_ci`; set `LOCAL_CI_SCRIPT_DIR` to that fixed script directory. For each task, the host poller copies `LOCAL_CI_SCRIPT_DIR` into a per-run snapshot under `LOCAL_CI_STATE_DIR/runner/<run-id>/`, then `run_in_container.sh` copies that snapshot into the Docker container. The container path `/workspace/triton-anchor` is deleted and freshly cloned from the dispatched `ci/*` task branch for every PR, push, or full run. PR branches do not need to contain local CI scripts.
 
 Prepared inside the container:
 
 ```text
 /workspace/llvm-release
 /workspace/ppl-release
-/workspace/triton-anchor
+/workspace/triton-anchor          recreated by every task
 /workspace/triton-sophgo-backend
 /workspace/FlagGems
 ```
 
-The runner does not pull backend source code. Backend source and dependencies must already exist in the container, but the backend wheel is rebuilt for every tested frontend commit. For another backend, prepare it in the container first, then change `BACKEND_PATH`, `BACKEND_ENVSETUP_ARGS`, and the test commands in `scripts/local_ci/config.env`.
+The runner does not pull backend source code. Backend source and dependencies must already exist in the container, but the backend wheel is rebuilt for every tested frontend commit. `ANCHOR_DIR` must be a dedicated child of `WORKSPACE` and must not overlap the backend, FlagGems, LLVM, PPL, or artifact directories because it is recursively removed before each fresh clone. For another backend, prepare it in the container first, then change `BACKEND_PATH`, `BACKEND_ENVSETUP_ARGS`, and the test commands in `scripts/local_ci/config.env`.
 
 For a PR, the poller reads `ci/base/pr-<number>`. If
 the SHA-indexed compile-time, pass-profile, and IR-serialization baselines
@@ -82,7 +83,7 @@ PYTHON_VENV_ACTIVATE="/opt/venv/bin/activate"
 RUN_FLAGGEMS_TESTS="true"
 FLAGGEMS_PIP_PACKAGES="scipy pytest"
 FLAGGEMS_TEST_MODE="sample"
-FLAGGEMS_SAMPLE_SIZE="6"
+FLAGGEMS_SAMPLE_SIZE="8"
 FLAGGEMS_RANDOM_SEED=""
 FLAGGEMS_TEST_COMMAND=""
 ```
@@ -147,9 +148,9 @@ Set `GITEE_TOKEN` for a private relay and for result publishing. The token needs
 
 For automatic fork PRs, do not expose the write-capable `GITEE_TOKEN` to the Docker container that runs PR code. Leave `LOCAL_CI_ALLOW_WRITE_TOKEN_IN_CONTAINER=0`. If the relay repository is private, set `LOCAL_CI_CONTAINER_GITEE_TOKEN` to a read-only token that can fetch `ci/*`; if the relay is public/readable, leave it empty.
 
-The runner activates `/opt/venv/bin/activate` before running `uv build` or `uv pip install`. Set `PYTHON_VENV_ACTIVATE` to another path, or empty, if a different container layout is used.
+The runner activates `/opt/venv/bin/activate`, explicitly uninstalls the existing `triton-anchor` distribution, sources `envsetup.sh` from the fresh checkout, removes local build/dist metadata, and only then builds and installs the new wheel. This prevents a failed build or stale CMake output from silently falling back to the previous frontend. Set `PYTHON_VENV_ACTIVATE` to another path, or empty, if a different container layout is used.
 
-Set `RUN_FLAGGEMS_TESTS=true` to run the local FlagGems check. Regular local CI uses `FLAGGEMS_TEST_MODE=sample`: it selects `FLAGGEMS_SAMPLE_SIZE=6` operators from the 36-op pass whitelist in `flaggems_pass_whitelist.tsv` with category-balanced sampling based on the attachment-5 `category` column. Manual full runs use `FLAGGEMS_TEST_MODE=full` through the `ci/full/*` task ref and run attachment-5 operators 1-127 from `flaggems_all_ops.tsv`. Set `FLAGGEMS_TEST_COMMAND` to bypass the selector completely.
+Set `RUN_FLAGGEMS_TESTS=true` to run the local FlagGems check. Regular local CI uses `FLAGGEMS_TEST_MODE=sample`: it selects one operator from each of the 8 categories in the 59-op pass whitelist in `flaggems_pass_whitelist.tsv`. Values of `FLAGGEMS_SAMPLE_SIZE` below the category count are raised to the category count; values above it add more randomly selected whitelist operators. Sample and full modes both discover pytest markers and test files from the checked-out FlagGems tree before invoking the same per-operator command with `--ref cpu -vs`. Manual full runs use `FLAGGEMS_TEST_MODE=full` through the `ci/full/*` task ref and run attachment-5 operators 1-127 from `flaggems_all_ops.tsv`. Set `FLAGGEMS_TEST_COMMAND` to bypass the selector completely.
 
 ## Run
 
@@ -245,4 +246,4 @@ Add GitHub repository secrets `GITEE_TOKEN` and, when it differs from the owner,
 
 ## Order Notes
 
-It is fine for backend source and heavy dependencies to be prepared before the frontend is pulled. The per-commit operation is frontend checkout/build/install, frontend smoke, backend rebuild, then backend discovery/smoke/JIT. If a future frontend change breaks backend ABI/API compatibility, the fixed rebuild and smoke/JIT sequence should catch it.
+It is fine for backend source and heavy dependencies to be prepared before the frontend is pulled. The per-commit operation is fresh frontend clone, old frontend uninstall, clean frontend build/install, frontend smoke, backend rebuild, then backend discovery/smoke/JIT. If a future frontend change breaks backend ABI/API compatibility, the fixed rebuild and smoke/JIT sequence should catch it.

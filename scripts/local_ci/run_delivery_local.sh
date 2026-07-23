@@ -36,7 +36,7 @@ FLAGGEMS_CLONE_DIR="${FLAGGEMS_CLONE_DIR:-${WORKSPACE}/FlagGems}"
 FLAGGEMS_REF="${FLAGGEMS_REF:-}"
 FLAGGEMS_PIP_PACKAGES="${FLAGGEMS_PIP_PACKAGES:-scipy pytest}"
 FLAGGEMS_TEST_MODE="${FLAGGEMS_TEST_MODE:-sample}"
-FLAGGEMS_SAMPLE_SIZE="${FLAGGEMS_SAMPLE_SIZE:-6}"
+FLAGGEMS_SAMPLE_SIZE="${FLAGGEMS_SAMPLE_SIZE:-8}"
 FLAGGEMS_RANDOM_SEED="${FLAGGEMS_RANDOM_SEED:-}"
 FLAGGEMS_TEST_OP="${FLAGGEMS_TEST_OP:-abs}"
 FLAGGEMS_TEST_COMMAND="${FLAGGEMS_TEST_COMMAND:-}"
@@ -138,12 +138,109 @@ cleanup_gitee_git_auth() {
     rm -f "${LOCAL_CI_GIT_ASKPASS}"
   fi
 }
+
+validated_anchor_checkout_path() {
+  if [[ "${WORKSPACE}" != /* || "${ANCHOR_DIR}" != /* ]]; then
+    echo "WORKSPACE and ANCHOR_DIR must be absolute paths." >&2
+    return 1
+  fi
+  if [[ -L "${ANCHOR_DIR}" ]]; then
+    echo "Refusing to replace symlinked ANCHOR_DIR: ${ANCHOR_DIR}" >&2
+    return 1
+  fi
+
+  local workspace_path anchor_path protected protected_path
+  workspace_path="$(realpath -m -- "${WORKSPACE}")"
+  anchor_path="$(realpath -m -- "${ANCHOR_DIR}")"
+  if [[ "${anchor_path}" == "${workspace_path}" || "${anchor_path}" != "${workspace_path}"/* ]]; then
+    echo "Refusing to replace ANCHOR_DIR outside WORKSPACE: ${anchor_path}" >&2
+    return 1
+  fi
+  if command -v mountpoint >/dev/null 2>&1 \
+    && [[ -e "${anchor_path}" ]] \
+    && mountpoint -q "${anchor_path}"; then
+    echo "Refusing to replace mounted ANCHOR_DIR: ${anchor_path}" >&2
+    return 1
+  fi
+
+  for protected in \
+    "${BACKEND_PATH}" \
+    "${FLAGGEMS_CLONE_DIR}" \
+    "${LLVM_BUILD_DIR}" \
+    "${PPL_ROOT}" \
+    "${LOCAL_CI_ARTIFACT_ROOT}"; do
+    protected_path="$(realpath -m -- "${protected}")"
+    if [[ "${anchor_path}" == "${protected_path}" \
+      || "${anchor_path}" == "${protected_path}"/* \
+      || "${protected_path}" == "${anchor_path}"/* ]]; then
+      echo "Refusing overlapping checkout/protected paths: ${anchor_path}, ${protected_path}" >&2
+      return 1
+    fi
+  done
+
+  printf '%s\n' "${anchor_path}"
+}
+
+fresh_checkout_anchor() {
+  local anchor_path checked_out_sha
+  anchor_path="$(validated_anchor_checkout_path)"
+
+  echo "Removing previous frontend checkout: ${anchor_path}"
+  rm -rf -- "${anchor_path}"
+  mkdir -p -- "$(dirname "${anchor_path}")"
+
+  echo "Cloning ${GITEE_BRANCH} from ${GITEE_REPO_URL}"
+  git clone \
+    --origin gitee \
+    --branch "${GITEE_BRANCH}" \
+    --single-branch \
+    --no-checkout \
+    "${GITEE_REPO_URL}" \
+    "${anchor_path}"
+  git config --global --add safe.directory "${anchor_path}" || true
+  git -C "${anchor_path}" checkout --detach "${target_sha}"
+  git -C "${anchor_path}" reset --hard "${target_sha}"
+  git -C "${anchor_path}" clean -ffdx
+
+  checked_out_sha="$(git -C "${anchor_path}" rev-parse HEAD)"
+  if [[ "${checked_out_sha}" != "${target_sha}" ]]; then
+    echo "Fresh checkout SHA mismatch: expected ${target_sha}, got ${checked_out_sha}" >&2
+    return 1
+  fi
+}
+
 run_logged() {
   local name="$1"
   shift
   local log_file="${DELIVERY_ARTIFACT_DIR}/${name}.log"
   echo "Running ${name}; log: ${log_file}"
   "$@" 2>&1 | tee "${log_file}"
+}
+
+frontend_package_installed() {
+  "${PYTHON_BIN}" -c \
+    'from importlib.metadata import distribution; distribution("triton-anchor")' \
+    >/dev/null 2>&1
+}
+
+uninstall_installed_frontend() {
+  if ! frontend_package_installed; then
+    echo "No previously installed triton-anchor distribution found." \
+      | tee "${DELIVERY_ARTIFACT_DIR}/frontend-uninstall.log"
+    return 0
+  fi
+
+  if use_uv; then
+    run_logged frontend-uninstall uv pip uninstall triton-anchor
+  else
+    run_logged frontend-uninstall \
+      "${PYTHON_BIN}" -m pip uninstall -y triton-anchor
+  fi
+
+  if frontend_package_installed; then
+    echo "triton-anchor is still installed after uninstall." >&2
+    return 1
+  fi
 }
 
 mark_stage_failed() {
@@ -596,6 +693,8 @@ write_summary() {
     echo "branch: ${GITEE_BRANCH}"
     echo "anchor_dir: ${ANCHOR_DIR}"
     echo "anchor_commit: $(git_commit "${ANCHOR_DIR}")"
+    echo "frontend_checkout_mode: fresh_clone"
+    echo "frontend_uninstall_before_build: true"
     echo "backend_profile: ${BACKEND_PROFILE}"
     echo "expected_backend: ${EXPECTED_TRITON_BACKEND}"
     echo "backend_path: ${BACKEND_PATH}"
@@ -653,18 +752,10 @@ on_exit() {
 }
 trap on_exit EXIT
 
-cd "${ANCHOR_DIR}"
-git config --global --add safe.directory "${ANCHOR_DIR}" || true
-if git remote get-url gitee >/dev/null 2>&1; then
-  git remote set-url gitee "${GITEE_REPO_URL}"
-else
-  git remote add gitee "${GITEE_REPO_URL}"
-fi
-
+FRONTEND_BUILD_STATUS="running"
 setup_gitee_git_auth
-git fetch --prune gitee "${GITEE_BRANCH}"
-git checkout --detach "${target_sha}"
-git reset --hard "${target_sha}"
+run_logged frontend-checkout fresh_checkout_anchor
+cd "${ANCHOR_DIR}"
 
 if [[ -n "${LOCAL_CI_BASE_SHA}" ]]; then
   if [[ "${RUN_COMPILE_BENCHMARK}" == "true" ]]; then
@@ -698,6 +789,7 @@ Artifact dir: ${DELIVERY_ARTIFACT_DIR}
 EOF
 
 source_python_venv
+uninstall_installed_frontend
 source_anchor_env
 
 if [[ -z "${FRONTEND_BUILD_COMMAND}" ]]; then
@@ -707,10 +799,10 @@ if [[ -z "${FRONTEND_BUILD_COMMAND}" ]]; then
     FRONTEND_BUILD_COMMAND="${PYTHON_BIN} -m build --wheel --no-isolation"
   fi
 fi
+echo "Preparing empty frontend build directories under ${ANCHOR_DIR}"
+rm -rf -- "${ANCHOR_DIR}/build" "${ANCHOR_DIR}/dist"
+find "${ANCHOR_DIR}" -maxdepth 1 -name '*.egg-info' -exec rm -rf -- {} +
 mkdir -p "${ANCHOR_DIR}/dist"
-FRONTEND_BUILD_STATUS="running"
-echo "Cleaning old frontend wheels under ${ANCHOR_DIR}/dist"
-rm -f "${ANCHOR_DIR}"/dist/*.whl
 
 run_logged frontend-build bash -lc "${FRONTEND_BUILD_COMMAND}"
 

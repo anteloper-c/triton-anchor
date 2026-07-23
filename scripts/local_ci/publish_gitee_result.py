@@ -105,7 +105,12 @@ def map_container_path(path_text: str) -> Path | None:
 
 PUBLISHED_ARTIFACT_FILES = (
     "delivery-summary.txt",
+    "frontend-checkout.log",
+    "frontend-uninstall.log",
+    "frontend-build.log",
+    "frontend-wheel-info.log",
     "frontend-install.log",
+    "verify-triton-anchor-import.log",
     "frontend-smoke.log",
     "backend-rebuild.log",
     "backend-smoke-jit.log",

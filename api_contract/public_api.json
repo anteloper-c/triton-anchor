@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "description": "Initial stable Python API contract for triton-anchor. The base branch copy is authoritative during compatibility checks.",
+  "modules": {
+    "triton_anchor": {
+      "exports": [
+        "AnchorIRTrack",
+        "AnchorIRValidator",
+        "ComputeParadigm",
+        "HWCapability",
+        "build_ttir_pipeline"
+      ]
+    },
+    "triton_anchor.hw_capability": {
+      "classes": {
+        "ComputeParadigm": {
+          "kind": "enum"
+        },
+        "GPGPUCapability": {
+          "kind": "dataclass"
+        },
+        "HWCapability": {
+          "kind": "dataclass",
+          "methods": [
+            "lowering_path",
+            "to_gpu_target",
+            "validate"
+          ]
+        },
+        "MatrixCapability": {
+          "kind": "dataclass"
+        },
+        "TensorCapability": {
+          "kind": "dataclass"
+        }
+      }
+    },
+    "triton_anchor.anchor_ir": {
+      "classes": {
+        "AnchorIRError": {
+          "kind": "exception"
+        },
+        "AnchorIRTrack": {
+          "kind": "enum"
+        },
+        "AnchorIRValidator": {
+          "kind": "class",
+          "methods": [
+            "__init__",
+            "is_valid",
+            "validate",
+            "validate_and_raise",
+            "validate_post_hook",
+            "validate_pre_hook"
+          ]
+        },
+        "AnchorIRViolation": {
+          "kind": "dataclass"
+        }
+      }
+    },
+    "triton_anchor.pipeline": {
+      "functions": [
+        "build_ttir_pipeline",
+        "inject_hw_attributes",
+        "make_ttir"
+      ]
+    },
+    "triton_anchor.adapters": {
+      "exports": [
+        "AdapterConversionError",
+        "AdapterRegistry",
+        "ILinalgOptAdapter",
+        "ILinalgPybindAdapter",
+        "ITritonToLinalgAdapter",
+        "get_adapter"
+      ]
+    },
+    "triton_anchor.adapters.base": {
+      "classes": {
+        "AdapterConversionError": {
+          "kind": "exception",
+          "methods": [
+            "__init__"
+          ]
+        },
+        "ILinalgOptAdapter": {
+          "kind": "class",
+          "track_added_abstract_methods": true
+        },
+        "ILinalgPybindAdapter": {
+          "kind": "class",
+          "track_added_abstract_methods": true
+        },
+        "ITritonToLinalgAdapter": {
+          "kind": "class",
+          "methods": [
+            "convert",
+            "get_output_dialects",
+            "get_required_passes",
+            "name",
+            "validate_output"
+          ],
+          "track_added_abstract_methods": true
+        }
+      }
+    },
+    "triton_anchor.adapters.registry": {
+      "classes": {
+        "AdapterNotFoundError": {
+          "kind": "exception"
+        },
+        "AdapterRegistry": {
+          "kind": "class",
+          "methods": [
+            "discover",
+            "get",
+            "get_adapter",
+            "list_adapters",
+            "register"
+          ]
+        }
+      },
+      "functions": [
+        "get_adapter"
+      ]
+    }
+  }
+}

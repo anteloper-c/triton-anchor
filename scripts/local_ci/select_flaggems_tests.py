@@ -34,7 +34,7 @@ class Entry:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("sample", "full", "single"), default="sample")
-    parser.add_argument("--sample-size", type=int, default=6)
+    parser.add_argument("--sample-size", type=int, default=8)
     parser.add_argument("--seed", default="")
     parser.add_argument("--op", default="")
     parser.add_argument("--whitelist", required=True)
@@ -122,19 +122,22 @@ def group_entries_by_category(entries: list[Entry]) -> dict[str, list[Entry]]:
 
 
 def select_sample_entries(entries: list[Entry], requested_size: int, seed: str) -> list[Entry]:
-    sample_size = min(max(requested_size, 1), len(entries))
     rng = random.Random(seed) if seed else random.SystemRandom()
     grouped = group_entries_by_category(entries)
     categories = sorted(grouped)
+    sample_size = min(max(requested_size, len(categories), 1), len(entries))
 
-    if len(categories) <= sample_size:
-        selected_categories = categories
-    else:
-        selected_categories = sorted(rng.sample(categories, sample_size))
+    if requested_size < len(categories):
+        print(
+            f"warning: requested sample size {requested_size} is smaller than "
+            f"the {len(categories)} whitelist categories; selecting one operator "
+            "from every category",
+            file=sys.stderr,
+        )
 
     selected: list[Entry] = []
     selected_keys: set[tuple[str, str, str]] = set()
-    for category in selected_categories:
+    for category in categories:
         chosen = rng.choice(grouped[category])
         selected.append(chosen)
         selected_keys.add((chosen.op, chosen.marker, chosen.test_file))
@@ -148,21 +151,22 @@ def select_sample_entries(entries: list[Entry], requested_size: int, seed: str) 
 
 
 def select_entries(args: argparse.Namespace) -> list[Entry]:
+    marker_files = discover_marker_files(Path(args.flaggems_dir))
     if args.mode == "full":
         if not args.full_list:
             raise ValueError("--full-list is required in full mode")
-        full_entries = read_entries(Path(args.full_list))
-        marker_files = discover_marker_files(Path(args.flaggems_dir))
-        return attach_discovered_files(full_entries, marker_files)
+        selected = read_entries(Path(args.full_list))
+        return attach_discovered_files(selected, marker_files)
 
     entries = read_entries(Path(args.whitelist))
     if args.mode == "single":
         selected = [entry for entry in entries if args.op in (entry.op, entry.marker)]
         if not selected:
             raise ValueError(f"FlagGems op {args.op!r} was not found in the pass whitelist")
-        return selected
+    else:
+        selected = select_sample_entries(entries, args.sample_size, args.seed)
 
-    return select_sample_entries(entries, args.sample_size, args.seed)
+    return attach_discovered_files(selected, marker_files)
 
 
 def unique_in_order(values: list[str]) -> list[str]:
