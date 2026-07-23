@@ -145,6 +145,11 @@ manifest metadata. When a valid `flaggems-summary.json` exists in the newest
 manual full run, it also rewrites `full-test.json` and the downloadable
 UTF-8-BOM `full-test.csv`.
 
+The results repository may be private. The workflow reads the repository with
+the existing `GITEE_TOKEN` repository secret and uses `GITEE_RESULTS_OWNER` as
+the Git username through `GIT_ASKPASS`. The token is never embedded in the
+repository URL or printed to the workflow log.
+
 Gitee inputs used by the current normalizer:
 
 ```text

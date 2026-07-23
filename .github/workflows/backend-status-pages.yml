@@ -39,15 +39,35 @@ jobs:
       - name: Fetch live Gitee CI results
         if: ${{ github.event_name != 'pull_request' }}
         env:
-          GITEE_RESULTS_REPO_URL: ${{ vars.GITEE_RESULTS_REPO_URL || 'https://gitee.com/likehupochuan/triton-anchor-local-ci-results.git' }}
+          GITEE_RESULTS_OWNER: ${{ vars.GITEE_RESULTS_OWNER || vars.GITEE_OWNER || 'likehupochuan' }}
+          GITEE_RESULTS_REPO: ${{ vars.GITEE_RESULTS_REPO || 'triton-anchor-local-ci-results' }}
+          GITEE_RESULTS_REPO_URL: ${{ vars.GITEE_RESULTS_REPO_URL }}
           GITEE_RESULTS_BRANCH: ${{ vars.GITEE_RESULTS_BRANCH || 'local-ci-results' }}
           GITEE_RESULTS_WEB_URL: ${{ vars.GITEE_RESULTS_WEB_URL || 'https://gitee.com/likehupochuan/triton-anchor-local-ci-results' }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           DASHBOARD_SOURCE_BRANCH: ${{ vars.DASHBOARD_SOURCE_BRANCH || 'ci/push/jiwang-delivery-ci' }}
           DASHBOARD_FULL_TEST_SOURCE_BRANCH: ${{ vars.DASHBOARD_FULL_TEST_SOURCE_BRANCH || 'ci/full/main' }}
           BACKEND_PROFILE: ${{ vars.LOCAL_CI_BACKEND_PROFILE || 'sophgo-cmodel' }}
         run: |
-          git clone --depth 1 --branch "${GITEE_RESULTS_BRANCH}" \
-            "${GITEE_RESULTS_REPO_URL}" "${RUNNER_TEMP}/gitee-results"
+          if [[ -z "${GITEE_TOKEN}" ]]; then
+            echo "GITEE_TOKEN is empty"
+            exit 1
+          fi
+
+          repo_url="${GITEE_RESULTS_REPO_URL:-https://gitee.com/${GITEE_RESULTS_OWNER}/${GITEE_RESULTS_REPO}.git}"
+          askpass="${RUNNER_TEMP}/gitee-askpass.sh"
+          cat > "${askpass}" <<'SH'
+          #!/usr/bin/env sh
+          case "$1" in
+            *Username*) printf '%s\n' "${GITEE_RESULTS_OWNER}" ;;
+            *) printf '%s\n' "${GITEE_TOKEN}" ;;
+          esac
+          SH
+          chmod 700 "${askpass}"
+
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+            git clone --depth 1 --branch "${GITEE_RESULTS_BRANCH}" \
+              "${repo_url}" "${RUNNER_TEMP}/gitee-results"
           python scripts/dashboard/sync_gitee_results.py \
             --results-dir "${RUNNER_TEMP}/gitee-results" \
             --output-dir dashboard/data \
