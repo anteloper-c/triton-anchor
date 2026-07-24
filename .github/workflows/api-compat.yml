@@ -3,7 +3,7 @@ name: Public API Compatibility
 on:
   pull_request:
   push:
-    branches: [main, develop, "release/**"]
+    branches: [main, develop, jiwang-delivery-ci]
   workflow_dispatch:
 
 permissions:
