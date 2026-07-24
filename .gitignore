@@ -189,3 +189,13 @@ htmlcov/
 
 # temp
 ./docs/*triton/include/
+
+# Local CI reference documents; the remote guide is docs/ci_guide_zh.md
+docs/backend_status_pages.md
+docs/ci_delivery.md
+docs/ci_sharing_zh.md
+docs/ir_serialization_profiling.md
+docs/local_ci.md
+docs/local_ci_handoff_zh.md
+docs/pass_profiling.md
+docs/任务3.4-标准交付测试CI集成*.md

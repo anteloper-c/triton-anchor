@@ -18,7 +18,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from result_paths import (
+LOCAL_CI_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(LOCAL_CI_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(LOCAL_CI_SCRIPT_DIR))
+
+from result_paths import (  # noqa: E402
     result_commit_dir,
     result_run_dir,
     safe_path_part,
