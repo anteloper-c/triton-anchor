@@ -1,0 +1,18 @@
+{
+  "schema": "triton-anchor-dashboard-manifest/v1",
+  "mode": "mock",
+  "generated_at": "2026-07-20T03:30:00Z",
+  "sources": {
+    "full_test": "full-test.json",
+    "backend_status": "backend-status.json",
+    "performance": "performance.json"
+  },
+  "downloads": {
+    "full_test_csv": "full-test.csv"
+  },
+  "display": {
+    "backend_ids": [
+      "sophgo-cmodel"
+    ]
+  }
+}

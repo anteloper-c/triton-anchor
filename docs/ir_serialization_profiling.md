@@ -44,7 +44,8 @@ dashboard.
 
 ## Regression Policy
 
-For PR tasks, the server uses the exact base SHA from `ci/base/pr-<number>`.
+For PR tasks, the server uses the exact base SHA from
+`ci/base/pr-<number>/<source-branch>`.
 It looks for:
 
 ```text

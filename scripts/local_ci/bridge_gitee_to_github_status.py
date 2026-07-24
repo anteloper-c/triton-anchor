@@ -16,6 +16,8 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
+from result_paths import result_commit_dir
+
 
 RESULT_NOT_READY_EXIT_CODE = 3
 RESULT_FAILED_EXIT_CODE = 10
@@ -68,10 +70,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-result", action="store_true")
     parser.add_argument("--exit-with-result", action="store_true")
     return parser.parse_args()
-
-
-def safe_path_part(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_") or "default"
 
 
 def request_json(url: str, method: str = "GET", token: str = "", data: dict | None = None) -> tuple[int, object | None, str]:
@@ -240,8 +238,7 @@ def gitee_result_url(web_url: str, results_branch: str, rel_dir: str) -> str:
 
 
 def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: str) -> LocalCIResult | None:
-    safe_task_ref = safe_path_part(target.task_ref)
-    commit_dir = f"runs/{safe_task_ref}/{target.sha}"
+    commit_dir = result_commit_dir(target.task_ref, target.sha).as_posix()
     latest_path = f"{commit_dir}/latest.txt"
     run_id_text = gitee_content(
         args.gitee_owner,

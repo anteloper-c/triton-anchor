@@ -18,6 +18,12 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from result_paths import (
+    result_commit_dir,
+    result_run_dir,
+    safe_path_part,
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -36,10 +42,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--results-branch", default="local-ci-results")
     parser.add_argument("--context", default="local-ci/sophgo-cmodel")
     return parser.parse_args()
-
-
-def safe_path_part(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_") or "default"
 
 
 def run_git(args: list[str], cwd: Path, env: dict[str, str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -451,8 +453,12 @@ def main() -> int:
         return 1
 
     status_text = "passed" if args.exit_code == 0 else "failed"
-    safe_branch = safe_path_part(args.source_branch)
-    rel_dir = Path("runs") / safe_branch / args.sha / args.run_id
+    try:
+        rel_dir = result_run_dir(args.source_branch, args.sha, args.run_id)
+        commit_dir = result_commit_dir(args.source_branch, args.sha)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     quoted_branch = urllib.parse.quote(args.results_branch, safe="")
     quoted_rel_dir = urllib.parse.quote(str(rel_dir), safe="/")
     result_url = f"{results_web_url}/tree/{quoted_branch}/{quoted_rel_dir}"
@@ -506,14 +512,19 @@ def main() -> int:
             f"{dashboard_csv.relative_to(worktree)}"
         )
 
-        latest_dir = worktree / "runs" / safe_branch / args.sha
+        latest_dir = worktree / commit_dir
         latest_dir.mkdir(parents=True, exist_ok=True)
         (latest_dir / "latest.txt").write_text(f"{args.run_id}\n")
 
         index = worktree / "index.md"
         index.write_text(
             "# Triton Anchor Local CI Results\n\n"
-            "Result directories are stored under runs/<branch>/<commit>/<run-id>/.\n\n"
+            "Result directories are grouped under runs/ci_full_main/, "
+            "runs/ci_pr/, and runs/ci_push/.\n\n"
+            "- Full: runs/ci_full_main/<commit>/<run-id>/\n"
+            "- PR: runs/ci_pr/ci_pr-<number>_<branch>/<commit>/<run-id>/\n"
+            "- PR base: runs/ci_pr/ci_base_pr-<number>_<branch>/<commit>/<run-id>/\n"
+            "- Push: runs/ci_push/ci_push_<branch>/<commit>/<run-id>/\n\n"
             "Compile-time baselines are stored under "
             "compile-time/by-sha/<commit>/<backend-profile>/latest.json.\n"
             "Pass-profile baselines are stored under "

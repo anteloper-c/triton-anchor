@@ -90,6 +90,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
+          echo "result_ready=false" >> "${GITHUB_OUTPUT}"
           set +e
           python scripts/local_ci/bridge_gitee_to_github_status.py \
             --mode single \
@@ -110,10 +111,12 @@ jobs:
 
           case "${bridge_status}" in
             0)
+              echo "result_ready=true" >> "${GITHUB_OUTPUT}"
               exit 0
               ;;
             10)
               # The bridge published the failure details; stage jobs report them below.
+              echo "result_ready=true" >> "${GITHUB_OUTPUT}"
               exit 0
               ;;
             3)
@@ -150,6 +153,23 @@ jobs:
             -f context="${CONTEXT}" \
             -f description="${description}"
           exit 1
+
+      - name: Refresh backend status Pages
+        if: ${{ always() && steps.bridge.outputs.result_ready == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DASHBOARD_MAIN_TASK_REF: ${{ vars.DASHBOARD_SOURCE_BRANCH || 'ci/push/jiwang-delivery-ci' }}
+          DASHBOARD_FULL_TEST_TASK_REF: ${{ vars.DASHBOARD_FULL_TEST_SOURCE_BRANCH || 'ci/full/main' }}
+        run: |
+          if [[ "${TASK_REF}" != "${DASHBOARD_MAIN_TASK_REF}" \
+            && "${TASK_REF}" != "${DASHBOARD_FULL_TEST_TASK_REF}" ]]; then
+            echo "Skip Pages refresh for non-dashboard task: ${TASK_REF}"
+            exit 0
+          fi
+          gh workflow run backend-status-pages.yml \
+            --repo "${REPO}" \
+            --ref "${RECEIVER_REF}"
 
   stage-results:
     name: Local CI / ${{ matrix.name }}

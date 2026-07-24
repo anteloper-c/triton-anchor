@@ -230,8 +230,8 @@ run_once() {
   local base_sha=""
   if [[ ("${RUN_COMPILE_BENCHMARK}" == "true" || "${RUN_PASS_PROFILE}" == "true" \
     || "${RUN_IR_SERIALIZATION_BENCHMARK}" == "true") \
-    && "${branch}" =~ ^ci/pr-([0-9]+)/.+$ ]]; then
-    base_branch="ci/base/pr-${BASH_REMATCH[1]}"
+    && "${branch}" =~ ^ci/pr-([0-9]+)/(.+)$ ]]; then
+    base_branch="ci/base/pr-${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
     base_sha="$(latest_sha "${base_branch}")"
     if [[ -z "${base_sha}" ]]; then
       echo "No base SHA found for ${branch}; performance comparisons will report a warning." >&2

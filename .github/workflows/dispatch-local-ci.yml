@@ -81,7 +81,7 @@ jobs:
           context="${CONTEXT}"
           if [ "${GITHUB_EVENT_NAME}" = "pull_request_target" ]; then
             task_ref="ci/pr-${PR_NUMBER}/${EVENT_SOURCE_BRANCH}"
-            base_task_ref="ci/base/pr-${PR_NUMBER}"
+            base_task_ref="ci/base/pr-${PR_NUMBER}/${EVENT_SOURCE_BRANCH}"
             base_fetch_ref="refs/heads/${EVENT_BASE_BRANCH}"
           elif [ "${flaggems_mode}" = "full" ]; then
             task_ref="ci/full/${EVENT_SOURCE_BRANCH}"

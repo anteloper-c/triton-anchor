@@ -7,7 +7,7 @@ The Docker container and backend environment are assumed to be ready already. Lo
 ```text
 GitHub push/PR
   -> dispatch exact head SHA to Gitee CI relay ci/* task ref
-  -> for a PR, also dispatch its base SHA to ci/base/pr-<number>
+  -> for a PR, also dispatch its base SHA to ci/base/pr-<number>/<branch>
   -> poll Gitee CI relay
   -> enter existing Docker
   -> delete the old frontend checkout and fresh-clone the exact task ref
@@ -28,7 +28,7 @@ The Gitee CI relay is intentionally separate from the normal source mirror. One 
 ```text
 ci/push/<github-branch>   exact SHA dispatched by a GitHub push
 ci/pr-<number>/<branch>   exact PR head SHA dispatched by a GitHub PR event, including fork PRs
-ci/base/pr-<number>       exact PR base SHA; metadata only, not a standalone task
+ci/base/pr-<number>/<branch> exact PR base SHA; metadata only, not a standalone task
 ci/full/<github-branch>   manual full FlagGems run for a GitHub branch
 local-ci-results          local runner results only
 ```
@@ -57,7 +57,7 @@ Prepared inside the container:
 
 The runner does not pull backend source code. Backend source and dependencies must already exist in the container, but the backend wheel is rebuilt for every tested frontend commit. `ANCHOR_DIR` must be a dedicated child of `WORKSPACE` and must not overlap the backend, FlagGems, LLVM, PPL, or artifact directories because it is recursively removed before each fresh clone. For another backend, prepare it in the container first, then change `BACKEND_PATH`, `BACKEND_ENVSETUP_ARGS`, and the test commands in `scripts/local_ci/config.env`.
 
-For a PR, the poller reads `ci/base/pr-<number>`. If
+For a PR, the poller reads `ci/base/pr-<number>/<branch>`. If
 the SHA-indexed compile-time, pass-profile, and IR-serialization baselines
 already exist on `local-ci-results`, it reuses them. Otherwise it runs the base
 commit once, publishes the missing performance baselines, and then runs the PR
@@ -180,13 +180,25 @@ Container-side artifacts:
 /workspace/local-ci-artifacts
 ```
 
-Published results are stored on `local-ci-results` under
-`runs/<safe-task-ref>/<commit>/<run-id>/`. The result directory keeps selected
-build, smoke/JIT, FlagGems, compile-time, pass-profile, and IR-serialization artifacts, including
+Published results are stored on `local-ci-results` in three task groups:
+
+```text
+runs/ci_full_main/<commit>/<run-id>/
+runs/ci_pr/ci_pr-<number>_<branch>/<commit>/<run-id>/
+runs/ci_pr/ci_base_pr-<number>_<branch>/<commit>/<run-id>/
+runs/ci_push/ci_push_<branch>/<commit>/<run-id>/
+```
+
+The result directory keeps selected build, smoke/JIT, FlagGems, compile-time,
+pass-profile, and IR-serialization artifacts, including
 `flaggems-selected.txt`. Full local logs remain under
 `/workspace/local-ci-artifacts`. If the container artifact directory cannot be
 mapped back to the host, the publisher writes a fallback summary plus the
 host-side `local-ci.log` and `result.json`.
+
+The publisher, GitHub result receiver, and dashboard synchronizer all use this
+layout. Old flattened `runs/ci_pr-*`, `runs/ci_base_pr-*`, and
+`runs/ci_push_*` directories are not read after switching to this version.
 
 Compile-time artifacts include `compile-benchmark.json`,
 `compile-benchmark.csv`, and, for PRs, `compile-time-comparison.json` and
@@ -222,7 +234,7 @@ existing Gitee result receiver.
 `Dispatch Local CI via Gitee` is the only automatic push/PR entry point.
 Pushes to `main` and `jiwang-delivery-ci` create `ci/push/*`; PR events,
 including fork PRs, create `ci/pr-*/*` and update the matching
-`ci/base/pr-*` pointer. It uses `pull_request_target` so the trusted base-branch
+`ci/base/pr-*/*` pointer. It uses `pull_request_target` so the trusted base-branch
 workflow can access the Gitee relay credentials, but it only fetches and relays
 the exact PR head/base commits; it must not run PR code on the GitHub-hosted
 runner. Manual dispatch with `flaggems_mode=full` creates `ci/full/*` and
