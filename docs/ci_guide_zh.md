@@ -369,7 +369,7 @@ PR 任务通过 `ci/base/pr-*` 获取 base SHA。结果仓库中存在该 SHA �
 当前运行目录按任务类型分组：
 
 ```text
-runs/ci_full_main/<sha>/<run-id>/
+runs/ci_full/ci_full_<branch>/<sha>/<run-id>/
 runs/ci_pr/ci_pr-<number>_<branch>/<sha>/<run-id>/
 runs/ci_pr/ci_base_pr-<number>_<branch>/<sha>/<run-id>/
 runs/ci_push/ci_push_<branch>/<sha>/<run-id>/
@@ -424,7 +424,7 @@ runs/ci_push/ci_push_<branch>/<sha>/<run-id>/
 - `mixed`：后端状态和性能已从 Gitee 同步，但尚无有效手动 full 结果，逐算子区域继续使用演示数据；
 - `live`：逐算子、后端状态和性能三部分均来自实际 Local CI 结果。
 
-生产同步默认从两类独立结果流取数：手动全量算子结果来自 `runs/ci_full_main/`，后端健康和性能来自主分支 push 的 `runs/ci_push/`。PR 结果继续保留在历史目录并用于 PR 判定，但不会覆盖公开页面的主分支性能基线。缺少某类性能文件时页面显示不可用，不会把 mock 数据标记为 live。
+生产同步默认从两类独立结果流取数：手动全量算子结果来自 `runs/ci_full/ci_full_<branch>/`，后端健康和性能来自主分支 push 的 `runs/ci_push/`。PR 结果继续保留在历史目录并用于 PR 判定，但不会覆盖公开页面的主分支性能基线。缺少某类性能文件时页面显示不可用，不会把 mock 数据标记为 live。
 
 `backend-status-pages.yml` 在 PR 中只执行页面与数据契约校验；指定分支 push、手动触发，或 receiver 收到主分支/full 结果后才同步 Gitee 并部署。同步或契约校验失败时，本次部署失败，上一版成功页面仍保持在线。正式访问地址以仓库 `Settings -> Pages` 和 workflow deployment environment 输出为准，不在文档中硬编码。
 

@@ -53,7 +53,7 @@ def write_full_run(
     run_id: str,
     branch: str = "ci/full/main",
 ) -> Path:
-    run = root / "runs" / "ci_full_main" / sha / run_id
+    run = root / SYNC.result_task_dir(branch) / sha / run_id
     run.mkdir(parents=True)
     (run / "delivery-summary.txt").write_text(
         "\n".join(
@@ -122,11 +122,11 @@ class DashboardSyncTest(unittest.TestCase):
     def test_result_paths_use_canonical_task_groups(self):
         self.assertEqual(
             SYNC.result_task_dir("ci/full/main").as_posix(),
-            "runs/ci_full_main",
+            "runs/ci_full/ci_full_main",
         )
         self.assertEqual(
             SYNC.result_task_dir("ci/full/release-candidate").as_posix(),
-            "runs/ci_full_main",
+            "runs/ci_full/ci_full_release-candidate",
         )
         self.assertEqual(
             SYNC.result_task_dir("ci/push/jiwang-delivery-ci").as_posix(),
@@ -143,7 +143,7 @@ class DashboardSyncTest(unittest.TestCase):
             "runs/ci_pr/ci_base_pr-9_feat_backend-status-pages",
         )
 
-    def test_full_run_keeps_branch_from_delivery_summary(self):
+    def test_full_runs_are_isolated_by_task_branch(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             sha = "a" * 40
@@ -154,12 +154,13 @@ class DashboardSyncTest(unittest.TestCase):
                 branch="ci/full/release-candidate",
             )
 
-            runs = SYNC.discover_runs(root, "ci/full/main")
+            self.assertEqual(SYNC.discover_runs(root, "ci/full/main"), [])
+            runs = SYNC.discover_runs(root, "ci/full/release-candidate")
 
             self.assertEqual(len(runs), 1)
             self.assertEqual(runs[0].source_branch, "ci/full/release-candidate")
             self.assertIn(
-                "/runs/ci_full_main/",
+                "/runs/ci_full/ci_full_release-candidate/",
                 SYNC.result_url(
                     runs[0],
                     "https://gitee.example/results",

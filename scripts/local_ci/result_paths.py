@@ -14,8 +14,13 @@ def safe_path_part(value: str) -> str:
 def result_task_dir(task_ref: str) -> PurePosixPath:
     normalized = task_ref.strip("/")
 
-    if re.fullmatch(r"ci/full/.+", normalized):
-        return PurePosixPath("runs", "ci_full_main")
+    match = re.fullmatch(r"ci/full/(.+)", normalized)
+    if match:
+        return PurePosixPath(
+            "runs",
+            "ci_full",
+            f"ci_full_{safe_path_part(match.group(1))}",
+        )
 
     match = re.fullmatch(r"ci/push/(.+)", normalized)
     if match:

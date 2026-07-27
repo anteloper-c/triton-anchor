@@ -523,9 +523,9 @@ def main() -> int:
         index = worktree / "index.md"
         index.write_text(
             "# Triton Anchor Local CI Results\n\n"
-            "Result directories are grouped under runs/ci_full_main/, "
+            "Result directories are grouped under runs/ci_full/, "
             "runs/ci_pr/, and runs/ci_push/.\n\n"
-            "- Full: runs/ci_full_main/<commit>/<run-id>/\n"
+            "- Full: runs/ci_full/ci_full_<branch>/<commit>/<run-id>/\n"
             "- PR: runs/ci_pr/ci_pr-<number>_<branch>/<commit>/<run-id>/\n"
             "- PR base: runs/ci_pr/ci_base_pr-<number>_<branch>/<commit>/<run-id>/\n"
             "- Push: runs/ci_push/ci_push_<branch>/<commit>/<run-id>/\n\n"
