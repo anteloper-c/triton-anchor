@@ -19,14 +19,7 @@ def write_json(path: Path, value: object) -> None:
 
 
 def write_run(root: Path, sha: str, run_id: str, status: int) -> Path:
-    run = (
-        root
-        / "runs"
-        / "ci_push"
-        / "ci_push_jiwang-delivery-ci"
-        / sha
-        / run_id
-    )
+    run = root / "runs" / "ci_push" / "ci_push_jiwang-delivery-ci" / sha / run_id
     run.mkdir(parents=True)
     (run / "delivery-summary.txt").write_text(
         "\n".join(
@@ -137,9 +130,7 @@ class DashboardSyncTest(unittest.TestCase):
             "runs/ci_pr/ci_pr-9_feat_backend-status-pages",
         )
         self.assertEqual(
-            SYNC.result_task_dir(
-                "ci/base/pr-9/feat/backend-status-pages"
-            ).as_posix(),
+            SYNC.result_task_dir("ci/base/pr-9/feat/backend-status-pages").as_posix(),
             "runs/ci_pr/ci_base_pr-9_feat_backend-status-pages",
         )
 
@@ -188,9 +179,7 @@ class DashboardSyncTest(unittest.TestCase):
             )
 
             metric_sha = "1" * 40
-            metric_run = write_run(
-                root, metric_sha, "20260720T010000Z-111111111111", 0
-            )
+            metric_run = write_run(root, metric_sha, "20260720T010000Z-111111111111", 0)
             write_json(
                 metric_run / "compile-benchmark.json",
                 {
@@ -226,7 +215,9 @@ class DashboardSyncTest(unittest.TestCase):
 
             SYNC.sync_dashboard(root, output)
 
-            manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+            manifest = json.loads(
+                (output / "manifest.json").read_text(encoding="utf-8")
+            )
             backend = json.loads(
                 (output / "backend-status.json").read_text(encoding="utf-8")
             )
@@ -243,7 +234,9 @@ class DashboardSyncTest(unittest.TestCase):
                 backend["backends"][0]["result_url"],
             )
             self.assertEqual(performance["sha"], metric_sha)
-            self.assertEqual(performance["compile_time"]["kernels"][0]["candidate_ms"], 12.5)
+            self.assertEqual(
+                performance["compile_time"]["kernels"][0]["candidate_ms"], 12.5
+            )
             self.assertEqual(
                 performance["pass_profile"]["hotspots"][0]["name"],
                 "add / TritonToLinalg",
@@ -270,9 +263,7 @@ class DashboardSyncTest(unittest.TestCase):
             )
 
             main_sha = "3" * 40
-            main_run = write_run(
-                root, main_sha, "20260722T010000Z-333333333333", 0
-            )
+            main_run = write_run(root, main_sha, "20260722T010000Z-333333333333", 0)
             write_json(
                 main_run / "compile-benchmark.json",
                 {
@@ -314,7 +305,9 @@ class DashboardSyncTest(unittest.TestCase):
 
             SYNC.sync_dashboard(root, output)
 
-            manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+            manifest = json.loads(
+                (output / "manifest.json").read_text(encoding="utf-8")
+            )
             backend = json.loads(
                 (output / "backend-status.json").read_text(encoding="utf-8")
             )
