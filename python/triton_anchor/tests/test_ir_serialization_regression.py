@@ -54,12 +54,8 @@ def compare(base, candidate, *, min_base_ms=0.05, min_delta_ms=0.05):
 
 
 def test_ir_serialization_comparison_passes_within_threshold():
-    base = benchmark_document(
-        {"add": {"serialize": 1.0, "deserialize": 2.0}}
-    )
-    candidate = benchmark_document(
-        {"add": {"serialize": 1.1, "deserialize": 2.2}}
-    )
+    base = benchmark_document({"add": {"serialize": 1.0, "deserialize": 2.0}})
+    candidate = benchmark_document({"add": {"serialize": 1.1, "deserialize": 2.2}})
 
     result = compare(base, candidate)
 
@@ -68,12 +64,8 @@ def test_ir_serialization_comparison_passes_within_threshold():
 
 
 def test_ir_serialization_comparison_warns_on_slowdown():
-    base = benchmark_document(
-        {"add": {"serialize": 1.0, "deserialize": 2.0}}
-    )
-    candidate = benchmark_document(
-        {"add": {"serialize": 1.25, "deserialize": 2.0}}
-    )
+    base = benchmark_document({"add": {"serialize": 1.0, "deserialize": 2.0}})
+    candidate = benchmark_document({"add": {"serialize": 1.25, "deserialize": 2.0}})
 
     result = compare(base, candidate)
 
@@ -83,12 +75,8 @@ def test_ir_serialization_comparison_warns_on_slowdown():
 
 
 def test_ir_serialization_comparison_ignores_speedup_and_small_noise():
-    base = benchmark_document(
-        {"add": {"serialize": 1.0, "deserialize": 0.01}}
-    )
-    candidate = benchmark_document(
-        {"add": {"serialize": 0.5, "deserialize": 0.02}}
-    )
+    base = benchmark_document({"add": {"serialize": 1.0, "deserialize": 0.01}})
+    candidate = benchmark_document({"add": {"serialize": 0.5, "deserialize": 0.02}})
 
     result = compare(base, candidate)
 
@@ -97,9 +85,7 @@ def test_ir_serialization_comparison_ignores_speedup_and_small_noise():
 
 
 def test_ir_serialization_comparison_warns_when_baseline_missing():
-    candidate = benchmark_document(
-        {"add": {"serialize": 1.0, "deserialize": 2.0}}
-    )
+    candidate = benchmark_document({"add": {"serialize": 1.0, "deserialize": 2.0}})
 
     result = compare(None, candidate)
 
@@ -139,9 +125,7 @@ def test_publish_ir_cache_and_dashboard(tmp_path):
         "# result\n", encoding="utf-8"
     )
 
-    cache_dir = PUBLISH.publish_ir_serialization_cache(
-        tmp_path, result_dir, "abc123"
-    )
+    cache_dir = PUBLISH.publish_ir_serialization_cache(tmp_path, result_dir, "abc123")
     markdown_path, csv_path = PUBLISH.write_ir_serialization_dashboard(tmp_path)
 
     assert cache_dir == (

@@ -5,19 +5,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 
 PROFILE_SCRIPT = ROOT / "scripts" / "local_ci" / "pass_profile_benchmark.py"
-PROFILE_SPEC = importlib.util.spec_from_file_location("pass_profile_benchmark", PROFILE_SCRIPT)
+PROFILE_SPEC = importlib.util.spec_from_file_location(
+    "pass_profile_benchmark", PROFILE_SCRIPT
+)
 PROFILE_MODULE = importlib.util.module_from_spec(PROFILE_SPEC)
 assert PROFILE_SPEC and PROFILE_SPEC.loader
 PROFILE_SPEC.loader.exec_module(PROFILE_MODULE)
 
 COMPARE_SCRIPT = ROOT / "scripts" / "local_ci" / "compare_pass_profile.py"
-COMPARE_SPEC = importlib.util.spec_from_file_location("compare_pass_profile", COMPARE_SCRIPT)
+COMPARE_SPEC = importlib.util.spec_from_file_location(
+    "compare_pass_profile", COMPARE_SCRIPT
+)
 COMPARE_MODULE = importlib.util.module_from_spec(COMPARE_SPEC)
 assert COMPARE_SPEC and COMPARE_SPEC.loader
 COMPARE_SPEC.loader.exec_module(COMPARE_MODULE)
 
 PUBLISH_SCRIPT = ROOT / "scripts" / "local_ci" / "publish_gitee_result.py"
-PUBLISH_SPEC = importlib.util.spec_from_file_location("publish_gitee_result", PUBLISH_SCRIPT)
+PUBLISH_SPEC = importlib.util.spec_from_file_location(
+    "publish_gitee_result", PUBLISH_SCRIPT
+)
 PUBLISH_MODULE = importlib.util.module_from_spec(PUBLISH_SPEC)
 assert PUBLISH_SPEC and PUBLISH_SPEC.loader
 PUBLISH_SPEC.loader.exec_module(PUBLISH_MODULE)
@@ -61,10 +67,34 @@ def test_parse_mlir_timing_rows_with_bare_seconds_and_units():
 
 def test_pass_profile_summary_sorts_hotspots_by_median():
     events = [
-        {"kernel": "add", "run_id": "0", "kind": "pass", "name": "slow", "wall_ms": 4.0},
-        {"kernel": "add", "run_id": "0", "kind": "pass", "name": "fast", "wall_ms": 1.0},
-        {"kernel": "add", "run_id": "1", "kind": "pass", "name": "slow", "wall_ms": 6.0},
-        {"kernel": "add", "run_id": "1", "kind": "pass", "name": "fast", "wall_ms": 1.5},
+        {
+            "kernel": "add",
+            "run_id": "0",
+            "kind": "pass",
+            "name": "slow",
+            "wall_ms": 4.0,
+        },
+        {
+            "kernel": "add",
+            "run_id": "0",
+            "kind": "pass",
+            "name": "fast",
+            "wall_ms": 1.0,
+        },
+        {
+            "kernel": "add",
+            "run_id": "1",
+            "kind": "pass",
+            "name": "slow",
+            "wall_ms": 6.0,
+        },
+        {
+            "kernel": "add",
+            "run_id": "1",
+            "kind": "pass",
+            "name": "fast",
+            "wall_ms": 1.5,
+        },
     ]
     run_results = [
         {"kernel": "add", "run_id": "0", "compile_est_ms": 10.0, "spec": {}},
@@ -130,10 +160,16 @@ def test_publish_pass_profile_cache_uses_sha_and_profile(tmp_path):
         '{"metadata":{"backend_profile":"sophgo-cmodel"},"summary":{}}',
         encoding="utf-8",
     )
-    (result_dir / "pass-profile-summary.csv").write_text("kernel,pass,median_ms\n", encoding="utf-8")
+    (result_dir / "pass-profile-summary.csv").write_text(
+        "kernel,pass,median_ms\n", encoding="utf-8"
+    )
 
-    cache_dir = PUBLISH_MODULE.publish_pass_profile_cache(tmp_path, result_dir, "abc123")
+    cache_dir = PUBLISH_MODULE.publish_pass_profile_cache(
+        tmp_path, result_dir, "abc123"
+    )
 
-    assert cache_dir == tmp_path / "pass-profile" / "by-sha" / "abc123" / "sophgo-cmodel"
+    assert (
+        cache_dir == tmp_path / "pass-profile" / "by-sha" / "abc123" / "sophgo-cmodel"
+    )
     assert (cache_dir / "latest.json").is_file()
     assert (cache_dir / "latest-summary.csv").is_file()

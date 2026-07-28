@@ -1,3 +1,4 @@
+# 2026-07-28 full run: successful operators completed within 600 seconds.
 # category	op	marker
 unary_pointwise	abs	abs
 unary_pointwise	bitwise_not	bitwise_not
@@ -11,36 +12,20 @@ unary_pointwise	neg	neg
 unary_pointwise	reciprocal	reciprocal
 unary_pointwise	relu	relu
 unary_pointwise	rsqrt	rsqrt
-unary_pointwise	sigmoid	sigmoid
-unary_pointwise	silu	silu
 unary_pointwise	sin	sin
-unary_pointwise	tanh	tanh
 binary_pointwise	bitwise_and_tensor	bitwise_and
-binary_pointwise	bitwise_or_tensor	bitwise_or
-binary_pointwise	true_divide	div
 binary_pointwise	eq	eq
 binary_pointwise	ge	ge
 binary_pointwise	gt	gt
 binary_pointwise	le	le
-binary_pointwise	logical_and	logical_and
-binary_pointwise	logical_or	logical_or
-binary_pointwise	logical_xor	logical_xor
 binary_pointwise	lt	lt
 binary_pointwise	maximum	maximum
 binary_pointwise	minimum	minimum
-binary_pointwise	mul	mul
 binary_pointwise	ne	ne
-binary_pointwise	sub	sub
 blas	mm	mm
 blas	mv	mv
-blas	outer	outer
-norm	native_group_norm	group_norm
-norm	native_layer_norm	layer_norm
-reduction	scatter	scatter
 tensor_constructor	arange	arange
 tensor_constructor	full	full
-tensor_constructor	full_like	full_like
-tensor_constructor	masked_fill	masked_fill
 tensor_constructor	ones	ones
 tensor_constructor	ones_like	ones_like
 tensor_constructor	rand	rand
@@ -54,7 +39,6 @@ distribution	exponential_	exponential_
 distribution	normal_tensor_tensor	normal
 distribution	uniform_	uniform_
 special	diag	diag
-special	diagonal_backward	diagonal_backward
 special	embedding	embedding
 special	hstack	hstack
 special	stack	stack

@@ -61,7 +61,7 @@ class OperatorResult:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("sample", "full", "single"), default="sample")
-    parser.add_argument("--sample-size", type=int, default=8)
+    parser.add_argument("--sample-size", type=int, default=6)
     parser.add_argument("--seed", default="")
     parser.add_argument("--op", default="")
     parser.add_argument("--whitelist", required=True)

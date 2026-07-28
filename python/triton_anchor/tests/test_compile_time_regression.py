@@ -2,14 +2,26 @@ import importlib.util
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "local_ci" / "compare_compile_time.py"
+SCRIPT = (
+    Path(__file__).resolve().parents[3]
+    / "scripts"
+    / "local_ci"
+    / "compare_compile_time.py"
+)
 SPEC = importlib.util.spec_from_file_location("compare_compile_time", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 SPEC.loader.exec_module(MODULE)
 
-PUBLISH_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "local_ci" / "publish_gitee_result.py"
-PUBLISH_SPEC = importlib.util.spec_from_file_location("publish_gitee_result", PUBLISH_SCRIPT)
+PUBLISH_SCRIPT = (
+    Path(__file__).resolve().parents[3]
+    / "scripts"
+    / "local_ci"
+    / "publish_gitee_result.py"
+)
+PUBLISH_SPEC = importlib.util.spec_from_file_location(
+    "publish_gitee_result", PUBLISH_SCRIPT
+)
 PUBLISH_MODULE = importlib.util.module_from_spec(PUBLISH_SPEC)
 assert PUBLISH_SPEC and PUBLISH_SPEC.loader
 PUBLISH_SPEC.loader.exec_module(PUBLISH_MODULE)
@@ -63,10 +75,16 @@ def test_publish_compile_time_cache_uses_sha_and_profile(tmp_path):
         '{"metadata":{"backend_profile":"sophgo-cmodel"},"summary":{}}',
         encoding="utf-8",
     )
-    (result_dir / "compile-benchmark.csv").write_text("kernel,compile_est_ms\n", encoding="utf-8")
+    (result_dir / "compile-benchmark.csv").write_text(
+        "kernel,compile_est_ms\n", encoding="utf-8"
+    )
 
-    cache_dir = PUBLISH_MODULE.publish_compile_time_cache(tmp_path, result_dir, "abc123")
+    cache_dir = PUBLISH_MODULE.publish_compile_time_cache(
+        tmp_path, result_dir, "abc123"
+    )
 
-    assert cache_dir == tmp_path / "compile-time" / "by-sha" / "abc123" / "sophgo-cmodel"
+    assert (
+        cache_dir == tmp_path / "compile-time" / "by-sha" / "abc123" / "sophgo-cmodel"
+    )
     assert (cache_dir / "latest.json").is_file()
     assert (cache_dir / "latest.csv").is_file()

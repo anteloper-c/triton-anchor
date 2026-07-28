@@ -247,7 +247,7 @@ PR 使用 `pull_request_target`，目的是让可信的基准分支 workflow 可
 
 `ci/base/*` 是性能基线指针，不会被当作独立任务；`local-ci-results` 也不会进入任务扫描。
 
-poller 使用文件锁避免同一状态目录启动多个实例。每个新 SHA 都会生成独立的 run ID、运行目录和日志。成功任务记录 last-processed SHA；失败任务保留状态并允许后续重试。
+poller 使用文件锁避免同一状态目录启动多个实例。每个新 SHA 都会生成独立的 run ID、运行目录和日志。无论测试成功或失败，只要最终结果成功发布，都会记录 last-processed SHA；若结果发布失败或任务异常中断、未完成收尾，则不会标记，下一轮轮询会重新执行同一 SHA。已有运行目录和日志会保留用于排查。
 
 #### 4.4.2 可信脚本与待测代码分离
 
@@ -299,7 +299,7 @@ fresh-clone 精确 SHA
 
 #### 4.4.5 FlagGems
 
-常规 PR/push 使用 sample 模式，当前从通过白名单的 8 个类别中至少各选一个算子。手动 full 模式使用 `ci/full/*`，执行完整算子列表。每个算子在独立进程中运行，并记录结果、失败阶段、耗时、超时原因和已完成测试节点数。
+常规 PR/push 使用 sample 模式，当前从最新 full 结果中筛选成功且耗时不超过 600 秒的算子，并从覆盖的 6 个类别中各选一个。`norm` 和 `reduction` 因没有符合该时间条件的成功算子，仅在 full 模式覆盖。手动 full 模式使用 `ci/full/*`，执行完整算子列表。每个算子在独立进程中运行，并记录结果、失败阶段、耗时、超时原因和已完成测试节点数。
 
 如果设置 `FLAGGEMS_TEST_COMMAND`，则跳过内置算子选择器，直接执行后端维护的命令。
 
@@ -315,7 +315,7 @@ Local CI 的任务协议和 runner 骨架可以复用，但真实执行不能假
 | 性能监测 | 代表性 kernel、重复次数、噪声下限、回归阈值、backend profile 和 SHA 基线命名空间 |
 | 结果展示 | GitHub status context、结果中的 backend 标识以及 Pages 中的 backend 行 |
 
-当前仓库的默认配置和已经跑通的完整链路对应 **Sophgo CModel**：profile 为 `sophgo-cmodel`，预期 Triton backend 为 `sophgo`，后端通过 `PIO_CMODEL` 初始化，并执行 Sophgo 后端的 smoke/JIT。当前 FlagGems sample 白名单也是根据该环境的全量运行结果整理的 59 个通过算子（因超时设置及仿真环境影响算子通过情况，当前结果仅为CI校验，不作为验收结果），覆盖 8 个类别；full 列表对应当前约定的 1～127 号算子。
+当前仓库的默认配置和已经跑通的完整链路对应 **Sophgo CModel**：profile 为 `sophgo-cmodel`，预期 Triton backend 为 `sophgo`，后端通过 `PIO_CMODEL` 初始化，并执行 Sophgo 后端的 smoke/JIT。当前 FlagGems sample 白名单根据该环境 2026-07-28 的全量运行结果整理，包含 42 个成功且耗时不超过 600 秒的算子（因超时设置及仿真环境影响算子通过情况，当前结果仅为 CI 校验，不作为验收结果），覆盖 6 个类别；full 列表仍对应当前约定的 1～127 号算子并覆盖全部 8 类。
 
 这些算子结果不能直接视为其他后端的白名单。后续接入新后端时，应先完成该后端的全量探测，再生成自己的算子映射、白名单和性能基线；必要时通过 `FLAGGEMS_TEST_COMMAND` 使用后端专用测试入口。建议每个后端使用独立的 `config.env`、容器、状态目录和 status context，公共脚本仅复用调度、快照、结果协议和通用阶段控制。
 
