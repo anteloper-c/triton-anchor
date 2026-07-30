@@ -39,6 +39,12 @@ BACKEND_PROFILE="${BACKEND_PROFILE:-sophgo-cmodel}"
 RUN_COMPILE_BENCHMARK="${RUN_COMPILE_BENCHMARK:-true}"
 RUN_PASS_PROFILE="${RUN_PASS_PROFILE:-true}"
 RUN_IR_SERIALIZATION_BENCHMARK="${RUN_IR_SERIALIZATION_BENCHMARK:-true}"
+RUN_CODEX_SMOKE="${RUN_CODEX_SMOKE:-false}"
+CODEX_SMOKE_BRANCH_REGEX="${CODEX_SMOKE_BRANCH_REGEX:-^ci/push/}"
+CODEX_SMOKE_REPO_DIR="${CODEX_SMOKE_REPO_DIR:-${LOCAL_CI_WORKSPACE_HOST%/}/triton-anchor}"
+CODEX_BIN="${CODEX_BIN:-codex}"
+CODEX_SMOKE_TIMEOUT_SECONDS="${CODEX_SMOKE_TIMEOUT_SECONDS:-300}"
+CODEX_SMOKE_REASONING_EFFORT="${CODEX_SMOKE_REASONING_EFFORT:-low}"
 export GITEE_TOKEN GITEE_USERNAME GITEE_WEB_URL GITEE_RESULTS_WEB_URL WORKSPACE LOCAL_CI_WORKSPACE_HOST LOCAL_CI_CONFIG LOCAL_CI_CONTAINER
 
 mkdir -p "${LOCAL_CI_STATE_DIR}"
@@ -108,6 +114,52 @@ flaggems_mode_for_branch() {
     ci/full/*) printf 'full' ;;
     *) printf '%s' "${FLAGGEMS_TEST_MODE:-sample}" ;;
   esac
+}
+
+artifact_dir_for_run() {
+  local run_log="$1"
+  local artifact_path
+  artifact_path="$(
+    sed -n \
+      -e 's/^Artifact dir:[[:space:]]*//p' \
+      -e 's/^.*Artifacts are in[[:space:]]*//p' \
+      "${run_log}" |
+      tail -n 1
+  )"
+  if [[ -z "${artifact_path}" ]]; then
+    return 1
+  fi
+  if [[ -d "${artifact_path}" ]]; then
+    printf '%s' "${artifact_path}"
+    return 0
+  fi
+
+  local container_workspace="${WORKSPACE:-/workspace}"
+  container_workspace="${container_workspace%/}"
+  if [[ "${artifact_path}" == "${container_workspace}/"* ]]; then
+    local mapped_path="${LOCAL_CI_WORKSPACE_HOST%/}/${artifact_path#"${container_workspace}/"}"
+    if [[ -d "${mapped_path}" ]]; then
+      printf '%s' "${mapped_path}"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+run_codex_smoke_for_run() {
+  local sha="$1"
+  local run_log="$2"
+  local artifact_dir
+  artifact_dir="$(artifact_dir_for_run "${run_log}")" || {
+    echo "Codex smoke could not resolve the delivery artifact directory." >&2
+    return 1
+  }
+
+  CODEX_BIN="${CODEX_BIN}" \
+    CODEX_SMOKE_TIMEOUT_SECONDS="${CODEX_SMOKE_TIMEOUT_SECONDS}" \
+    CODEX_SMOKE_REASONING_EFFORT="${CODEX_SMOKE_REASONING_EFFORT}" \
+    "${LOCAL_CI_RUNNER_DIR}/run_codex_smoke.sh" \
+    "${CODEX_SMOKE_REPO_DIR}" "${artifact_dir}" "${sha}"
 }
 
 publish_result() {
@@ -295,7 +347,29 @@ run_once() {
   status=${PIPESTATUS[0]}
   set -e
 
-  echo "{\"sha\":\"${sha}\",\"status\":${status},\"run_dir\":\"${run_dir}\"}" > "${run_dir}/result.json"
+  local codex_smoke_status="skipped"
+  if [[ "${RUN_CODEX_SMOKE}" == "true" \
+    && (-z "${CODEX_SMOKE_BRANCH_REGEX}" || "${branch}" =~ ${CODEX_SMOKE_BRANCH_REGEX}) ]]; then
+    echo "Running non-blocking Codex smoke for ${sha}." | tee -a "${run_dir}/local-ci.log"
+    local codex_smoke_exit=0
+    set +e
+    run_codex_smoke_for_run "${sha}" "${run_dir}/local-ci.log" 2>&1 |
+      tee -a "${run_dir}/local-ci.log"
+    codex_smoke_exit=${PIPESTATUS[0]}
+    set -e
+    if [[ ${codex_smoke_exit} -eq 0 ]]; then
+      codex_smoke_status="pass"
+    else
+      codex_smoke_status="fail"
+      echo "Codex smoke failed but does not change the deterministic local-ci result." |
+        tee -a "${run_dir}/local-ci.log"
+    fi
+  else
+    echo "Codex smoke skipped for ${branch}." | tee -a "${run_dir}/local-ci.log"
+  fi
+
+  echo "{\"sha\":\"${sha}\",\"status\":${status},\"codex_smoke_status\":\"${codex_smoke_status}\",\"run_dir\":\"${run_dir}\"}" \
+    > "${run_dir}/result.json"
 
   local publish_status=0
   set +e

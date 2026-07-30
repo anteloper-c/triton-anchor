@@ -135,6 +135,9 @@ PUBLISHED_ARTIFACT_FILES = (
     "ir-serialization-comparison.json",
     "ir-serialization-comparison.csv",
     "ir-serialization-comparison.md",
+    "codex-smoke.log",
+    "codex-smoke-final.txt",
+    "codex-smoke-summary.txt",
 )
 
 
