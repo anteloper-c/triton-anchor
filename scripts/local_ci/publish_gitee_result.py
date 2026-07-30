@@ -111,38 +111,23 @@ def map_container_path(path_text: str) -> Path | None:
 
 PUBLISHED_ARTIFACT_FILES = (
     "delivery-summary.txt",
-    "frontend-checkout.log",
-    "frontend-uninstall.log",
-    "frontend-build.log",
-    "frontend-wheel-info.log",
-    "frontend-install.log",
     "verify-triton-anchor-import.log",
-    "frontend-smoke.log",
-    "backend-rebuild.log",
-    "backend-smoke-jit.log",
-    "flaggems.log",
     "flaggems-selected.txt",
     "flaggems-summary.csv",
     "flaggems-summary.json",
     "flaggems-summary.md",
-    "compile-benchmark.log",
     "compile-benchmark.json",
     "compile-benchmark.csv",
     "compile-benchmark-base.json",
     "compile-time-comparison.json",
     "compile-time-comparison.md",
-    "compile-time-comparison.log",
-    "pass-profile.log",
     "pass-profile.json",
-    "pass-profile-events.csv",
     "pass-profile-summary.csv",
     "pass-profile-hotspots.md",
     "pass-profile-base.json",
     "pass-profile-comparison.json",
     "pass-profile-comparison.csv",
     "pass-profile-comparison.md",
-    "pass-profile-comparison.log",
-    "ir-serialization.log",
     "ir-serialization.json",
     "ir-serialization.csv",
     "ir-serialization-summary.md",
@@ -150,7 +135,6 @@ PUBLISHED_ARTIFACT_FILES = (
     "ir-serialization-comparison.json",
     "ir-serialization-comparison.csv",
     "ir-serialization-comparison.md",
-    "ir-serialization-comparison.log",
 )
 
 
@@ -171,11 +155,10 @@ def copy_results(run_dir: Path, target_dir: Path) -> Path | None:
             shutil.copy2(source, target_dir / file_name)
             copied.append(file_name)
 
-    for dir_name in ("flaggems",):
-        source = artifact_dir / dir_name
-        if source.is_dir():
-            shutil.copytree(source, target_dir / dir_name, dirs_exist_ok=True)
-            copied.append(f"{dir_name}/")
+    result_json = run_dir / "result.json"
+    if result_json.is_file():
+        shutil.copy2(result_json, target_dir / "result.json")
+        copied.append("result.json")
 
     if not copied:
         shutil.rmtree(target_dir)
@@ -225,7 +208,6 @@ def publish_pass_profile_cache(worktree: Path, result_dir: Path | None, sha: str
     shutil.copy2(source_json, cache_dir / "latest.json")
     for source_name, target_name in (
         ("pass-profile-summary.csv", "latest-summary.csv"),
-        ("pass-profile-events.csv", "latest-events.csv"),
     ):
         source = result_dir / source_name
         if source.is_file():
