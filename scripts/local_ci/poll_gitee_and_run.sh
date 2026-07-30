@@ -116,50 +116,15 @@ flaggems_mode_for_branch() {
   esac
 }
 
-artifact_dir_for_run() {
-  local run_log="$1"
-  local artifact_path
-  artifact_path="$(
-    sed -n \
-      -e 's/^Artifact dir:[[:space:]]*//p' \
-      -e 's/^.*Artifacts are in[[:space:]]*//p' \
-      "${run_log}" |
-      tail -n 1
-  )"
-  if [[ -z "${artifact_path}" ]]; then
-    return 1
-  fi
-  if [[ -d "${artifact_path}" ]]; then
-    printf '%s' "${artifact_path}"
-    return 0
-  fi
-
-  local container_workspace="${WORKSPACE:-/workspace}"
-  container_workspace="${container_workspace%/}"
-  if [[ "${artifact_path}" == "${container_workspace}/"* ]]; then
-    local mapped_path="${LOCAL_CI_WORKSPACE_HOST%/}/${artifact_path#"${container_workspace}/"}"
-    if [[ -d "${mapped_path}" ]]; then
-      printf '%s' "${mapped_path}"
-      return 0
-    fi
-  fi
-  return 1
-}
-
 run_codex_smoke_for_run() {
   local sha="$1"
-  local run_log="$2"
-  local artifact_dir
-  artifact_dir="$(artifact_dir_for_run "${run_log}")" || {
-    echo "Codex smoke could not resolve the delivery artifact directory." >&2
-    return 1
-  }
+  local run_dir="$2"
 
   CODEX_BIN="${CODEX_BIN}" \
     CODEX_SMOKE_TIMEOUT_SECONDS="${CODEX_SMOKE_TIMEOUT_SECONDS}" \
     CODEX_SMOKE_REASONING_EFFORT="${CODEX_SMOKE_REASONING_EFFORT}" \
     "${LOCAL_CI_RUNNER_DIR}/run_codex_smoke.sh" \
-    "${CODEX_SMOKE_REPO_DIR}" "${artifact_dir}" "${sha}"
+    "${CODEX_SMOKE_REPO_DIR}" "${run_dir}" "${sha}"
 }
 
 publish_result() {
@@ -353,7 +318,7 @@ run_once() {
     echo "Running non-blocking Codex smoke for ${sha}." | tee -a "${run_dir}/local-ci.log"
     local codex_smoke_exit=0
     set +e
-    run_codex_smoke_for_run "${sha}" "${run_dir}/local-ci.log" 2>&1 |
+    run_codex_smoke_for_run "${sha}" "${run_dir}" 2>&1 |
       tee -a "${run_dir}/local-ci.log"
     codex_smoke_exit=${PIPESTATUS[0]}
     set -e

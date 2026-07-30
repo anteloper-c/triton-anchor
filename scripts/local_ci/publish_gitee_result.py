@@ -135,6 +135,9 @@ PUBLISHED_ARTIFACT_FILES = (
     "ir-serialization-comparison.json",
     "ir-serialization-comparison.csv",
     "ir-serialization-comparison.md",
+)
+
+PUBLISHED_RUN_FILES = (
     "codex-smoke.log",
     "codex-smoke-final.txt",
     "codex-smoke-summary.txt",
@@ -154,6 +157,12 @@ def copy_results(run_dir: Path, target_dir: Path) -> Path | None:
     copied = []
     for file_name in PUBLISHED_ARTIFACT_FILES:
         source = artifact_dir / file_name
+        if source.is_file():
+            shutil.copy2(source, target_dir / file_name)
+            copied.append(file_name)
+
+    for file_name in PUBLISHED_RUN_FILES:
+        source = run_dir / file_name
         if source.is_file():
             shutil.copy2(source, target_dir / file_name)
             copied.append(file_name)
@@ -373,7 +382,7 @@ def write_fallback_results(run_dir: Path, target_dir: Path, args: argparse.Names
     target_dir.mkdir(parents=True, exist_ok=True)
 
     copied = []
-    for file_name in ("local-ci.log", "result.json"):
+    for file_name in ("local-ci.log", "result.json", *PUBLISHED_RUN_FILES):
         source = run_dir / file_name
         if source.is_file():
             shutil.copy2(source, target_dir / file_name)

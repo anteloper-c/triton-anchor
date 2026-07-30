@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-repo_dir="${1:?usage: run_codex_smoke.sh <repo-dir> <artifact-dir> <target-sha>}"
-artifact_dir="${2:?usage: run_codex_smoke.sh <repo-dir> <artifact-dir> <target-sha>}"
-target_sha="${3:?usage: run_codex_smoke.sh <repo-dir> <artifact-dir> <target-sha>}"
+repo_dir="${1:?usage: run_codex_smoke.sh <repo-dir> <output-dir> <target-sha>}"
+output_dir="${2:?usage: run_codex_smoke.sh <repo-dir> <output-dir> <target-sha>}"
+target_sha="${3:?usage: run_codex_smoke.sh <repo-dir> <output-dir> <target-sha>}"
 
 CODEX_BIN="${CODEX_BIN:-codex}"
 CODEX_SMOKE_TIMEOUT_SECONDS="${CODEX_SMOKE_TIMEOUT_SECONDS:-300}"
 CODEX_SMOKE_REASONING_EFFORT="${CODEX_SMOKE_REASONING_EFFORT:-low}"
 
-log_path="${artifact_dir}/codex-smoke.log"
-final_path="${artifact_dir}/codex-smoke-final.txt"
-summary_path="${artifact_dir}/codex-smoke-summary.txt"
-delivery_summary="${artifact_dir}/delivery-summary.txt"
+log_path="${output_dir}/codex-smoke.log"
+final_path="${output_dir}/codex-smoke-final.txt"
+summary_path="${output_dir}/codex-smoke-summary.txt"
 
 status="fail"
 exit_code=1
@@ -24,7 +23,10 @@ command_executed="false"
 start_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 start_seconds="${SECONDS}"
 
-mkdir -p "${artifact_dir}"
+if ! mkdir -p "${output_dir}" || [[ ! -w "${output_dir}" ]]; then
+  echo "Codex smoke: fail (output directory is not writable: ${output_dir})" >&2
+  exit 1
+fi
 : > "${log_path}"
 : > "${final_path}"
 
@@ -37,6 +39,7 @@ write_summary() {
     echo "target_sha: ${target_sha}"
     echo "actual_sha: ${actual_sha}"
     echo "repo_dir: ${repo_dir}"
+    echo "output_dir: ${output_dir}"
     echo "started_at: ${start_time}"
     echo "duration_seconds: ${duration_seconds}"
     echo "timeout_seconds: ${CODEX_SMOKE_TIMEOUT_SECONDS}"
@@ -46,10 +49,6 @@ write_summary() {
     echo "command_executed: ${command_executed}"
     echo "failure_reason: ${failure_reason}"
   } > "${summary_path}"
-
-  if [[ -f "${delivery_summary}" ]]; then
-    echo "codex_smoke_status: ${status}" >> "${delivery_summary}"
-  fi
 }
 
 fail_smoke() {
@@ -70,11 +69,18 @@ fi
 if ! command -v timeout >/dev/null 2>&1; then
   fail_smoke "timeout command was not found"
 fi
-if ! git -C "${repo_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+git_check_output=""
+if ! git_check_output="$(
+  git -c "safe.directory=${repo_dir}" -C "${repo_dir}" \
+    rev-parse --is-inside-work-tree 2>&1
+)"; then
+  echo "${git_check_output}" >> "${log_path}"
   fail_smoke "repository is unavailable: ${repo_dir}"
 fi
 
-actual_sha="$(git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || true)"
+actual_sha="$(
+  git -c "safe.directory=${repo_dir}" -C "${repo_dir}" rev-parse HEAD 2>/dev/null || true
+)"
 if [[ "${actual_sha}" != "${target_sha}" ]]; then
   fail_smoke "checkout SHA does not match target SHA"
 fi
@@ -94,6 +100,10 @@ prompt="$(
 set +e
 (
   cd "${repo_dir}" || exit 2
+  export GIT_CONFIG_COUNT=1
+  export GIT_CONFIG_KEY_0="safe.directory"
+  export GIT_CONFIG_VALUE_0="${repo_dir}"
+  export GIT_OPTIONAL_LOCKS=0
   timeout --signal=TERM --kill-after=30s "${CODEX_SMOKE_TIMEOUT_SECONDS}s" \
     "${CODEX_BIN}" exec \
     --ephemeral \

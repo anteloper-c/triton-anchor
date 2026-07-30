@@ -321,7 +321,7 @@ Local CI 的任务协议和 runner 骨架可以复用，但真实执行不能假
 
 #### 4.4.7 Codex smoke
 
-可通过 `RUN_CODEX_SMOKE=true` 启用宿主机 Codex CLI 的最小只读检查。它在确定性 Local CI 结束后运行，只执行 `git rev-parse HEAD`、`git status --short` 和 `git ls-files`，用于验证 Codex 能读取正确 checkout、调用模型并完成一次 shell tool 循环。第一阶段默认仅匹配 `ci/push/*`，Codex 失败只写入 `codex-smoke.log`、`codex-smoke-final.txt` 和 `codex-smoke-summary.txt`，不会改变原 Local CI 的通过或失败结果。
+可通过 `RUN_CODEX_SMOKE=true` 启用宿主机 Codex CLI 的最小只读检查。它在确定性 Local CI 结束后运行，只执行 `git rev-parse HEAD`、`git status --short` 和 `git ls-files`，用于验证 Codex 能读取正确 checkout、调用模型并完成一次 shell tool 循环。第一阶段默认仅匹配 `ci/push/*`，Codex 失败只在宿主机 run 目录写入 `codex-smoke.log`、`codex-smoke-final.txt` 和 `codex-smoke-summary.txt`，不会修改容器创建的 Delivery artifact，也不会改变原 Local CI 的通过或失败结果。
 
 poller 必须由已经完成 Codex CLI 配置和认证的同一宿主机用户运行。当前 smoke 不应开放给不受信任的 PR；后续生成测例或执行 PR 代码时，需要把持有模型凭据的 Codex 控制进程与无凭据测试执行环境进一步隔离。
 
