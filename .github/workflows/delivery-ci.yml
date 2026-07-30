@@ -2,9 +2,9 @@ name: Delivery CI
 
 on:
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, ai-ci]
   push:
-    branches: [main, develop, jiwang-delivery-ci]
+    branches: [main, develop, jiwang-delivery-ci, ai-ci]
   workflow_dispatch:
     inputs:
       run_full_smoke:

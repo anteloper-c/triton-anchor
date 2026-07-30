@@ -2,7 +2,7 @@ name: Backend Status Pages
 
 on:
   push:
-    branches: [jiwang-delivery-ci, main, feat/backend-status-pages]
+    branches: [jiwang-delivery-ci, main, feat/backend-status-pages, ai-ci]
     paths:
       - "dashboard/**"
       - "scripts/dashboard/**"
