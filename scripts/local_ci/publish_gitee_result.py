@@ -144,7 +144,11 @@ PUBLISHED_RUN_FILES = (
     "codex-ai-ci.log",
     "codex-ai-report.json",
     "codex-ai-report.md",
+    "codex-ai-comment.md",
     "codex-ai-ci-summary.txt",
+    "codex-workspace-status.txt",
+    "codex-workspace.patch",
+    "codex-generated-files.tar.gz",
 )
 
 

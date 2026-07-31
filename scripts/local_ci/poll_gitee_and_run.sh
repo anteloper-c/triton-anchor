@@ -42,15 +42,23 @@ RUN_IR_SERIALIZATION_BENCHMARK="${RUN_IR_SERIALIZATION_BENCHMARK:-true}"
 RUN_CODEX_SMOKE="${RUN_CODEX_SMOKE:-false}"
 CODEX_SMOKE_BRANCH_REGEX="${CODEX_SMOKE_BRANCH_REGEX:-^ci/push/}"
 CODEX_BIN="${CODEX_BIN:-codex}"
+CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
 CODEX_WORKSPACE_ROOT="${CODEX_WORKSPACE_ROOT:-${LOCAL_CI_STATE_DIR%/}/codex-workspaces}"
 CODEX_SMOKE_WORKSPACE_ROOT="${CODEX_SMOKE_WORKSPACE_ROOT:-${CODEX_WORKSPACE_ROOT}}"
 CODEX_SMOKE_TIMEOUT_SECONDS="${CODEX_SMOKE_TIMEOUT_SECONDS:-300}"
 CODEX_SMOKE_REASONING_EFFORT="${CODEX_SMOKE_REASONING_EFFORT:-low}"
 RUN_CODEX_AI_CI="${RUN_CODEX_AI_CI:-${RUN_CODEX_SMOKE}}"
-CODEX_AI_CI_BRANCH_REGEX="${CODEX_AI_CI_BRANCH_REGEX:-^ci/push/}"
+CODEX_AI_CI_BRANCH_REGEX="${CODEX_AI_CI_BRANCH_REGEX:-^ci/(push/.+|pr-[0-9]+/.+)$}"
 CODEX_AI_CI_WORKSPACE_ROOT="${CODEX_AI_CI_WORKSPACE_ROOT:-${CODEX_WORKSPACE_ROOT}}"
-CODEX_AI_CI_TIMEOUT_SECONDS="${CODEX_AI_CI_TIMEOUT_SECONDS:-900}"
+CODEX_AI_CI_TIMEOUT_SECONDS="${CODEX_AI_CI_TIMEOUT_SECONDS:-1800}"
 CODEX_AI_CI_REASONING_EFFORT="${CODEX_AI_CI_REASONING_EFFORT:-medium}"
+CODEX_AI_CI_MIN_GENERATED_TEST_CASES="${CODEX_AI_CI_MIN_GENERATED_TEST_CASES:-1}"
+CODEX_AI_CI_MAX_GENERATED_TEST_CASES="${CODEX_AI_CI_MAX_GENERATED_TEST_CASES:-3}"
+CODEX_AI_CI_MAX_GENERATED_TEST_FILES="${CODEX_AI_CI_MAX_GENERATED_TEST_FILES:-2}"
+CODEX_AI_CI_MAX_TEST_COMMANDS="${CODEX_AI_CI_MAX_TEST_COMMANDS:-4}"
+CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS="${CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS:-600}"
+CODEX_AI_CI_TEST_BUDGET_SECONDS="${CODEX_AI_CI_TEST_BUDGET_SECONDS:-1200}"
+CODEX_AI_CI_REPORT_RESERVE_SECONDS="${CODEX_AI_CI_REPORT_RESERVE_SECONDS:-300}"
 export GITEE_TOKEN GITEE_USERNAME GITEE_WEB_URL GITEE_RESULTS_WEB_URL WORKSPACE LOCAL_CI_WORKSPACE_HOST LOCAL_CI_CONFIG LOCAL_CI_CONTAINER
 
 mkdir -p "${LOCAL_CI_STATE_DIR}"
@@ -140,13 +148,30 @@ run_codex_ai_ci_for_run() {
   local run_dir="$2"
   local base_sha="$3"
   local branch="$4"
+  local local_ci_status="$5"
 
   CODEX_BIN="${CODEX_BIN}" \
+    CODEX_HOME="${CODEX_HOME}" \
     CODEX_AI_CI_TIMEOUT_SECONDS="${CODEX_AI_CI_TIMEOUT_SECONDS}" \
     CODEX_AI_CI_REASONING_EFFORT="${CODEX_AI_CI_REASONING_EFFORT}" \
     CODEX_AI_CI_WORKSPACE_ROOT="${CODEX_AI_CI_WORKSPACE_ROOT}" \
+    CODEX_AI_CI_MIN_GENERATED_TEST_CASES="${CODEX_AI_CI_MIN_GENERATED_TEST_CASES}" \
+    CODEX_AI_CI_MAX_GENERATED_TEST_CASES="${CODEX_AI_CI_MAX_GENERATED_TEST_CASES}" \
+    CODEX_AI_CI_MAX_GENERATED_TEST_FILES="${CODEX_AI_CI_MAX_GENERATED_TEST_FILES}" \
+    CODEX_AI_CI_MAX_TEST_COMMANDS="${CODEX_AI_CI_MAX_TEST_COMMANDS}" \
+    CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS="${CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS}" \
+    CODEX_AI_CI_TEST_BUDGET_SECONDS="${CODEX_AI_CI_TEST_BUDGET_SECONDS}" \
+    CODEX_AI_CI_REPORT_RESERVE_SECONDS="${CODEX_AI_CI_REPORT_RESERVE_SECONDS}" \
+    LOCAL_CI_CONTAINER="${LOCAL_CI_CONTAINER}" \
+    PYTHON_VENV_ACTIVATE="${PYTHON_VENV_ACTIVATE:-}" \
+    SOURCE_ENVSETUP="${SOURCE_ENVSETUP:-1}" \
+    ANCHOR_DIR="${ANCHOR_DIR:-}" \
+    BACKEND_PATH="${BACKEND_PATH:-}" \
+    BACKEND_ENVSETUP="${BACKEND_ENVSETUP:-}" \
+    BACKEND_ENVSETUP_ARGS="${BACKEND_ENVSETUP_ARGS:-}" \
     "${LOCAL_CI_RUNNER_DIR}/run_codex_ai_ci.sh" \
-    "${GITEE_REPO_URL}" "${run_dir}" "${sha}" "${base_sha}" "${branch}"
+    "${GITEE_REPO_URL}" "${run_dir}" "${sha}" "${base_sha}" "${branch}" \
+    "${local_ci_status}"
 }
 
 publish_result() {
@@ -362,13 +387,21 @@ run_once() {
 
   local codex_ai_ci_status="skipped"
   local codex_ai_ci_verdict="NOT_RUN"
+  local codex_ai_test_status="NOT_RUN"
+  local codex_ai_mode="not_run"
   if [[ "${RUN_CODEX_AI_CI}" == "true" \
     && (-z "${CODEX_AI_CI_BRANCH_REGEX}" || "${branch}" =~ ${CODEX_AI_CI_BRANCH_REGEX}) ]]; then
     codex_ai_ci_verdict="UNKNOWN"
-    echo "Running non-blocking Codex AI diff analysis for ${sha}." | tee -a "${run_dir}/local-ci.log"
+    codex_ai_mode="full"
+    if [[ ${status} -ne 0 ]]; then
+      codex_ai_mode="analysis_only"
+    fi
+    echo "Running non-blocking Codex AI CI for ${sha} (${codex_ai_mode})." |
+      tee -a "${run_dir}/local-ci.log"
     local codex_ai_ci_exit=0
     set +e
-    run_codex_ai_ci_for_run "${sha}" "${run_dir}" "${codex_ai_base_sha}" "${branch}" 2>&1 |
+    run_codex_ai_ci_for_run \
+      "${sha}" "${run_dir}" "${codex_ai_base_sha}" "${branch}" "${status}" 2>&1 |
       tee -a "${run_dir}/local-ci.log"
     codex_ai_ci_exit=${PIPESTATUS[0]}
     set -e
@@ -378,6 +411,13 @@ run_once() {
       parsed_codex_ai_verdict="$(awk -F ': ' '$1 == "report_verdict" { print $2; exit }' "${codex_ai_summary}")"
       case "${parsed_codex_ai_verdict}" in
         PASS | WARNING | FAIL) codex_ai_ci_verdict="${parsed_codex_ai_verdict}" ;;
+      esac
+      local parsed_codex_ai_test_status
+      parsed_codex_ai_test_status="$(awk -F ': ' '$1 == "test_execution_status" { print $2; exit }' "${codex_ai_summary}")"
+      case "${parsed_codex_ai_test_status}" in
+        not_run | passed | stable_failure | flaky_failure | infrastructure_failure | test_generation_error | insufficient_evidence)
+          codex_ai_test_status="${parsed_codex_ai_test_status}"
+          ;;
       esac
     fi
     if [[ ${codex_ai_ci_exit} -eq 0 ]]; then
@@ -391,7 +431,7 @@ run_once() {
     echo "Codex AI CI skipped for ${branch}." | tee -a "${run_dir}/local-ci.log"
   fi
 
-  echo "{\"sha\":\"${sha}\",\"status\":${status},\"codex_smoke_status\":\"${codex_smoke_status}\",\"codex_ai_ci_status\":\"${codex_ai_ci_status}\",\"codex_ai_ci_verdict\":\"${codex_ai_ci_verdict}\",\"run_dir\":\"${run_dir}\"}" \
+  echo "{\"sha\":\"${sha}\",\"status\":${status},\"codex_smoke_status\":\"${codex_smoke_status}\",\"codex_ai_ci_status\":\"${codex_ai_ci_status}\",\"codex_ai_ci_mode\":\"${codex_ai_mode}\",\"codex_ai_ci_verdict\":\"${codex_ai_ci_verdict}\",\"codex_ai_test_status\":\"${codex_ai_test_status}\",\"run_dir\":\"${run_dir}\"}" \
     > "${run_dir}/result.json"
 
   local publish_status=0

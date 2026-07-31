@@ -39,6 +39,8 @@ permissions:
   actions: write
   contents: read
   statuses: write
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: receive-local-ci-${{ inputs.task_ref }}

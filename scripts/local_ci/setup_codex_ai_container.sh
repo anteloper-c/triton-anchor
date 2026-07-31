@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (($# > 1)); then
+  echo "用法：setup_codex_ai_container.sh [local-ci-container]" >&2
+  exit 2
+fi
+
+source_container="${1:-${LOCAL_CI_CONTAINER:-anchor-sophgo-ci}}"
+host_codex_home="${CODEX_HOME:-${HOME}/.codex}"
+host_codex_bin="${CODEX_BIN:-}"
+if [[ -z "${host_codex_bin}" ]]; then
+  host_codex_bin="$(command -v codex 2>/dev/null || true)"
+elif [[ "${host_codex_bin}" != */* ]]; then
+  host_codex_bin="$(command -v "${host_codex_bin}" 2>/dev/null || true)"
+fi
+
+case "${source_container}" in
+  "" | *[!A-Za-z0-9_.-]*)
+    echo "Local CI 容器名称无效：${source_container}" >&2
+    exit 2
+    ;;
+esac
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "未找到 docker 命令。" >&2
+  exit 1
+fi
+if [[ -z "${host_codex_bin}" || ! -x "${host_codex_bin}" ]]; then
+  echo "宿主机上找不到可执行的 Codex CLI，请设置 CODEX_BIN。" >&2
+  exit 1
+fi
+for config_file in config.toml auth.json; do
+  if [[ ! -r "${host_codex_home}/${config_file}" ]]; then
+    echo "Codex 配置文件不可读：${host_codex_home}/${config_file}" >&2
+    exit 1
+  fi
+done
+if [[ "$(docker inspect --format '{{.State.Running}}' "${source_container}" 2>/dev/null || true)" != "true" ]]; then
+  echo "Local CI 容器未运行：${source_container}" >&2
+  exit 1
+fi
+if docker inspect --format '{{range .Mounts}}{{println .Destination}}{{end}}' \
+  "${source_container}" | grep -Fxq '/var/run/docker.sock'; then
+  echo "Local CI 容器挂载了 Docker socket，不能作为 Codex 临时容器来源。" >&2
+  exit 1
+fi
+if ! docker exec --user 0 "${source_container}" test -d /workspace; then
+  echo "Local CI 容器中不存在 /workspace：${source_container}" >&2
+  exit 1
+fi
+
+codex_version="$("${host_codex_bin}" --version)"
+cat <<EOF
+Codex AI CI 前置检查通过。
+
+- Local CI 容器：${source_container}
+- 宿主机 Codex CLI：${host_codex_bin}
+- Codex 版本：${codex_version}
+- Codex 配置目录：${host_codex_home}
+- Local CI 工作区：/workspace
+
+每次任务将由 run_codex_ai_ci.sh 临时执行 commit、run、copy、exec、collect 和 cleanup；本脚本不会创建长期容器、镜像或 volume。
+EOF

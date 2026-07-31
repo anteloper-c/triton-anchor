@@ -17,7 +17,22 @@
           "severity": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
           "category": {
             "type": "string",
-            "enum": ["correctness", "regression", "security", "api-compatibility", "test-gap", "other"]
+            "enum": [
+              "algorithm",
+              "business-logic",
+              "state-management",
+              "cache-consistency",
+              "concurrency",
+              "resource-lifecycle",
+              "data-integrity",
+              "correctness",
+              "regression",
+              "security",
+              "api-compatibility",
+              "performance",
+              "test-gap",
+              "other"
+            ]
           },
           "file": {"type": "string"},
           "line": {"type": "string"},
@@ -58,6 +73,62 @@
       "type": "array",
       "items": {"type": "string"}
     },
+    "test_execution": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_run",
+            "passed",
+            "stable_failure",
+            "flaky_failure",
+            "infrastructure_failure",
+            "test_generation_error",
+            "insufficient_evidence"
+          ]
+        },
+        "summary": {"type": "string"},
+        "generated_test_files": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {"type": "string", "pattern": "^RUN-[0-9]{3}$"},
+              "command": {"type": "string"},
+              "exit_code": {"type": "integer"},
+              "duration_seconds": {"type": "number", "minimum": 0},
+              "status": {
+                "type": "string",
+                "enum": [
+                  "passed",
+                  "stable_failure",
+                  "flaky_failure",
+                  "infrastructure_failure",
+                  "not_executed"
+                ]
+              },
+              "evidence": {"type": "string"}
+            },
+            "required": [
+              "id",
+              "command",
+              "exit_code",
+              "duration_seconds",
+              "status",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["status", "summary", "generated_test_files", "commands"],
+      "additionalProperties": false
+    },
     "completion_marker": {
       "type": "string",
       "enum": ["CODEX_AI_CI_COMPLETE"]
@@ -69,6 +140,7 @@
     "findings",
     "suggested_tests",
     "residual_risks",
+    "test_execution",
     "completion_marker"
   ],
   "additionalProperties": false

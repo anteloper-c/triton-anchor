@@ -21,6 +21,7 @@ from result_paths import result_commit_dir
 
 RESULT_NOT_READY_EXIT_CODE = 3
 RESULT_FAILED_EXIT_CODE = 10
+CODEX_COMMENT_MARKER = "<!-- triton-anchor-codex-ai-comment -->"
 
 REPORTABLE_STAGES = (
     ("frontend_smoke", "frontend_smoke_status", "frontend-smoke", "Frontend smoke"),
@@ -49,6 +50,7 @@ class LocalCIResult:
     pass_profile_status: str
     ir_serialization_status: str
     stage_statuses: dict[str, str]
+    codex_comment: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -269,6 +271,13 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
         stage_id: parse_summary_value(summary, summary_key)
         for stage_id, summary_key, _, _ in REPORTABLE_STAGES
     }
+    codex_comment = gitee_content(
+        args.gitee_owner,
+        args.gitee_repo,
+        f"{rel_dir}/codex-ai-comment.md",
+        args.gitee_results_branch,
+        gitee_token,
+    ) or ""
     return LocalCIResult(
         parse_summary_status(summary),
         gitee_result_url(args.gitee_web_url, args.gitee_results_branch, rel_dir),
@@ -277,6 +286,7 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
         stage_statuses["pass_profile"],
         stage_statuses["ir_serialization"],
         stage_statuses,
+        codex_comment.strip(),
     )
 
 
@@ -287,6 +297,70 @@ def stage_github_state(status: str) -> str | None:
     if normalized in {"fail", "failure", "error", "timeout", "aborted"}:
         return "failure"
     return None
+
+
+def pr_number_from_task_ref(task_ref: str) -> int | None:
+    match = re.fullmatch(r"ci/pr-([0-9]+)/.+", task_ref)
+    return int(match.group(1)) if match else None
+
+
+def codex_pr_comment_body(target: Target, result: LocalCIResult) -> str:
+    body = result.codex_comment.strip()
+    if not body:
+        return ""
+    return (
+        f"{body}\n\n"
+        f"- 提交：`{target.sha[:12]}`\n"
+        f"- [完整 Codex AI CI 报告]({result.target_url})\n\n"
+        f"{CODEX_COMMENT_MARKER}\n"
+    )
+
+
+def post_codex_pr_comment(target: Target, result: LocalCIResult) -> None:
+    pr_number = pr_number_from_task_ref(target.task_ref)
+    body = codex_pr_comment_body(target, result)
+    if pr_number is None or not body:
+        return
+
+    comments_path = f"/repos/{github_repo()}/issues/{pr_number}/comments"
+    comments = get_github_json(comments_path, {"per_page": "100"})
+    if not isinstance(comments, list):
+        comments = []
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        comment_body = comment.get("body")
+        comment_id = comment.get("id")
+        comment_user = comment.get("user")
+        is_bot = isinstance(comment_user, dict) and comment_user.get("type") == "Bot"
+        if (
+            isinstance(comment_body, str)
+            and CODEX_COMMENT_MARKER in comment_body
+            and isinstance(comment_id, int)
+            and is_bot
+        ):
+            status, _, raw = request_json(
+                github_api_url(f"/repos/{github_repo()}/issues/comments/{comment_id}"),
+                method="PATCH",
+                token=github_token(),
+                data={"body": body},
+            )
+            if status != 200:
+                raise RuntimeError(
+                    f"GitHub PR comment update failed: HTTP {status}: {raw[:500]}"
+                )
+            return
+
+    status, _, raw = request_json(
+        github_api_url(comments_path),
+        method="POST",
+        token=github_token(),
+        data={"body": body},
+    )
+    if status not in (200, 201):
+        raise RuntimeError(
+            f"GitHub PR comment creation failed: HTTP {status}: {raw[:500]}"
+        )
 
 
 def post_stage_statuses(
@@ -366,6 +440,13 @@ def sync_target(args: argparse.Namespace, target: Target, set_pending: bool) -> 
             result = None
         if result is not None:
             post_stage_statuses(args, target, result)
+            try:
+                post_codex_pr_comment(target, result)
+            except Exception as exc:
+                print(
+                    f"Warning: failed to publish Codex AI PR comment: {exc}",
+                    file=sys.stderr,
+                )
             write_github_outputs(result)
             if result.exit_code == 0:
                 description = "Gitee local CI passed"
