@@ -1,0 +1,75 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["PASS", "WARNING", "FAIL"]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "pattern": "^AI-[0-9]{3}$"},
+          "severity": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
+          "category": {
+            "type": "string",
+            "enum": ["correctness", "regression", "security", "api-compatibility", "test-gap", "other"]
+          },
+          "file": {"type": "string"},
+          "line": {"type": "string"},
+          "title": {"type": "string"},
+          "evidence": {"type": "string"},
+          "impact": {"type": "string"},
+          "fix_direction": {"type": "string"}
+        },
+        "required": [
+          "id",
+          "severity",
+          "category",
+          "file",
+          "line",
+          "title",
+          "evidence",
+          "impact",
+          "fix_direction"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "suggested_tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "pattern": "^TEST-[0-9]{3}$"},
+          "priority": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
+          "target": {"type": "string"},
+          "description": {"type": "string"}
+        },
+        "required": ["id", "priority", "target", "description"],
+        "additionalProperties": false
+      }
+    },
+    "residual_risks": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "completion_marker": {
+      "type": "string",
+      "enum": ["CODEX_AI_CI_COMPLETE"]
+    }
+  },
+  "required": [
+    "verdict",
+    "summary",
+    "findings",
+    "suggested_tests",
+    "residual_risks",
+    "completion_marker"
+  ],
+  "additionalProperties": false
+}

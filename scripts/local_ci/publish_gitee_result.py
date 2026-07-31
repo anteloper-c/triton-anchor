@@ -141,6 +141,10 @@ PUBLISHED_RUN_FILES = (
     "codex-smoke.log",
     "codex-smoke-final.txt",
     "codex-smoke-summary.txt",
+    "codex-ai-ci.log",
+    "codex-ai-report.json",
+    "codex-ai-report.md",
+    "codex-ai-ci-summary.txt",
 )
 
 

@@ -45,6 +45,12 @@ CODEX_SMOKE_REPO_DIR="${CODEX_SMOKE_REPO_DIR:-${LOCAL_CI_WORKSPACE_HOST%/}/trito
 CODEX_BIN="${CODEX_BIN:-codex}"
 CODEX_SMOKE_TIMEOUT_SECONDS="${CODEX_SMOKE_TIMEOUT_SECONDS:-300}"
 CODEX_SMOKE_REASONING_EFFORT="${CODEX_SMOKE_REASONING_EFFORT:-low}"
+RUN_CODEX_AI_CI="${RUN_CODEX_AI_CI:-${RUN_CODEX_SMOKE}}"
+CODEX_AI_CI_BRANCH_REGEX="${CODEX_AI_CI_BRANCH_REGEX:-^ci/push/}"
+CODEX_AI_CI_REPO_DIR="${CODEX_AI_CI_REPO_DIR:-${CODEX_SMOKE_REPO_DIR}}"
+CODEX_AI_CI_WORKSPACE_ROOT="${CODEX_AI_CI_WORKSPACE_ROOT:-${LOCAL_CI_STATE_DIR%/}/codex-ai-workspaces}"
+CODEX_AI_CI_TIMEOUT_SECONDS="${CODEX_AI_CI_TIMEOUT_SECONDS:-900}"
+CODEX_AI_CI_REASONING_EFFORT="${CODEX_AI_CI_REASONING_EFFORT:-medium}"
 export GITEE_TOKEN GITEE_USERNAME GITEE_WEB_URL GITEE_RESULTS_WEB_URL WORKSPACE LOCAL_CI_WORKSPACE_HOST LOCAL_CI_CONFIG LOCAL_CI_CONTAINER
 
 mkdir -p "${LOCAL_CI_STATE_DIR}"
@@ -125,6 +131,20 @@ run_codex_smoke_for_run() {
     CODEX_SMOKE_REASONING_EFFORT="${CODEX_SMOKE_REASONING_EFFORT}" \
     "${LOCAL_CI_RUNNER_DIR}/run_codex_smoke.sh" \
     "${CODEX_SMOKE_REPO_DIR}" "${run_dir}" "${sha}"
+}
+
+run_codex_ai_ci_for_run() {
+  local sha="$1"
+  local run_dir="$2"
+  local base_sha="$3"
+  local branch="$4"
+
+  CODEX_BIN="${CODEX_BIN}" \
+    CODEX_AI_CI_TIMEOUT_SECONDS="${CODEX_AI_CI_TIMEOUT_SECONDS}" \
+    CODEX_AI_CI_REASONING_EFFORT="${CODEX_AI_CI_REASONING_EFFORT}" \
+    CODEX_AI_CI_WORKSPACE_ROOT="${CODEX_AI_CI_WORKSPACE_ROOT}" \
+    "${LOCAL_CI_RUNNER_DIR}/run_codex_ai_ci.sh" \
+    "${CODEX_AI_CI_REPO_DIR}" "${run_dir}" "${sha}" "${base_sha}" "${branch}"
 }
 
 publish_result() {
@@ -333,7 +353,43 @@ run_once() {
     echo "Codex smoke skipped for ${branch}." | tee -a "${run_dir}/local-ci.log"
   fi
 
-  echo "{\"sha\":\"${sha}\",\"status\":${status},\"codex_smoke_status\":\"${codex_smoke_status}\",\"run_dir\":\"${run_dir}\"}" \
+  local codex_ai_base_sha="${base_sha}"
+  if [[ -z "${codex_ai_base_sha}" && -n "${last}" ]]; then
+    codex_ai_base_sha="${last}"
+  fi
+
+  local codex_ai_ci_status="skipped"
+  local codex_ai_ci_verdict="NOT_RUN"
+  if [[ "${RUN_CODEX_AI_CI}" == "true" \
+    && (-z "${CODEX_AI_CI_BRANCH_REGEX}" || "${branch}" =~ ${CODEX_AI_CI_BRANCH_REGEX}) ]]; then
+    codex_ai_ci_verdict="UNKNOWN"
+    echo "Running non-blocking Codex AI diff analysis for ${sha}." | tee -a "${run_dir}/local-ci.log"
+    local codex_ai_ci_exit=0
+    set +e
+    run_codex_ai_ci_for_run "${sha}" "${run_dir}" "${codex_ai_base_sha}" "${branch}" 2>&1 |
+      tee -a "${run_dir}/local-ci.log"
+    codex_ai_ci_exit=${PIPESTATUS[0]}
+    set -e
+    local codex_ai_summary="${run_dir}/codex-ai-ci-summary.txt"
+    if [[ -f "${codex_ai_summary}" ]]; then
+      local parsed_codex_ai_verdict
+      parsed_codex_ai_verdict="$(awk -F ': ' '$1 == "report_verdict" { print $2; exit }' "${codex_ai_summary}")"
+      case "${parsed_codex_ai_verdict}" in
+        PASS | WARNING | FAIL) codex_ai_ci_verdict="${parsed_codex_ai_verdict}" ;;
+      esac
+    fi
+    if [[ ${codex_ai_ci_exit} -eq 0 ]]; then
+      codex_ai_ci_status="pass"
+    else
+      codex_ai_ci_status="fail"
+      echo "Codex AI CI failed but does not change the deterministic local-ci result." |
+        tee -a "${run_dir}/local-ci.log"
+    fi
+  else
+    echo "Codex AI CI skipped for ${branch}." | tee -a "${run_dir}/local-ci.log"
+  fi
+
+  echo "{\"sha\":\"${sha}\",\"status\":${status},\"codex_smoke_status\":\"${codex_smoke_status}\",\"codex_ai_ci_status\":\"${codex_ai_ci_status}\",\"codex_ai_ci_verdict\":\"${codex_ai_ci_verdict}\",\"run_dir\":\"${run_dir}\"}" \
     > "${run_dir}/result.json"
 
   local publish_status=0

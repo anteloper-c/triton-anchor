@@ -100,6 +100,7 @@ prompt="$(
 set +e
 (
   cd "${repo_dir}" || exit 2
+  unset GITEE_TOKEN GITEE_USERNAME GIT_ASKPASS
   export GIT_CONFIG_COUNT=1
   export GIT_CONFIG_KEY_0="safe.directory"
   export GIT_CONFIG_VALUE_0="${repo_dir}"
@@ -108,9 +109,10 @@ set +e
     "${CODEX_BIN}" exec \
     --ephemeral \
     --json \
-    --sandbox read-only \
+    --sandbox workspace-write \
     --ignore-rules \
     --config "model_reasoning_effort=\"${CODEX_SMOKE_REASONING_EFFORT}\"" \
+    --config "sandbox_workspace_write.network_access=false" \
     --output-last-message "${final_path}" \
     "${prompt}"
 ) > "${log_path}" 2>&1
