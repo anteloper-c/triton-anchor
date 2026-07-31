@@ -55,6 +55,7 @@ PACKAGE_TOOL="${PACKAGE_TOOL:-auto}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 PYTHON_VENV_ACTIVATE="${PYTHON_VENV_ACTIVATE:-/opt/venv/bin/activate}"
 SOURCE_ENVSETUP="${SOURCE_ENVSETUP:-1}"
+FRONTEND_BUILD_MODE="${FRONTEND_BUILD_MODE:-fresh}"
 FRONTEND_BUILD_COMMAND="${FRONTEND_BUILD_COMMAND:-}"
 LOCAL_CI_ARTIFACT_ROOT="${LOCAL_CI_ARTIFACT_ROOT:-${WORKSPACE}/local-ci-artifacts}"
 RUN_COMPILE_BENCHMARK="${RUN_COMPILE_BENCHMARK:-true}"
@@ -84,6 +85,8 @@ IR_SERIALIZATION_MIN_DELTA_MS="${IR_SERIALIZATION_MIN_DELTA_MS:-0.05}"
 IR_SERIALIZATION_TIMEOUT="${IR_SERIALIZATION_TIMEOUT:-30m}"
 IR_SERIALIZATION_STATUS="not_run"
 FRONTEND_BUILD_STATUS="not_run"
+FRONTEND_CHECKOUT_MODE="unknown"
+FRONTEND_BUILD_CACHE_PRESERVED="false"
 FRONTEND_SMOKE_STATUS="not_run"
 BACKEND_REBUILD_STATUS="not_run"
 BACKEND_SMOKE_JIT_STATUS="not_run"
@@ -103,7 +106,7 @@ FLAGGEMS_SELECTED_FILE="${FLAGGEMS_SELECTED_FILE:-${DELIVERY_ARTIFACT_DIR}/flagg
 export WORKSPACE ANCHOR_DIR BACKEND_PROFILE EXPECTED_TRITON_BACKEND BACKEND_PATH
 export BACKEND_ENVSETUP BACKEND_ENVSETUP_ARGS BACKEND_TEST_COMMAND
 export RUN_FLAGGEMS_TESTS FLAGGEMS_CLONE_DIR FLAGGEMS_REF FLAGGEMS_PIP_PACKAGES FLAGGEMS_TEST_MODE FLAGGEMS_SAMPLE_SIZE FLAGGEMS_RANDOM_SEED FLAGGEMS_TEST_OP FLAGGEMS_TEST_COMMAND FLAGGEMS_PYTEST_ARGS FLAGGEMS_IDLE_TIMEOUT_SECONDS FLAGGEMS_TOTAL_TIMEOUT_SECONDS FLAGGEMS_FULL_TIMEOUT_EXTENSION_SECONDS FLAGGEMS_FULL_HARD_TIMEOUT_SECONDS FLAGGEMS_CLEAR_CACHE FLAGGEMS_WHITELIST FLAGGEMS_FULL_LIST FLAGGEMS_SELECTED_FILE
-export LLVM_BUILD_DIR PPL_ROOT PYTHON_BIN PYTHON_VENV_ACTIVATE GITHUB_SHA="${target_sha}" GITHUB_REF="refs/heads/${GITEE_BRANCH}"
+export LLVM_BUILD_DIR PPL_ROOT PYTHON_BIN PYTHON_VENV_ACTIVATE FRONTEND_BUILD_MODE GITHUB_SHA="${target_sha}" GITHUB_REF="refs/heads/${GITEE_BRANCH}"
 export BACKEND_PROFILE MAX_JOBS CMAKE_BUILD_PARALLEL_LEVEL NINJAFLAGS UV_LINK_MODE
 
 mkdir -p "${DELIVERY_ARTIFACT_DIR}"
@@ -209,6 +212,66 @@ fresh_checkout_anchor() {
     echo "Fresh checkout SHA mismatch: expected ${target_sha}, got ${checked_out_sha}" >&2
     return 1
   fi
+}
+
+incremental_checkout_anchor() {
+  local anchor_path checked_out_sha
+  anchor_path="$(validated_anchor_checkout_path)"
+
+  if [[ ! -e "${anchor_path}" ]]; then
+    echo "No existing frontend checkout; using a cold clone for incremental mode."
+    fresh_checkout_anchor
+    return
+  fi
+  if [[ ! -d "${anchor_path}/.git" ]] \
+    || ! git -C "${anchor_path}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "Incremental frontend checkout is not a Git worktree: ${anchor_path}" >&2
+    echo "Use FRONTEND_BUILD_MODE=fresh to replace it." >&2
+    return 1
+  fi
+
+  git config --global --add safe.directory "${anchor_path}" || true
+  if git -C "${anchor_path}" remote get-url gitee >/dev/null 2>&1; then
+    git -C "${anchor_path}" remote set-url gitee "${GITEE_REPO_URL}"
+  else
+    git -C "${anchor_path}" remote add gitee "${GITEE_REPO_URL}"
+  fi
+
+  echo "Fetching ${GITEE_BRANCH} into existing frontend checkout."
+  git -C "${anchor_path}" fetch \
+    --prune \
+    --no-tags \
+    gitee \
+    "refs/heads/${GITEE_BRANCH}"
+  if ! git -C "${anchor_path}" cat-file -e "${target_sha}^{commit}" 2>/dev/null; then
+    echo "Target SHA was not fetched from ${GITEE_BRANCH}: ${target_sha}" >&2
+    return 1
+  fi
+
+  git -C "${anchor_path}" checkout --detach "${target_sha}"
+  git -C "${anchor_path}" reset --hard "${target_sha}"
+  git -C "${anchor_path}" clean -ffdx -e /build/
+
+  checked_out_sha="$(git -C "${anchor_path}" rev-parse HEAD)"
+  if [[ "${checked_out_sha}" != "${target_sha}" ]]; then
+    echo "Incremental checkout SHA mismatch: expected ${target_sha}, got ${checked_out_sha}" >&2
+    return 1
+  fi
+}
+
+prepare_anchor_checkout() {
+  case "${FRONTEND_BUILD_MODE}" in
+    fresh)
+      fresh_checkout_anchor
+      ;;
+    incremental)
+      incremental_checkout_anchor
+      ;;
+    *)
+      echo "Invalid FRONTEND_BUILD_MODE=${FRONTEND_BUILD_MODE@Q}; expected fresh or incremental." >&2
+      return 2
+      ;;
+  esac
 }
 
 run_logged() {
@@ -695,7 +758,9 @@ write_summary() {
     echo "branch: ${GITEE_BRANCH}"
     echo "anchor_dir: ${ANCHOR_DIR}"
     echo "anchor_commit: $(git_commit "${ANCHOR_DIR}")"
-    echo "frontend_checkout_mode: fresh_clone"
+    echo "frontend_build_mode: ${FRONTEND_BUILD_MODE}"
+    echo "frontend_checkout_mode: ${FRONTEND_CHECKOUT_MODE}"
+    echo "frontend_build_cache_preserved: ${FRONTEND_BUILD_CACHE_PRESERVED}"
     echo "frontend_uninstall_before_build: true"
     echo "backend_profile: ${BACKEND_PROFILE}"
     echo "expected_backend: ${EXPECTED_TRITON_BACKEND}"
@@ -759,8 +824,29 @@ on_exit() {
 trap on_exit EXIT
 
 FRONTEND_BUILD_STATUS="running"
+case "${FRONTEND_BUILD_MODE}" in
+  fresh)
+    FRONTEND_CHECKOUT_MODE="fresh_clone"
+    FRONTEND_BUILD_CACHE_PRESERVED="false"
+    ;;
+  incremental)
+    if [[ -e "${ANCHOR_DIR}" ]]; then
+      FRONTEND_CHECKOUT_MODE="incremental_fetch"
+    else
+      FRONTEND_CHECKOUT_MODE="incremental_cold_clone"
+    fi
+    if [[ -d "${ANCHOR_DIR}/build" ]]; then
+      FRONTEND_BUILD_CACHE_PRESERVED="true"
+    fi
+    ;;
+  *)
+    echo "Invalid FRONTEND_BUILD_MODE=${FRONTEND_BUILD_MODE@Q}; expected fresh or incremental." >&2
+    exit 2
+    ;;
+esac
+
 setup_gitee_git_auth
-run_logged frontend-checkout fresh_checkout_anchor
+run_logged frontend-checkout prepare_anchor_checkout
 cd "${ANCHOR_DIR}"
 
 if [[ -n "${LOCAL_CI_BASE_SHA}" ]]; then
@@ -788,6 +874,7 @@ LOCAL_CI_GIT_ASKPASS=""
 cat <<EOF
 Local CI commit: ${target_sha}
 Anchor dir: ${ANCHOR_DIR}
+Frontend build mode: ${FRONTEND_BUILD_MODE}
 Backend profile: ${BACKEND_PROFILE}
 Backend path: ${BACKEND_PATH}
 Run FlagGems: ${RUN_FLAGGEMS_TESTS}
@@ -805,8 +892,14 @@ if [[ -z "${FRONTEND_BUILD_COMMAND}" ]]; then
     FRONTEND_BUILD_COMMAND="${PYTHON_BIN} -m build --wheel --no-isolation"
   fi
 fi
-echo "Preparing empty frontend build directories under ${ANCHOR_DIR}"
-rm -rf -- "${ANCHOR_DIR}/build" "${ANCHOR_DIR}/dist"
+if [[ "${FRONTEND_BUILD_MODE}" == "fresh" ]]; then
+  echo "Clearing frontend build cache and wheel output under ${ANCHOR_DIR}"
+  rm -rf -- "${ANCHOR_DIR}/build" "${ANCHOR_DIR}/dist"
+else
+  echo "Preserving frontend build cache at ${ANCHOR_DIR}/build"
+  echo "Clearing frontend wheel output under ${ANCHOR_DIR}/dist"
+  rm -rf -- "${ANCHOR_DIR}/dist"
+fi
 find "${ANCHOR_DIR}" -maxdepth 1 -name '*.egg-info' -exec rm -rf -- {} +
 mkdir -p "${ANCHOR_DIR}/dist"
 
