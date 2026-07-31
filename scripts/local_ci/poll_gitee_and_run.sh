@@ -41,14 +41,14 @@ RUN_PASS_PROFILE="${RUN_PASS_PROFILE:-true}"
 RUN_IR_SERIALIZATION_BENCHMARK="${RUN_IR_SERIALIZATION_BENCHMARK:-true}"
 RUN_CODEX_SMOKE="${RUN_CODEX_SMOKE:-false}"
 CODEX_SMOKE_BRANCH_REGEX="${CODEX_SMOKE_BRANCH_REGEX:-^ci/push/}"
-CODEX_SMOKE_REPO_DIR="${CODEX_SMOKE_REPO_DIR:-${LOCAL_CI_WORKSPACE_HOST%/}/triton-anchor}"
 CODEX_BIN="${CODEX_BIN:-codex}"
+CODEX_WORKSPACE_ROOT="${CODEX_WORKSPACE_ROOT:-${LOCAL_CI_STATE_DIR%/}/codex-workspaces}"
+CODEX_SMOKE_WORKSPACE_ROOT="${CODEX_SMOKE_WORKSPACE_ROOT:-${CODEX_WORKSPACE_ROOT}}"
 CODEX_SMOKE_TIMEOUT_SECONDS="${CODEX_SMOKE_TIMEOUT_SECONDS:-300}"
 CODEX_SMOKE_REASONING_EFFORT="${CODEX_SMOKE_REASONING_EFFORT:-low}"
 RUN_CODEX_AI_CI="${RUN_CODEX_AI_CI:-${RUN_CODEX_SMOKE}}"
 CODEX_AI_CI_BRANCH_REGEX="${CODEX_AI_CI_BRANCH_REGEX:-^ci/push/}"
-CODEX_AI_CI_REPO_DIR="${CODEX_AI_CI_REPO_DIR:-${CODEX_SMOKE_REPO_DIR}}"
-CODEX_AI_CI_WORKSPACE_ROOT="${CODEX_AI_CI_WORKSPACE_ROOT:-${LOCAL_CI_STATE_DIR%/}/codex-ai-workspaces}"
+CODEX_AI_CI_WORKSPACE_ROOT="${CODEX_AI_CI_WORKSPACE_ROOT:-${CODEX_WORKSPACE_ROOT}}"
 CODEX_AI_CI_TIMEOUT_SECONDS="${CODEX_AI_CI_TIMEOUT_SECONDS:-900}"
 CODEX_AI_CI_REASONING_EFFORT="${CODEX_AI_CI_REASONING_EFFORT:-medium}"
 export GITEE_TOKEN GITEE_USERNAME GITEE_WEB_URL GITEE_RESULTS_WEB_URL WORKSPACE LOCAL_CI_WORKSPACE_HOST LOCAL_CI_CONFIG LOCAL_CI_CONTAINER
@@ -125,12 +125,14 @@ flaggems_mode_for_branch() {
 run_codex_smoke_for_run() {
   local sha="$1"
   local run_dir="$2"
+  local branch="$3"
 
   CODEX_BIN="${CODEX_BIN}" \
+    CODEX_SMOKE_WORKSPACE_ROOT="${CODEX_SMOKE_WORKSPACE_ROOT}" \
     CODEX_SMOKE_TIMEOUT_SECONDS="${CODEX_SMOKE_TIMEOUT_SECONDS}" \
     CODEX_SMOKE_REASONING_EFFORT="${CODEX_SMOKE_REASONING_EFFORT}" \
     "${LOCAL_CI_RUNNER_DIR}/run_codex_smoke.sh" \
-    "${CODEX_SMOKE_REPO_DIR}" "${run_dir}" "${sha}"
+    "${GITEE_REPO_URL}" "${run_dir}" "${sha}" "${branch}"
 }
 
 run_codex_ai_ci_for_run() {
@@ -144,7 +146,7 @@ run_codex_ai_ci_for_run() {
     CODEX_AI_CI_REASONING_EFFORT="${CODEX_AI_CI_REASONING_EFFORT}" \
     CODEX_AI_CI_WORKSPACE_ROOT="${CODEX_AI_CI_WORKSPACE_ROOT}" \
     "${LOCAL_CI_RUNNER_DIR}/run_codex_ai_ci.sh" \
-    "${CODEX_AI_CI_REPO_DIR}" "${run_dir}" "${sha}" "${base_sha}" "${branch}"
+    "${GITEE_REPO_URL}" "${run_dir}" "${sha}" "${base_sha}" "${branch}"
 }
 
 publish_result() {
@@ -338,7 +340,7 @@ run_once() {
     echo "Running non-blocking Codex smoke for ${sha}." | tee -a "${run_dir}/local-ci.log"
     local codex_smoke_exit=0
     set +e
-    run_codex_smoke_for_run "${sha}" "${run_dir}" 2>&1 |
+    run_codex_smoke_for_run "${sha}" "${run_dir}" "${branch}" 2>&1 |
       tee -a "${run_dir}/local-ci.log"
     codex_smoke_exit=${PIPESTATUS[0]}
     set -e

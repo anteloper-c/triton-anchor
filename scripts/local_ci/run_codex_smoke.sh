@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-repo_dir="${1:?usage: run_codex_smoke.sh <repo-dir> <output-dir> <target-sha>}"
-output_dir="${2:?usage: run_codex_smoke.sh <repo-dir> <output-dir> <target-sha>}"
-target_sha="${3:?usage: run_codex_smoke.sh <repo-dir> <output-dir> <target-sha>}"
+repo_url="${1:?usage: run_codex_smoke.sh <repo-url> <output-dir> <target-sha> <branch>}"
+output_dir="${2:?usage: run_codex_smoke.sh <repo-url> <output-dir> <target-sha> <branch>}"
+target_sha="${3:?usage: run_codex_smoke.sh <repo-url> <output-dir> <target-sha> <branch>}"
+branch="${4:?usage: run_codex_smoke.sh <repo-url> <output-dir> <target-sha> <branch>}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODEX_BIN="${CODEX_BIN:-codex}"
 CODEX_SMOKE_TIMEOUT_SECONDS="${CODEX_SMOKE_TIMEOUT_SECONDS:-300}"
 CODEX_SMOKE_REASONING_EFFORT="${CODEX_SMOKE_REASONING_EFFORT:-low}"
+CODEX_SMOKE_WORKSPACE_ROOT="${CODEX_SMOKE_WORKSPACE_ROOT:-${TMPDIR:-/tmp}/triton-anchor-codex-smoke}"
+checkout_helper="${SCRIPT_DIR}/prepare_codex_checkout.sh"
 
 log_path="${output_dir}/codex-smoke.log"
 final_path="${output_dir}/codex-smoke-final.txt"
@@ -20,8 +24,18 @@ failure_reason=""
 marker_found="false"
 turn_completed="false"
 command_executed="false"
+workspace_dirty="false"
+workspace_dir=""
+workspace_parent=""
 start_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 start_seconds="${SECONDS}"
+
+cleanup() {
+  if [[ -n "${workspace_parent}" && -d "${workspace_parent}" ]]; then
+    rm -rf -- "${workspace_parent}"
+  fi
+}
+trap cleanup EXIT
 
 if ! mkdir -p "${output_dir}" || [[ ! -w "${output_dir}" ]]; then
   echo "Codex smoke: fail (output directory is not writable: ${output_dir})" >&2
@@ -38,7 +52,9 @@ write_summary() {
     echo "exit_code: ${exit_code}"
     echo "target_sha: ${target_sha}"
     echo "actual_sha: ${actual_sha}"
-    echo "repo_dir: ${repo_dir}"
+    echo "branch: ${branch}"
+    echo "repo_source: gitee"
+    echo "workspace_dir: ${workspace_dir}"
     echo "output_dir: ${output_dir}"
     echo "started_at: ${start_time}"
     echo "duration_seconds: ${duration_seconds}"
@@ -47,6 +63,7 @@ write_summary() {
     echo "marker_found: ${marker_found}"
     echo "turn_completed: ${turn_completed}"
     echo "command_executed: ${command_executed}"
+    echo "workspace_dirty: ${workspace_dirty}"
     echo "failure_reason: ${failure_reason}"
   } > "${summary_path}"
 }
@@ -69,18 +86,25 @@ fi
 if ! command -v timeout >/dev/null 2>&1; then
   fail_smoke "timeout command was not found"
 fi
-git_check_output=""
-if ! git_check_output="$(
-  git -c "safe.directory=${repo_dir}" -C "${repo_dir}" \
-    rev-parse --is-inside-work-tree 2>&1
-)"; then
-  echo "${git_check_output}" >> "${log_path}"
-  fail_smoke "repository is unavailable: ${repo_dir}"
+if ! command -v git >/dev/null 2>&1; then
+  fail_smoke "git command was not found"
+fi
+if [[ ! -x "${checkout_helper}" ]]; then
+  fail_smoke "checkout helper is unavailable: ${checkout_helper}"
 fi
 
-actual_sha="$(
-  git -c "safe.directory=${repo_dir}" -C "${repo_dir}" rev-parse HEAD 2>/dev/null || true
-)"
+if ! workspace_dir="$(
+  "${checkout_helper}" \
+    "${repo_url}" \
+    "${branch}" \
+    "${CODEX_SMOKE_WORKSPACE_ROOT}" \
+    "codex-smoke" \
+    "${target_sha}" 2>> "${log_path}"
+)"; then
+  fail_smoke "failed to create the disposable smoke checkout"
+fi
+workspace_parent="$(dirname "${workspace_dir}")"
+actual_sha="$(git -C "${workspace_dir}" rev-parse HEAD 2>/dev/null || true)"
 if [[ "${actual_sha}" != "${target_sha}" ]]; then
   fail_smoke "checkout SHA does not match target SHA"
 fi
@@ -99,11 +123,8 @@ prompt="$(
 
 set +e
 (
-  cd "${repo_dir}" || exit 2
+  cd "${workspace_dir}" || exit 2
   unset GITEE_TOKEN GITEE_USERNAME GIT_ASKPASS
-  export GIT_CONFIG_COUNT=1
-  export GIT_CONFIG_KEY_0="safe.directory"
-  export GIT_CONFIG_VALUE_0="${repo_dir}"
   export GIT_OPTIONAL_LOCKS=0
   timeout --signal=TERM --kill-after=30s "${CODEX_SMOKE_TIMEOUT_SECONDS}s" \
     "${CODEX_BIN}" exec \
@@ -128,6 +149,9 @@ fi
 if grep -Fq '"command_execution"' "${log_path}"; then
   command_executed="true"
 fi
+if [[ -n "$(git -C "${workspace_dir}" status --short --untracked-files=all)" ]]; then
+  workspace_dirty="true"
+fi
 
 if [[ ${exit_code} -ne 0 ]]; then
   failure_reason="codex exec exited with ${exit_code}"
@@ -137,6 +161,8 @@ elif [[ "${turn_completed}" != "true" ]]; then
   failure_reason="JSONL did not contain turn.completed"
 elif [[ "${command_executed}" != "true" ]]; then
   failure_reason="JSONL did not contain a command execution"
+elif [[ "${workspace_dirty}" == "true" ]]; then
+  failure_reason="read-only smoke modified the disposable workspace"
 else
   status="pass"
 fi

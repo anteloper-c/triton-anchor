@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-repo_dir="${1:?usage: run_codex_ai_ci.sh <repo-dir> <output-dir> <target-sha> [base-sha] [branch]}"
-output_dir="${2:?usage: run_codex_ai_ci.sh <repo-dir> <output-dir> <target-sha> [base-sha] [branch]}"
-target_sha="${3:?usage: run_codex_ai_ci.sh <repo-dir> <output-dir> <target-sha> [base-sha] [branch]}"
+repo_url="${1:?usage: run_codex_ai_ci.sh <repo-url> <output-dir> <target-sha> <base-sha> <branch>}"
+output_dir="${2:?usage: run_codex_ai_ci.sh <repo-url> <output-dir> <target-sha> <base-sha> <branch>}"
+target_sha="${3:?usage: run_codex_ai_ci.sh <repo-url> <output-dir> <target-sha> <base-sha> <branch>}"
 requested_base_sha="${4:-}"
-branch="${5:-unknown}"
+branch="${5:?usage: run_codex_ai_ci.sh <repo-url> <output-dir> <target-sha> <base-sha> <branch>}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODEX_BIN="${CODEX_BIN:-codex}"
@@ -20,6 +20,7 @@ report_path="${output_dir}/codex-ai-report.md"
 summary_path="${output_dir}/codex-ai-ci-summary.txt"
 schema_path="${SCRIPT_DIR}/codex_ai_report.schema.json"
 renderer_path="${SCRIPT_DIR}/render_codex_ai_report.py"
+checkout_helper="${SCRIPT_DIR}/prepare_codex_checkout.sh"
 
 status="fail"
 exit_code=1
@@ -35,12 +36,13 @@ turn_completed="false"
 command_executed="false"
 workspace_dirty="false"
 workspace_dir=""
+workspace_parent=""
 start_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 start_seconds="${SECONDS}"
 
 cleanup() {
-  if [[ -n "${workspace_dir}" && -d "${workspace_dir}" ]]; then
-    rm -rf -- "${workspace_dir}"
+  if [[ -n "${workspace_parent}" && -d "${workspace_parent}" ]]; then
+    rm -rf -- "${workspace_parent}"
   fi
 }
 trap cleanup EXIT
@@ -57,7 +59,7 @@ write_summary() {
     echo "base_sha: ${base_sha}"
     echo "base_source: ${base_source}"
     echo "branch: ${branch}"
-    echo "repo_dir: ${repo_dir}"
+    echo "repo_source: gitee"
     echo "workspace_dir: ${workspace_dir}"
     echo "output_dir: ${output_dir}"
     echo "changed_file_count: ${changed_file_count}"
@@ -154,33 +156,27 @@ fi
 if [[ ! -r "${renderer_path}" ]]; then
   fail_ai_ci "report renderer is unavailable: ${renderer_path}"
 fi
-if ! git -c "safe.directory=${repo_dir}" -C "${repo_dir}" \
-  rev-parse --is-inside-work-tree >/dev/null 2>> "${log_path}"; then
-  fail_ai_ci "repository is unavailable: ${repo_dir}"
+if ! command -v git >/dev/null 2>&1; then
+  fail_ai_ci "git command was not found"
+fi
+if [[ ! -x "${checkout_helper}" ]]; then
+  fail_ai_ci "checkout helper is unavailable: ${checkout_helper}"
 fi
 
-actual_sha="$(
-  git -c "safe.directory=${repo_dir}" -C "${repo_dir}" rev-parse HEAD 2>/dev/null || true
-)"
+if ! workspace_dir="$(
+  "${checkout_helper}" \
+    "${repo_url}" \
+    "${branch}" \
+    "${CODEX_AI_CI_WORKSPACE_ROOT}" \
+    "codex-ai" \
+    "${target_sha}" 2>> "${log_path}"
+)"; then
+  fail_ai_ci "failed to create the disposable analysis checkout"
+fi
+workspace_parent="$(dirname "${workspace_dir}")"
+actual_sha="$(git -C "${workspace_dir}" rev-parse HEAD 2>/dev/null || true)"
 if [[ "${actual_sha}" != "${target_sha}" ]]; then
   fail_ai_ci "checkout SHA does not match target SHA"
-fi
-
-if ! mkdir -p "${CODEX_AI_CI_WORKSPACE_ROOT}"; then
-  fail_ai_ci "failed to create the Codex AI workspace root"
-fi
-if ! workspace_dir="$(
-  mktemp -d "${CODEX_AI_CI_WORKSPACE_ROOT%/}/codex-ai-${target_sha:0:12}.XXXXXX"
-)"; then
-  fail_ai_ci "failed to create the disposable analysis workspace"
-fi
-if ! git -c "safe.directory=${repo_dir}" clone --quiet --shared --no-checkout \
-  "${repo_dir}" "${workspace_dir}" >> "${log_path}" 2>&1; then
-  fail_ai_ci "failed to create the disposable analysis clone"
-fi
-if ! git -C "${workspace_dir}" checkout --quiet --detach "${target_sha}" \
-  >> "${log_path}" 2>&1; then
-  fail_ai_ci "failed to check out the target SHA in the analysis clone"
 fi
 
 if [[ -n "${requested_base_sha}" ]] &&
