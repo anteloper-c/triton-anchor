@@ -27,8 +27,12 @@ def fail(message: str) -> None:
     raise CredentialValidationError(message)
 
 
-def require_private_path(
-    path: Path, *, expected_mode: int, kind: str
+def require_credential_path(
+    path: Path,
+    *,
+    recommended_mode: int,
+    kind: str,
+    warnings: list[str],
 ) -> os.stat_result:
     try:
         metadata = path.lstat()
@@ -44,14 +48,15 @@ def require_private_path(
         fail(f"{kind}不是普通文件：{path}")
 
     if metadata.st_uid != os.geteuid():
-        fail(
-            f"{kind}必须归当前用户所有：{path}"
+        warnings.append(
+            f"{kind}不归当前用户所有：{path}"
             f"（当前 UID {os.geteuid()}，文件 UID {metadata.st_uid}）"
         )
     actual_mode = stat.S_IMODE(metadata.st_mode)
-    if actual_mode != expected_mode:
-        fail(
-            f"{kind}权限必须是 {expected_mode:03o}：{path}（当前为 {actual_mode:03o}）"
+    if actual_mode != recommended_mode:
+        warnings.append(
+            f"{kind}建议权限为 {recommended_mode:03o}：{path}"
+            f"（当前为 {actual_mode:03o}，不会阻止 AI-CI）"
         )
     return metadata
 
@@ -287,14 +292,24 @@ def validate_auth(auth_path: Path) -> None:
         fail("Codex auth.json 缺少非空 OPENAI_API_KEY")
 
 
-def validate_credentials(codex_home: Path, personal_codex_home: Path) -> Path:
+def validate_credentials(
+    codex_home: Path,
+    personal_codex_home: Path,
+    *,
+    warnings: list[str] | None = None,
+) -> Path:
+    if warnings is None:
+        warnings = []
     resolved_home = require_no_symlink_components(codex_home, kind="CODEX_AI_CI_HOME")
     personal_home = personal_codex_home.expanduser().resolve(strict=False)
     if resolved_home == personal_home or personal_home in resolved_home.parents:
         fail(f"CODEX_AI_CI_HOME 不得使用个人 Codex 配置目录或其子目录：{resolved_home}")
 
-    require_private_path(
-        resolved_home, expected_mode=0o700, kind="Codex AI CI 凭据目录"
+    require_credential_path(
+        resolved_home,
+        recommended_mode=0o700,
+        kind="Codex AI CI 凭据目录",
+        warnings=warnings,
     )
     expected_names = {"config.toml", "auth.json"}
     try:
@@ -306,13 +321,18 @@ def validate_credentials(codex_home: Path, personal_codex_home: Path) -> Path:
     if missing_names:
         fail(f"Codex AI CI 凭据目录缺少文件：{', '.join(missing_names)}")
     if unexpected_names:
-        fail(f"Codex AI CI 凭据目录包含多余文件：{', '.join(unexpected_names)}")
+        warnings.append(
+            f"Codex AI CI 凭据目录包含额外文件：{', '.join(unexpected_names)}"
+        )
 
     files: dict[str, Path] = {}
     for name in sorted(expected_names):
         path = resolved_home / name
-        metadata = require_private_path(
-            path, expected_mode=0o600, kind=f"Codex AI CI 凭据文件 {name}"
+        metadata = require_credential_path(
+            path,
+            recommended_mode=0o600,
+            kind=f"Codex AI CI 凭据文件 {name}",
+            warnings=warnings,
         )
         if metadata.st_nlink != 1:
             fail(f"Codex AI CI 凭据文件不得是硬链接：{path}")
@@ -336,13 +356,18 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        warnings: list[str] = []
         resolved_home = validate_credentials(
-            Path(args.codex_home), Path(args.personal_codex_home)
+            Path(args.codex_home),
+            Path(args.personal_codex_home),
+            warnings=warnings,
         )
     except CredentialValidationError as exc:
         print(f"Codex AI CI 凭据校验失败：{exc}", file=sys.stderr)
         return 1
 
+    for warning in warnings:
+        print(f"Codex AI CI 凭据警告：{warning}", file=sys.stderr)
     if not args.quiet:
         print(f"Codex AI CI 独立凭据校验通过：{resolved_home}")
     return 0

@@ -581,16 +581,19 @@ validate_prerequisites() {
   if [[ -z "${CODEX_AI_CI_HOME}" ]]; then
     fail_ai_ci "必须设置独立的 CODEX_AI_CI_HOME"
   fi
-  local credential_validation_error
-  if ! credential_validation_error="$(
+  local credential_validation_output
+  if ! credential_validation_output="$(
     "${PYTHON_BIN}" "${credentials_validator}" \
       --codex-home "${CODEX_AI_CI_HOME}" \
       --personal-codex-home "${HOME}/.codex" \
       --quiet 2>&1
   )"; then
-    [[ -n "${credential_validation_error}" ]] && \
-      echo "${credential_validation_error}" >> "${log_path}"
-    fail_ai_ci "${credential_validation_error:-Codex AI CI 独立凭据校验失败}"
+    [[ -n "${credential_validation_output}" ]] && \
+      echo "${credential_validation_output}" >> "${log_path}"
+    fail_ai_ci "${credential_validation_output:-Codex AI CI 独立凭据校验失败}"
+  fi
+  if [[ -n "${credential_validation_output}" ]]; then
+    echo "${credential_validation_output}" >> "${log_path}"
   fi
   capture_credential_hashes
 

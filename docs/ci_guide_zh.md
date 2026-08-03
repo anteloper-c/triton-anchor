@@ -321,9 +321,9 @@ Local CI 的任务协议和 runner 骨架可以复用，但真实执行不能假
 
 #### 4.4.7 Codex AI CI 独立凭据
 
-Codex AI CI 不使用 poller 用户的个人 `~/.codex`。启用 `RUN_CODEX_AI_CI=true` 时，必须通过 `CODEX_AI_CI_HOME` 指向独立凭据目录；目录中只能包含 `config.toml` 和 `auth.json`，目录权限为 `700`，两个文件权限为 `600`，并由 poller 用户所有。`auth.json` 使用可独立撤销和审计的 CI 专用静态 API token。
+Codex AI CI 不使用 poller 用户的个人 `~/.codex`。启用 `RUN_CODEX_AI_CI=true` 时，必须通过 `CODEX_AI_CI_HOME` 指向独立凭据目录，并提供可读的 `config.toml` 和 `auth.json`。建议目录使用 `700`、两个文件使用 `600`，但权限更宽、所有者不同或存在额外文件时只记录警告，不会阻止 AI-CI。`auth.json` 使用可独立撤销和审计的 CI 专用静态 API token。
 
-部署时先停止 poller，创建 `/home/race_work/local_ci/secrets/codex-ai`，按已验证的中转配置单独写入 `config.toml`（不要复制个人配置中的 `[projects]` 记录），并将 `auth.json` 写为 `{"OPENAI_API_KEY":"<CI 专用 token>"}`。随后执行 `chmod 700 /home/race_work/local_ci/secrets/codex-ai` 和 `chmod 600 /home/race_work/local_ci/secrets/codex-ai/{config.toml,auth.json}`，再在 `config.env` 中设置 `CODEX_AI_CI_HOME`。
+部署时先停止 poller，创建 `/home/race_work/local_ci/secrets/codex-ai`，按已验证的中转配置单独写入 `config.toml`（不要复制个人配置中的 `[projects]` 记录），并将 `auth.json` 写为 `{"OPENAI_API_KEY":"<CI 专用 token>"}`，再在 `config.env` 中设置 `CODEX_AI_CI_HOME`。不执行额外的 `chmod` 也可以运行；服务器存在其他用户时，仍建议收紧权限以避免 token 被读取。
 
 每次任务会把宿主机 Codex CLI 和独立凭据实体复制到任务专属临时容器的 `/root/.codex`，不会挂载凭据，也不会把容器内文件复制回宿主机。runner 会比较任务前后的凭据文件哈希；发现外部修改时只记录中文告警，不自动恢复文件，也不改变确定性 Local CI 的结果。可在启动 poller 前运行 `CODEX_AI_CI_HOME=/home/race_work/local_ci/secrets/codex-ai scripts/local_ci/setup_codex_ai_container.sh` 完成前置检查。
 
