@@ -90,6 +90,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--comment-output", required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--base-sha", required=True)
+    parser.add_argument("--requested-base-sha", default="")
+    parser.add_argument(
+        "--diff-mode",
+        choices=("two-point", "merge-base"),
+        default="two-point",
+    )
     parser.add_argument("--target-sha", required=True)
     parser.add_argument("--changed-file-count", required=True, type=int)
     parser.add_argument(
@@ -305,6 +311,15 @@ def comment_inline(value: Any) -> str:
 
 def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if args.diff_mode == "merge-base":
+        base_rows = [
+            f"| 目标分支提交 | `{inline(args.requested_base_sha)}` |",
+            f"| 实际审查起点（merge-base） | `{inline(args.base_sha)}` |",
+        ]
+    else:
+        base_rows = [
+            f"| 基础提交 | `{inline(args.base_sha)}` |",
+        ]
     lines = [
         "# Codex AI CI 报告",
         "",
@@ -314,7 +329,7 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
         "| --- | --- |",
         "| 报告格式 | `triton-anchor-codex-ai-report/v1` |",
         f"| 分支 | `{inline(args.branch)}` |",
-        f"| 基础提交 | `{inline(args.base_sha)}` |",
+        *base_rows,
         f"| 目标提交 | `{inline(args.target_sha)}` |",
         f"| 变更文件数 | {args.changed_file_count} |",
         f"| 生成时间（UTC） | `{generated_at}` |",

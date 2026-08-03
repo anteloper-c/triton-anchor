@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "local_ci"))
 
-import bridge_gitee_to_github_status as bridge  # noqa: E402
+import bridge_gitee_to_github_status as bridge
 
 
 class CodexCommentTests(unittest.TestCase):
@@ -28,21 +31,29 @@ class CodexCommentTests(unittest.TestCase):
             "pass",
             "pass",
             {},
-            "## Codex AI 关键问题概述\n\n发现一个问题。",
+            bridge.CodexAIResult(
+                "pass",
+                "WARNING",
+                "stable_failure",
+                "full",
+                "warning",
+                "生成测试和执行命令均在限制内。",
+                "",
+                "## Codex AI 关键问题概述\n\n发现一个问题。",
+                "https://gitee.example/results/run/codex-ai-report.md",
+            ),
         )
 
     def test_pr_number_is_derived_only_from_pr_task_refs(self) -> None:
         self.assertEqual(bridge.pr_number_from_task_ref(self.target.task_ref), 42)
-        self.assertIsNone(
-            bridge.pr_number_from_task_ref("ci/push/feature")
-        )
+        self.assertIsNone(bridge.pr_number_from_task_ref("ci/push/feature"))
 
     def test_comment_body_contains_summary_link_and_stable_marker(self) -> None:
         body = bridge.codex_pr_comment_body(self.target, self.result)
         self.assertIn("发现一个问题。", body)
         self.assertIn("- 提交：", body)
         self.assertIn("`aaaaaaaaaaaa`", body)
-        self.assertIn(self.result.target_url, body)
+        self.assertIn(self.result.codex_ai.report_url, body)
         self.assertIn(bridge.CODEX_COMMENT_MARKER, body)
 
     @mock.patch.object(bridge, "request_json")
@@ -79,6 +90,164 @@ class CodexCommentTests(unittest.TestCase):
 
         self.assertEqual(request_json.call_args.kwargs["method"], "PATCH")
         self.assertIn("/issues/comments/99", request_json.call_args.args[0])
+
+    def test_push_does_not_publish_pr_comment(self) -> None:
+        push_target = bridge.Target(
+            "feature",
+            "ci/push/feature",
+            "b" * 40,
+            "branch feature",
+        )
+        with (
+            mock.patch.object(bridge, "get_github_json") as get_json,
+            mock.patch.object(bridge, "request_json") as request_json,
+        ):
+            bridge.post_codex_pr_comment(push_target, self.result)
+        get_json.assert_not_called()
+        request_json.assert_not_called()
+
+    def test_codex_advisory_status_is_always_non_blocking(self) -> None:
+        args = SimpleNamespace(context="local-ci/test")
+        with mock.patch.object(bridge, "post_github_status") as post_status:
+            bridge.post_codex_advisory_status(args, self.target, self.result)
+
+        status_args = post_status.call_args.args
+        self.assertEqual(status_args[0], self.target.sha)
+        self.assertEqual(status_args[1], "success")
+        self.assertEqual(status_args[2], "local-ci/test/codex-ai-advisory")
+        self.assertIn("警告", status_args[3])
+        self.assertIn("非阻塞", status_args[3])
+        self.assertEqual(status_args[4], self.result.codex_ai.report_url)
+
+    def test_advisory_descriptions_cover_non_pass_states(self) -> None:
+        base = self.result.codex_ai
+
+        def changed(**values: str) -> bridge.CodexAIResult:
+            payload = {
+                name: getattr(base, name)
+                for name in bridge.CodexAIResult.__dataclass_fields__
+            }
+            payload.update(values)
+            return bridge.CodexAIResult(**payload)
+
+        cases = (
+            (changed(execution_status="fail"), "未完成"),
+            (changed(execution_status="skipped"), "未运行"),
+            (
+                changed(verdict="PASS", test_status="insufficient_evidence"),
+                "证据不足",
+            ),
+            (changed(verdict="FAIL"), "失败"),
+            (changed(verdict="PASS", constraint_status="warning"), "约束警告"),
+            (
+                changed(
+                    verdict="PASS",
+                    test_status="passed",
+                    constraint_status="pass",
+                ),
+                "通过",
+            ),
+        )
+        for codex_ai, expected in cases:
+            with self.subTest(expected=expected):
+                description = bridge.codex_advisory_description(codex_ai)
+                self.assertIn(expected, description)
+                self.assertIn("非阻塞", description)
+
+    def test_codex_ai_output_is_single_line_json(self) -> None:
+        encoded = bridge.codex_ai_output_json(self.result)
+        self.assertNotIn("\n", encoded)
+        payload = json.loads(encoded)
+        self.assertEqual(payload["execution_status"], "pass")
+        self.assertEqual(payload["verdict"], "WARNING")
+        self.assertEqual(payload["test_status"], "stable_failure")
+        self.assertIn("发现一个问题", payload["comment_markdown"])
+        self.assertEqual(
+            payload["report_url"],
+            self.result.codex_ai.report_url,
+        )
+
+    def test_write_github_outputs_includes_codex_ai_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "github-output.txt"
+            with mock.patch.dict(
+                os.environ,
+                {"GITHUB_OUTPUT": str(output_path)},
+            ):
+                bridge.write_github_outputs(self.result)
+
+            values = dict(
+                line.split("=", 1)
+                for line in output_path.read_text(encoding="utf-8").splitlines()
+            )
+        payload = json.loads(values["codex_ai_result"])
+        self.assertEqual(payload["analysis_mode"], "full")
+        self.assertEqual(payload["constraint_status"], "warning")
+
+    @mock.patch.object(bridge, "gitee_content")
+    def test_read_result_combines_result_summary_and_comment(
+        self, gitee_content: mock.Mock
+    ) -> None:
+        def content(
+            owner: str,
+            repo: str,
+            path: str,
+            ref: str,
+            token: str,
+        ) -> str | None:
+            del owner, repo, ref, token
+            if path.endswith("/latest.txt"):
+                return "run-1\n"
+            if path.endswith("/delivery-summary.txt"):
+                return (
+                    "status: 0\n"
+                    "frontend_smoke_status: pass\n"
+                    "backend_smoke_jit_status: pass\n"
+                    "flaggems_status: disabled\n"
+                    "compile_time_status: disabled\n"
+                    "pass_profile_status: disabled\n"
+                    "ir_serialization_status: disabled\n"
+                )
+            if path.endswith("/result.json"):
+                return json.dumps(
+                    {
+                        "codex_ai_ci_status": "pass",
+                        "codex_ai_ci_mode": "full",
+                        "codex_ai_ci_verdict": "PASS",
+                        "codex_ai_test_status": "passed",
+                    }
+                )
+            if path.endswith("/codex-ai-ci-summary.txt"):
+                return (
+                    "status: pass\n"
+                    "analysis_mode: full\n"
+                    "report_verdict: WARNING\n"
+                    "test_execution_status: stable_failure\n"
+                    "constraint_status: warning\n"
+                    "constraint_reason: 定向测试数量符合约束。\n"
+                    "failure_reason: \n"
+                )
+            if path.endswith("/codex-ai-comment.md"):
+                return "## Codex AI 关键问题概述\n\n发现一个问题。\n"
+            return None
+
+        gitee_content.side_effect = content
+        args = SimpleNamespace(
+            gitee_owner="owner",
+            gitee_repo="results",
+            gitee_results_branch="local-ci-results",
+            gitee_web_url="https://gitee.example/results",
+        )
+        result = bridge.read_local_ci_result(args, self.target, "token")
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.codex_ai.execution_status, "pass")
+        self.assertEqual(result.codex_ai.verdict, "WARNING")
+        self.assertEqual(result.codex_ai.test_status, "stable_failure")
+        self.assertEqual(result.codex_ai.constraint_status, "warning")
+        self.assertIn("/blob/local-ci-results/", result.codex_ai.report_url)
+        self.assertTrue(result.codex_ai.report_url.endswith("codex-ai-report.md"))
 
 
 if __name__ == "__main__":

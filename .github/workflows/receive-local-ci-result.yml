@@ -56,6 +56,7 @@ jobs:
       overall_status: ${{ steps.bridge.outputs.overall_status }}
       target_url: ${{ steps.bridge.outputs.target_url }}
       stage_results: ${{ steps.bridge.outputs.stage_results }}
+      codex_ai_result: ${{ steps.bridge.outputs.codex_ai_result }}
     env:
       CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
       SHA: ${{ inputs.sha }}
@@ -227,3 +228,134 @@ jobs:
               exit 1
               ;;
           esac
+
+  codex-ai-result:
+    name: Codex AI / Review
+    needs: receive
+    if: ${{ always() && needs.receive.outputs.result_ready == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish non-blocking Codex AI summary
+        env:
+          CODEX_AI_RESULT: ${{ needs.receive.outputs.codex_ai_result }}
+        shell: bash
+        run: |
+          set +e
+          python3 <<'PY'
+          import json
+          import os
+
+          execution_labels = {
+              "pass": "完成",
+              "fail": "执行失败",
+              "skipped": "已跳过",
+              "not_reported": "未报告",
+          }
+          verdict_labels = {
+              "PASS": "通过",
+              "WARNING": "警告",
+              "FAIL": "失败",
+              "UNKNOWN": "未知",
+              "NOT_RUN": "未运行",
+          }
+          test_labels = {
+              "passed": "通过",
+              "stable_failure": "稳定失败",
+              "flaky_failure": "不稳定失败",
+              "infrastructure_failure": "基础设施失败",
+              "test_generation_error": "测试生成失败",
+              "insufficient_evidence": "证据不足",
+              "not_run": "未执行",
+              "UNKNOWN": "未知",
+              "NOT_RUN": "未运行",
+          }
+          mode_labels = {
+              "full": "完整分析",
+              "analysis_only": "只分析",
+              "not_run": "未运行",
+          }
+          constraint_labels = {
+              "pass": "通过",
+              "warning": "警告",
+              "not_applicable": "不适用",
+              "not_reported": "未报告",
+          }
+
+          raw = os.environ.get("CODEX_AI_RESULT", "")
+          parse_error = ""
+          try:
+              data = json.loads(raw) if raw else {}
+              if not isinstance(data, dict):
+                  raise ValueError("根节点不是 JSON 对象")
+          except (json.JSONDecodeError, ValueError) as exc:
+              parse_error = f"无法解析 Codex AI 结果：{exc}"
+              data = {}
+
+          execution = str(data.get("execution_status") or "not_reported")
+          verdict = str(data.get("verdict") or "UNKNOWN")
+          test_status = str(data.get("test_status") or "UNKNOWN")
+          analysis_mode = str(data.get("analysis_mode") or "not_run")
+          constraint_status = str(data.get("constraint_status") or "not_reported")
+          constraint_reason = str(data.get("constraint_reason") or "")
+          failure_reason = str(data.get("failure_reason") or "")
+          comment = str(data.get("comment_markdown") or "").strip()
+          report_url = str(data.get("report_url") or "").strip()
+
+          def display(labels, value):
+              return f"{labels.get(value, value)} (`{value}`)"
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
+              stream.write("## Codex AI / Review（非阻塞）\n\n")
+              stream.write(
+                  "该结果仅供代码审查参考，不改变确定性 Local CI 状态，也不阻止合并。\n\n"
+              )
+              stream.write("| 字段 | 值 |\n| --- | --- |\n")
+              stream.write(
+                  f"| 执行状态 | {display(execution_labels, execution)} |\n"
+              )
+              stream.write(
+                  f"| AI 建议性结论 | {display(verdict_labels, verdict)} |\n"
+              )
+              stream.write(
+                  f"| 测试状态 | {display(test_labels, test_status)} |\n"
+              )
+              stream.write(
+                  f"| 分析模式 | {display(mode_labels, analysis_mode)} |\n"
+              )
+              stream.write(
+                  f"| 约束状态 | {display(constraint_labels, constraint_status)} |\n"
+              )
+              if constraint_reason:
+                  stream.write(f"\n**约束说明：** {constraint_reason}\n")
+              if failure_reason:
+                  stream.write(f"\n**执行说明：** {failure_reason}\n")
+              stream.write("\n### 关键问题概述\n\n")
+              stream.write(comment or "未生成 Codex AI 关键问题概述。")
+              stream.write("\n")
+              if report_url:
+                  stream.write(f"\n[查看 Gitee 完整报告]({report_url})\n")
+
+          warnings = []
+          if parse_error:
+              warnings.append(parse_error)
+          if execution not in {"pass", "skipped"}:
+              warnings.append("Codex AI 执行未完成，当前结果仅供参考。")
+          if verdict in {"WARNING", "FAIL"}:
+              warnings.append(f"Codex AI 给出{verdict_labels[verdict]}建议性结论。")
+          if test_status == "insufficient_evidence":
+              warnings.append("Codex AI 定向测试证据不足。")
+          if constraint_status == "warning":
+              warnings.append("Codex AI 测试执行超出轻量约束。")
+          for warning in warnings:
+              print(f"::warning title=Codex AI（非阻塞）::{warning}")
+          PY
+          python_status=$?
+          if [ "${python_status}" -ne 0 ]; then
+            {
+              echo "## Codex AI / Review（非阻塞）"
+              echo
+              echo "Codex AI 摘要生成失败；该问题不影响确定性 Local CI 状态。"
+            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "::warning title=Codex AI（非阻塞）::Codex AI 摘要生成失败。"
+          fi
+          exit 0

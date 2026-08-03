@@ -147,8 +147,9 @@ run_codex_ai_ci_for_run() {
   local sha="$1"
   local run_dir="$2"
   local base_sha="$3"
-  local branch="$4"
-  local local_ci_status="$5"
+  local base_ref="$4"
+  local branch="$5"
+  local local_ci_status="$6"
 
   CODEX_BIN="${CODEX_BIN}" \
     CODEX_HOME="${CODEX_HOME}" \
@@ -170,8 +171,8 @@ run_codex_ai_ci_for_run() {
     BACKEND_ENVSETUP="${BACKEND_ENVSETUP:-}" \
     BACKEND_ENVSETUP_ARGS="${BACKEND_ENVSETUP_ARGS:-}" \
     "${LOCAL_CI_RUNNER_DIR}/run_codex_ai_ci.sh" \
-    "${GITEE_REPO_URL}" "${run_dir}" "${sha}" "${base_sha}" "${branch}" \
-    "${local_ci_status}"
+    "${GITEE_REPO_URL}" "${run_dir}" "${sha}" "${base_sha}" "${base_ref}" \
+    "${branch}" "${local_ci_status}"
 }
 
 publish_result() {
@@ -292,13 +293,11 @@ run_once() {
 
   local base_branch=""
   local base_sha=""
-  if [[ ("${RUN_COMPILE_BENCHMARK}" == "true" || "${RUN_PASS_PROFILE}" == "true" \
-    || "${RUN_IR_SERIALIZATION_BENCHMARK}" == "true") \
-    && "${branch}" =~ ^ci/pr-([0-9]+)/(.+)$ ]]; then
+  if [[ "${branch}" =~ ^ci/pr-([0-9]+)/(.+)$ ]]; then
     base_branch="ci/base/pr-${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
     base_sha="$(latest_sha "${base_branch}")"
     if [[ -z "${base_sha}" ]]; then
-      echo "No base SHA found for ${branch}; performance comparisons will report a warning." >&2
+      echo "No exact PR base SHA found for ${branch}; performance and Codex comparisons are unavailable." >&2
     else
       local missing_baseline=0
       if [[ "${RUN_COMPILE_BENCHMARK}" == "true" ]]; then
@@ -380,8 +379,12 @@ run_once() {
     echo "Codex smoke skipped for ${branch}." | tee -a "${run_dir}/local-ci.log"
   fi
 
-  local codex_ai_base_sha="${base_sha}"
-  if [[ -z "${codex_ai_base_sha}" && -n "${last}" ]]; then
+  local codex_ai_base_sha=""
+  local codex_ai_base_ref=""
+  if [[ -n "${base_branch}" ]]; then
+    codex_ai_base_sha="${base_sha}"
+    codex_ai_base_ref="${base_branch}"
+  elif [[ -n "${last}" ]]; then
     codex_ai_base_sha="${last}"
   fi
 
@@ -401,7 +404,7 @@ run_once() {
     local codex_ai_ci_exit=0
     set +e
     run_codex_ai_ci_for_run \
-      "${sha}" "${run_dir}" "${codex_ai_base_sha}" "${branch}" "${status}" 2>&1 |
+      "${sha}" "${run_dir}" "${codex_ai_base_sha}" "${codex_ai_base_ref}" "${branch}" "${status}" 2>&1 |
       tee -a "${run_dir}/local-ci.log"
     codex_ai_ci_exit=${PIPESTATUS[0]}
     set -e

@@ -42,6 +42,19 @@ class Target:
 
 
 @dataclass(frozen=True)
+class CodexAIResult:
+    execution_status: str
+    verdict: str
+    test_status: str
+    analysis_mode: str
+    constraint_status: str
+    constraint_reason: str
+    failure_reason: str
+    comment_markdown: str
+    report_url: str
+
+
+@dataclass(frozen=True)
 class LocalCIResult:
     exit_code: int | None
     target_url: str
@@ -50,7 +63,7 @@ class LocalCIResult:
     pass_profile_status: str
     ir_serialization_status: str
     stage_statuses: dict[str, str]
-    codex_comment: str
+    codex_ai: CodexAIResult
 
 
 def parse_args() -> argparse.Namespace:
@@ -239,6 +252,12 @@ def gitee_result_url(web_url: str, results_branch: str, rel_dir: str) -> str:
     return f"{web_url.rstrip('/')}/tree/{quoted_branch}/{quoted_rel_dir}"
 
 
+def gitee_file_url(web_url: str, results_branch: str, rel_path: str) -> str:
+    quoted_branch = urllib.parse.quote(results_branch, safe="")
+    quoted_rel_path = urllib.parse.quote(rel_path, safe="/")
+    return f"{web_url.rstrip('/')}/blob/{quoted_branch}/{quoted_rel_path}"
+
+
 def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: str) -> LocalCIResult | None:
     commit_dir = result_commit_dir(target.task_ref, target.sha).as_posix()
     latest_path = f"{commit_dir}/latest.txt"
@@ -271,6 +290,20 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
         stage_id: parse_summary_value(summary, summary_key)
         for stage_id, summary_key, _, _ in REPORTABLE_STAGES
     }
+    result_json_text = gitee_content(
+        args.gitee_owner,
+        args.gitee_repo,
+        f"{rel_dir}/result.json",
+        args.gitee_results_branch,
+        gitee_token,
+    ) or ""
+    codex_summary = gitee_content(
+        args.gitee_owner,
+        args.gitee_repo,
+        f"{rel_dir}/codex-ai-ci-summary.txt",
+        args.gitee_results_branch,
+        gitee_token,
+    ) or ""
     codex_comment = gitee_content(
         args.gitee_owner,
         args.gitee_repo,
@@ -278,6 +311,79 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
         args.gitee_results_branch,
         gitee_token,
     ) or ""
+
+    codex_document: dict[str, object] = {}
+    parse_failure = ""
+    if result_json_text:
+        try:
+            candidate = json.loads(result_json_text)
+            if isinstance(candidate, dict):
+                codex_document = candidate
+            else:
+                parse_failure = "result.json 的根节点不是 JSON 对象。"
+        except json.JSONDecodeError:
+            parse_failure = "result.json 不是有效的 JSON。"
+
+    def document_string(key: str, default: str) -> str:
+        value = codex_document.get(key)
+        return value.strip() if isinstance(value, str) and value.strip() else default
+
+    execution_status = document_string("codex_ai_ci_status", "not_reported")
+    verdict = document_string("codex_ai_ci_verdict", "UNKNOWN")
+    test_status = document_string("codex_ai_test_status", "UNKNOWN")
+    analysis_mode = document_string("codex_ai_ci_mode", "not_run")
+    constraint_status = "not_reported"
+    constraint_reason = "未找到 Codex AI 约束校验结果。"
+    failure_reason = parse_failure
+
+    if codex_summary:
+        execution_status = parse_summary_value(codex_summary, "status") or execution_status
+        verdict = parse_summary_value(codex_summary, "report_verdict") or verdict
+        test_status = (
+            parse_summary_value(codex_summary, "test_execution_status") or test_status
+        )
+        analysis_mode = parse_summary_value(codex_summary, "analysis_mode") or analysis_mode
+        constraint_status = (
+            parse_summary_value(codex_summary, "constraint_status")
+            or constraint_status
+        )
+        constraint_reason = (
+            parse_summary_value(codex_summary, "constraint_reason")
+            or constraint_reason
+        )
+        failure_reason = (
+            parse_summary_value(codex_summary, "failure_reason") or failure_reason
+        )
+
+    if execution_status == "skipped":
+        if constraint_status == "not_reported":
+            constraint_status = "not_applicable"
+            constraint_reason = "本次任务未运行 Codex AI CI，约束校验不适用。"
+        failure_reason = failure_reason or "本次任务未运行 Codex AI CI。"
+    elif execution_status == "not_reported":
+        failure_reason = failure_reason or "未找到 Codex AI CI 结果。"
+
+    has_report = bool(codex_summary or codex_comment) or execution_status in {"pass", "fail"}
+    report_url = (
+        gitee_file_url(
+            args.gitee_web_url,
+            args.gitee_results_branch,
+            f"{rel_dir}/codex-ai-report.md",
+        )
+        if has_report
+        else ""
+    )
+    codex_ai = CodexAIResult(
+        execution_status,
+        verdict,
+        test_status,
+        analysis_mode,
+        constraint_status,
+        constraint_reason,
+        failure_reason,
+        codex_comment.strip(),
+        report_url,
+    )
     return LocalCIResult(
         parse_summary_status(summary),
         gitee_result_url(args.gitee_web_url, args.gitee_results_branch, rel_dir),
@@ -286,7 +392,7 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
         stage_statuses["pass_profile"],
         stage_statuses["ir_serialization"],
         stage_statuses,
-        codex_comment.strip(),
+        codex_ai,
     )
 
 
@@ -305,13 +411,14 @@ def pr_number_from_task_ref(task_ref: str) -> int | None:
 
 
 def codex_pr_comment_body(target: Target, result: LocalCIResult) -> str:
-    body = result.codex_comment.strip()
+    body = result.codex_ai.comment_markdown.strip()
     if not body:
         return ""
+    report_url = result.codex_ai.report_url or result.target_url
     return (
         f"{body}\n\n"
         f"- 提交：`{target.sha[:12]}`\n"
-        f"- [完整 Codex AI CI 报告]({result.target_url})\n\n"
+        f"- [完整 Codex AI CI 报告]({report_url})\n\n"
         f"{CODEX_COMMENT_MARKER}\n"
     )
 
@@ -387,6 +494,67 @@ def post_stage_statuses(
             )
 
 
+def codex_advisory_description(codex_ai: CodexAIResult) -> str:
+    execution_status = codex_ai.execution_status.strip().lower()
+    verdict = codex_ai.verdict.strip().upper()
+    test_status = codex_ai.test_status.strip().lower()
+    constraint_status = codex_ai.constraint_status.strip().lower()
+    if execution_status == "skipped":
+        return "Codex AI 未运行（非阻塞）"
+    if execution_status != "pass":
+        return "Codex AI 未完成（非阻塞）"
+    if test_status == "insufficient_evidence":
+        return "Codex AI 测试证据不足（非阻塞）"
+    if verdict == "FAIL":
+        return "Codex AI 建议性结论：失败（非阻塞）"
+    if verdict == "WARNING":
+        return "Codex AI 建议性结论：警告（非阻塞）"
+    if constraint_status == "warning":
+        return "Codex AI 测试约束警告（非阻塞）"
+    return "Codex AI 建议性结论：通过（非阻塞）"
+
+
+def post_codex_advisory_status(
+    args: argparse.Namespace, target: Target, result: LocalCIResult
+) -> None:
+    post_github_status(
+        target.sha,
+        "success",
+        f"{args.context}/codex-ai-advisory",
+        codex_advisory_description(result.codex_ai),
+        result.codex_ai.report_url or result.target_url,
+    )
+
+
+def codex_ai_output_json(result: LocalCIResult | None) -> str:
+    if result is None:
+        codex_ai = CodexAIResult(
+            "not_reported",
+            "UNKNOWN",
+            "UNKNOWN",
+            "not_run",
+            "not_reported",
+            "未找到 Codex AI 约束校验结果。",
+            "尚未收到 Codex AI CI 结果。",
+            "",
+            "",
+        )
+    else:
+        codex_ai = result.codex_ai
+    payload = {
+        "execution_status": codex_ai.execution_status,
+        "verdict": codex_ai.verdict,
+        "test_status": codex_ai.test_status,
+        "analysis_mode": codex_ai.analysis_mode,
+        "constraint_status": codex_ai.constraint_status,
+        "constraint_reason": codex_ai.constraint_reason,
+        "failure_reason": codex_ai.failure_reason,
+        "comment_markdown": codex_ai.comment_markdown,
+        "report_url": codex_ai.report_url,
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
 def write_github_outputs(result: LocalCIResult | None) -> None:
     output_path = os.getenv("GITHUB_OUTPUT", "")
     if not output_path:
@@ -396,6 +564,7 @@ def write_github_outputs(result: LocalCIResult | None) -> None:
             "result_ready": "false",
             "overall_status": "not_ready",
             "target_url": "",
+            "codex_ai_result": codex_ai_output_json(None),
             "run_id": "",
             "stage_results": "{}",
         }
@@ -407,6 +576,7 @@ def write_github_outputs(result: LocalCIResult | None) -> None:
             "overall_status": overall_status,
             "target_url": result.target_url,
             "run_id": result.run_id,
+            "codex_ai_result": codex_ai_output_json(result),
             "stage_results": json.dumps(stage_results, separators=(",", ":")),
         }
     with open(output_path, "a", encoding="utf-8") as stream:
@@ -440,6 +610,13 @@ def sync_target(args: argparse.Namespace, target: Target, set_pending: bool) -> 
             result = None
         if result is not None:
             post_stage_statuses(args, target, result)
+            try:
+                post_codex_advisory_status(args, target, result)
+            except Exception as exc:
+                print(
+                    f"Warning: failed to publish Codex AI advisory status: {exc}",
+                    file=sys.stderr,
+                )
             try:
                 post_codex_pr_comment(target, result)
             except Exception as exc:

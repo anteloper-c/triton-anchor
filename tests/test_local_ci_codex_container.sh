@@ -44,6 +44,21 @@ git -C "${source_repo}" add README.md
 git -C "${source_repo}" commit -q -m docs
 docs_target_sha="$(git -C "${source_repo}" rev-parse HEAD)"
 git -C "${source_repo}" push -q gitee "HEAD:refs/heads/${docs_branch}"
+
+pr_branch="ci/pr-42/feature"
+pr_base_branch="ci/base/pr-42/feature"
+git -C "${source_repo}" checkout -q --detach "${base_sha}"
+printf 'target branch only\n' > "${source_repo}/target-only.txt"
+git -C "${source_repo}" add target-only.txt
+git -C "${source_repo}" commit -q -m target-base
+pr_target_base_sha="$(git -C "${source_repo}" rev-parse HEAD)"
+git -C "${source_repo}" push -q gitee "HEAD:refs/heads/${pr_base_branch}"
+git -C "${source_repo}" checkout -q --detach "${base_sha}"
+printf 'pull request only\n' > "${source_repo}/pr-only.txt"
+git -C "${source_repo}" add pr-only.txt
+git -C "${source_repo}" commit -q -m pr-head
+pr_head_sha="$(git -C "${source_repo}" rev-parse HEAD)"
+git -C "${source_repo}" push -q gitee "HEAD:refs/heads/${pr_branch}"
 git -C "${source_repo}" checkout -q --detach "${target_sha}"
 
 repo_url="file://${relay_repo}"
@@ -54,6 +69,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -343,6 +359,13 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-c":
     raise SystemExit(0)
 if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
     prompt = sys.stdin.read()
+    assert "${" not in prompt
+    if "分支：ci/pr-42/feature" in prompt:
+        assert "差异模式：merge-base" in prompt
+        assert re.search(r"git diff --find-renames [0-9a-f]{40}\.\.\.[0-9a-f]{40}", prompt)
+    else:
+        assert "差异模式：two-point" in prompt
+        assert re.search(r"git diff --find-renames [0-9a-f]{40} [0-9a-f]{40}", prompt)
     mode = environment.get("AI_ANALYSIS_MODE", "full")
     if mode == "analysis_only":
         assert "只分析模式" in prompt
@@ -397,6 +420,7 @@ run_case() {
   local case_target_sha="${6:-${target_sha}}"
   local case_base_sha="${7:-${base_sha}}"
   local case_branch="${8:-${task_branch}}"
+  local case_base_ref="${9:-}"
   local case_root="${test_root}/${case_name}"
   local output_dir="${case_root}/output"
   local docker_root="${case_root}/container-root"
@@ -430,7 +454,7 @@ run_case() {
   CODEX_AI_CI_TIMEOUT_SECONDS="${timeout_seconds}" \
   CODEX_AI_CI_REASONING_EFFORT="low" \
     "${runner}" "${repo_url}" "${output_dir}" "${case_target_sha}" \
-    "${case_base_sha}" "${case_branch}" "${local_ci_status}"
+    "${case_base_sha}" "${case_base_ref}" "${case_branch}" "${local_ci_status}"
   local actual_exit=$?
   set -e
 
@@ -460,6 +484,13 @@ run_case() {
   fi
 }
 
+for prompt_template in \
+  codex_ai_common.md \
+  codex_ai_full.md \
+  codex_ai_analysis_only.md; do
+  [[ -r "${repo_root}/scripts/local_ci/prompts/${prompt_template}" ]]
+done
+
 run_case success success 0 30 0
 success_output="${test_root}/success/output"
 grep -Fxq "status: pass" "${success_output}/codex-ai-ci-summary.txt"
@@ -481,6 +512,59 @@ grep -Fxq "max_test_command_duration_seconds: 0.2" "${success_output}/codex-ai-c
 grep -Fxq "total_test_command_duration_seconds: 0.2" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fq "## 测试执行约束" "${success_output}/codex-ai-report.md"
 grep -Fq "状态：通过" "${success_output}/codex-ai-report.md"
+
+run_case pr-merge-base success 0 30 0 \
+  "${pr_head_sha}" "${pr_target_base_sha}" "${pr_branch}" "${pr_base_branch}"
+pr_output="${test_root}/pr-merge-base/output"
+grep -Fxq "requested_base_sha: ${pr_target_base_sha}" "${pr_output}/codex-ai-ci-summary.txt"
+grep -Fxq "requested_base_ref: ${pr_base_branch}" "${pr_output}/codex-ai-ci-summary.txt"
+grep -Fxq "base_sha: ${base_sha}" "${pr_output}/codex-ai-ci-summary.txt"
+grep -Fxq "base_source: merge-base" "${pr_output}/codex-ai-ci-summary.txt"
+grep -Fxq "diff_mode: merge-base" "${pr_output}/codex-ai-ci-summary.txt"
+grep -Fxq "changed_file_count: 1" "${pr_output}/codex-ai-ci-summary.txt"
+grep -Fq "目标分支提交" "${pr_output}/codex-ai-report.md"
+grep -Fq "实际审查起点（merge-base）" "${pr_output}/codex-ai-report.md"
+grep -Fq "${pr_target_base_sha}" "${pr_output}/codex-ai-report.md"
+grep -Fq "${base_sha}" "${pr_output}/codex-ai-report.md"
+
+missing_case_root="${test_root}/pr-missing-base"
+missing_output="${missing_case_root}/output"
+missing_docker_root="${missing_case_root}/container-root"
+missing_docker_state="${missing_case_root}/docker-state"
+missing_source_workspace="${missing_case_root}/source-workspace"
+mkdir -p "${missing_output}" "${missing_docker_root}" \
+  "${missing_docker_state}" "${missing_source_workspace}"
+printf 'Local CI finished successfully.\n' > "${missing_output}/local-ci.log"
+set +e
+PATH="${fake_bin}:${PATH}" \
+FAKE_DOCKER_STATE="${missing_docker_state}" \
+FAKE_DOCKER_ROOT="${missing_docker_root}" \
+FAKE_SOURCE_WORKSPACE="${missing_source_workspace}" \
+FAKE_SOURCE_CONTAINER="anchor-sophgo-ci" \
+FAKE_SCENARIO="success" \
+CODEX_BIN="${fake_codex}" \
+CODEX_HOME="${codex_home}" \
+LOCAL_CI_CONTAINER="anchor-sophgo-ci" \
+CODEX_AI_CI_WORKSPACE_ROOT="${workspace_root}" \
+CODEX_AI_CI_TIMEOUT_SECONDS="30" \
+  "${runner}" "${repo_url}" "${missing_output}" "${pr_head_sha}" \
+  "" "" "${pr_branch}" "0"
+missing_exit=$?
+set -e
+[[ ${missing_exit} -ne 0 ]]
+grep -Fxq "status: fail" "${missing_output}/codex-ai-ci-summary.txt"
+grep -Fxq "diff_mode: unresolved" "${missing_output}/codex-ai-ci-summary.txt"
+grep -Fq "PR Codex 审查缺少目标分支引用" \
+  "${missing_output}/codex-ai-ci-summary.txt"
+assert_chinese_failure_report "${missing_output}"
+if grep -Fq "commit anchor-sophgo-ci" "${missing_docker_state}/docker.log"; then
+  echo "PR base 缺失时不应创建 Codex 临时镜像" >&2
+  exit 1
+fi
+if find "${workspace_root}" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+  echo "PR base 缺失后的宿主机 checkout 未清理" >&2
+  exit 1
+fi
 
 run_case over-limit over_limit 0 30 0
 over_limit_output="${test_root}/over-limit/output"
