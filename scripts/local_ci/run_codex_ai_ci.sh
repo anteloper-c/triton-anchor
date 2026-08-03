@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-usage="run_codex_ai_ci.sh <repo-url> <output-dir> <target-sha> <base-sha> <base-ref> <branch> [local-ci-status]"
+usage="run_codex_ai_ci.sh <repo-url> <output-dir> <target-sha> <base-sha> <base-ref> <branch> [local-ci-status] [task-metadata-file]"
 repo_url="${1:?usage: ${usage}}"
 output_dir="${2:?usage: ${usage}}"
 target_sha="${3:?usage: ${usage}}"
@@ -9,10 +9,11 @@ requested_base_sha="${4:-}"
 requested_base_ref="${5:-}"
 branch="${6:?usage: ${usage}}"
 local_ci_status="${7:-0}"
+task_metadata_file="${8:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODEX_BIN="${CODEX_BIN:-codex}"
-CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
+CODEX_AI_CI_HOME="${CODEX_AI_CI_HOME:-}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 CODEX_AI_CI_TIMEOUT_SECONDS="${CODEX_AI_CI_TIMEOUT_SECONDS:-1800}"
 CODEX_AI_CI_REASONING_EFFORT="${CODEX_AI_CI_REASONING_EFFORT:-medium}"
@@ -52,6 +53,9 @@ generated_files_path="${output_dir}/codex-generated-files.tar.gz"
 schema_path="${SCRIPT_DIR}/codex_ai_report.schema.json"
 renderer_path="${SCRIPT_DIR}/render_codex_ai_report.py"
 checkout_helper="${SCRIPT_DIR}/prepare_codex_checkout.sh"
+credentials_validator="${SCRIPT_DIR}/validate_codex_ai_credentials.py"
+task_metadata_validator="${SCRIPT_DIR}/validate_task_metadata.py"
+task_metadata_output_path="${output_dir}/task-metadata.json"
 prompt_dir="${SCRIPT_DIR}/prompts"
 common_prompt_template="${prompt_dir}/codex_ai_common.md"
 full_prompt_template="${prompt_dir}/codex_ai_full.md"
@@ -85,6 +89,15 @@ workspace_dir=""
 workspace_parent=""
 artifact_dir=""
 host_codex_bin=""
+credential_integrity_status="not_checked"
+credential_integrity_reason="尚未校验独立凭据文件。"
+credential_hashes_initialized="false"
+config_sha256_before=""
+auth_sha256_before=""
+change_request_context_status="not_applicable"
+change_request_context_reason="当前任务不是 PR，功能声明上下文不适用。"
+change_request_context_pr_number=""
+change_request_context_json=""
 ephemeral_container=""
 ephemeral_image=""
 analysis_mode="full"
@@ -94,6 +107,10 @@ if [[ "${local_ci_status}" != "0" ]]; then
   analysis_mode="analysis_only"
   constraint_status="not_applicable"
   constraint_reason="只分析模式不执行测试数量和耗时约束校验。"
+fi
+if [[ "${branch}" =~ ^ci/pr-[0-9]+/.+ ]]; then
+  change_request_context_status="not_checked"
+  change_request_context_reason="尚未校验 PR 功能声明元数据。"
 fi
 
 cleanup() {
@@ -169,6 +186,11 @@ write_summary() {
     echo "turn_completed: ${turn_completed}"
     echo "command_executed: ${command_executed}"
     echo "workspace_dirty: ${workspace_dirty}"
+    echo "credential_integrity_status: ${credential_integrity_status}"
+    echo "credential_integrity_reason: ${credential_integrity_reason}"
+    echo "change_request_context_status: ${change_request_context_status}"
+    echo "change_request_context_reason: ${change_request_context_reason}"
+    echo "change_request_context_pr_number: ${change_request_context_pr_number}"
     echo "failure_reason: ${failure_reason}"
   } > "${summary_path}"
 }
@@ -256,9 +278,53 @@ JSON
   } > "${comment_path}"
 }
 
+append_credential_integrity_warning() {
+  if [[ "${credential_integrity_status}" != "warning" ]]; then
+    return 0
+  fi
+  {
+    echo
+    echo "## 凭据完整性"
+    echo
+    echo "- 状态：警告"
+    echo "- 说明：${credential_integrity_reason}"
+  } >> "${report_path}"
+  {
+    echo
+    echo "### Codex AI CI 凭据完整性警告"
+    echo
+    echo "${credential_integrity_reason}"
+  } >> "${comment_path}"
+  echo "Codex AI CI 凭据完整性警告：${credential_integrity_reason}" >> "${log_path}"
+}
+
+append_change_request_context_warning() {
+  case "${change_request_context_status}" in
+    missing | invalid) ;;
+    *) return 0 ;;
+  esac
+  {
+    echo
+    echo "## PR 功能声明上下文"
+    echo
+    echo "- 状态：警告"
+    echo "- 说明：${change_request_context_reason}"
+  } >> "${report_path}"
+  {
+    echo
+    echo "### PR 功能声明上下文警告"
+    echo
+    echo "${change_request_context_reason}"
+  } >> "${comment_path}"
+  echo "PR 功能声明上下文警告：${change_request_context_reason}" >> "${log_path}"
+}
+
 fail_ai_ci() {
   failure_reason="$1"
+  verify_credential_integrity
   write_failure_report
+  append_change_request_context_warning
+  append_credential_integrity_warning
   echo "Codex AI CI 失败：${failure_reason}" >> "${log_path}"
   write_summary
   echo "Codex AI CI：失败（${failure_reason}）"
@@ -273,6 +339,43 @@ resolve_codex_binary() {
   fi
   if [[ -z "${host_codex_bin}" || ! -x "${host_codex_bin}" ]]; then
     fail_ai_ci "宿主机上找不到可执行的 Codex CLI：${CODEX_BIN}"
+  fi
+}
+
+credential_sha256() {
+  sha256sum "$1" | awk '{print $1}'
+}
+
+capture_credential_hashes() {
+  config_sha256_before="$(credential_sha256 "${CODEX_AI_CI_HOME}/config.toml")"
+  auth_sha256_before="$(credential_sha256 "${CODEX_AI_CI_HOME}/auth.json")"
+  credential_hashes_initialized="true"
+  credential_integrity_status="pass"
+  credential_integrity_reason="独立凭据文件在任务执行前后保持不变。"
+}
+
+verify_credential_integrity() {
+  local config_sha256_after
+  local auth_sha256_after
+  if [[ "${credential_hashes_initialized}" != "true" ]]; then
+    return 0
+  fi
+  if [[ ! -f "${CODEX_AI_CI_HOME}/config.toml" || ! -f "${CODEX_AI_CI_HOME}/auth.json" ]]; then
+    credential_integrity_status="warning"
+    credential_integrity_reason="任务执行期间独立凭据文件被删除或替换；runner 未自动恢复文件。"
+    return 0
+  fi
+  config_sha256_after="$(credential_sha256 "${CODEX_AI_CI_HOME}/config.toml" 2>/dev/null || true)"
+  auth_sha256_after="$(credential_sha256 "${CODEX_AI_CI_HOME}/auth.json" 2>/dev/null || true)"
+  if [[ -z "${config_sha256_after}" || -z "${auth_sha256_after}" ]]; then
+    credential_integrity_status="warning"
+    credential_integrity_reason="任务结束时无法重新计算独立凭据文件哈希；runner 未修改或恢复文件。"
+  elif [[ "${config_sha256_after}" != "${config_sha256_before}" || "${auth_sha256_after}" != "${auth_sha256_before}" ]]; then
+    credential_integrity_status="warning"
+    credential_integrity_reason="任务执行期间独立凭据文件内容发生变化；runner 未自动恢复文件，请人工检查。"
+  else
+    credential_integrity_status="pass"
+    credential_integrity_reason="独立凭据文件在任务执行前后保持不变。"
   fi
 }
 
@@ -308,6 +411,101 @@ except (OSError, UnicodeError, KeyError, ValueError) as exc:
     raise SystemExit(2)
 sys.stdout.write(rendered)
 PY
+}
+
+build_unavailable_change_request_context() {
+  "${PYTHON_BIN}" - "${change_request_context_status}" \
+    "${change_request_context_reason}" <<'PY'
+import json
+import sys
+
+print(
+    json.dumps(
+        {"status": sys.argv[1], "reason": sys.argv[2]},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+)
+PY
+}
+
+load_change_request_context() {
+  if [[ ! "${branch}" =~ ^ci/pr-[0-9]+/.+ ]]; then
+    change_request_context_status="not_applicable"
+    change_request_context_reason="当前任务不是 PR，功能声明上下文不适用。"
+    change_request_context_json="$(build_unavailable_change_request_context)" || \
+      fail_ai_ci "无法生成非 PR 功能声明上下文"
+    return 0
+  fi
+
+  if [[ -z "${task_metadata_file}" || ! -f "${task_metadata_file}" ]]; then
+    change_request_context_status="missing"
+    change_request_context_reason="未取得与当前 PR head SHA 匹配的功能声明元数据；继续依据代码差异和测试证据分析。"
+    change_request_context_json="$(build_unavailable_change_request_context)" || \
+      fail_ai_ci "无法生成 PR 元数据缺失上下文"
+    echo "${change_request_context_reason}" >> "${log_path}"
+    return 0
+  fi
+
+  if [[ "${task_metadata_file}" != "${task_metadata_output_path}" ]]; then
+    rm -f -- "${task_metadata_output_path}"
+  fi
+  local validation_message=""
+  if ! validation_message="$(
+    "${PYTHON_BIN}" "${task_metadata_validator}" \
+      --input "${task_metadata_file}" \
+      --output "${task_metadata_output_path}" \
+      --task-ref "${branch}" \
+      --target-sha "${target_sha}" 2>&1
+  )"; then
+    rm -f -- "${task_metadata_output_path}"
+    validation_message="${validation_message//$'\n'/ }"
+    change_request_context_status="invalid"
+    change_request_context_reason="PR 功能声明元数据校验失败；继续依据代码差异和测试证据分析。${validation_message:+ ${validation_message}}"
+    change_request_context_json="$(build_unavailable_change_request_context)" || \
+      fail_ai_ci "无法生成 PR 元数据无效上下文"
+    echo "${change_request_context_reason}" >> "${log_path}"
+    return 0
+  fi
+
+  if [[ -n "${validation_message}" ]]; then
+    printf '%s\n' "${validation_message}" >> "${log_path}"
+  fi
+  local context_parts=()
+  mapfile -t context_parts < <(
+    "${PYTHON_BIN}" - "${task_metadata_output_path}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    metadata = json.load(stream)
+context = {
+    "status": "available",
+    "pr_number": metadata["pr_number"],
+    "title": metadata["title"],
+    "description": metadata["description"],
+    "captured_at": metadata["captured_at"],
+    "title_truncated": metadata["title_truncated"],
+    "description_truncated": metadata["description_truncated"],
+}
+print(metadata["pr_number"])
+print(json.dumps(context, ensure_ascii=False, separators=(",", ":")))
+PY
+  )
+  if [[ "${#context_parts[@]}" -ne 2 || -z "${context_parts[1]}" ]]; then
+    rm -f -- "${task_metadata_output_path}"
+    change_request_context_status="invalid"
+    change_request_context_reason="规范化后的 PR 功能声明元数据无法读取；继续依据代码差异和测试证据分析。"
+    change_request_context_json="$(build_unavailable_change_request_context)" || \
+      fail_ai_ci "无法生成 PR 元数据读取失败上下文"
+    echo "${change_request_context_reason}" >> "${log_path}"
+    return 0
+  fi
+
+  change_request_context_status="available"
+  change_request_context_reason="已校验并载入与当前 PR head SHA 匹配的功能声明元数据。"
+  change_request_context_pr_number="${context_parts[0]}"
+  change_request_context_json="${context_parts[1]}"
 }
 
 validate_prerequisites() {
@@ -350,6 +548,9 @@ validate_prerequisites() {
   if ! command -v git >/dev/null 2>&1; then
     fail_ai_ci "宿主机缺少 git 命令"
   fi
+  if ! command -v sha256sum >/dev/null 2>&1; then
+    fail_ai_ci "宿主机缺少 sha256sum 命令"
+  fi
   if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
     fail_ai_ci "宿主机找不到 Python：${PYTHON_BIN}"
   fi
@@ -362,6 +563,12 @@ validate_prerequisites() {
   if [[ ! -x "${checkout_helper}" ]]; then
     fail_ai_ci "checkout helper 不可执行：${checkout_helper}"
   fi
+  if [[ ! -r "${credentials_validator}" ]]; then
+    fail_ai_ci "独立凭据校验器不可读：${credentials_validator}"
+  fi
+  if [[ ! -r "${task_metadata_validator}" ]]; then
+    fail_ai_ci "PR 功能声明元数据校验器不可读：${task_metadata_validator}"
+  fi
   for prompt_template in \
     "${common_prompt_template}" \
     "${full_prompt_template}" \
@@ -371,11 +578,21 @@ validate_prerequisites() {
   done
 
   resolve_codex_binary
-  for config_file in config.toml auth.json; do
-    if [[ ! -r "${CODEX_HOME}/${config_file}" ]]; then
-      fail_ai_ci "Codex 配置文件不可读：${CODEX_HOME}/${config_file}"
-    fi
-  done
+  if [[ -z "${CODEX_AI_CI_HOME}" ]]; then
+    fail_ai_ci "必须设置独立的 CODEX_AI_CI_HOME"
+  fi
+  local credential_validation_error
+  if ! credential_validation_error="$(
+    "${PYTHON_BIN}" "${credentials_validator}" \
+      --codex-home "${CODEX_AI_CI_HOME}" \
+      --personal-codex-home "${HOME}/.codex" \
+      --quiet 2>&1
+  )"; then
+    [[ -n "${credential_validation_error}" ]] && \
+      echo "${credential_validation_error}" >> "${log_path}"
+    fail_ai_ci "${credential_validation_error:-Codex AI CI 独立凭据校验失败}"
+  fi
+  capture_credential_hashes
 
   if [[ "$(docker inspect --format '{{.State.Running}}' "${LOCAL_CI_CONTAINER}" 2>> "${log_path}" || true)" != "true" ]]; then
     fail_ai_ci "Local CI 容器未运行：${LOCAL_CI_CONTAINER}"
@@ -483,7 +700,7 @@ create_ephemeral_container() {
     fail_ai_ci "无法设置容器内 Codex CLI 的执行权限"
   fi
   for config_file in config.toml auth.json; do
-    if ! docker cp "${CODEX_HOME}/${config_file}" \
+    if ! docker cp "${CODEX_AI_CI_HOME}/${config_file}" \
       "${ephemeral_container}:${container_codex_home}/${config_file}" \
       >> "${log_path}" 2>&1; then
       fail_ai_ci "无法把 ${config_file} 复制到临时容器"
@@ -565,6 +782,7 @@ fi
 : > "${workspace_patch_path}"
 
 validate_prerequisites
+load_change_request_context
 discover_artifact_dir
 
 if ! workspace_dir="$(
@@ -674,6 +892,7 @@ if ! prompt="$(
     ANALYSIS_MODE "${analysis_mode}" \
     DIFF_MODE "${diff_mode}" \
     DIFF_COMMAND "${diff_command}" \
+    CHANGE_REQUEST_CONTEXT_JSON "${change_request_context_json}" \
     MODE_INSTRUCTIONS "${mode_prompt}"
 )"; then
   fail_ai_ci "无法渲染 Codex 通用提示词模板"
@@ -901,9 +1120,12 @@ else
   status="pass"
 fi
 
+verify_credential_integrity
 if [[ "${status}" != "pass" ]]; then
   write_failure_report
 fi
+append_change_request_context_warning
+append_credential_integrity_warning
 write_summary
 if [[ "${status}" == "pass" ]]; then
   echo "Codex AI CI：完成（结论 ${report_verdict}；测试状态 ${test_execution_status}；约束 ${constraint_status}；报告 ${report_path}）"

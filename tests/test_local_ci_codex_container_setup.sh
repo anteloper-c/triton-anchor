@@ -5,9 +5,23 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 setup_script="${repo_root}/scripts/local_ci/setup_codex_ai_container.sh"
 test_root="$(mktemp -d /tmp/local-ci-codex-container-setup.XXXXXX)"
 trap 'rm -rf -- "${test_root}"' EXIT
-mkdir -p "${test_root}/bin" "${test_root}/home/.codex"
-printf 'model = "test"\n' > "${test_root}/home/.codex/config.toml"
-printf '{}\n' > "${test_root}/home/.codex/auth.json"
+mkdir -p "${test_root}/bin" "${test_root}/home" "${test_root}/credentials"
+chmod 700 "${test_root}/credentials"
+cat > "${test_root}/credentials/config.toml" <<'TOML'
+model = "test"
+model_provider = "test"
+
+[model_providers.test]
+name = "test"
+base_url = "http://relay.invalid/openai"
+wire_api = "responses"
+requires_openai_auth = true
+TOML
+printf '{"OPENAI_API_KEY":"ci-test-key"}\n' \
+  > "${test_root}/credentials/auth.json"
+chmod 600 \
+  "${test_root}/credentials/config.toml" \
+  "${test_root}/credentials/auth.json"
 printf '#!/usr/bin/env bash\necho codex-test\n' > "${test_root}/codex"
 chmod +x "${test_root}/codex"
 
@@ -38,6 +52,7 @@ chmod +x "${test_root}/bin/docker"
 PATH="${test_root}/bin:${PATH}" \
 HOME="${test_root}/home" \
 CODEX_BIN="${test_root}/codex" \
+CODEX_AI_CI_HOME="${test_root}/credentials" \
 FAKE_DOCKER_LOG="${test_root}/docker.log" \
   "${setup_script}" > "${test_root}/setup-output.txt"
 
@@ -52,11 +67,15 @@ if grep -Eq '(^| )(commit|run|cp|volume|image)( |$)' "${test_root}/docker.log"; 
   exit 1
 fi
 
-mkdir -p "${test_root}/missing-home/.codex"
-printf 'model = "test"\n' > "${test_root}/missing-home/.codex/config.toml"
+mkdir -p "${test_root}/missing-home" "${test_root}/missing-credentials"
+chmod 700 "${test_root}/missing-credentials"
+cp "${test_root}/credentials/config.toml" \
+  "${test_root}/missing-credentials/config.toml"
+chmod 600 "${test_root}/missing-credentials/config.toml"
 if PATH="${test_root}/bin:${PATH}" \
   HOME="${test_root}/missing-home" \
   CODEX_BIN="${test_root}/codex" \
+  CODEX_AI_CI_HOME="${test_root}/missing-credentials" \
   FAKE_DOCKER_LOG="${test_root}/missing.log" \
     "${setup_script}" >/dev/null 2>&1; then
   echo "缺少 auth.json 时前置检查仍然通过" >&2

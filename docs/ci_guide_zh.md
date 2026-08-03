@@ -319,11 +319,13 @@ Local CI 的任务协议和 runner 骨架可以复用，但真实执行不能假
 
 这些算子结果不能直接视为其他后端的白名单。后续接入新后端时，应先完成该后端的全量探测，再生成自己的算子映射、白名单和性能基线；必要时通过 `FLAGGEMS_TEST_COMMAND` 使用后端专用测试入口。建议每个后端使用独立的 `config.env`、容器、状态目录和 status context，公共脚本仅复用调度、快照、结果协议和通用阶段控制。
 
-#### 4.4.7 Codex smoke
+#### 4.4.7 Codex AI CI 独立凭据
 
-可通过 `RUN_CODEX_SMOKE=true` 启用宿主机 Codex CLI 的最小只读检查。它在确定性 Local CI 结束后运行，只执行 `git rev-parse HEAD`、`git status --short` 和 `git ls-files`，用于验证 Codex 能读取正确 checkout、调用模型并完成一次 shell tool 循环。第一阶段默认仅匹配 `ci/push/*`，Codex 失败只在宿主机 run 目录写入 `codex-smoke.log`、`codex-smoke-final.txt` 和 `codex-smoke-summary.txt`，不会修改容器创建的 Delivery artifact，也不会改变原 Local CI 的通过或失败结果。
+Codex AI CI 不使用 poller 用户的个人 `~/.codex`。启用 `RUN_CODEX_AI_CI=true` 时，必须通过 `CODEX_AI_CI_HOME` 指向独立凭据目录；目录中只能包含 `config.toml` 和 `auth.json`，目录权限为 `700`，两个文件权限为 `600`，并由 poller 用户所有。`auth.json` 使用可独立撤销和审计的 CI 专用静态 API token。
 
-poller 必须由已经完成 Codex CLI 配置和认证的同一宿主机用户运行。当前 smoke 不应开放给不受信任的 PR；后续生成测例或执行 PR 代码时，需要把持有模型凭据的 Codex 控制进程与无凭据测试执行环境进一步隔离。
+部署时先停止 poller，创建 `/home/race_work/local_ci/secrets/codex-ai`，按已验证的中转配置单独写入 `config.toml`（不要复制个人配置中的 `[projects]` 记录），并将 `auth.json` 写为 `{"OPENAI_API_KEY":"<CI 专用 token>"}`。随后执行 `chmod 700 /home/race_work/local_ci/secrets/codex-ai` 和 `chmod 600 /home/race_work/local_ci/secrets/codex-ai/{config.toml,auth.json}`，再在 `config.env` 中设置 `CODEX_AI_CI_HOME`。
+
+每次任务会把宿主机 Codex CLI 和独立凭据实体复制到任务专属临时容器的 `/root/.codex`，不会挂载凭据，也不会把容器内文件复制回宿主机。runner 会比较任务前后的凭据文件哈希；发现外部修改时只记录中文告警，不自动恢复文件，也不改变确定性 Local CI 的结果。可在启动 poller 前运行 `CODEX_AI_CI_HOME=/home/race_work/local_ci/secrets/codex-ai scripts/local_ci/setup_codex_ai_container.sh` 完成前置检查。
 
 ### 4.5 性能监测
 

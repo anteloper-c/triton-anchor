@@ -138,9 +138,7 @@ PUBLISHED_ARTIFACT_FILES = (
 )
 
 PUBLISHED_RUN_FILES = (
-    "codex-smoke.log",
-    "codex-smoke-final.txt",
-    "codex-smoke-summary.txt",
+    "task-metadata.json",
     "codex-ai-ci.log",
     "codex-ai-report.json",
     "codex-ai-report.md",

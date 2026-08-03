@@ -6,9 +6,12 @@ if (($# > 1)); then
   exit 2
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source_container="${1:-${LOCAL_CI_CONTAINER:-anchor-sophgo-ci}}"
-host_codex_home="${CODEX_HOME:-${HOME}/.codex}"
+codex_ai_ci_home="${CODEX_AI_CI_HOME:-}"
 host_codex_bin="${CODEX_BIN:-}"
+python_bin="${PYTHON_BIN:-python3}"
+credentials_validator="${SCRIPT_DIR}/validate_codex_ai_credentials.py"
 if [[ -z "${host_codex_bin}" ]]; then
   host_codex_bin="$(command -v codex 2>/dev/null || true)"
 elif [[ "${host_codex_bin}" != */* ]]; then
@@ -30,12 +33,22 @@ if [[ -z "${host_codex_bin}" || ! -x "${host_codex_bin}" ]]; then
   echo "宿主机上找不到可执行的 Codex CLI，请设置 CODEX_BIN。" >&2
   exit 1
 fi
-for config_file in config.toml auth.json; do
-  if [[ ! -r "${host_codex_home}/${config_file}" ]]; then
-    echo "Codex 配置文件不可读：${host_codex_home}/${config_file}" >&2
-    exit 1
-  fi
-done
+if [[ -z "${codex_ai_ci_home}" ]]; then
+  echo "必须设置独立的 CODEX_AI_CI_HOME。" >&2
+  exit 1
+fi
+if ! command -v "${python_bin}" >/dev/null 2>&1; then
+  echo "宿主机找不到 Python：${python_bin}" >&2
+  exit 1
+fi
+if [[ ! -r "${credentials_validator}" ]]; then
+  echo "独立凭据校验器不可读：${credentials_validator}" >&2
+  exit 1
+fi
+"${python_bin}" "${credentials_validator}" \
+  --codex-home "${codex_ai_ci_home}" \
+  --personal-codex-home "${HOME}/.codex" \
+  --quiet
 if [[ "$(docker inspect --format '{{.State.Running}}' "${source_container}" 2>/dev/null || true)" != "true" ]]; then
   echo "Local CI 容器未运行：${source_container}" >&2
   exit 1
@@ -50,14 +63,12 @@ if ! docker exec --user 0 "${source_container}" test -d /workspace; then
   exit 1
 fi
 
-codex_version="$("${host_codex_bin}" --version)"
 cat <<EOF
 Codex AI CI 前置检查通过。
 
 - Local CI 容器：${source_container}
 - 宿主机 Codex CLI：${host_codex_bin}
-- Codex 版本：${codex_version}
-- Codex 配置目录：${host_codex_home}
+- Codex AI CI 独立凭据目录：${codex_ai_ci_home}
 - Local CI 工作区：/workspace
 
 每次任务将由 run_codex_ai_ci.sh 临时执行 commit、run、copy、exec、collect 和 cleanup；本脚本不会创建长期容器、镜像或 volume。

@@ -39,17 +39,11 @@ BACKEND_PROFILE="${BACKEND_PROFILE:-sophgo-cmodel}"
 RUN_COMPILE_BENCHMARK="${RUN_COMPILE_BENCHMARK:-true}"
 RUN_PASS_PROFILE="${RUN_PASS_PROFILE:-true}"
 RUN_IR_SERIALIZATION_BENCHMARK="${RUN_IR_SERIALIZATION_BENCHMARK:-true}"
-RUN_CODEX_SMOKE="${RUN_CODEX_SMOKE:-false}"
-CODEX_SMOKE_BRANCH_REGEX="${CODEX_SMOKE_BRANCH_REGEX:-^ci/push/}"
 CODEX_BIN="${CODEX_BIN:-codex}"
-CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
-CODEX_WORKSPACE_ROOT="${CODEX_WORKSPACE_ROOT:-${LOCAL_CI_STATE_DIR%/}/codex-workspaces}"
-CODEX_SMOKE_WORKSPACE_ROOT="${CODEX_SMOKE_WORKSPACE_ROOT:-${CODEX_WORKSPACE_ROOT}}"
-CODEX_SMOKE_TIMEOUT_SECONDS="${CODEX_SMOKE_TIMEOUT_SECONDS:-300}"
-CODEX_SMOKE_REASONING_EFFORT="${CODEX_SMOKE_REASONING_EFFORT:-low}"
-RUN_CODEX_AI_CI="${RUN_CODEX_AI_CI:-${RUN_CODEX_SMOKE}}"
+CODEX_AI_CI_HOME="${CODEX_AI_CI_HOME:-}"
+RUN_CODEX_AI_CI="${RUN_CODEX_AI_CI:-false}"
 CODEX_AI_CI_BRANCH_REGEX="${CODEX_AI_CI_BRANCH_REGEX:-^ci/(push/.+|pr-[0-9]+/.+)$}"
-CODEX_AI_CI_WORKSPACE_ROOT="${CODEX_AI_CI_WORKSPACE_ROOT:-${CODEX_WORKSPACE_ROOT}}"
+CODEX_AI_CI_WORKSPACE_ROOT="${CODEX_AI_CI_WORKSPACE_ROOT:-${LOCAL_CI_STATE_DIR%/}/codex-workspaces}"
 CODEX_AI_CI_TIMEOUT_SECONDS="${CODEX_AI_CI_TIMEOUT_SECONDS:-1800}"
 CODEX_AI_CI_REASONING_EFFORT="${CODEX_AI_CI_REASONING_EFFORT:-medium}"
 CODEX_AI_CI_MIN_GENERATED_TEST_CASES="${CODEX_AI_CI_MIN_GENERATED_TEST_CASES:-1}"
@@ -113,6 +107,9 @@ branch_is_enabled() {
   if [[ -z "${branch}" ]]; then
     return 1
   fi
+  case "${branch}" in
+    ci/meta/*) return 1 ;;
+  esac
   if [[ "${branch}" == "${GITEE_RESULTS_BRANCH}" ]]; then
     return 1
   fi
@@ -120,6 +117,15 @@ branch_is_enabled() {
     return 1
   fi
   return 0
+}
+
+metadata_ref_for_task() {
+  local branch="$1"
+  if [[ "${branch}" =~ ^ci/pr-([0-9]+)/(.+)$ ]]; then
+    printf 'ci/meta/pr-%s/%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    return 0
+  fi
+  return 1
 }
 
 flaggems_mode_for_branch() {
@@ -130,19 +136,6 @@ flaggems_mode_for_branch() {
   esac
 }
 
-run_codex_smoke_for_run() {
-  local sha="$1"
-  local run_dir="$2"
-  local branch="$3"
-
-  CODEX_BIN="${CODEX_BIN}" \
-    CODEX_SMOKE_WORKSPACE_ROOT="${CODEX_SMOKE_WORKSPACE_ROOT}" \
-    CODEX_SMOKE_TIMEOUT_SECONDS="${CODEX_SMOKE_TIMEOUT_SECONDS}" \
-    CODEX_SMOKE_REASONING_EFFORT="${CODEX_SMOKE_REASONING_EFFORT}" \
-    "${LOCAL_CI_RUNNER_DIR}/run_codex_smoke.sh" \
-    "${GITEE_REPO_URL}" "${run_dir}" "${sha}" "${branch}"
-}
-
 run_codex_ai_ci_for_run() {
   local sha="$1"
   local run_dir="$2"
@@ -150,9 +143,10 @@ run_codex_ai_ci_for_run() {
   local base_ref="$4"
   local branch="$5"
   local local_ci_status="$6"
+  local task_metadata_file="$7"
 
   CODEX_BIN="${CODEX_BIN}" \
-    CODEX_HOME="${CODEX_HOME}" \
+    CODEX_AI_CI_HOME="${CODEX_AI_CI_HOME}" \
     CODEX_AI_CI_TIMEOUT_SECONDS="${CODEX_AI_CI_TIMEOUT_SECONDS}" \
     CODEX_AI_CI_REASONING_EFFORT="${CODEX_AI_CI_REASONING_EFFORT}" \
     CODEX_AI_CI_WORKSPACE_ROOT="${CODEX_AI_CI_WORKSPACE_ROOT}" \
@@ -172,7 +166,7 @@ run_codex_ai_ci_for_run() {
     BACKEND_ENVSETUP_ARGS="${BACKEND_ENVSETUP_ARGS:-}" \
     "${LOCAL_CI_RUNNER_DIR}/run_codex_ai_ci.sh" \
     "${GITEE_REPO_URL}" "${run_dir}" "${sha}" "${base_sha}" "${base_ref}" \
-    "${branch}" "${local_ci_status}"
+    "${branch}" "${local_ci_status}" "${task_metadata_file}"
 }
 
 publish_result() {
@@ -287,6 +281,30 @@ run_once() {
   export LOCAL_CI_RUNNER_DIR
   echo "Runner script snapshot: ${LOCAL_CI_RUNNER_DIR}"
 
+  local task_metadata_file=""
+  local task_metadata_ref=""
+  if task_metadata_ref="$(metadata_ref_for_task "${branch}")"; then
+    task_metadata_file="${run_dir}/task-metadata.json"
+    local task_metadata_message=""
+    if task_metadata_message="$(
+      "${LOCAL_CI_RUNNER_DIR}/fetch_task_metadata.sh" \
+        "${GITEE_REPO_URL}" "${task_metadata_ref}" "${branch}" "${sha}" \
+        "${task_metadata_file}" 2>&1
+    )"; then
+      echo "Fetched PR task metadata from ${task_metadata_ref}."
+      if [[ -n "${task_metadata_message}" ]]; then
+        printf '%s\n' "${task_metadata_message}" >&2
+      fi
+    else
+      rm -f -- "${task_metadata_file}"
+      task_metadata_file=""
+      echo "Warning: PR task metadata is unavailable; Local CI and Codex AI will continue." >&2
+      if [[ -n "${task_metadata_message}" ]]; then
+        printf '%s\n' "${task_metadata_message}" >&2
+      fi
+    fi
+  fi
+
   local flaggems_test_mode
   flaggems_test_mode="$(flaggems_mode_for_branch "${branch}")"
   echo "FlagGems test mode: ${flaggems_test_mode}"
@@ -358,27 +376,6 @@ run_once() {
   status=${PIPESTATUS[0]}
   set -e
 
-  local codex_smoke_status="skipped"
-  if [[ "${RUN_CODEX_SMOKE}" == "true" \
-    && (-z "${CODEX_SMOKE_BRANCH_REGEX}" || "${branch}" =~ ${CODEX_SMOKE_BRANCH_REGEX}) ]]; then
-    echo "Running non-blocking Codex smoke for ${sha}." | tee -a "${run_dir}/local-ci.log"
-    local codex_smoke_exit=0
-    set +e
-    run_codex_smoke_for_run "${sha}" "${run_dir}" "${branch}" 2>&1 |
-      tee -a "${run_dir}/local-ci.log"
-    codex_smoke_exit=${PIPESTATUS[0]}
-    set -e
-    if [[ ${codex_smoke_exit} -eq 0 ]]; then
-      codex_smoke_status="pass"
-    else
-      codex_smoke_status="fail"
-      echo "Codex smoke failed but does not change the deterministic local-ci result." |
-        tee -a "${run_dir}/local-ci.log"
-    fi
-  else
-    echo "Codex smoke skipped for ${branch}." | tee -a "${run_dir}/local-ci.log"
-  fi
-
   local codex_ai_base_sha=""
   local codex_ai_base_ref=""
   if [[ -n "${base_branch}" ]]; then
@@ -404,7 +401,8 @@ run_once() {
     local codex_ai_ci_exit=0
     set +e
     run_codex_ai_ci_for_run \
-      "${sha}" "${run_dir}" "${codex_ai_base_sha}" "${codex_ai_base_ref}" "${branch}" "${status}" 2>&1 |
+      "${sha}" "${run_dir}" "${codex_ai_base_sha}" "${codex_ai_base_ref}" "${branch}" "${status}" \
+      "${task_metadata_file}" 2>&1 |
       tee -a "${run_dir}/local-ci.log"
     codex_ai_ci_exit=${PIPESTATUS[0]}
     set -e
@@ -434,7 +432,7 @@ run_once() {
     echo "Codex AI CI skipped for ${branch}." | tee -a "${run_dir}/local-ci.log"
   fi
 
-  echo "{\"sha\":\"${sha}\",\"status\":${status},\"codex_smoke_status\":\"${codex_smoke_status}\",\"codex_ai_ci_status\":\"${codex_ai_ci_status}\",\"codex_ai_ci_mode\":\"${codex_ai_mode}\",\"codex_ai_ci_verdict\":\"${codex_ai_ci_verdict}\",\"codex_ai_test_status\":\"${codex_ai_test_status}\",\"run_dir\":\"${run_dir}\"}" \
+  echo "{\"sha\":\"${sha}\",\"status\":${status},\"codex_ai_ci_status\":\"${codex_ai_ci_status}\",\"codex_ai_ci_mode\":\"${codex_ai_mode}\",\"codex_ai_ci_verdict\":\"${codex_ai_ci_verdict}\",\"codex_ai_test_status\":\"${codex_ai_test_status}\",\"run_dir\":\"${run_dir}\"}" \
     > "${run_dir}/result.json"
 
   local publish_status=0
