@@ -112,6 +112,8 @@ def map_container_path(path_text: str) -> Path | None:
 PUBLISHED_ARTIFACT_FILES = (
     "delivery-summary.txt",
     "verify-triton-anchor-import.log",
+    "frontend-smoke.log",
+    "backend-smoke-jit.log",
     "flaggems-selected.txt",
     "flaggems-summary.csv",
     "flaggems-summary.json",
