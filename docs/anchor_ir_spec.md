@@ -14,7 +14,7 @@ AnchorIR 两端的职责明确如下：
 > Adapter：是将上游优化后的 TTIR 按特定指针分析和转换策略转换为 AnchorIR 的生产组件。
 
 | Track           | 主要方言                                              | 典型使用场景                      |     
-| --------------- | ------------------------------------------------- | --------------------------- | --- |
+| --------------- | ------------------------------------------------- | --------------------------- |
 | Linalg Track    | `linalg`、`tensor`、`memref`、`arith`、`math`、`scf` 等 | AME Matrix、Tensor Processor |     
 | TritonGPU Track | `triton_gpu`、带 encoding 的 `tt` Op、GPU 相关方言        | SIMT/GPGPU                  |     
 
