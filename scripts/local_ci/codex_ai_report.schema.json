@@ -8,6 +8,96 @@
     "summary": {
       "type": "string"
     },
+    "merge_recommendation": {
+      "type": "string"
+    },
+    "changed_files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {"type": "string"},
+          "change_type": {
+            "type": "string",
+            "enum": ["modified", "added", "deleted", "renamed"]
+          },
+          "summary": {"type": "string"},
+          "impact": {"type": "string"},
+          "validation_strategy": {"type": "string"}
+        },
+        "required": [
+          "path",
+          "change_type",
+          "summary",
+          "impact",
+          "validation_strategy"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "behavior_coverage": {
+      "type": "object",
+      "properties": {
+        "normal": {
+          "type": "object",
+          "properties": {
+            "scope": {"type": "string"},
+            "strategy": {"type": "string"},
+            "result": {"type": "string"}
+          },
+          "required": ["scope", "strategy", "result"],
+          "additionalProperties": false
+        },
+        "boundary": {
+          "type": "object",
+          "properties": {
+            "scope": {"type": "string"},
+            "strategy": {"type": "string"},
+            "result": {"type": "string"}
+          },
+          "required": ["scope", "strategy", "result"],
+          "additionalProperties": false
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "scope": {"type": "string"},
+            "strategy": {"type": "string"},
+            "result": {"type": "string"}
+          },
+          "required": ["scope", "strategy", "result"],
+          "additionalProperties": false
+        },
+        "compatibility": {
+          "type": "object",
+          "properties": {
+            "scope": {"type": "string"},
+            "strategy": {"type": "string"},
+            "result": {"type": "string"}
+          },
+          "required": ["scope", "strategy", "result"],
+          "additionalProperties": false
+        },
+        "integration": {
+          "type": "object",
+          "properties": {
+            "scope": {"type": "string"},
+            "strategy": {"type": "string"},
+            "result": {"type": "string"}
+          },
+          "required": ["scope", "strategy", "result"],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "normal",
+        "boundary",
+        "error",
+        "compatibility",
+        "integration"
+      ],
+      "additionalProperties": false
+    },
     "findings": {
       "type": "array",
       "items": {
@@ -137,6 +227,9 @@
   "required": [
     "verdict",
     "summary",
+    "merge_recommendation",
+    "changed_files",
+    "behavior_coverage",
     "findings",
     "suggested_tests",
     "residual_risks",

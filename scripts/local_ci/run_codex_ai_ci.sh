@@ -57,9 +57,9 @@ credentials_validator="${SCRIPT_DIR}/validate_codex_ai_credentials.py"
 task_metadata_validator="${SCRIPT_DIR}/validate_task_metadata.py"
 task_metadata_output_path="${output_dir}/task-metadata.json"
 prompt_dir="${SCRIPT_DIR}/prompts"
-common_prompt_template="${prompt_dir}/codex_ai_common.md"
-full_prompt_template="${prompt_dir}/codex_ai_full.md"
-analysis_only_prompt_template="${prompt_dir}/codex_ai_analysis_only.md"
+success_prompt_template="${prompt_dir}/codex_ai_success.md"
+failure_prompt_template="${prompt_dir}/codex_ai_failure.md"
+changed_files_manifest_path="${output_dir}/codex-changed-files-manifest.json"
 
 status="fail"
 exit_code=1
@@ -70,6 +70,7 @@ diff_mode="unresolved"
 diff_command=""
 diff_revisions=()
 changed_file_count=0
+changed_files_manifest_json="[]"
 failure_reason=""
 marker_found="false"
 report_format_valid="false"
@@ -105,8 +106,7 @@ start_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 start_seconds="${SECONDS}"
 if [[ "${local_ci_status}" != "0" ]]; then
   analysis_mode="analysis_only"
-  constraint_status="not_applicable"
-  constraint_reason="只分析模式不执行测试数量和耗时约束校验。"
+  constraint_reason="Local CI 失败诊断尚未完成轻量约束校验。"
 fi
 if [[ "${branch}" =~ ^ci/pr-[0-9]+/.+ ]]; then
   change_request_context_status="not_checked"
@@ -196,36 +196,119 @@ write_summary() {
 }
 
 write_failure_report() {
-  cat > "${report_json_path}" <<'JSON'
-{
-  "verdict": "WARNING",
-  "summary": "Codex AI CI 未完成，未生成可信的结构化审查结论。",
-  "findings": [
-    {
-      "id": "AI-001",
-      "severity": "MEDIUM",
-      "category": "other",
-      "file": "不可用",
-      "line": "不可用",
-      "title": "Codex AI CI 分析未完成",
-      "evidence": "执行环境、超时或输出格式校验失败，具体原因请查看本次任务的摘要和原始日志。",
-      "impact": "本次代码差异没有获得完整可靠的 AI 审查结论。",
-      "fix_direction": "排查 Codex AI CI 摘要和日志中的失败原因后重新执行。"
-    }
-  ],
-  "suggested_tests": [],
-  "residual_risks": [
-    "当前代码差异仍需人工检查，或在修复执行环境后重新运行 Codex AI CI。"
-  ],
-  "test_execution": {
-    "status": "infrastructure_failure",
-    "summary": "Codex AI CI 未完成，因此没有可信的测试执行结论。",
-    "generated_test_files": [],
-    "commands": []
-  },
-  "completion_marker": "CODEX_AI_CI_COMPLETE"
+  local rendered_diff_mode="two-point"
+  if [[ "${diff_mode}" == "merge-base" ]]; then
+    rendered_diff_mode="merge-base"
+  fi
+  report_verdict="WARNING"
+  test_execution_status="infrastructure_failure"
+  generated_test_file_count="0"
+  test_command_count="0"
+  max_test_command_duration_seconds="0"
+  total_test_command_duration_seconds="0"
+  constraint_status="warning"
+  constraint_reason="Codex AI CI 未完成，无法确认测试执行是否符合轻量约束。"
+
+  if ! "${PYTHON_BIN}" - "${failure_reason:-未知原因}" \
+    "${changed_files_manifest_path}" > "${report_json_path}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+failure_reason = sys.argv[1]
+manifest_path = Path(sys.argv[2])
+try:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError):
+    manifest = []
+
+changed_files = []
+for item in manifest if isinstance(manifest, list) else []:
+    if not isinstance(item, dict):
+        continue
+    path = item.get("path")
+    change_type = item.get("change_type")
+    if not isinstance(path, str) or not isinstance(change_type, str):
+        continue
+    changed_files.append({
+        "path": path,
+        "change_type": change_type,
+        "summary": "AI 审查未完成，未能可靠归纳该文件的改动。",
+        "impact": "该文件的行为影响仍需人工检查。",
+        "validation_strategy": "修复 AI 执行问题后重新审查，或由维护者人工验证。",
+    })
+
+behavior_coverage = {}
+labels = {
+    "normal": "正常路径",
+    "boundary": "边界路径",
+    "error": "错误路径",
+    "compatibility": "兼容路径",
+    "integration": "集成路径",
 }
-JSON
+for key, label in labels.items():
+    behavior_coverage[key] = {
+        "scope": f"本次未能可靠检查{label}。",
+        "strategy": "修复 AI 执行问题后重新分析代码差异并进行定向验证。",
+        "result": "分析未完成，当前没有可信结论。",
+    }
+
+document = {
+    "verdict": "WARNING",
+    "summary": f"Codex AI CI 未完成：{failure_reason}。本次没有生成可信的结构化审查结论。",
+    "merge_recommendation": "请先排查 AI 执行问题并重新运行，当前不要仅依据本次 AI 结果决定合入。",
+    "changed_files": changed_files,
+    "behavior_coverage": behavior_coverage,
+    "findings": [
+        {
+            "id": "AI-001",
+            "severity": "MEDIUM",
+            "category": "other",
+            "file": "Codex AI CI",
+            "line": "不适用",
+            "title": "Codex AI CI 分析未完成",
+            "evidence": "执行环境、超时或输出格式校验失败，具体原因请查看本次任务摘要和原始日志。",
+            "impact": "本次代码差异没有获得完整可靠的 AI 审查结论。",
+            "fix_direction": "排查摘要和日志中的失败原因后重新执行 Codex AI CI。",
+        }
+    ],
+    "suggested_tests": [],
+    "residual_risks": [
+        "当前代码差异仍需人工检查，或在修复执行环境后重新运行 Codex AI CI。"
+    ],
+    "test_execution": {
+        "status": "infrastructure_failure",
+        "summary": "Codex AI CI 未完成，因此没有可信的测试执行结论。",
+        "generated_test_files": [],
+        "commands": [],
+    },
+    "completion_marker": "CODEX_AI_CI_COMPLETE",
+}
+json.dump(document, sys.stdout, ensure_ascii=False, indent=2)
+sys.stdout.write("\n")
+PY
+  then
+    :
+  fi
+
+  if [[ -r "${renderer_path}" && -r "${changed_files_manifest_path}" ]] && \
+    "${PYTHON_BIN}" "${renderer_path}" \
+      --input "${report_json_path}" \
+      --output "${report_path}" \
+      --comment-output "${comment_path}" \
+      --branch "${branch}" \
+      --base-sha "${base_sha:-不可用}" \
+      --requested-base-sha "${requested_base_sha}" \
+      --diff-mode "${rendered_diff_mode}" \
+      --target-sha "${target_sha}" \
+      --changed-file-count "${changed_file_count}" \
+      --changed-files-manifest "${changed_files_manifest_path}" \
+      --constraint-status "${constraint_status}" \
+      --constraint-reason "${constraint_reason}" \
+      >/dev/null 2>> "${log_path}"; then
+    return 0
+  fi
+
   {
     echo "# Codex AI CI 报告"
     echo
@@ -233,7 +316,7 @@ JSON
     echo
     echo "| 字段 | 值 |"
     echo "| --- | --- |"
-    echo "| 报告格式 | \`triton-anchor-codex-ai-report/v1\` |"
+    echo "| 报告格式 | \`triton-anchor-codex-ai-report/v2\` |"
     echo "| 分支 | \`${branch}\` |"
     echo "| 请求的基础提交 | \`${requested_base_sha:-不可用}\` |"
     echo "| 实际审查起点 | \`${base_sha:-不可用}\` |"
@@ -244,11 +327,23 @@ JSON
     echo
     echo "## 结论"
     echo
-    echo "**失败**"
+    echo "**警告**"
     echo
     echo "## 摘要"
     echo
     echo "Codex AI CI 未完成：${failure_reason}"
+    echo
+    echo "## 合入建议"
+    echo
+    echo "请先排查 AI 执行问题并重新运行，当前不要仅依据本次 AI 结果决定合入。"
+    echo
+    echo "## 具体文件变更"
+    echo
+    echo "分析未完成，无法可靠生成文件级变更表。"
+    echo
+    echo "## 行为覆盖"
+    echo
+    echo "正常、边界、错误、兼容和集成路径均未获得可信结论。"
     echo
     echo "## 关键问题"
     echo
@@ -272,9 +367,31 @@ JSON
     echo "CODEX_AI_CI_FAILED"
   } > "${report_path}"
   {
-    echo "## Codex AI 关键问题概述"
+    echo "## Codex AI 审核摘要"
     echo
-    echo "Codex 分析未完成：${failure_reason:-未知原因}。请查看完整日志。"
+    echo "Codex AI CI 未完成：${failure_reason:-未知原因}。"
+    echo
+    echo "合入建议：**请先排查 AI 执行问题并重新运行，再决定是否合入。**"
+    echo
+    echo "### 补充验证"
+    echo
+    echo "测试状态：**基础设施失败**。本次没有获得可信的补充验证结果。"
+    echo
+    echo "### 需要重点关注的问题"
+    echo
+    echo "1. **[中风险][其他问题] Codex AI CI 分析未完成**"
+    echo "   - 位置：\`Codex AI CI\`"
+    echo "   - 影响：本次代码差异没有获得完整可靠的 AI 审查结论。"
+    echo "   - 建议：查看完整日志，修复执行问题后重新运行。"
+    echo
+    echo "### 具体文件变更"
+    echo
+    echo "<details>"
+    echo "<summary>展开文件级变更表</summary>"
+    echo
+    echo "分析未完成，无法可靠生成文件级变更表。"
+    echo
+    echo "</details>"
   } > "${comment_path}"
 }
 
@@ -570,9 +687,8 @@ validate_prerequisites() {
     fail_ai_ci "PR 功能声明元数据校验器不可读：${task_metadata_validator}"
   fi
   for prompt_template in \
-    "${common_prompt_template}" \
-    "${full_prompt_template}" \
-    "${analysis_only_prompt_template}"; do
+    "${success_prompt_template}" \
+    "${failure_prompt_template}"; do
     [[ -r "${prompt_template}" ]] || \
       fail_ai_ci "Codex 提示词模板不可读：${prompt_template}"
   done
@@ -641,6 +757,81 @@ diff_requires_generated_tests() {
     esac
   done < <(git "${diff_args[@]}")
   return 1
+}
+
+generate_changed_files_manifest() {
+  local diff_args=(
+    -C "${workspace_dir}"
+    diff
+    --name-status
+    -z
+    --diff-filter=ACDMRTUXB
+    --find-renames
+    "${diff_revisions[@]}"
+  )
+  if ! git "${diff_args[@]}" | "${PYTHON_BIN}" -c '
+import json
+import sys
+
+fields = sys.stdin.buffer.read().split(b"\0")
+if fields and fields[-1] == b"":
+    fields.pop()
+
+manifest = []
+index = 0
+while index < len(fields):
+    status = fields[index].decode("ascii")
+    index += 1
+    code = status[:1]
+    if code in {"R", "C"}:
+        if index + 1 >= len(fields):
+            raise SystemExit("incomplete rename/copy record in git diff")
+        previous_path = fields[index].decode("utf-8", "replace")
+        path = fields[index + 1].decode("utf-8", "replace")
+        index += 2
+        if code == "R":
+            manifest.append({
+                "path": path,
+                "change_type": "renamed",
+                "previous_path": previous_path,
+            })
+        else:
+            manifest.append({"path": path, "change_type": "added"})
+        continue
+    if index >= len(fields):
+        raise SystemExit("incomplete path record in git diff")
+    path = fields[index].decode("utf-8", "replace")
+    index += 1
+    change_type = {
+        "A": "added",
+        "D": "deleted",
+        "M": "modified",
+        "T": "modified",
+        "U": "modified",
+        "X": "modified",
+        "B": "modified",
+    }.get(code)
+    if change_type is None:
+        raise SystemExit(f"unsupported git diff status: {status}")
+    manifest.append({"path": path, "change_type": change_type})
+
+paths = [item["path"] for item in manifest]
+if len(paths) != len(set(paths)):
+    raise SystemExit("duplicate path in git diff manifest")
+json.dump(manifest, sys.stdout, ensure_ascii=False, separators=(",", ":"))
+sys.stdout.write("\n")
+' > "${changed_files_manifest_path}"; then
+    return 1
+  fi
+
+  if ! changed_file_count="$(${PYTHON_BIN} -c '
+import json
+import sys
+print(len(json.load(open(sys.argv[1], encoding="utf-8"))))
+' "${changed_files_manifest_path}")"; then
+    return 1
+  fi
+  changed_files_manifest_json="$(<"${changed_files_manifest_path}")"
 }
 
 create_ephemeral_container() {
@@ -783,6 +974,7 @@ fi
 : > "${comment_path}"
 : > "${workspace_status_path}"
 : > "${workspace_patch_path}"
+printf '[]\n' > "${changed_files_manifest_path}"
 
 validate_prerequisites
 load_change_request_context
@@ -845,47 +1037,25 @@ else
   diff_command="git diff --find-renames ${base_sha} ${target_sha}"
 fi
 
-if ! changed_file_count="$(
-  git -C "${workspace_dir}" diff --name-only --diff-filter=ACDMRTUXB \
-    --find-renames "${diff_revisions[@]}" | awk 'END { print NR + 0 }'
-)"; then
-  fail_ai_ci "无法计算待审查的代码差异"
+if ! generate_changed_files_manifest; then
+  fail_ai_ci "无法生成待审查代码差异的标准文件清单"
 fi
 
-if [[ "${analysis_mode}" == "full" ]] && diff_requires_generated_tests; then
+if diff_requires_generated_tests; then
   test_generation_expected="true"
 fi
 
 create_ephemeral_container
 
 if [[ "${analysis_mode}" == "full" ]]; then
-  if ! mode_prompt="$(
-    render_prompt_template "${full_prompt_template}" \
-      TEST_GENERATION_EXPECTED "${test_generation_expected}" \
-      MIN_GENERATED_TEST_CASES "${CODEX_AI_CI_MIN_GENERATED_TEST_CASES}" \
-      MAX_GENERATED_TEST_CASES "${CODEX_AI_CI_MAX_GENERATED_TEST_CASES}" \
-      MAX_GENERATED_TEST_FILES "${CODEX_AI_CI_MAX_GENERATED_TEST_FILES}" \
-      MAX_TEST_COMMANDS "${CODEX_AI_CI_MAX_TEST_COMMANDS}" \
-      RECOMMENDED_COMMAND_TIMEOUT_SECONDS "${CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS}" \
-      TEST_BUDGET_SECONDS "${CODEX_AI_CI_TEST_BUDGET_SECONDS}" \
-      CODEX_TIMEOUT_SECONDS "${CODEX_AI_CI_TIMEOUT_SECONDS}" \
-      REPORT_RESERVE_SECONDS "${CODEX_AI_CI_REPORT_RESERVE_SECONDS}"
-  )"; then
-    fail_ai_ci "无法渲染 Codex 完整分析提示词模板"
-  fi
+  selected_prompt_template="${success_prompt_template}"
 else
-  if ! mode_prompt="$(
-    render_prompt_template "${analysis_only_prompt_template}" \
-      LOCAL_CI_STATUS "${local_ci_status}" \
-      LOCAL_CI_LOG_PATH "${container_local_ci_log}" \
-      ARTIFACT_DIR "${artifact_dir:-未识别到具体目录}"
-  )"; then
-    fail_ai_ci "无法渲染 Codex 只分析提示词模板"
-  fi
+  selected_prompt_template="${failure_prompt_template}"
 fi
 
 if ! prompt="$(
-  render_prompt_template "${common_prompt_template}" \
+  render_prompt_template "${selected_prompt_template}" \
+    REPOSITORY_ROOT "${container_checkout_dir}" \
     BRANCH "${branch}" \
     REQUESTED_BASE_REF "${requested_base_ref:-不适用}" \
     REQUESTED_BASE_SHA "${requested_base_sha:-不适用}" \
@@ -896,9 +1066,21 @@ if ! prompt="$(
     DIFF_MODE "${diff_mode}" \
     DIFF_COMMAND "${diff_command}" \
     CHANGE_REQUEST_CONTEXT_JSON "${change_request_context_json}" \
-    MODE_INSTRUCTIONS "${mode_prompt}"
+    CHANGED_FILE_COUNT "${changed_file_count}" \
+    CHANGED_FILES_MANIFEST_JSON "${changed_files_manifest_json}" \
+    LOCAL_CI_LOG "${container_local_ci_log}" \
+    ARTIFACT_DIR "${artifact_dir:-未识别到具体目录}" \
+    TEST_GENERATION_EXPECTED "${test_generation_expected}" \
+    MIN_GENERATED_TEST_CASES "${CODEX_AI_CI_MIN_GENERATED_TEST_CASES}" \
+    MAX_GENERATED_TEST_CASES "${CODEX_AI_CI_MAX_GENERATED_TEST_CASES}" \
+    MAX_GENERATED_TEST_FILES "${CODEX_AI_CI_MAX_GENERATED_TEST_FILES}" \
+    MAX_TEST_COMMANDS "${CODEX_AI_CI_MAX_TEST_COMMANDS}" \
+    RECOMMENDED_COMMAND_TIMEOUT_SECONDS "${CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS}" \
+    TEST_BUDGET_SECONDS "${CODEX_AI_CI_TEST_BUDGET_SECONDS}" \
+    CODEX_TIMEOUT_SECONDS "${CODEX_AI_CI_TIMEOUT_SECONDS}" \
+    REPORT_RESERVE_SECONDS "${CODEX_AI_CI_REPORT_RESERVE_SECONDS}"
 )"; then
-  fail_ai_ci "无法渲染 Codex 通用提示词模板"
+  fail_ai_ci "无法渲染 Codex AI CI 提示词模板：${selected_prompt_template}"
 fi
 
 set +e
@@ -924,30 +1106,28 @@ printf '%s\n' "${prompt}" | timeout --signal=TERM --kill-after=30s \
     "${ephemeral_container}" \
     bash -lc '
       bootstrap_status=0
-      if [[ "${AI_ANALYSIS_MODE}" == "full" ]]; then
-        set +u
-        if [[ -n "${AI_PYTHON_VENV_ACTIVATE}" && -f "${AI_PYTHON_VENV_ACTIVATE}" ]]; then
-          source "${AI_PYTHON_VENV_ACTIVATE}" || bootstrap_status=1
-        else
-          echo "Codex AI CI 环境提示：Python venv 激活脚本不存在。" >&2
-          bootstrap_status=1
-        fi
-        if [[ "${AI_SOURCE_ENVSETUP}" == "1" && -f "${AI_CHECKOUT_DIR}/envsetup.sh" ]]; then
-          source "${AI_CHECKOUT_DIR}/envsetup.sh" || bootstrap_status=1
-        fi
-        backend_setup="${AI_BACKEND_ENVSETUP}"
-        if [[ -n "${backend_setup}" && "${backend_setup}" != /* ]]; then
-          backend_setup="${AI_BACKEND_PATH}/${backend_setup}"
-        fi
-        if [[ -n "${backend_setup}" && -f "${backend_setup}" ]]; then
-          # shellcheck disable=SC2086
-          source "${backend_setup}" ${AI_BACKEND_ENVSETUP_ARGS} || bootstrap_status=1
-        elif [[ -n "${backend_setup}" ]]; then
-          echo "Codex AI CI 环境提示：后端环境脚本不存在。" >&2
-          bootstrap_status=1
-        fi
-        set -u
+      set +u
+      if [[ -n "${AI_PYTHON_VENV_ACTIVATE}" && -f "${AI_PYTHON_VENV_ACTIVATE}" ]]; then
+        source "${AI_PYTHON_VENV_ACTIVATE}" || bootstrap_status=1
+      else
+        echo "Codex AI CI 环境提示：Python venv 激活脚本不存在。" >&2
+        bootstrap_status=1
       fi
+      if [[ "${AI_SOURCE_ENVSETUP}" == "1" && -f "${AI_CHECKOUT_DIR}/envsetup.sh" ]]; then
+        source "${AI_CHECKOUT_DIR}/envsetup.sh" || bootstrap_status=1
+      fi
+      backend_setup="${AI_BACKEND_ENVSETUP}"
+      if [[ -n "${backend_setup}" && "${backend_setup}" != /* ]]; then
+        backend_setup="${AI_BACKEND_PATH}/${backend_setup}"
+      fi
+      if [[ -n "${backend_setup}" && -f "${backend_setup}" ]]; then
+        # shellcheck disable=SC2086
+        source "${backend_setup}" ${AI_BACKEND_ENVSETUP_ARGS} || bootstrap_status=1
+      elif [[ -n "${backend_setup}" ]]; then
+        echo "Codex AI CI 环境提示：后端环境脚本不存在。" >&2
+        bootstrap_status=1
+      fi
+      set -u
       if [[ ${bootstrap_status} -eq 0 ]]; then
         export CODEX_AI_ENVIRONMENT_STATUS="ready"
       else
@@ -1012,40 +1192,36 @@ max_duration = max(durations, default=0.0)
 total_duration = sum(durations)
 reasons = []
 
-if analysis_mode == "full":
-    if len(generated_files) > max_files:
-        reasons.append(
-            f"生成测试文件数量 {len(generated_files)} 超过限制 {max_files}"
-        )
-    if len(commands) > max_commands:
-        reasons.append(
-            f"测试、构建或 lint 命令数量 {len(commands)} 超过限制 {max_commands}"
-        )
-    if max_duration > recommended_timeout:
-        reasons.append(
-            f"单条命令最长耗时 {max_duration:g} 秒超过建议上限 "
-            f"{recommended_timeout} 秒"
-        )
-    if total_duration > test_budget:
-        reasons.append(
-            f"测试命令累计耗时 {total_duration:g} 秒超过建议预算 "
-            f"{test_budget} 秒"
-        )
-    if test_generation_expected and not generated_files:
-        reasons.append("可测试代码改动未生成测试文件，测试证据不足")
-    if test_generation_expected and not commands:
-        reasons.append(
-            "可测试代码改动未记录测试、构建或 lint 命令，测试证据不足"
-        )
-    constraint_status = "warning" if reasons else "pass"
-    constraint_reason = (
-        "；".join(reasons)
-        if reasons
-        else "生成测试文件、执行命令和报告耗时均在轻量约束范围内。"
+if len(generated_files) > max_files:
+    reasons.append(
+        f"生成测试文件数量 {len(generated_files)} 超过限制 {max_files}"
     )
-else:
-    constraint_status = "not_applicable"
-    constraint_reason = "只分析模式不执行测试数量和耗时约束校验。"
+if len(commands) > max_commands:
+    reasons.append(
+        f"测试、构建、lint 或诊断命令数量 {len(commands)} 超过限制 {max_commands}"
+    )
+if max_duration > recommended_timeout:
+    reasons.append(
+        f"单条命令最长耗时 {max_duration:g} 秒超过建议上限 "
+        f"{recommended_timeout} 秒"
+    )
+if total_duration > test_budget:
+    reasons.append(
+        f"测试和诊断命令累计耗时 {total_duration:g} 秒超过建议预算 "
+        f"{test_budget} 秒"
+    )
+if analysis_mode == "full" and test_generation_expected and not generated_files:
+    reasons.append("可测试代码改动未生成测试文件，测试证据不足")
+if analysis_mode == "full" and test_generation_expected and not commands:
+    reasons.append(
+        "可测试代码改动未记录测试、构建或 lint 命令，测试证据不足"
+    )
+constraint_status = "warning" if reasons else "pass"
+constraint_reason = (
+    "；".join(reasons)
+    if reasons
+    else "生成测试文件、执行测试或诊断命令的数量和耗时均在轻量约束范围内。"
+)
 
 print(
     execution["status"],
@@ -1085,6 +1261,7 @@ print(
     --diff-mode "${diff_mode}"
     --target-sha "${target_sha}"
     --changed-file-count "${changed_file_count}"
+    --changed-files-manifest "${changed_files_manifest_path}"
     --constraint-status "${constraint_status}"
     --constraint-reason "${constraint_reason}"
   )
@@ -1113,12 +1290,6 @@ elif [[ "${turn_completed}" != "true" ]]; then
   failure_reason="Codex JSONL 日志中没有 turn.completed 事件"
 elif [[ "${command_executed}" != "true" ]]; then
   failure_reason="Codex 没有执行任何用于检查代码或日志的命令"
-elif [[ "${analysis_mode}" == "analysis_only" && "${test_execution_status}" != "not_run" ]]; then
-  failure_reason="只分析模式的 test_execution.status 必须为 not_run"
-elif [[ "${analysis_mode}" == "analysis_only" && ("${generated_test_file_count}" != "0" || "${test_command_count}" != "0") ]]; then
-  failure_reason="只分析模式不得声明生成测试或执行测试命令"
-elif [[ "${analysis_mode}" == "analysis_only" && "${workspace_dirty}" == "true" ]]; then
-  failure_reason="只分析模式意外修改了一次性 checkout"
 else
   status="pass"
 fi

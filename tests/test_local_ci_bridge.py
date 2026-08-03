@@ -39,7 +39,15 @@ class CodexCommentTests(unittest.TestCase):
                 "warning",
                 "生成测试和执行命令均在限制内。",
                 "",
-                "## Codex AI 关键问题概述\n\n发现一个问题。",
+                (
+                    "## Codex AI 审核摘要\n\n"
+                    "发现一个问题。\n\n"
+                    "合入建议：**修复后合入。**\n\n"
+                    "### 补充验证\n\n定向测试稳定复现。\n\n"
+                    "### 需要重点关注的问题\n\n"
+                    "1. **[中风险] 示例问题**\n\n"
+                    "### 具体文件变更\n\n<details></details>"
+                ),
                 "https://gitee.example/results/run/codex-ai-report.md",
             ),
         )
@@ -51,6 +59,8 @@ class CodexCommentTests(unittest.TestCase):
     def test_comment_body_contains_summary_link_and_stable_marker(self) -> None:
         body = bridge.codex_pr_comment_body(self.target, self.result)
         self.assertIn("发现一个问题。", body)
+        self.assertIn("## Codex AI 审核摘要", body)
+        self.assertIn("### 具体文件变更", body)
         self.assertIn("- 提交：", body)
         self.assertIn("`aaaaaaaaaaaa`", body)
         self.assertIn(self.result.codex_ai.report_url, body)
@@ -228,7 +238,13 @@ class CodexCommentTests(unittest.TestCase):
                     "failure_reason: \n"
                 )
             if path.endswith("/codex-ai-comment.md"):
-                return "## Codex AI 关键问题概述\n\n发现一个问题。\n"
+                return (
+                    "## Codex AI 审核摘要\n\n发现一个问题。\n\n"
+                    "合入建议：**修复后合入。**\n\n"
+                    "### 补充验证\n\n定向测试稳定复现。\n\n"
+                    "### 需要重点关注的问题\n\n1. 示例问题。\n\n"
+                    "### 具体文件变更\n\n<details></details>\n"
+                )
             return None
 
         gitee_content.side_effect = content

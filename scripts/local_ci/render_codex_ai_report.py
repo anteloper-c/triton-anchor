@@ -15,12 +15,32 @@ from typing import Any
 ROOT_KEYS = {
     "verdict",
     "summary",
+    "merge_recommendation",
+    "changed_files",
+    "behavior_coverage",
     "findings",
     "suggested_tests",
     "residual_risks",
     "test_execution",
     "completion_marker",
 }
+CHANGED_FILE_KEYS = {
+    "path",
+    "change_type",
+    "summary",
+    "impact",
+    "validation_strategy",
+}
+MANIFEST_FILE_KEYS = {"path", "change_type"}
+MANIFEST_RENAME_KEYS = {"path", "change_type", "previous_path"}
+BEHAVIOR_COVERAGE_KEYS = {
+    "normal",
+    "boundary",
+    "error",
+    "compatibility",
+    "integration",
+}
+BEHAVIOR_ITEM_KEYS = {"scope", "strategy", "result"}
 FINDING_KEYS = {
     "id",
     "severity",
@@ -64,6 +84,7 @@ COMMAND_STATUSES = {
     "infrastructure_failure",
     "not_executed",
 }
+CHANGE_TYPES = {"modified", "added", "deleted", "renamed"}
 CATEGORIES = {
     "algorithm",
     "business-logic",
@@ -98,6 +119,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--target-sha", required=True)
     parser.add_argument("--changed-file-count", required=True, type=int)
+    parser.add_argument("--changed-files-manifest", required=True)
     parser.add_argument(
         "--constraint-status",
         choices=("pass", "warning", "not_applicable"),
@@ -131,7 +153,38 @@ def require_chinese_string(value: Any, location: str) -> str:
     return text
 
 
-def validate_report(document: Any) -> dict[str, Any]:
+def validate_changed_files_manifest(document: Any) -> list[dict[str, str]]:
+    if not isinstance(document, list):
+        raise ValueError("changed files manifest must be an array")
+    manifest: list[dict[str, str]] = []
+    seen_paths: set[str] = set()
+    for index, item in enumerate(document):
+        location = f"changed_files_manifest[{index}]"
+        if not isinstance(item, dict):
+            raise ValueError(f"{location} must be an object")
+        change_type = require_string(item.get("change_type"), f"{location}.change_type")
+        expected_keys = (
+            MANIFEST_RENAME_KEYS if change_type == "renamed" else MANIFEST_FILE_KEYS
+        )
+        require_exact_keys(item, expected_keys, location)
+        if change_type not in CHANGE_TYPES:
+            raise ValueError(f"{location}.change_type is invalid")
+        path = require_string(item["path"], f"{location}.path")
+        if path in seen_paths:
+            raise ValueError(f"duplicate manifest path: {path}")
+        seen_paths.add(path)
+        normalized = {"path": path, "change_type": change_type}
+        if change_type == "renamed":
+            normalized["previous_path"] = require_string(
+                item["previous_path"], f"{location}.previous_path"
+            )
+        manifest.append(normalized)
+    return manifest
+
+
+def validate_report(
+    document: Any, expected_files: list[dict[str, str]]
+) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise ValueError("report root must be an object")
     require_exact_keys(document, ROOT_KEYS, "report")
@@ -140,8 +193,62 @@ def validate_report(document: Any) -> dict[str, Any]:
     if verdict not in {"PASS", "WARNING", "FAIL"}:
         raise ValueError(f"unsupported verdict: {verdict}")
     require_chinese_string(document["summary"], "summary")
+    require_chinese_string(document["merge_recommendation"], "merge_recommendation")
     if document["completion_marker"] != "CODEX_AI_CI_COMPLETE":
         raise ValueError("completion_marker is invalid")
+
+    changed_files = document["changed_files"]
+    if not isinstance(changed_files, list):
+        raise ValueError("changed_files must be an array")
+    actual_files: dict[str, str] = {}
+    for index, changed_file in enumerate(changed_files):
+        location = f"changed_files[{index}]"
+        if not isinstance(changed_file, dict):
+            raise ValueError(f"{location} must be an object")
+        require_exact_keys(changed_file, CHANGED_FILE_KEYS, location)
+        path = require_string(changed_file["path"], f"{location}.path")
+        change_type = require_string(
+            changed_file["change_type"], f"{location}.change_type"
+        )
+        if change_type not in CHANGE_TYPES:
+            raise ValueError(f"{location}.change_type is invalid")
+        if path in actual_files:
+            raise ValueError(f"duplicate changed_files path: {path}")
+        actual_files[path] = change_type
+        for key in {"summary", "impact", "validation_strategy"}:
+            require_chinese_string(changed_file[key], f"{location}.{key}")
+
+    expected_map = {
+        item["path"]: item["change_type"]
+        for item in expected_files
+    }
+    if actual_files != expected_map:
+        missing = sorted(set(expected_map) - set(actual_files))
+        extra = sorted(set(actual_files) - set(expected_map))
+        mismatched = sorted(
+            path
+            for path in set(actual_files) & set(expected_map)
+            if actual_files[path] != expected_map[path]
+        )
+        raise ValueError(
+            "changed_files does not match Git diff manifest; "
+            f"missing={missing}, extra={extra}, mismatched={mismatched}"
+        )
+
+    behavior_coverage = document["behavior_coverage"]
+    if not isinstance(behavior_coverage, dict):
+        raise ValueError("behavior_coverage must be an object")
+    require_exact_keys(
+        behavior_coverage, BEHAVIOR_COVERAGE_KEYS, "behavior_coverage"
+    )
+    for behavior_name in BEHAVIOR_COVERAGE_KEYS:
+        behavior = behavior_coverage[behavior_name]
+        location = f"behavior_coverage.{behavior_name}"
+        if not isinstance(behavior, dict):
+            raise ValueError(f"{location} must be an object")
+        require_exact_keys(behavior, BEHAVIOR_ITEM_KEYS, location)
+        for key in BEHAVIOR_ITEM_KEYS:
+            require_chinese_string(behavior[key], f"{location}.{key}")
 
     findings = document["findings"]
     if not isinstance(findings, list):
@@ -303,10 +410,28 @@ CONSTRAINT_STATUS_LABELS = {
     "warning": "警告",
     "not_applicable": "不适用",
 }
+CHANGE_TYPE_LABELS = {
+    "modified": "修改",
+    "added": "新增",
+    "deleted": "删除",
+    "renamed": "重命名",
+}
+BEHAVIOR_LABELS = {
+    "normal": "正常路径",
+    "boundary": "边界路径",
+    "error": "错误路径",
+    "compatibility": "兼容路径",
+    "integration": "集成路径",
+}
+BEHAVIOR_ORDER = ("normal", "boundary", "error", "compatibility", "integration")
+MAX_COMMENT_LENGTH = 58_000
 
 
-def comment_inline(value: Any) -> str:
-    return inline(value).replace("@", "＠")
+def comment_inline(value: Any, limit: int = 2_000) -> str:
+    text = inline(value).replace("@", "＠")
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(limit - 1, 0)]}…"
 
 
 def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
@@ -327,7 +452,7 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
         "",
         "| 字段 | 值 |",
         "| --- | --- |",
-        "| 报告格式 | `triton-anchor-codex-ai-report/v1` |",
+        "| 报告格式 | `triton-anchor-codex-ai-report/v2` |",
         f"| 分支 | `{inline(args.branch)}` |",
         *base_rows,
         f"| 目标提交 | `{inline(args.target_sha)}` |",
@@ -342,9 +467,43 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
         "",
         inline(document["summary"]),
         "",
-        "## 关键问题",
+        "## 合入建议",
         "",
+        inline(document["merge_recommendation"]),
+        "",
+        "## 具体文件变更",
+        "",
+        "| 文件 | 类型 | 改动说明 | 影响 | 验证策略 |",
+        "| --- | --- | --- | --- | --- |",
     ]
+
+    for changed_file in document["changed_files"]:
+        lines.append(
+            f"| `{inline(changed_file['path'])}` | "
+            f"{CHANGE_TYPE_LABELS[changed_file['change_type']]} | "
+            f"{inline(changed_file['summary'])} | "
+            f"{inline(changed_file['impact'])} | "
+            f"{inline(changed_file['validation_strategy'])} |"
+        )
+    if not document["changed_files"]:
+        lines.append("| 无 | 无 | 本次差异没有变更文件。 | 不适用。 | 不适用。 |")
+
+    lines.extend([
+        "",
+        "## 行为覆盖",
+        "",
+        "| 路径 | 检查范围 | 验证策略 | 结果 |",
+        "| --- | --- | --- | --- |",
+    ])
+    for behavior_name in BEHAVIOR_ORDER:
+        behavior = document["behavior_coverage"][behavior_name]
+        lines.append(
+            f"| {BEHAVIOR_LABELS[behavior_name]} | "
+            f"{inline(behavior['scope'])} | "
+            f"{inline(behavior['strategy'])} | "
+            f"{inline(behavior['result'])} |"
+        )
+    lines.extend(["", "## 关键问题", ""])
 
     findings = document["findings"]
     if not findings:
@@ -438,12 +597,31 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
             finding["severity"]
         ],
     )
-    lines = ["## Codex AI 关键问题概述", ""]
+    test_execution = document["test_execution"]
+    lines = [
+        "## Codex AI 审核摘要",
+        "",
+        comment_inline(document["summary"]),
+        "",
+        f"合入建议：**{comment_inline(document['merge_recommendation'], 1_000)}**",
+        "",
+        "### 补充验证",
+        "",
+        f"测试状态：**{TEST_EXECUTION_STATUS_LABELS[test_execution['status']]}**。"
+        f"{comment_inline(test_execution['summary'], 1_500)}",
+        "",
+    ]
+    if args.constraint_status == "warning":
+        lines.extend([
+            f"约束提醒：{comment_inline(args.constraint_reason, 1_500)}",
+            "",
+        ])
+
+    lines.extend(["### 需要重点关注的问题", ""])
     if not findings:
         lines.extend(["未发现需要阻塞合并的关键问题。", ""])
     else:
         shown = findings[:5]
-        lines.extend([f"发现 {len(findings)} 个需要关注的问题：", ""])
         for index, finding in enumerate(shown, start=1):
             category = CATEGORY_LABELS.get(finding["category"], "其他问题")
             severity = SEVERITY_LABELS[finding["severity"]]
@@ -453,9 +631,15 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
             )
             lines.append(
                 f"{index}. **[{severity}][{category}] "
-                f"{comment_inline(finding['title'])}** (`{location}`)"
+                f"{comment_inline(finding['title'], 400)}**"
             )
-            lines.append(f"   影响：{comment_inline(finding['impact'])}")
+            lines.append(f"   - 位置：`{location}`")
+            lines.append(
+                f"   - 影响：{comment_inline(finding['impact'], 1_000)}"
+            )
+            lines.append(
+                f"   - 建议：{comment_inline(finding['fix_direction'], 1_000)}"
+            )
         if len(findings) > len(shown):
             lines.extend([
                 "",
@@ -463,13 +647,38 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
             ])
         lines.append("")
 
-    if args.constraint_status == "warning":
-        lines.extend([
-            "### 测试执行约束警告",
-            "",
-            comment_inline(args.constraint_reason),
-            "",
-        ])
+    lines.extend([
+        "### 具体文件变更",
+        "",
+        "<details>",
+        "<summary>展开文件级变更表</summary>",
+        "",
+        "| 文件 | 类型 | 改动说明 | 影响 |",
+        "| --- | --- | --- | --- |",
+    ])
+    table_suffix = ["", "</details>", ""]
+    changed_files = document["changed_files"]
+    if not changed_files:
+        lines.append("| 无 | 无 | 本次差异没有变更文件。 | 不适用。 |")
+    else:
+        for index, changed_file in enumerate(changed_files):
+            row = (
+                f"| `{comment_inline(changed_file['path'], 500)}` | "
+                f"{CHANGE_TYPE_LABELS[changed_file['change_type']]} | "
+                f"{comment_inline(changed_file['summary'], 800)} | "
+                f"{comment_inline(changed_file['impact'], 800)} |"
+            )
+            candidate = "\n".join([*lines, row, *table_suffix])
+            if len(candidate) > MAX_COMMENT_LENGTH:
+                remaining = len(changed_files) - index
+                lines.append(
+                    f"| 其余 {remaining} 个文件 | 省略 | "
+                    "评论长度接近 GitHub 限制，请查看完整报告。 | "
+                    "完整验证策略保留在完整报告中。 |"
+                )
+                break
+            lines.append(row)
+    lines.extend(table_suffix)
     return "\n".join(lines)
 
 
@@ -477,7 +686,18 @@ def main() -> int:
     args = parse_args()
     try:
         input_path = Path(args.input)
-        document = validate_report(json.loads(input_path.read_text(encoding="utf-8")))
+        manifest_path = Path(args.changed_files_manifest)
+        expected_files = validate_changed_files_manifest(
+            json.loads(manifest_path.read_text(encoding="utf-8"))
+        )
+        if len(expected_files) != args.changed_file_count:
+            raise ValueError(
+                "changed file count does not match manifest; "
+                f"count={args.changed_file_count}, manifest={len(expected_files)}"
+            )
+        document = validate_report(
+            json.loads(input_path.read_text(encoding="utf-8")), expected_files
+        )
         require_chinese_string(args.constraint_reason, "constraint_reason")
         rendered = render_report(document, args)
         output_path = Path(args.output)
