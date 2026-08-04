@@ -194,26 +194,6 @@ static OpFoldResult accumulateTargetOffset(Location loc,
   return targetOffset;
 }
 
-static OpFoldResult accumulateTargetOffset(Location loc,
-                                           ArrayRef<OpFoldResult> offsets,
-                                           ArrayRef<OpFoldResult> strides,
-                                           int gatherDim, OpBuilder &b) {
-  // For gather/scatter, the gather_scatter_offset already encodes the complete
-  // element offset from the base pointer (including contributions from all
-  // dimensions). Only accumulate the gather dimension's offset here; skip
-  // non-gather dimensions to avoid double-counting the base offset that is
-  // already baked into the gather_scatter_offset values.
-  OpFoldResult targetOffset = b.getIndexAttr(0);
-  for (int i = 0; i < (int)offsets.size(); i++) {
-    if (i == gatherDim) {
-      OpFoldResult offset = offsets[i];
-      OpFoldResult stride = strides[i];
-      offset = mulOFRs(offset, stride, loc, b);
-      targetOffset = addOFRs(targetOffset, offset, loc, b);
-    }
-  }
-  return targetOffset;
-}
 
 static Value rewriteGatherScatterPtrElement(
     ArrayRef<int64_t> resultShape, tts::MakeGatherScatterTensorPtrOp op,
@@ -227,8 +207,11 @@ static Value rewriteGatherScatterPtrElement(
 
   auto offsets = op.getMixedOffsets();
   offsets[gatherDim] = gatherOffsetElt;
-  auto targetOffset = accumulateTargetOffset(op.getLoc(), offsets, mixedStrides,
-                                             gatherDim, rewriter);
+  // Sum all per-dimension offsets to get the flat element address.
+  // offsets[non-gatherDim] carry structured contributions (e.g. pid_x * row_stride)
+  // that are already in element units; offsets[gatherDim] is the scalar scatter
+  // index (stride=1 by construction in rebuildAsGatherScatter).
+  auto targetOffset = accumulateTargetOffset(op.getLoc(), offsets, rewriter);
 
   auto staticTargetOffset = getIntAttr(targetOffset);
   auto resultType = getResultMemrefType(
