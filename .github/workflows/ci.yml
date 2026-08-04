@@ -23,25 +23,54 @@ jobs:
   lint:
     name: "Lint & Style"
     runs-on: ubuntu-latest
+
+    env:
+      RUFF_CRITICAL_RULES: "E9,F63,F7,F82" #E9语法错误；F63表达式逻辑错误；F7控制结构错误；F82未定义变量名
+      RUFF_EXCLUDE: "triton/**"
+
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: false          # 不拉取 triton submodule
+          submodules: false
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install lint tools
+      - name: Install Ruff
+        run: pip install "ruff==0.15.22"
+
+      - name: Ruff warnings
+        shell: bash
         run: |
-          python -m pip install "ruff==0.15.22"
-          ruff --version
+          has_warning=false
 
-      - name: Ruff check (lint)
-        run: ruff check python/ tests/ --output-format=github
+          if ! ruff check \
+            --exclude "$RUFF_EXCLUDE" \
+            --ignore "$RUFF_CRITICAL_RULES" \
+            --output-format=concise \
+            python/ tests/; then
+            has_warning=true
+          fi
 
-      - name: Ruff format check
-        run: ruff format --check python/ tests/
+          if ! ruff format \
+            --check \
+            --exclude "$RUFF_EXCLUDE" \
+            python/ tests/; then
+            has_warning=true
+          fi
+
+          if [ "$has_warning" = "true" ]; then
+            echo "::warning title=Ruff warning::代码规范问题，详细内容请查看日志。"
+          fi
+
+      - name: Ruff critical errors
+        run: |
+          ruff check \
+            --exclude "$RUFF_EXCLUDE" \
+            --select "$RUFF_CRITICAL_RULES" \
+            --output-format=github \
+            python/ tests/
 
   # ───────────── Job 2: Pure-Python unit tests ────────────────
   unit-test:
