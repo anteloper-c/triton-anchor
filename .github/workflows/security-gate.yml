@@ -65,6 +65,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+          allow-unsafe-pr-checkout: true
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
