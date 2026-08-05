@@ -144,17 +144,25 @@ jobs:
           bash -n scripts/ci/install_backend_deps.sh
           bash -n scripts/ci/run_delivery_smoke.sh
           bash -n scripts/ci/run_flaggems_tests.sh
-          bash -n scripts/local_ci/poll_gitee_and_run.sh
-          bash -n scripts/local_ci/run_in_container.sh
-          bash -n scripts/local_ci/run_delivery_local.sh
+          # Keep deployed compatibility entry points syntactically valid.
+          for script in scripts/local_ci/*.sh; do bash -n "${script}"; done
+          bash -n scripts/local_ci/orchestration/poll_gitee_tasks.sh
+          bash -n scripts/local_ci/orchestration/run_deterministic_ci_in_container.sh
+          bash -n scripts/local_ci/orchestration/fetch_task_metadata.sh
+          bash -n scripts/local_ci/deterministic_ci/run_deterministic_ci.sh
+          bash -n scripts/local_ci/codex_ai/run_codex_ai_ci.sh
+          bash -n scripts/local_ci/codex_ai/prepare_codex_checkout.sh
+          bash -n scripts/local_ci/codex_ai/setup_codex_ai_container.sh
           python -m py_compile scripts/ci/collect_delivery_evidence.py
-          python -m py_compile scripts/local_ci/compile_benchmark.py
-          python -m py_compile scripts/local_ci/compare_compile_time.py
-          python -m py_compile scripts/local_ci/ir_serialization_benchmark.py
-          python -m py_compile scripts/local_ci/compare_ir_serialization.py
-          python -m py_compile scripts/local_ci/publish_gitee_result.py
-          python -m py_compile scripts/local_ci/bridge_gitee_to_github_status.py
+          python -m compileall -q scripts/local_ci
           python -m py_compile tests/test_smoke.py
+
+      - name: Check Codex prompt contracts
+        run: >-
+          python -m pytest
+          scripts/local_ci/codex_ai/tests/test_codex_prompt_templates.py
+          scripts/local_ci/tests/test_module_layout.py
+          -v --tb=short
 
       - name: Run pure Python frontend tests
         run: python -m pytest python/triton_anchor/tests -v --tb=short

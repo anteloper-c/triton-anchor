@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-setup_script="${repo_root}/scripts/local_ci/setup_codex_ai_container.sh"
+setup_script="${repo_root}/scripts/local_ci/codex_ai/setup_codex_ai_container.sh"
 test_root="$(mktemp -d /tmp/local-ci-codex-container-setup.XXXXXX)"
 trap 'rm -rf -- "${test_root}"' EXIT
 mkdir -p "${test_root}/bin" "${test_root}/home" "${test_root}/credentials"

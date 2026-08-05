@@ -6,6 +6,8 @@ SCRIPT = (
     Path(__file__).resolve().parents[3]
     / "scripts"
     / "local_ci"
+    / "deterministic_ci"
+    / "performance"
     / "compare_compile_time.py"
 )
 SPEC = importlib.util.spec_from_file_location("compare_compile_time", SCRIPT)
@@ -17,6 +19,7 @@ PUBLISH_SCRIPT = (
     Path(__file__).resolve().parents[3]
     / "scripts"
     / "local_ci"
+    / "results"
     / "publish_gitee_result.py"
 )
 PUBLISH_SPEC = importlib.util.spec_from_file_location(

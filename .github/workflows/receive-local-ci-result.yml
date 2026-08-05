@@ -84,7 +84,7 @@ jobs:
           python-version: "3.11"
 
       - name: Check bridge script
-        run: python -m py_compile scripts/local_ci/bridge_gitee_to_github_status.py
+        run: python -m py_compile scripts/local_ci/results/bridge_gitee_to_github_status.py
 
       - name: Wait for Gitee local CI result
         id: bridge
@@ -95,7 +95,7 @@ jobs:
         run: |
           echo "result_ready=false" >> "${GITHUB_OUTPUT}"
           set +e
-          python scripts/local_ci/bridge_gitee_to_github_status.py \
+          python scripts/local_ci/results/bridge_gitee_to_github_status.py \
             --mode single \
             --gitee-owner "${GITEE_RESULTS_OWNER}" \
             --gitee-repo "${GITEE_RESULTS_REPO}" \

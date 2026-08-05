@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-renderer="${repo_root}/scripts/local_ci/render_codex_ai_report.py"
+renderer="${repo_root}/scripts/local_ci/codex_ai/render_codex_ai_report.py"
 test_root="$(mktemp -d /tmp/local-ci-codex-report-test.XXXXXX)"
 trap 'rm -rf -- "${test_root}"' EXIT
 

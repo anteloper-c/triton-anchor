@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "scripts" / "local_ci"))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "local_ci" / "results"))
 
 import bridge_gitee_to_github_status as bridge
 

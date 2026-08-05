@@ -2,8 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-runner="${repo_root}/scripts/local_ci/run_codex_ai_ci.sh"
-renderer="${repo_root}/scripts/local_ci/render_codex_ai_report.py"
+runner="${repo_root}/scripts/local_ci/codex_ai/run_codex_ai_ci.sh"
+renderer="${repo_root}/scripts/local_ci/codex_ai/render_codex_ai_report.py"
 test_root="$(mktemp -d /tmp/local-ci-codex-container-test.XXXXXX)"
 trap 'rm -rf -- "${test_root}"' EXIT
 export GIT_CONFIG_GLOBAL="${test_root}/gitconfig"
@@ -691,9 +691,9 @@ run_case() {
 for prompt_template in \
   codex_ai_success.md \
   codex_ai_failure.md; do
-  [[ -r "${repo_root}/scripts/local_ci/prompts/${prompt_template}" ]]
+  [[ -r "${repo_root}/scripts/local_ci/codex_ai/prompts/${prompt_template}" ]]
 done
-[[ "$(find "${repo_root}/scripts/local_ci/prompts" -maxdepth 1 -type f -name '*.md' | wc -l)" -eq 2 ]]
+[[ "$(find "${repo_root}/scripts/local_ci/codex_ai/prompts" -maxdepth 1 -type f -name 'codex_ai_*.md' | wc -l)" -eq 2 ]]
 
 run_case success success 0 30 0
 success_output="${test_root}/success/output"
