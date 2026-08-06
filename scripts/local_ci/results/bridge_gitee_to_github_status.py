@@ -507,10 +507,18 @@ def codex_advisory_description(codex_ai: CodexAIResult) -> str:
         return "Codex AI 未运行（非阻塞）"
     if execution_status != "pass":
         return "Codex AI 未完成（非阻塞）"
-    if test_status == "insufficient_evidence":
-        return "Codex AI 测试证据不足（非阻塞）"
     if verdict == "FAIL":
         return "Codex AI 建议性结论：失败（非阻塞）"
+    if test_status == "insufficient_evidence":
+        return "Codex AI 测试证据不足（非阻塞）"
+    if test_status == "stable_failure":
+        return "Codex AI 测试存在可稳定复现的失败（非阻塞）"
+    if test_status == "flaky_failure":
+        return "Codex AI 测试存在非确定性失败（非阻塞）"
+    if test_status == "infrastructure_failure":
+        return "Codex AI 测试遇到基础设施失败（非阻塞）"
+    if test_status == "test_generation_error":
+        return "Codex AI 测试生成失败（非阻塞）"
     if verdict == "WARNING":
         return "Codex AI 建议性结论：警告（非阻塞）"
     if constraint_status == "warning":

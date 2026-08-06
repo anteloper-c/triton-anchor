@@ -27,6 +27,7 @@ CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS="${CODEX_AI_CI_RECOMMENDED_COMMA
 CODEX_AI_CI_TEST_BUDGET_SECONDS="${CODEX_AI_CI_TEST_BUDGET_SECONDS:-1200}"
 CODEX_AI_CI_REPORT_RESERVE_SECONDS="${CODEX_AI_CI_REPORT_RESERVE_SECONDS:-300}"
 LOCAL_CI_CONTAINER="${LOCAL_CI_CONTAINER:-anchor-sophgo-ci}"
+LOCAL_CI_ARTIFACT_ROOT="${LOCAL_CI_ARTIFACT_ROOT:-/workspace/local-ci-artifacts}"
 PYTHON_VENV_ACTIVATE="${PYTHON_VENV_ACTIVATE:-/opt/venv/bin/activate}"
 SOURCE_ENVSETUP="${SOURCE_ENVSETUP:-1}"
 ANCHOR_DIR="${ANCHOR_DIR:-/workspace/triton-anchor}"
@@ -202,7 +203,7 @@ write_failure_report() {
     rendered_diff_mode="merge-base"
   fi
   report_verdict="WARNING"
-  test_execution_status="infrastructure_failure"
+  test_execution_status="insufficient_evidence"
   generated_test_file_count="0"
   test_command_count="0"
   max_test_command_duration_seconds="0"
@@ -236,7 +237,7 @@ for item in manifest if isinstance(manifest, list) else []:
         "change_type": change_type,
         "summary": "AI 审查未完成，未能可靠归纳该文件的改动。",
         "impact": "该文件的行为影响仍需人工检查。",
-        "validation_strategy": "修复 AI 执行问题后重新审查，或由维护者人工验证。",
+        "validation_strategy": "未执行：Codex AI CI 未完成，没有取得该文件的可信验证结果。",
     })
 
 behavior_coverage = {}
@@ -260,25 +261,13 @@ document = {
     "merge_recommendation": "请先排查 AI 执行问题并重新运行，当前不要仅依据本次 AI 结果决定合入。",
     "changed_files": changed_files,
     "behavior_coverage": behavior_coverage,
-    "findings": [
-        {
-            "id": "AI-001",
-            "severity": "MEDIUM",
-            "category": "other",
-            "file": "Codex AI CI",
-            "line": "不适用",
-            "title": "Codex AI CI 分析未完成",
-            "evidence": "执行环境、超时或输出格式校验失败，具体原因请查看本次任务摘要和原始日志。",
-            "impact": "本次代码差异没有获得完整可靠的 AI 审查结论。",
-            "fix_direction": "排查摘要和日志中的失败原因后重新执行 Codex AI CI。",
-        }
-    ],
+    "findings": [],
     "suggested_tests": [],
     "residual_risks": [
         "当前代码差异仍需人工检查，或在修复执行环境后重新运行 Codex AI CI。"
     ],
     "test_execution": {
-        "status": "infrastructure_failure",
+        "status": "insufficient_evidence",
         "summary": "Codex AI CI 未完成，因此没有可信的测试执行结论。",
         "generated_test_files": [],
         "commands": [],
@@ -356,7 +345,7 @@ PY
     echo
     echo "## 测试执行"
     echo
-    echo "- 状态：基础设施失败"
+    echo "- 状态：证据不足"
     echo "- 摘要：Codex AI CI 未完成，未获得可信的测试结果。"
     echo
     echo "## 剩余风险"
@@ -376,14 +365,11 @@ PY
     echo
     echo "### 补充验证"
     echo
-    echo "测试状态：**基础设施失败**。本次没有获得可信的补充验证结果。"
+    echo "测试状态：**证据不足**。本次没有获得可信的补充验证结果。"
     echo
     echo "### 需要重点关注的问题"
     echo
-    echo "1. **[中风险][其他问题] Codex AI CI 分析未完成**"
-    echo "   - 位置：\`Codex AI CI\`"
-    echo "   - 影响：本次代码差异没有获得完整可靠的 AI 审查结论。"
-    echo "   - 建议：查看完整日志，修复执行问题后重新运行。"
+    echo "未生成产品代码 finding；Codex AI CI 执行未完成。"
     echo
     echo "### 具体文件变更"
     echo
@@ -724,13 +710,35 @@ validate_prerequisites() {
 }
 
 discover_artifact_dir() {
+  local candidate=""
+  local resolved_root=""
+  local resolved_candidate=""
   if [[ ! -f "${output_dir}/local-ci.log" ]]; then
     return 0
   fi
-  artifact_dir="$(
+  candidate="$(
     sed -n 's/.*Artifacts are in \([^[:space:]]*\).*/\1/p' \
       "${output_dir}/local-ci.log" | tail -n 1
   )"
+  if [[ -z "${candidate}" ]]; then
+    return 0
+  fi
+  resolved_root="$(
+    docker exec --user 0 "${LOCAL_CI_CONTAINER}" \
+      readlink -e -- "${LOCAL_CI_ARTIFACT_ROOT}" 2>> "${log_path}" || true
+  )"
+  resolved_candidate="$(
+    docker exec --user 0 "${LOCAL_CI_CONTAINER}" \
+      readlink -e -- "${candidate}" 2>> "${log_path}" || true
+  )"
+  if [[ -z "${resolved_root}" || -z "${resolved_candidate}" \
+    || "${resolved_candidate}" == "${resolved_root}" \
+    || "${resolved_candidate}" != "${resolved_root}"/* ]]; then
+    echo "忽略不在预期 artifact 根目录中的日志路径：${candidate}" >> "${log_path}"
+    artifact_dir=""
+    return 0
+  fi
+  artifact_dir="${resolved_candidate}"
 }
 
 diff_requires_generated_tests() {

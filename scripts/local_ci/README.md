@@ -4,9 +4,10 @@
 
 ## 模块划分
 
-| 目录 | 职责 |
+| 模块/入口 | 职责 |
 | --- | --- |
-| `orchestration/` | 轮询 Gitee task ref、创建可信 runner 快照并编排每次任务。 |
+| `poll_gitee_and_run.sh` | 服务器稳定入口，轮询 Gitee task ref、创建可信 runner 快照并编排每次任务。 |
+| `orchestration/` | 提供 metadata 获取和确定性 CI 容器调度。 |
 | `deterministic_ci/` | 执行构建、smoke 测试、FlagGems 测试并收集性能证据。 |
 | `codex_ai/` | 执行非阻塞 Codex 审查、校验结构化报告并维护 prompt 契约。 |
 | `results/` | 向 Gitee 发布产物，并将已完成的结果回写到 GitHub。 |
@@ -15,9 +16,11 @@
 模块依赖方向如下：
 
 ```text
+poll_gitee_and_run.sh -> orchestration
+                      -> codex_ai
+                      -> results
+
 orchestration -> deterministic_ci
-              -> codex_ai
-              -> results
 
 codex_ai -> shared
 results  -> shared
@@ -26,8 +29,8 @@ dashboard -> shared
 
 确定性 CI 必须先于 Codex AI 执行。Codex 只提供辅助审查，不能改变确定性 CI 的退出码。任务结果成功发布后，才能将对应 SHA 标记为已处理。
 
-## 兼容入口
+## 服务器入口
 
-直接保留在 `scripts/local_ci/` 下的脚本是兼容入口，用于兼容服务器现有配置、systemd/cron 任务、workflow 和人工执行命令。新增代码必须调用上述模块中的 canonical 路径。兼容入口只转发参数和退出状态，不包含第二套业务实现。
+`scripts/local_ci/poll_gitee_and_run.sh` 是唯一保留在根目录的可执行脚本，也是 systemd/cron 和人工运行 poller 的稳定入口。它包含 poller 完整实现，并调用分层目录中的 canonical 模块；其他脚本不提供根目录兼容入口。
 
-本次迁移只调整源码目录。task ref、结果路径、产物名称、报告 schema、status context 和性能缓存路径均保持不变。
+本次迁移调整源码布局、workflow 引用和部署文档；task ref、结果路径、产物名称、报告 schema、status context 和性能缓存路径均保持不变。

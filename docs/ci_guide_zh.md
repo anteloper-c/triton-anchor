@@ -239,7 +239,7 @@ PR 使用 `pull_request_target`，目的是让可信的基准分支 workflow 可
 
 #### 4.4.1 poller
 
-`scripts/local_ci/poll_gitee_and_run.sh` 是运行在本地服务器上的轮询器。它读取 `LOCAL_CI_CONFIG` 指定的配置文件，通过 `git ls-remote` 扫描 Gitee 中转仓库，并只接收匹配以下规则的任务：
+`scripts/local_ci/poll_gitee_and_run.sh` 是运行在本地服务器上的稳定轮询入口。它读取 `LOCAL_CI_CONFIG` 指定的配置文件，通过 `git ls-remote` 扫描 Gitee 中转仓库，并只接收匹配以下规则的任务：
 
 ```text
 ^ci/(pr-[0-9]+/.+|push/.+|full/.+)$
@@ -257,7 +257,9 @@ Local CI 不直接使用 PR 中携带的控制脚本。服务器通过 `LOCAL_CI
 LOCAL_CI_STATE_DIR/runner/<run-id>/
 ```
 
-随后 `run_in_container.sh` 再把该快照复制进 Docker 容器。这样可以保证：
+`LOCAL_CI_SCRIPT_DIR` 必须指向完整的 `scripts/local_ci` 根目录，不能只指向某个子目录。根目录只保留完整实现的稳定服务器入口 `poll_gitee_and_run.sh`；其余实现按 `orchestration/`、`deterministic_ci/`、`codex_ai/`、`results/` 和 `shared/` 分层。
+
+随后 `orchestration/run_deterministic_ci_in_container.sh` 再把完整快照复制进 Docker 容器。这样可以保证：
 
 - PR 分支中没有 `scripts/local_ci` 时仍可执行；
 - 未受信任的 PR 不能直接修改本地 CI 控制逻辑；
@@ -325,7 +327,7 @@ Codex AI CI 不使用 poller 用户的个人 `~/.codex`。启用 `RUN_CODEX_AI_C
 
 部署时先停止 poller，创建 `/home/race_work/local_ci/secrets/codex-ai`，按已验证的中转配置单独写入 `config.toml`（不要复制个人配置中的 `[projects]` 记录），并将 `auth.json` 写为 `{"OPENAI_API_KEY":"<CI 专用 token>"}`，再在 `config.env` 中设置 `CODEX_AI_CI_HOME`。不执行额外的 `chmod` 也可以运行；服务器存在其他用户时，仍建议收紧权限以避免 token 被读取。
 
-每次任务会把宿主机 Codex CLI 和独立凭据实体复制到任务专属临时容器的 `/root/.codex`，不会挂载凭据，也不会把容器内文件复制回宿主机。runner 会比较任务前后的凭据文件哈希；发现外部修改时只记录中文告警，不自动恢复文件，也不改变确定性 Local CI 的结果。可在启动 poller 前运行 `CODEX_AI_CI_HOME=/home/race_work/local_ci/secrets/codex-ai scripts/local_ci/setup_codex_ai_container.sh` 完成前置检查。
+每次任务会把宿主机 Codex CLI 和独立凭据实体复制到任务专属临时容器的 `/root/.codex`，不会挂载凭据，也不会把容器内文件复制回宿主机。runner 会比较任务前后的凭据文件哈希；发现外部修改时只记录中文告警，不自动恢复文件，也不改变确定性 Local CI 的结果。可在启动 poller 前运行 `CODEX_AI_CI_HOME=/home/race_work/local_ci/secrets/codex-ai scripts/local_ci/codex_ai/setup_codex_ai_container.sh` 完成前置检查。
 
 ### 4.5 性能监测
 
@@ -394,7 +396,7 @@ runs/ci_push/ci_push_<branch>/<sha>/<run-id>/
 
 #### 4.6.2 receiver
 
-`receive-local-ci-result.yml` 使用 `bridge_gitee_to_github_status.py` 按 task ref 和 SHA 轮询结果。默认每 60 秒检查一次，单次 receiver 最长等待 20400 秒；当前 workflow 最多允许 6 次续接。
+`receive-local-ci-result.yml` 使用 `scripts/local_ci/results/bridge_gitee_to_github_status.py` 按 task ref 和 SHA 轮询结果。默认每 60 秒检查一次，单次 receiver 最长等待 20400 秒；当前 workflow 最多允许 6 次续接。
 
 结果完成后，receiver：
 
@@ -584,7 +586,12 @@ GitHub commit status 没有 warning 状态，因此性能 warning 会映射为 s
 | 公共 API 范围 | `api_contract/public_api.json` |
 | API 比较脚本 | `scripts/api_contract/` |
 | 通用构建和 smoke 脚本 | `scripts/ci/` |
-| Local CI 调度、执行、性能和结果脚本 | `scripts/local_ci/` |
+| Local CI 调度入口 | `scripts/local_ci/poll_gitee_and_run.sh` |
+| Local CI 编排 helper | `scripts/local_ci/orchestration/` |
+| 确定性 CI、FlagGems 和性能脚本 | `scripts/local_ci/deterministic_ci/` |
+| Codex AI CI | `scripts/local_ci/codex_ai/` |
+| 结果发布和 GitHub bridge | `scripts/local_ci/results/` |
+| Local CI 共享协议 | `scripts/local_ci/shared/` |
 | Local CI 配置模板 | `scripts/local_ci/config.example.env` |
 | Pages 数据同步脚本 | `scripts/dashboard/` |
 | Pages 静态站点与数据契约测试 | `dashboard/`、`python/triton_anchor/tests/test_dashboard_contract.py`、`python/triton_anchor/tests/test_dashboard_sync.py` |
