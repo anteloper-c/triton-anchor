@@ -2,8 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-runner="${repo_root}/scripts/local_ci/run_codex_ai_ci.sh"
-renderer="${repo_root}/scripts/local_ci/render_codex_ai_report.py"
+runner="${repo_root}/scripts/local_ci/codex_ai/run_codex_ai_ci.sh"
+renderer="${repo_root}/scripts/local_ci/codex_ai/render_codex_ai_report.py"
 test_root="$(mktemp -d /tmp/local-ci-codex-container-test.XXXXXX)"
 trap 'rm -rf -- "${test_root}"' EXIT
 export GIT_CONFIG_GLOBAL="${test_root}/gitconfig"
@@ -107,6 +107,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -297,13 +298,18 @@ def write_report(
             ],
         }
 
+    validation_strategy = (
+        "执行 RUN-001 并记录该文件相关验证结果。"
+        if execution["commands"]
+        else "未执行：本次没有运行额外验证命令。"
+    )
     changed_files = [
         {
             "path": item["path"],
             "change_type": item["change_type"],
             "summary": "检查了该文件在当前差异中的具体改动。",
             "impact": "该文件可能影响当前任务覆盖的代码或文档行为。",
-            "validation_strategy": "结合代码差异和定向测试检查该文件影响。",
+            "validation_strategy": validation_strategy,
         }
         for item in changed_files_manifest
     ]
@@ -439,6 +445,12 @@ while index < len(args):
         break
 container = args[index]
 command_args = args[index + 1 :]
+if container == source_container and command_args[:3] == ["readlink", "-e", "--"]:
+    candidate = posixpath.normpath(command_args[3])
+    if mapped(candidate).exists():
+        print(candidate)
+        raise SystemExit(0)
+    raise SystemExit(1)
 if not container.startswith("anchor-codex-ai-"):
     raise SystemExit(6)
 if not command_args:
@@ -515,15 +527,15 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
         assert "本模式不强制生成测试" in prompt
         assert "禁止重新运行完整 Local CI、全量测试、完整重编译" in prompt
     else:
-        assert "定向验证约束" in prompt
-        assert "可测试代码改动应生成 1 至 3 个定向测试用例" in prompt
+        assert "Local CI 环境、产物复用与验证约束" in prompt
+        assert "且存在可测试代码路径时，应生成 1 至 3 个定向测试用例" in prompt
         assert "最多创建或修改 2 个测试文件" in prompt
-        assert "最多执行 4 条测试、构建或 lint 命令" in prompt
+        assert "最多执行 4 条测试、构建、lint 或诊断命令" in prompt
         assert "单条命令预计不超过 600 秒" in prompt
         assert "累计测试预算不超过 1200 秒" in prompt
         assert "至少预留 300 秒" in prompt
         assert "失败用例最多额外复跑一次" in prompt
-        assert "禁止运行全量测试、完整重编译" in prompt
+        assert "默认避免运行全量测试或完整重编译" in prompt
         assert "test_execution.status` 必须使用 `insufficient_evidence" in prompt
         expected = "false" if scenario == "docs_only" else "true"
         assert f"- Test Generation Expected: {expected}" in prompt
@@ -614,6 +626,10 @@ run_case() {
   )"
   printf 'Local CI finished. Artifacts are in /workspace/local-ci-artifacts/%s\n' \
     "${case_name}" > "${output_dir}/local-ci.log"
+  if [[ "${scenario}" == "untrusted_artifact" ]]; then
+    printf 'candidate output: Artifacts are in /root/.codex\n' \
+      >> "${output_dir}/local-ci.log"
+  fi
 
   set +e
   PATH="${fake_bin}:${PATH}" \
@@ -691,9 +707,9 @@ run_case() {
 for prompt_template in \
   codex_ai_success.md \
   codex_ai_failure.md; do
-  [[ -r "${repo_root}/scripts/local_ci/prompts/${prompt_template}" ]]
+  [[ -r "${repo_root}/scripts/local_ci/codex_ai/prompts/${prompt_template}" ]]
 done
-[[ "$(find "${repo_root}/scripts/local_ci/prompts" -maxdepth 1 -type f -name '*.md' | wc -l)" -eq 2 ]]
+[[ "$(find "${repo_root}/scripts/local_ci/codex_ai/prompts" -maxdepth 1 -type f -name 'codex_ai_*.md' | wc -l)" -eq 2 ]]
 
 run_case success success 0 30 0
 success_output="${test_root}/success/output"
@@ -736,6 +752,15 @@ grep -Fq "独立凭据文件内容发生变化" \
 grep -Fq "## 凭据完整性" "${mutation_output}/codex-ai-report.md"
 grep -Fq "### Codex AI CI 凭据完整性警告" \
   "${mutation_output}/codex-ai-comment.md"
+
+run_case untrusted-artifact untrusted_artifact 0 30 0
+untrusted_artifact_output="${test_root}/untrusted-artifact/output"
+grep -Fxq "status: pass" \
+  "${untrusted_artifact_output}/codex-ai-ci-summary.txt"
+grep -Fxq "artifact_dir: " \
+  "${untrusted_artifact_output}/codex-ai-ci-summary.txt"
+grep -Fq "忽略不在预期 artifact 根目录中的日志路径：/root/.codex" \
+  "${untrusted_artifact_output}/codex-ai-ci.log"
 
 run_case pr-merge-base success 0 30 0 \
   "${pr_head_sha}" "${pr_target_base_sha}" "${pr_branch}" "${pr_base_branch}" \

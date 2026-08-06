@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-renderer="${repo_root}/scripts/local_ci/render_codex_ai_report.py"
+renderer="${repo_root}/scripts/local_ci/codex_ai/render_codex_ai_report.py"
 test_root="$(mktemp -d /tmp/local-ci-codex-report-test.XXXXXX)"
 trap 'rm -rf -- "${test_root}"' EXIT
 
@@ -232,6 +232,29 @@ if python3 "${renderer}" \
   --changed-files-manifest "${manifest_json}" \
   >/dev/null 2>&1; then
   echo "渲染器接受了缺少集成路径的 behavior_coverage" >&2
+  exit 1
+fi
+
+inconsistent_execution_report="${test_root}/inconsistent-execution.json"
+python3 - "${valid_json}" "${inconsistent_execution_report}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+document["test_execution"]["commands"][0]["exit_code"] = 1
+Path(sys.argv[2]).write_text(
+    json.dumps(document, ensure_ascii=False), encoding="utf-8"
+)
+PY
+if python3 "${renderer}" \
+  --input "${inconsistent_execution_report}" \
+  --output "${test_root}/inconsistent-execution.md" \
+  --comment-output "${test_root}/inconsistent-execution-comment.md" \
+  --branch test --base-sha a --target-sha b --changed-file-count 1 \
+  --changed-files-manifest "${manifest_json}" \
+  >/dev/null 2>&1; then
+  echo "渲染器接受了 passed 状态与非零退出码矛盾的命令" >&2
   exit 1
 fi
 

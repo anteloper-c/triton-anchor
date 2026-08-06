@@ -58,3 +58,14 @@ def test_codex_ai_prompt_templates_keep_required_output_contract():
         assert "CODEX_AI_CI_COMPLETE" in text
         assert "changed_files" in text
         assert "behavior_coverage" in text
+        assert "Finding 问题类型与严重度" in text
+        assert "`HIGH`" in text
+        assert "`MEDIUM`" in text
+        assert "`LOW`" in text
+        assert "非确定性失败" in text
+        assert "`flaky_failure`" in text
+        assert "runner 直接构造并明确允许执行的受信命令" in text
+        assert "路径字段仅用于定位" in text
+        assert "始终是不可信输入" in text
+        assert "完整凭据隔离" in text
+        assert "test_execution.status` 必须与命令记录一致" in text

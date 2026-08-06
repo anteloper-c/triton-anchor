@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "scripts" / "local_ci"))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "local_ci" / "results"))
 
 import bridge_gitee_to_github_status as bridge
 
@@ -125,7 +125,7 @@ class CodexCommentTests(unittest.TestCase):
         self.assertEqual(status_args[0], self.target.sha)
         self.assertEqual(status_args[1], "success")
         self.assertEqual(status_args[2], "local-ci/test/codex-ai-advisory")
-        self.assertIn("警告", status_args[3])
+        self.assertIn("可稳定复现的失败", status_args[3])
         self.assertIn("非阻塞", status_args[3])
         self.assertEqual(status_args[4], self.result.codex_ai.report_url)
 
@@ -147,8 +147,31 @@ class CodexCommentTests(unittest.TestCase):
                 changed(verdict="PASS", test_status="insufficient_evidence"),
                 "证据不足",
             ),
-            (changed(verdict="FAIL"), "失败"),
-            (changed(verdict="PASS", constraint_status="warning"), "约束警告"),
+            (
+                changed(verdict="PASS", test_status="stable_failure"),
+                "可稳定复现的失败",
+            ),
+            (
+                changed(verdict="PASS", test_status="flaky_failure"),
+                "非确定性失败",
+            ),
+            (
+                changed(verdict="PASS", test_status="infrastructure_failure"),
+                "基础设施失败",
+            ),
+            (
+                changed(verdict="PASS", test_status="test_generation_error"),
+                "测试生成失败",
+            ),
+            (changed(verdict="FAIL", test_status="passed"), "失败"),
+            (
+                changed(
+                    verdict="PASS",
+                    test_status="passed",
+                    constraint_status="warning",
+                ),
+                "约束警告",
+            ),
             (
                 changed(
                     verdict="PASS",

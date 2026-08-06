@@ -324,6 +324,8 @@ def validate_report(
     if not isinstance(commands, list):
         raise ValueError("test_execution.commands must be an array")
     command_ids: set[str] = set()
+    command_statuses: list[str] = []
+    command_statuses_by_text: dict[str, list[str]] = {}
     for index, command in enumerate(commands):
         location = f"test_execution.commands[{index}]"
         if not isinstance(command, dict):
@@ -335,7 +337,7 @@ def validate_report(
         if command_id in command_ids:
             raise ValueError(f"duplicate command id: {command_id}")
         command_ids.add(command_id)
-        require_string(command["command"], f"{location}.command")
+        command_text = require_string(command["command"], f"{location}.command")
         if not isinstance(command["exit_code"], int):
             raise ValueError(f"{location}.exit_code must be an integer")
         duration = command["duration_seconds"]
@@ -346,14 +348,87 @@ def validate_report(
         command_status = require_string(command["status"], f"{location}.status")
         if command_status not in COMMAND_STATUSES:
             raise ValueError(f"{location}.status is invalid")
+        if command_status == "passed" and command["exit_code"] != 0:
+            raise ValueError(f"{location}.passed command must have exit_code 0")
+        if command_status in {
+            "stable_failure",
+            "flaky_failure",
+            "infrastructure_failure",
+        } and command["exit_code"] == 0:
+            raise ValueError(
+                f"{location}.{command_status} command must have a non-zero exit_code"
+            )
+        command_statuses.append(command_status)
+        command_statuses_by_text.setdefault(command_text, []).append(command_status)
         require_chinese_string(command["evidence"], f"{location}.evidence")
 
-    expected_verdict = "FAIL" if any(
-        finding["severity"] == "HIGH" for finding in findings
-    ) else "WARNING" if findings else "PASS"
+    executed_statuses = [
+        status for status in command_statuses if status != "not_executed"
+    ]
+    if execution_status == "passed":
+        if not executed_statuses or any(
+            status != "passed" for status in executed_statuses
+        ):
+            raise ValueError(
+                "test_execution.status passed requires at least one executed command "
+                "and all executed commands to pass"
+            )
+    elif execution_status == "not_run" and executed_statuses:
+        raise ValueError("test_execution.status not_run cannot contain executed commands")
+    elif execution_status == "stable_failure":
+        has_comparable_repeat = any(
+            statuses.count("stable_failure") >= 2
+            for statuses in command_statuses_by_text.values()
+        )
+        if not has_comparable_repeat or any(
+            status not in {"passed", "stable_failure"}
+            for status in executed_statuses
+        ):
+            raise ValueError(
+                "test_execution.status stable_failure requires at least two "
+                "stable_failure command records"
+            )
+    elif execution_status == "flaky_failure":
+        has_inconsistent_repeat = any(
+            "passed" in statuses and "flaky_failure" in statuses
+            for statuses in command_statuses_by_text.values()
+        )
+        if not has_inconsistent_repeat or any(
+            status not in {"passed", "flaky_failure"}
+            for status in executed_statuses
+        ):
+            raise ValueError(
+                "test_execution.status flaky_failure requires both passed and "
+                "flaky_failure command records"
+            )
+    elif execution_status == "infrastructure_failure":
+        if "infrastructure_failure" not in command_statuses or any(
+            status not in {"passed", "infrastructure_failure"}
+            for status in executed_statuses
+        ):
+            raise ValueError(
+                "test_execution.status infrastructure_failure requires an "
+                "infrastructure_failure command record"
+            )
+
+    warning_execution_statuses = {
+        "stable_failure",
+        "flaky_failure",
+        "infrastructure_failure",
+        "test_generation_error",
+        "insufficient_evidence",
+    }
+    expected_verdict = (
+        "FAIL"
+        if any(finding["severity"] == "HIGH" for finding in findings)
+        else "WARNING"
+        if findings or execution_status in warning_execution_statuses
+        else "PASS"
+    )
     if verdict != expected_verdict:
         raise ValueError(
-            f"verdict {verdict} does not match findings; expected {expected_verdict}"
+            f"verdict {verdict} does not match findings and test_execution.status; "
+            f"expected {expected_verdict}"
         )
     return document
 
@@ -370,7 +445,7 @@ CATEGORY_LABELS = {
     "cache-consistency": "缓存一致性错误",
     "concurrency": "并发错误",
     "resource-lifecycle": "资源生命周期错误",
-    "data-integrity": "数据一致性错误",
+    "data-integrity": "数据完整性问题",
     "correctness": "正确性错误",
     "regression": "行为回归",
     "security": "安全问题",
@@ -392,16 +467,16 @@ VERDICT_LABELS = {
 TEST_EXECUTION_STATUS_LABELS = {
     "not_run": "未执行",
     "passed": "通过",
-    "stable_failure": "稳定失败",
-    "flaky_failure": "不稳定失败",
+    "stable_failure": "可稳定复现的失败",
+    "flaky_failure": "非确定性失败",
     "infrastructure_failure": "基础设施失败",
     "test_generation_error": "测试生成失败",
     "insufficient_evidence": "证据不足",
 }
 COMMAND_STATUS_LABELS = {
     "passed": "通过",
-    "stable_failure": "稳定失败",
-    "flaky_failure": "不稳定失败",
+    "stable_failure": "可稳定复现的失败",
+    "flaky_failure": "非确定性失败",
     "infrastructure_failure": "基础设施失败",
     "not_executed": "未执行",
 }
@@ -473,7 +548,7 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
         "",
         "## 具体文件变更",
         "",
-        "| 文件 | 类型 | 改动说明 | 影响 | 验证策略 |",
+        "| 文件 | 类型 | 改动说明 | 影响 | 已执行验证或未执行原因 |",
         "| --- | --- | --- | --- | --- |",
     ]
 
@@ -536,7 +611,7 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
         ])
         for test in tests:
             lines.append(
-                f"| {test['id']} | **{SEVERITY_LABELS[test['priority']]}** | "
+                f"| {test['id']} | **{test['priority']}** | "
                 f"`{inline(test['target'])}` | {inline(test['description'])} |"
             )
         lines.append("")
