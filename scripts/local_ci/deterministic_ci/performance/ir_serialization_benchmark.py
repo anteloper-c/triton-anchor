@@ -19,20 +19,26 @@ therefore diagnostic rather than an exact parser-only measurement.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
 import platform
 import shutil
-import statistics
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from common import (  # noqa: E402
+    DEFAULT_KERNELS,
+    neighboring_compile_benchmark,
+    summarize,
+    write_projected_csv,
+)
 
-DEFAULT_KERNELS = ("add", "mm", "softmax", "layernorm")
 METRICS = (
     "serialize",
     "write_text",
@@ -69,33 +75,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def summarize(values: list[float]) -> dict[str, float | int | None]:
-    if not values:
-        return {
-            "count": 0,
-            "mean_ms": None,
-            "median_ms": None,
-            "stdev_ms": None,
-            "min_ms": None,
-            "max_ms": None,
-        }
-    return {
-        "count": len(values),
-        "mean_ms": statistics.mean(values),
-        "median_ms": statistics.median(values),
-        "stdev_ms": statistics.stdev(values) if len(values) > 1 else 0.0,
-        "min_ms": min(values),
-        "max_ms": max(values),
-    }
-
-
-def compile_benchmark_script() -> Path:
-    path = Path(__file__).resolve().with_name("compile_benchmark.py")
-    if not path.is_file():
-        raise FileNotFoundError(f"compile_benchmark.py not found next to {__file__}")
-    return path
-
-
 def generate_ttir(
     args: argparse.Namespace,
     kernel: str,
@@ -106,7 +85,7 @@ def generate_ttir(
     result_file = kernel_root / "compile-worker.json"
     cmd = [
         sys.executable,
-        str(compile_benchmark_script()),
+        str(neighboring_compile_benchmark(Path(__file__))),
         "--worker",
         "--backend",
         args.backend,
@@ -324,11 +303,7 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "ir_bytes",
         *(f"{metric}_ms" for metric in METRICS),
     ]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows({key: row.get(key) for key in fieldnames} for row in rows)
+    write_projected_csv(path, fieldnames, rows)
 
 
 def write_markdown(path: Path, document: dict[str, Any]) -> None:

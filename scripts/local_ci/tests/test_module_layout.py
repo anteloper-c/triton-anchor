@@ -4,7 +4,7 @@ from pathlib import Path
 LOCAL_CI_ROOT = Path(__file__).resolve().parents[1]
 
 CANONICAL_PATHS = (
-    "orchestration/poll_gitee_tasks.sh",
+    "poll_gitee_and_run.sh",
     "orchestration/run_deterministic_ci_in_container.sh",
     "orchestration/fetch_task_metadata.sh",
     "deterministic_ci/run_deterministic_ci.sh",
@@ -27,35 +27,11 @@ CANONICAL_PATHS = (
     "results/publish_gitee_result.py",
     "results/bridge_gitee_to_github_status.py",
     "shared/result_paths.py",
+    "shared/finding_locations.py",
+    "shared/path_utils.sh",
     "shared/validate_task_metadata.py",
+    "deterministic_ci/performance/common.py",
 )
-
-SHELL_COMPATIBILITY_ENTRYPOINTS = {
-    "poll_gitee_and_run.sh": "orchestration/poll_gitee_tasks.sh",
-    "run_in_container.sh": "orchestration/run_deterministic_ci_in_container.sh",
-    "run_delivery_local.sh": "deterministic_ci/run_deterministic_ci.sh",
-    "fetch_task_metadata.sh": "orchestration/fetch_task_metadata.sh",
-    "run_codex_ai_ci.sh": "codex_ai/run_codex_ai_ci.sh",
-    "prepare_codex_checkout.sh": "codex_ai/prepare_codex_checkout.sh",
-    "setup_codex_ai_container.sh": "codex_ai/setup_codex_ai_container.sh",
-}
-
-PYTHON_COMPATIBILITY_ENTRYPOINTS = {
-    "batch_test_flaggems.py": "deterministic_ci/flaggems/batch_test_flaggems.py",
-    "select_flaggems_tests.py": "deterministic_ci/flaggems/select_flaggems_tests.py",
-    "compile_benchmark.py": "deterministic_ci/performance/compile_benchmark.py",
-    "compare_compile_time.py": "deterministic_ci/performance/compare_compile_time.py",
-    "pass_profile_benchmark.py": "deterministic_ci/performance/pass_profile_benchmark.py",
-    "compare_pass_profile.py": "deterministic_ci/performance/compare_pass_profile.py",
-    "ir_serialization_benchmark.py": "deterministic_ci/performance/ir_serialization_benchmark.py",
-    "compare_ir_serialization.py": "deterministic_ci/performance/compare_ir_serialization.py",
-    "publish_gitee_result.py": "results/publish_gitee_result.py",
-    "bridge_gitee_to_github_status.py": "results/bridge_gitee_to_github_status.py",
-    "render_codex_ai_report.py": "codex_ai/render_codex_ai_report.py",
-    "validate_codex_ai_credentials.py": "codex_ai/validate_codex_ai_credentials.py",
-    "validate_task_metadata.py": "shared/validate_task_metadata.py",
-    "result_paths.py": "shared/result_paths.py",
-}
 
 
 def test_canonical_local_ci_modules_exist():
@@ -63,15 +39,27 @@ def test_canonical_local_ci_modules_exist():
     assert not missing, f"missing canonical Local CI modules: {missing}"
 
 
-def test_shell_compatibility_entrypoints_forward_to_canonical_modules():
-    for legacy_path, canonical_path in SHELL_COMPATIBILITY_ENTRYPOINTS.items():
-        text = (LOCAL_CI_ROOT / legacy_path).read_text(encoding="utf-8")
-        assert canonical_path in text
-        assert "exec bash" in text
+def test_local_ci_root_has_only_the_stable_poller_entrypoint():
+    root_scripts = {
+        path.name
+        for path in LOCAL_CI_ROOT.iterdir()
+        if path.is_file() and path.suffix in {".sh", ".py"}
+    }
+    assert root_scripts == {"poll_gitee_and_run.sh"}
 
 
-def test_python_compatibility_entrypoints_forward_to_canonical_modules():
-    for legacy_path, canonical_path in PYTHON_COMPATIBILITY_ENTRYPOINTS.items():
-        text = (LOCAL_CI_ROOT / legacy_path).read_text(encoding="utf-8")
-        assert canonical_path in text
-        assert "run_legacy_entrypoint" in text
+def test_obsolete_poller_module_is_removed():
+    assert not (LOCAL_CI_ROOT / "orchestration" / "poll_gitee_tasks.sh").exists()
+
+
+def test_shell_runners_use_the_shared_path_normalizer():
+    expected_sources = {
+        "poll_gitee_and_run.sh": 'source "${LOCAL_CI_ROOT}/shared/path_utils.sh"',
+        "deterministic_ci/run_deterministic_ci.sh": (
+            'source "${RUNNER_ROOT}/shared/path_utils.sh"'
+        ),
+    }
+    for relative_path, expected_source in expected_sources.items():
+        text = (LOCAL_CI_ROOT / relative_path).read_text(encoding="utf-8")
+        assert expected_source in text
+        assert "safe_path_part() {" not in text

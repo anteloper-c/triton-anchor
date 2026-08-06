@@ -260,8 +260,8 @@ jobs:
           }
           test_labels = {
               "passed": "通过",
-              "stable_failure": "稳定失败",
-              "flaky_failure": "不稳定失败",
+              "stable_failure": "可稳定复现的失败",
+              "flaky_failure": "非确定性失败",
               "infrastructure_failure": "基础设施失败",
               "test_generation_error": "测试生成失败",
               "insufficient_evidence": "证据不足",

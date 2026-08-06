@@ -20,12 +20,22 @@ from pathlib import Path
 SHARED_SCRIPT_DIR = Path(__file__).resolve().parents[1] / "shared"
 if str(SHARED_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SHARED_SCRIPT_DIR))
-from result_paths import result_commit_dir
+from finding_locations import (  # noqa: E402
+    normalized_repository_path,
+    parse_finding_line_range,
+)
+from result_paths import (  # noqa: E402
+    gitee_blob_url,
+    gitee_tree_url,
+    result_commit_dir,
+)
 
 
 RESULT_NOT_READY_EXIT_CODE = 3
 RESULT_FAILED_EXIT_CODE = 10
 CODEX_COMMENT_MARKER = "<!-- triton-anchor-codex-ai-comment -->"
+FINDING_ID_RE = re.compile(r"^AI-[0-9]{3}$")
+GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 REPORTABLE_STAGES = (
     ("frontend_smoke", "frontend_smoke_status", "frontend-smoke", "Frontend smoke"),
@@ -43,6 +53,14 @@ class Target:
     task_ref: str
     sha: str
     label: str
+    source_repository: str = ""
+
+
+@dataclass(frozen=True)
+class FindingLocation:
+    identifier: str
+    file: str
+    line: str
 
 
 @dataclass(frozen=True)
@@ -56,6 +74,7 @@ class CodexAIResult:
     failure_reason: str
     comment_markdown: str
     report_url: str
+    finding_locations: tuple[FindingLocation, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -163,6 +182,37 @@ def parse_summary_value(summary: str, key: str) -> str:
     return ""
 
 
+def finding_locations_from_report(report_json: str) -> tuple[FindingLocation, ...]:
+    try:
+        document = json.loads(report_json)
+    except json.JSONDecodeError:
+        return ()
+    if not isinstance(document, dict):
+        return ()
+    findings = document.get("findings")
+    if not isinstance(findings, list):
+        return ()
+
+    locations: list[FindingLocation] = []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        identifier = finding.get("id")
+        file_name = finding.get("file")
+        line = finding.get("line")
+        if not all(isinstance(value, str) for value in (identifier, file_name, line)):
+            continue
+        if (
+            not FINDING_ID_RE.fullmatch(identifier)
+            or parse_finding_line_range(line) is None
+        ):
+            continue
+        if normalized_repository_path(file_name) is None:
+            continue
+        locations.append(FindingLocation(identifier, file_name, line))
+    return tuple(locations)
+
+
 def github_api_url(path: str, params: dict[str, str] | None = None) -> str:
     url = f"https://api.github.com{path}"
     if params:
@@ -238,12 +288,22 @@ def list_open_pr_targets(limit: int) -> list[Target]:
                 continue
             repo = head.get("repo")
             head_repo = repo.get("full_name") if isinstance(repo, dict) else ""
+            if not isinstance(head_repo, str):
+                head_repo = ""
             branch = head.get("ref")
             sha = head.get("sha")
             number = item.get("number")
             if isinstance(branch, str) and isinstance(sha, str) and isinstance(number, int):
                 source_label = f"{head_repo}:{branch}" if head_repo and head_repo != github_repo() else branch
-                targets.append(Target(branch, f"ci/pr-{number}/{branch}", sha, f"PR #{number} {source_label}"))
+                targets.append(
+                    Target(
+                        branch,
+                        f"ci/pr-{number}/{branch}",
+                        sha,
+                        f"PR #{number} {source_label}",
+                        head_repo,
+                    )
+                )
         if len(payload) < per_page:
             break
         page += 1
@@ -251,15 +311,11 @@ def list_open_pr_targets(limit: int) -> list[Target]:
 
 
 def gitee_result_url(web_url: str, results_branch: str, rel_dir: str) -> str:
-    quoted_branch = urllib.parse.quote(results_branch, safe="")
-    quoted_rel_dir = urllib.parse.quote(rel_dir, safe="/")
-    return f"{web_url.rstrip('/')}/tree/{quoted_branch}/{quoted_rel_dir}"
+    return gitee_tree_url(web_url, results_branch, rel_dir)
 
 
 def gitee_file_url(web_url: str, results_branch: str, rel_path: str) -> str:
-    quoted_branch = urllib.parse.quote(results_branch, safe="")
-    quoted_rel_path = urllib.parse.quote(rel_path, safe="/")
-    return f"{web_url.rstrip('/')}/blob/{quoted_branch}/{quoted_rel_path}"
+    return gitee_blob_url(web_url, results_branch, rel_path)
 
 
 def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: str) -> LocalCIResult | None:
@@ -315,6 +371,13 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
         args.gitee_results_branch,
         gitee_token,
     ) or ""
+    codex_report = gitee_content(
+        args.gitee_owner,
+        args.gitee_repo,
+        f"{rel_dir}/codex-ai-report.json",
+        args.gitee_results_branch,
+        gitee_token,
+    ) or ""
 
     codex_document: dict[str, object] = {}
     parse_failure = ""
@@ -367,7 +430,7 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
     elif execution_status == "not_reported":
         failure_reason = failure_reason or "未找到 Codex AI CI 结果。"
 
-    has_report = bool(codex_summary or codex_comment) or execution_status in {"pass", "fail"}
+    has_report = bool(codex_summary or codex_comment or codex_report) or execution_status in {"pass", "fail"}
     report_url = (
         gitee_file_url(
             args.gitee_web_url,
@@ -387,6 +450,7 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
         failure_reason,
         codex_comment.strip(),
         report_url,
+        finding_locations_from_report(codex_report),
     )
     return LocalCIResult(
         parse_summary_status(summary),
@@ -419,12 +483,51 @@ def codex_pr_comment_body(target: Target, result: LocalCIResult) -> str:
     if not body:
         return ""
     report_url = result.codex_ai.report_url or result.target_url
+    location_links = github_finding_location_links(target, result.codex_ai.finding_locations)
+    if location_links:
+        validation_heading = "\n### 验证情况\n"
+        if validation_heading in body:
+            body = body.replace(
+                validation_heading,
+                f"\n{location_links}\n\n### 验证情况\n",
+                1,
+            )
+        else:
+            body = f"{body}\n\n{location_links}"
     return (
         f"{body}\n\n"
-        f"- 提交：`{target.sha[:12]}`\n"
-        f"- [完整 Codex AI CI 报告]({report_url})\n\n"
+        f"---\n\n"
+        f"- 审查提交：`{target.sha[:12]}`\n"
+        f"- [查看完整 Codex AI CI 报告]({report_url})\n\n"
         f"{CODEX_COMMENT_MARKER}\n"
     )
+
+
+def github_finding_location_links(
+    target: Target, locations: tuple[FindingLocation, ...]
+) -> str:
+    repository = target.source_repository or os.getenv("GITHUB_REPOSITORY", "")
+    if not GITHUB_REPOSITORY_RE.fullmatch(repository):
+        repository = os.getenv("GITHUB_REPOSITORY", "")
+    if not repository or not locations:
+        return ""
+    lines = [
+        "### 可点击代码定位",
+        "",
+        "链接固定到本次审查提交，便于提交者修复和审核者核对代码功能。",
+        "",
+    ]
+    for location in locations[:5]:
+        line_range = parse_finding_line_range(location.line)
+        if line_range is None:
+            continue
+        start, end = line_range
+        anchor = f"#L{start}" if end == start else f"#L{start}-L{end}"
+        quoted_path = urllib.parse.quote(location.file, safe="/")
+        url = f"https://github.com/{repository}/blob/{target.sha}/{quoted_path}{anchor}"
+        label = location.file.replace("`", "'").replace("@", "＠")
+        lines.append(f"- `{location.identifier}`: [{label}:L{location.line}]({url})")
+    return "\n".join(lines) if len(lines) > 4 else ""
 
 
 def post_codex_pr_comment(target: Target, result: LocalCIResult) -> None:
@@ -507,10 +610,18 @@ def codex_advisory_description(codex_ai: CodexAIResult) -> str:
         return "Codex AI 未运行（非阻塞）"
     if execution_status != "pass":
         return "Codex AI 未完成（非阻塞）"
-    if test_status == "insufficient_evidence":
-        return "Codex AI 测试证据不足（非阻塞）"
     if verdict == "FAIL":
         return "Codex AI 建议性结论：失败（非阻塞）"
+    if test_status == "insufficient_evidence":
+        return "Codex AI 测试证据不足（非阻塞）"
+    if test_status == "stable_failure":
+        return "Codex AI 测试存在可稳定复现的失败（非阻塞）"
+    if test_status == "flaky_failure":
+        return "Codex AI 测试存在非确定性失败（非阻塞）"
+    if test_status == "infrastructure_failure":
+        return "Codex AI 测试遇到基础设施失败（非阻塞）"
+    if test_status == "test_generation_error":
+        return "Codex AI 测试生成失败（非阻塞）"
     if verdict == "WARNING":
         return "Codex AI 建议性结论：警告（非阻塞）"
     if constraint_status == "warning":
@@ -555,6 +666,14 @@ def codex_ai_output_json(result: LocalCIResult | None) -> str:
         "failure_reason": codex_ai.failure_reason,
         "comment_markdown": codex_ai.comment_markdown,
         "report_url": codex_ai.report_url,
+        "finding_locations": [
+            {
+                "id": location.identifier,
+                "file": location.file,
+                "line": location.line,
+            }
+            for location in codex_ai.finding_locations
+        ],
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
@@ -677,6 +796,7 @@ def reconcile_targets(args: argparse.Namespace) -> list[Target]:
                 f"ci/push/{source_branch}",
                 branch_sha,
                 f"branch {source_branch}",
+                github_repo(),
             )
             targets.append(target)
             seen.add((target.task_ref, target.sha))
@@ -703,6 +823,7 @@ def main() -> int:
             args.task_ref or args.source_branch,
             args.sha,
             args.source_branch,
+            github_repo(),
         )
         result = sync_target(args, target, args.set_pending)
         if result is None:

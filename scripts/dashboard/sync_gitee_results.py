@@ -9,7 +9,6 @@ import json
 import re
 import statistics
 import sys
-import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +16,7 @@ from typing import Any, Iterable
 
 LOCAL_CI_SHARED_DIR = Path(__file__).resolve().parents[1] / "local_ci" / "shared"
 sys.path.insert(0, str(LOCAL_CI_SHARED_DIR))
-from result_paths import result_run_dir, result_task_dir  # noqa: E402
+from result_paths import gitee_tree_url, result_run_dir, result_task_dir  # noqa: E402
 
 
 DEFAULT_SOURCE_BRANCH = "ci/push/jiwang-delivery-ci"
@@ -133,9 +132,7 @@ def normalize_stage(value: str) -> str:
 
 def result_url(run: Run, web_url: str, results_branch: str) -> str:
     relative = result_run_dir(run.source_branch, run.sha, run.run_id).as_posix()
-    quoted_branch = urllib.parse.quote(results_branch, safe="")
-    quoted_path = urllib.parse.quote(relative, safe="/")
-    return f"{web_url.rstrip('/')}/tree/{quoted_branch}/{quoted_path}"
+    return gitee_tree_url(web_url, results_branch, relative)
 
 
 def backend_document(
@@ -352,13 +349,32 @@ def previous_document(runs: list[Run], current: Run | None, file_name: str) -> d
     return document
 
 
+def candidate_and_baseline(
+    runs: list[Run],
+    candidate_file: str,
+    baseline_file: str,
+) -> tuple[Run | None, dict[str, Any] | None, dict[str, Any] | None]:
+    run, candidate = latest_valid_run(runs, candidate_file)
+    if run is None or candidate is None:
+        return None, None, None
+    baseline = read_json(run.path / baseline_file)
+    if baseline is None:
+        baseline = previous_document(runs, run, candidate_file)
+    return run, candidate, baseline
+
+
+def percent_delta(candidate_ms: float, baseline_ms: float | None) -> float | None:
+    if baseline_ms in (None, 0):
+        return None
+    return ((candidate_ms / baseline_ms) - 1.0) * 100.0
+
+
 def compile_rows(runs: list[Run], threshold_ratio: float) -> tuple[list[dict[str, Any]], Run | None]:
-    run, candidate = latest_valid_run(runs, "compile-benchmark.json")
+    run, candidate, baseline = candidate_and_baseline(
+        runs, "compile-benchmark.json", "compile-benchmark-base.json"
+    )
     if run is None or candidate is None:
         return [], None
-    baseline = read_json(run.path / "compile-benchmark-base.json")
-    if baseline is None:
-        baseline = previous_document(runs, run, "compile-benchmark.json")
     metadata = candidate.get("metadata", {})
     kernels = metadata.get("kernels", []) if isinstance(metadata, dict) else []
     if not isinstance(kernels, list):
@@ -370,9 +386,7 @@ def compile_rows(runs: list[Run], threshold_ratio: float) -> tuple[list[dict[str
         if candidate_ms is None:
             continue
         baseline_ms = nested_number(baseline, "summary", kernel, "compile_est", "median_ms")
-        delta = None
-        if baseline_ms not in (None, 0):
-            delta = ((candidate_ms / baseline_ms) - 1.0) * 100.0
+        delta = percent_delta(candidate_ms, baseline_ms)
         correct = bool(
             candidate.get("summary", {}).get(kernel, {}).get("all_correct", True)
             if isinstance(candidate.get("summary"), dict)
@@ -391,12 +405,11 @@ def compile_rows(runs: list[Run], threshold_ratio: float) -> tuple[list[dict[str
 
 
 def pass_rows(runs: list[Run], threshold_ratio: float) -> tuple[list[dict[str, Any]], Run | None]:
-    run, candidate = latest_valid_run(runs, "pass-profile.json")
+    run, candidate, baseline = candidate_and_baseline(
+        runs, "pass-profile.json", "pass-profile-base.json"
+    )
     if run is None or candidate is None:
         return [], None
-    baseline = read_json(run.path / "pass-profile-base.json")
-    if baseline is None:
-        baseline = previous_document(runs, run, "pass-profile.json")
     rows: list[dict[str, Any]] = []
     summary = candidate.get("summary", {})
     if not isinstance(summary, dict):
@@ -419,9 +432,7 @@ def pass_rows(runs: list[Run], threshold_ratio: float) -> tuple[list[dict[str, A
             baseline_ms = nested_number(
                 baseline, "summary", str(kernel), "passes", pass_name, "wall_ms", "median_ms"
             )
-            delta = None
-            if baseline_ms not in (None, 0):
-                delta = ((candidate_ms / baseline_ms) - 1.0) * 100.0
+            delta = percent_delta(candidate_ms, baseline_ms)
             rows.append(
                 {
                     "name": f"{kernel} / {pass_name}",
@@ -435,12 +446,11 @@ def pass_rows(runs: list[Run], threshold_ratio: float) -> tuple[list[dict[str, A
 
 
 def ir_rows(runs: list[Run], threshold_ratio: float) -> tuple[list[dict[str, Any]], Run | None]:
-    run, candidate = latest_valid_run(runs, "ir-serialization.json")
+    run, candidate, baseline = candidate_and_baseline(
+        runs, "ir-serialization.json", "ir-serialization-base.json"
+    )
     if run is None or candidate is None:
         return [], None
-    baseline = read_json(run.path / "ir-serialization-base.json")
-    if baseline is None:
-        baseline = previous_document(runs, run, "ir-serialization.json")
     summary = candidate.get("summary", {})
     if not isinstance(summary, dict):
         return [], run
@@ -461,9 +471,7 @@ def ir_rows(runs: list[Run], threshold_ratio: float) -> tuple[list[dict[str, Any
         ]
         baseline_values = [value for value in baseline_values if value is not None]
         baseline_ms = statistics.median(baseline_values) if baseline_values else None
-        delta = None
-        if baseline_ms not in (None, 0):
-            delta = ((candidate_ms / baseline_ms) - 1.0) * 100.0
+        delta = percent_delta(candidate_ms, baseline_ms)
         rows.append(
             {
                 "name": metric,

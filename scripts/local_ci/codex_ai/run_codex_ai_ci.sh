@@ -27,6 +27,7 @@ CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS="${CODEX_AI_CI_RECOMMENDED_COMMA
 CODEX_AI_CI_TEST_BUDGET_SECONDS="${CODEX_AI_CI_TEST_BUDGET_SECONDS:-1200}"
 CODEX_AI_CI_REPORT_RESERVE_SECONDS="${CODEX_AI_CI_REPORT_RESERVE_SECONDS:-300}"
 LOCAL_CI_CONTAINER="${LOCAL_CI_CONTAINER:-anchor-sophgo-ci}"
+LOCAL_CI_ARTIFACT_ROOT="${LOCAL_CI_ARTIFACT_ROOT:-/workspace/local-ci-artifacts}"
 PYTHON_VENV_ACTIVATE="${PYTHON_VENV_ACTIVATE:-/opt/venv/bin/activate}"
 SOURCE_ENVSETUP="${SOURCE_ENVSETUP:-1}"
 ANCHOR_DIR="${ANCHOR_DIR:-/workspace/triton-anchor}"
@@ -198,11 +199,25 @@ write_summary() {
 
 write_failure_report() {
   local rendered_diff_mode="two-point"
+  local repository_root_args=()
+  local fallback_assessment_label="无法判断"
+  local fallback_contributor_goal="Codex AI CI 未完成，未能可靠归纳贡献者的修改目标。"
+  local fallback_expected_behavior="Codex AI CI 未完成，未能可靠归纳贡献者声明的预期行为。"
+  local fallback_implementation_summary="当前没有足够证据判断代码是否实现了声明目标。"
   if [[ "${diff_mode}" == "merge-base" ]]; then
     rendered_diff_mode="merge-base"
   fi
+  if [[ "${change_request_context_status}" == "not_applicable" ]]; then
+    fallback_assessment_label="不适用"
+    fallback_contributor_goal="当前任务不是 PR，因此没有需要对照的贡献者功能声明。"
+    fallback_expected_behavior="当前任务不是 PR，因此贡献者预期行为不适用。"
+    fallback_implementation_summary="当前任务不是 PR，不进行贡献者声明对照；Codex AI 审查未完成。"
+  fi
+  if [[ -n "${workspace_dir}" && -d "${workspace_dir}" ]]; then
+    repository_root_args=(--repository-root "${workspace_dir}")
+  fi
   report_verdict="WARNING"
-  test_execution_status="infrastructure_failure"
+  test_execution_status="insufficient_evidence"
   generated_test_file_count="0"
   test_command_count="0"
   max_test_command_duration_seconds="0"
@@ -211,13 +226,15 @@ write_failure_report() {
   constraint_reason="Codex AI CI 未完成，无法确认测试执行是否符合轻量约束。"
 
   if ! "${PYTHON_BIN}" - "${failure_reason:-未知原因}" \
-    "${changed_files_manifest_path}" > "${report_json_path}" <<'PY'
+    "${changed_files_manifest_path}" "${change_request_context_status}" \
+    > "${report_json_path}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 failure_reason = sys.argv[1]
 manifest_path = Path(sys.argv[2])
+context_status = sys.argv[3]
 try:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 except (OSError, UnicodeError, json.JSONDecodeError):
@@ -236,7 +253,7 @@ for item in manifest if isinstance(manifest, list) else []:
         "change_type": change_type,
         "summary": "AI 审查未完成，未能可靠归纳该文件的改动。",
         "impact": "该文件的行为影响仍需人工检查。",
-        "validation_strategy": "修复 AI 执行问题后重新审查，或由维护者人工验证。",
+        "validation_strategy": "未执行：Codex AI CI 未完成，没有取得该文件的可信验证结果。",
     })
 
 behavior_coverage = {}
@@ -258,27 +275,34 @@ document = {
     "verdict": "WARNING",
     "summary": f"Codex AI CI 未完成：{failure_reason}。本次没有生成可信的结构化审查结论。",
     "merge_recommendation": "请先排查 AI 执行问题并重新运行，当前不要仅依据本次 AI 结果决定合入。",
+    "change_request_assessment": {
+        "status": "not_applicable" if context_status == "not_applicable" else "not_assessable",
+        "contributor_goal": (
+            "当前任务不是 PR，因此没有需要对照的贡献者功能声明。"
+            if context_status == "not_applicable"
+            else "Codex AI CI 未完成，未能可靠归纳贡献者的修改目标。"
+        ),
+        "expected_behavior": (
+            "当前任务不是 PR，因此贡献者预期行为不适用。"
+            if context_status == "not_applicable"
+            else "Codex AI CI 未完成，未能可靠归纳贡献者声明的预期行为。"
+        ),
+        "implementation_summary": (
+            "当前任务不是 PR，不进行贡献者声明对照；Codex AI 审查未完成。"
+            if context_status == "not_applicable"
+            else "AI 审查未完成，不能判断当前代码是否实现了声明目标。"
+        ),
+        "evidence": f"Codex AI CI 执行失败：{failure_reason}。当前没有完整的代码审查证据。",
+    },
     "changed_files": changed_files,
     "behavior_coverage": behavior_coverage,
-    "findings": [
-        {
-            "id": "AI-001",
-            "severity": "MEDIUM",
-            "category": "other",
-            "file": "Codex AI CI",
-            "line": "不适用",
-            "title": "Codex AI CI 分析未完成",
-            "evidence": "执行环境、超时或输出格式校验失败，具体原因请查看本次任务摘要和原始日志。",
-            "impact": "本次代码差异没有获得完整可靠的 AI 审查结论。",
-            "fix_direction": "排查摘要和日志中的失败原因后重新执行 Codex AI CI。",
-        }
-    ],
+    "findings": [],
     "suggested_tests": [],
     "residual_risks": [
         "当前代码差异仍需人工检查，或在修复执行环境后重新运行 Codex AI CI。"
     ],
     "test_execution": {
-        "status": "infrastructure_failure",
+        "status": "insufficient_evidence",
         "summary": "Codex AI CI 未完成，因此没有可信的测试执行结论。",
         "generated_test_files": [],
         "commands": [],
@@ -306,6 +330,7 @@ PY
       --changed-files-manifest "${changed_files_manifest_path}" \
       --constraint-status "${constraint_status}" \
       --constraint-reason "${constraint_reason}" \
+      "${repository_root_args[@]}" \
       >/dev/null 2>> "${log_path}"; then
     return 0
   fi
@@ -317,7 +342,7 @@ PY
     echo
     echo "| 字段 | 值 |"
     echo "| --- | --- |"
-    echo "| 报告格式 | \`triton-anchor-codex-ai-report/v2\` |"
+    echo "| 报告格式 | \`triton-anchor-codex-ai-report/v3\` |"
     echo "| 分支 | \`${branch}\` |"
     echo "| 请求的基础提交 | \`${requested_base_sha:-不可用}\` |"
     echo "| 实际审查起点 | \`${base_sha:-不可用}\` |"
@@ -333,6 +358,13 @@ PY
     echo "## 摘要"
     echo
     echo "Codex AI CI 未完成：${failure_reason}"
+    echo
+    echo "## 贡献者目标与实现情况"
+    echo
+    echo "- 判断：${fallback_assessment_label}"
+    echo "- 修改目标：${fallback_contributor_goal}"
+    echo "- 预期行为：${fallback_expected_behavior}"
+    echo "- 实现情况：${fallback_implementation_summary}"
     echo
     echo "## 合入建议"
     echo
@@ -356,7 +388,7 @@ PY
     echo
     echo "## 测试执行"
     echo
-    echo "- 状态：基础设施失败"
+    echo "- 状态：证据不足"
     echo "- 摘要：Codex AI CI 未完成，未获得可信的测试结果。"
     echo
     echo "## 剩余风险"
@@ -368,24 +400,34 @@ PY
     echo "CODEX_AI_CI_FAILED"
   } > "${report_path}"
   {
-    echo "## Codex AI 审核摘要"
+    echo "## Codex AI 代码审查"
+    echo
+    echo "> 这是非阻塞的辅助审查；确定性 CI 结果仍是合入门禁。"
+    echo
+    echo "### 审查结论"
+    echo
+    echo "- 结果：**警告**"
+    echo "- 合入建议：请先排查 AI 执行问题并重新运行，再决定是否合入。"
     echo
     echo "Codex AI CI 未完成：${failure_reason:-未知原因}。"
     echo
-    echo "合入建议：**请先排查 AI 执行问题并重新运行，再决定是否合入。**"
+    echo "### 贡献者目标与实现情况"
     echo
-    echo "### 补充验证"
+    echo "- 判断：**${fallback_assessment_label}**"
+    echo "- 修改目标：${fallback_contributor_goal}"
+    echo "- 预期行为：${fallback_expected_behavior}"
+    echo "- 实现情况：${fallback_implementation_summary}"
     echo
-    echo "测试状态：**基础设施失败**。本次没有获得可信的补充验证结果。"
+    echo "### 需要处理的问题"
     echo
-    echo "### 需要重点关注的问题"
+    echo "未生成产品代码问题；Codex AI CI 执行未完成。"
     echo
-    echo "1. **[中风险][其他问题] Codex AI CI 分析未完成**"
-    echo "   - 位置：\`Codex AI CI\`"
-    echo "   - 影响：本次代码差异没有获得完整可靠的 AI 审查结论。"
-    echo "   - 建议：查看完整日志，修复执行问题后重新运行。"
+    echo "### 验证情况"
     echo
-    echo "### 具体文件变更"
+    echo "- 状态：**证据不足**"
+    echo "- 说明：本次没有获得可信的补充验证结果。"
+    echo
+    echo "### 变更文件"
     echo
     echo "<details>"
     echo "<summary>展开文件级变更表</summary>"
@@ -724,13 +766,35 @@ validate_prerequisites() {
 }
 
 discover_artifact_dir() {
+  local candidate=""
+  local resolved_root=""
+  local resolved_candidate=""
   if [[ ! -f "${output_dir}/local-ci.log" ]]; then
     return 0
   fi
-  artifact_dir="$(
+  candidate="$(
     sed -n 's/.*Artifacts are in \([^[:space:]]*\).*/\1/p' \
       "${output_dir}/local-ci.log" | tail -n 1
   )"
+  if [[ -z "${candidate}" ]]; then
+    return 0
+  fi
+  resolved_root="$(
+    docker exec --user 0 "${LOCAL_CI_CONTAINER}" \
+      readlink -e -- "${LOCAL_CI_ARTIFACT_ROOT}" 2>> "${log_path}" || true
+  )"
+  resolved_candidate="$(
+    docker exec --user 0 "${LOCAL_CI_CONTAINER}" \
+      readlink -e -- "${candidate}" 2>> "${log_path}" || true
+  )"
+  if [[ -z "${resolved_root}" || -z "${resolved_candidate}" \
+    || "${resolved_candidate}" == "${resolved_root}" \
+    || "${resolved_candidate}" != "${resolved_root}"/* ]]; then
+    echo "忽略不在预期 artifact 根目录中的日志路径：${candidate}" >> "${log_path}"
+    artifact_dir=""
+    return 0
+  fi
+  artifact_dir="${resolved_candidate}"
 }
 
 diff_requires_generated_tests() {
@@ -1263,6 +1327,7 @@ print(
     --target-sha "${target_sha}"
     --changed-file-count "${changed_file_count}"
     --changed-files-manifest "${changed_files_manifest_path}"
+    --repository-root "${workspace_dir}"
     --constraint-status "${constraint_status}"
     --constraint-reason "${constraint_reason}"
   )

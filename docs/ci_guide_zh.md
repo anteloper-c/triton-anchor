@@ -239,7 +239,7 @@ PR 使用 `pull_request_target`，目的是让可信的基准分支 workflow 可
 
 #### 4.4.1 poller
 
-`scripts/local_ci/orchestration/poll_gitee_tasks.sh` 是运行在本地服务器上的轮询器。它读取 `LOCAL_CI_CONFIG` 指定的配置文件，通过 `git ls-remote` 扫描 Gitee 中转仓库，并只接收匹配以下规则的任务：
+`scripts/local_ci/poll_gitee_and_run.sh` 是运行在本地服务器上的稳定轮询入口。它读取 `LOCAL_CI_CONFIG` 指定的配置文件，通过 `git ls-remote` 扫描 Gitee 中转仓库，并只接收匹配以下规则的任务：
 
 ```text
 ^ci/(pr-[0-9]+/.+|push/.+|full/.+)$
@@ -257,7 +257,7 @@ Local CI 不直接使用 PR 中携带的控制脚本。服务器通过 `LOCAL_CI
 LOCAL_CI_STATE_DIR/runner/<run-id>/
 ```
 
-`LOCAL_CI_SCRIPT_DIR` 必须指向完整的 `scripts/local_ci` 根目录，不能只指向 `orchestration/` 或某个兼容 wrapper。根目录下的实现按 `orchestration/`、`deterministic_ci/`、`codex_ai/`、`results/` 和 `shared/` 分层；旧的顶层脚本路径仅作为已部署命令的兼容入口，新调用应使用对应模块中的 canonical 路径。
+`LOCAL_CI_SCRIPT_DIR` 必须指向完整的 `scripts/local_ci` 根目录，不能只指向某个子目录。根目录只保留完整实现的稳定服务器入口 `poll_gitee_and_run.sh`；其余实现按 `orchestration/`、`deterministic_ci/`、`codex_ai/`、`results/` 和 `shared/` 分层。
 
 随后 `orchestration/run_deterministic_ci_in_container.sh` 再把完整快照复制进 Docker 容器。这样可以保证：
 
@@ -530,7 +530,7 @@ push 到 Local CI 监听的分支后，任务写入 `ci/push/<分支>`。主要�
 
 ```bash
 LOCAL_CI_CONFIG=/path/to/local-ci/config.env \
-  bash scripts/local_ci/orchestration/poll_gitee_tasks.sh --once
+  bash scripts/local_ci/poll_gitee_and_run.sh --once
 ```
 
 持续轮询：
@@ -538,7 +538,7 @@ LOCAL_CI_CONFIG=/path/to/local-ci/config.env \
 ```bash
 LOCAL_CI_CONFIG=/path/to/local-ci/config.env \
 LOCAL_CI_POLL_INTERVAL=60 \
-  bash scripts/local_ci/orchestration/poll_gitee_tasks.sh
+  bash scripts/local_ci/poll_gitee_and_run.sh
 ```
 
 长期运行建议使用 systemd 或其他进程管理器托管 poller，以便开机启动、异常重启和集中查看日志。
@@ -586,7 +586,8 @@ GitHub commit status 没有 warning 状态，因此性能 warning 会映射为 s
 | 公共 API 范围 | `api_contract/public_api.json` |
 | API 比较脚本 | `scripts/api_contract/` |
 | 通用构建和 smoke 脚本 | `scripts/ci/` |
-| Local CI 调度入口 | `scripts/local_ci/orchestration/` |
+| Local CI 调度入口 | `scripts/local_ci/poll_gitee_and_run.sh` |
+| Local CI 编排 helper | `scripts/local_ci/orchestration/` |
 | 确定性 CI、FlagGems 和性能脚本 | `scripts/local_ci/deterministic_ci/` |
 | Codex AI CI | `scripts/local_ci/codex_ai/` |
 | 结果发布和 GitHub bridge | `scripts/local_ci/results/` |

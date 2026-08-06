@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+codex_ai_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="$(cd "${codex_ai_dir}/../../.." && pwd)"
 runner="${repo_root}/scripts/local_ci/codex_ai/run_codex_ai_ci.sh"
 renderer="${repo_root}/scripts/local_ci/codex_ai/render_codex_ai_report.py"
 test_root="$(mktemp -d /tmp/local-ci-codex-container-test.XXXXXX)"
@@ -107,6 +108,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -173,7 +175,10 @@ def run_git(arguments: list[str]) -> int:
 
 
 def write_report(
-    mode: str, output_path: Path, changed_files_manifest: list[dict[str, str]]
+    mode: str,
+    output_path: Path,
+    changed_files_manifest: list[dict[str, str]],
+    context_status: str,
 ) -> None:
     if scenario == "format_error":
         summary = "English-only summary."
@@ -297,13 +302,18 @@ def write_report(
             ],
         }
 
+    validation_strategy = (
+        "执行 RUN-001 并记录该文件相关验证结果。"
+        if execution["commands"]
+        else "未执行：本次没有运行额外验证命令。"
+    )
     changed_files = [
         {
             "path": item["path"],
             "change_type": item["change_type"],
             "summary": "检查了该文件在当前差异中的具体改动。",
             "impact": "该文件可能影响当前任务覆盖的代码或文档行为。",
-            "validation_strategy": "结合代码差异和定向测试检查该文件影响。",
+            "validation_strategy": validation_strategy,
         }
         for item in changed_files_manifest
     ]
@@ -334,6 +344,31 @@ def write_report(
             "result": "未发现新的集成问题。",
         },
     }
+    if context_status == "available":
+        change_request_assessment = {
+            "status": "implemented",
+            "contributor_goal": "贡献者希望增强适配器在新边界条件下的稳健性。",
+            "expected_behavior": "适配器应正确处理贡献者声明的新边界条件。",
+            "implementation_summary": "代码差异实现了声明的边界条件处理。",
+            "evidence": "代码差异和定向验证支持当前实现判断。",
+        }
+    elif context_status == "not_applicable":
+        change_request_assessment = {
+            "status": "not_applicable",
+            "contributor_goal": "当前任务不是 PR，因此没有贡献者功能声明。",
+            "expected_behavior": "当前任务不是 PR，因此声明的预期行为不适用。",
+            "implementation_summary": "本次仅依据代码差异执行审查，不进行 PR 声明对照。",
+            "evidence": "任务上下文明确标记为非 PR 推送任务。",
+        }
+    else:
+        change_request_assessment = {
+            "status": "not_assessable",
+            "contributor_goal": "PR 功能声明元数据不可用，无法可靠归纳贡献者目标。",
+            "expected_behavior": "PR 功能声明元数据不可用，无法确认声明的预期行为。",
+            "implementation_summary": "当前只能审查代码差异，不能判断实现与声明是否一致。",
+            "evidence": "任务上下文缺少通过校验的 PR 功能声明元数据。",
+        }
+
     report = {
         "verdict": "PASS",
         "summary": summary,
@@ -342,6 +377,7 @@ def write_report(
             if mode == "analysis_only"
             else "当前未发现需要阻塞合入的问题，可以结合原始 CI 结果决定合入。"
         ),
+        "change_request_assessment": change_request_assessment,
         "changed_files": changed_files,
         "behavior_coverage": behavior_coverage,
         "findings": [],
@@ -439,6 +475,12 @@ while index < len(args):
         break
 container = args[index]
 command_args = args[index + 1 :]
+if container == source_container and command_args[:3] == ["readlink", "-e", "--"]:
+    candidate = posixpath.normpath(command_args[3])
+    if mapped(candidate).exists():
+        print(candidate)
+        raise SystemExit(0)
+    raise SystemExit(1)
 if not container.startswith("anchor-codex-ai-"):
     raise SystemExit(6)
 if not command_args:
@@ -515,15 +557,15 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
         assert "本模式不强制生成测试" in prompt
         assert "禁止重新运行完整 Local CI、全量测试、完整重编译" in prompt
     else:
-        assert "定向验证约束" in prompt
-        assert "可测试代码改动应生成 1 至 3 个定向测试用例" in prompt
+        assert "Local CI 环境、产物复用与验证约束" in prompt
+        assert "且存在可测试代码路径时，应生成 1 至 3 个定向测试用例" in prompt
         assert "最多创建或修改 2 个测试文件" in prompt
-        assert "最多执行 4 条测试、构建或 lint 命令" in prompt
+        assert "最多执行 4 条测试、构建、lint 或诊断命令" in prompt
         assert "单条命令预计不超过 600 秒" in prompt
         assert "累计测试预算不超过 1200 秒" in prompt
         assert "至少预留 300 秒" in prompt
         assert "失败用例最多额外复跑一次" in prompt
-        assert "禁止运行全量测试、完整重编译" in prompt
+        assert "默认避免运行全量测试或完整重编译" in prompt
         assert "test_execution.status` 必须使用 `insufficient_evidence" in prompt
         expected = "false" if scenario == "docs_only" else "true"
         assert f"- Test Generation Expected: {expected}" in prompt
@@ -532,10 +574,15 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
     if scenario == "timeout":
         time.sleep(5)
         raise SystemExit(0)
+    context_match = re.search(
+        r'"status":"(available|missing|invalid|not_applicable)"', prompt
+    )
+    assert context_match is not None
     write_report(
         mode,
         mapped(environment["AI_REPORT_PATH"]),
         changed_files_manifest,
+        context_match.group(1),
     )
     print(json.dumps({"type": "item.completed", "item": {"type": "command_execution"}}))
     print(json.dumps({"type": "turn.completed"}))
@@ -555,8 +602,10 @@ assert_chinese_failure_report() {
   grep -Fq "## 结论" "${output_dir}/codex-ai-report.md"
   grep -Fq "**警告**" "${output_dir}/codex-ai-report.md"
   grep -Fq "## 合入建议" "${output_dir}/codex-ai-report.md"
-  grep -Fq "## Codex AI 审核摘要" "${output_dir}/codex-ai-comment.md"
-  grep -Fq "### 具体文件变更" "${output_dir}/codex-ai-comment.md"
+  grep -Fq "## 贡献者目标与实现情况" "${output_dir}/codex-ai-report.md"
+  grep -Fq "## Codex AI 代码审查" "${output_dir}/codex-ai-comment.md"
+  grep -Fq "### 贡献者目标与实现情况" "${output_dir}/codex-ai-comment.md"
+  grep -Fq "### 变更文件" "${output_dir}/codex-ai-comment.md"
   python3 "${renderer}" \
     --input "${output_dir}/codex-ai-report.json" \
     --output "${output_dir}/validated-fallback.md" \
@@ -614,6 +663,10 @@ run_case() {
   )"
   printf 'Local CI finished. Artifacts are in /workspace/local-ci-artifacts/%s\n' \
     "${case_name}" > "${output_dir}/local-ci.log"
+  if [[ "${scenario}" == "untrusted_artifact" ]]; then
+    printf 'candidate output: Artifacts are in /root/.codex\n' \
+      >> "${output_dir}/local-ci.log"
+  fi
 
   set +e
   PATH="${fake_bin}:${PATH}" \
@@ -710,11 +763,11 @@ grep -Fq "generated_tests/test_generated.py" "${success_output}/codex-workspace-
 tar -tzf "${success_output}/codex-generated-files.tar.gz" | grep -Fxq "generated_tests/test_generated.py"
 grep -Fq "# Codex AI CI 报告" "${success_output}/codex-ai-report.md"
 grep -Fq "**通过**" "${success_output}/codex-ai-report.md"
-grep -Fq 'triton-anchor-codex-ai-report/v2' "${success_output}/codex-ai-report.md"
+grep -Fq 'triton-anchor-codex-ai-report/v3' "${success_output}/codex-ai-report.md"
 grep -Fq "## 具体文件变更" "${success_output}/codex-ai-report.md"
 grep -Fq "## 行为覆盖" "${success_output}/codex-ai-report.md"
-grep -Fq "## Codex AI 审核摘要" "${success_output}/codex-ai-comment.md"
-grep -Fq "### 补充验证" "${success_output}/codex-ai-comment.md"
+grep -Fq "## Codex AI 代码审查" "${success_output}/codex-ai-comment.md"
+grep -Fq "### 验证情况" "${success_output}/codex-ai-comment.md"
 grep -Fq "<details>" "${success_output}/codex-ai-comment.md"
 python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert len(data) == 1 and data[0]["path"] == "payload.txt"' \
   "${success_output}/codex-changed-files-manifest.json"
@@ -737,6 +790,15 @@ grep -Fq "## 凭据完整性" "${mutation_output}/codex-ai-report.md"
 grep -Fq "### Codex AI CI 凭据完整性警告" \
   "${mutation_output}/codex-ai-comment.md"
 
+run_case untrusted-artifact untrusted_artifact 0 30 0
+untrusted_artifact_output="${test_root}/untrusted-artifact/output"
+grep -Fxq "status: pass" \
+  "${untrusted_artifact_output}/codex-ai-ci-summary.txt"
+grep -Fxq "artifact_dir: " \
+  "${untrusted_artifact_output}/codex-ai-ci-summary.txt"
+grep -Fq "忽略不在预期 artifact 根目录中的日志路径：/root/.codex" \
+  "${untrusted_artifact_output}/codex-ai-ci.log"
+
 run_case pr-merge-base success 0 30 0 \
   "${pr_head_sha}" "${pr_target_base_sha}" "${pr_branch}" "${pr_base_branch}" \
   "${pr_metadata_file}"
@@ -757,6 +819,9 @@ grep -Fxq "change_request_context_pr_number: 42" \
   "${pr_output}/codex-ai-ci-summary.txt"
 grep -Fq '"title": "增强 adapter 稳健性"' \
   "${pr_output}/task-metadata.json"
+grep -Fq "判断：已实现" "${pr_output}/codex-ai-report.md"
+grep -Fq "贡献者希望增强适配器在新边界条件下的稳健性" \
+  "${pr_output}/codex-ai-comment.md"
 [[ ! -e /tmp/codex-pr-metadata-must-not-run ]]
 
 run_case pr-missing-metadata success 0 30 0 \
@@ -767,6 +832,8 @@ grep -Fxq "status: pass" \
 grep -Fxq "change_request_context_status: missing" \
   "${pr_missing_metadata_output}/codex-ai-ci-summary.txt"
 grep -Fq "## PR 功能声明上下文" \
+  "${pr_missing_metadata_output}/codex-ai-report.md"
+grep -Fq "判断：无法判断" \
   "${pr_missing_metadata_output}/codex-ai-report.md"
 grep -Fq "PR 功能声明上下文警告" \
   "${pr_missing_metadata_output}/codex-ai-comment.md"
@@ -858,7 +925,7 @@ grep -Fq "生成测试文件数量 3 超过限制 2" "${over_limit_output}/codex
 grep -Fq "命令数量 5 超过限制 4" "${over_limit_output}/codex-ai-comment.md"
 grep -Fq "单条命令最长耗时 601 秒" "${over_limit_output}/codex-ai-report.md"
 grep -Fq "测试和诊断命令累计耗时 1501 秒" "${over_limit_output}/codex-ai-report.md"
-grep -Fq "约束提醒：" "${over_limit_output}/codex-ai-comment.md"
+grep -Fq "运行约束提醒：" "${over_limit_output}/codex-ai-comment.md"
 
 run_case zero-tests zero_tests 0 30 0
 zero_output="${test_root}/zero-tests/output"
@@ -880,7 +947,7 @@ grep -Fxq "test_command_count: 0" "${docs_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_generation_expected: false" "${docs_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: pass" "${docs_output}/codex-ai-ci-summary.txt"
 grep -Fq "只包含文档改动" "${docs_output}/codex-ai-report.md"
-if grep -Fq "约束提醒：" "${docs_output}/codex-ai-comment.md"; then
+if grep -Fq "运行约束提醒：" "${docs_output}/codex-ai-comment.md"; then
   echo "纯文档改动不应产生测试执行约束警告" >&2
   exit 1
 fi
