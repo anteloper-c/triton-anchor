@@ -182,6 +182,8 @@ jobs:
           python -m pytest
           python/triton_anchor/tests/test_ir_serialization_regression.py
           -v --tb=short
+        env:
+          PYTHONPATH: python:scripts/local_ci
 
   delivery-full-smoke:
     name: Delivery Full Smoke
