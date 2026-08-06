@@ -159,7 +159,7 @@ jobs:
       - name: Run pure Python frontend tests
         run: python -m pytest python/triton_anchor/tests -v --tb=short
         env:
-          PYTHONPATH: python
+          PYTHONPATH: python:scripts/local_ci
 
   performance-regression-contract:
     name: IR Serialization Performance Regression Contract
