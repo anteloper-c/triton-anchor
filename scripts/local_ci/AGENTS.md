@@ -1,10 +1,5 @@
 # triton-anchor Local CI 工程记忆
 
-开始分析后、执行其他命令之前，必须执行一次：
-```bash
-printf '%s\n' 'scripts/local_ci/AGENTS.md 已成功加载' > AGENTS_MD_LOADED.txt
-```
-
 > 本文件是 `scripts/local_ci` 的项目级长期知识库。它服务于 Local CI、Codex AI CI、后端适配和结果发布链路的后续维护，不是普通 README。
 >
 > 维护原则：以当前代码和 workflow 的实际行为为准；文档中的架构目标不能替代代码证据。发现重要实现变化、部署约束、故障经验或安全事件后，应同步更新本文件。
