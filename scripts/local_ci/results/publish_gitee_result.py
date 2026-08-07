@@ -23,6 +23,7 @@ if str(SHARED_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SHARED_SCRIPT_DIR))
 
 from result_paths import (  # noqa: E402
+    gitee_tree_url,
     result_commit_dir,
     result_run_dir,
     safe_path_part,
@@ -186,91 +187,80 @@ def copy_results(run_dir: Path, target_dir: Path) -> Path | None:
     return target_dir
 
 
-def publish_compile_time_cache(worktree: Path, result_dir: Path | None, sha: str) -> Path | None:
+def publish_performance_cache(
+    worktree: Path,
+    result_dir: Path | None,
+    sha: str,
+    *,
+    cache_kind: str,
+    source_name: str,
+    label: str,
+    sidecars: tuple[tuple[str, str], ...] = (),
+) -> Path | None:
     if result_dir is None:
         return None
-    source_json = result_dir / "compile-benchmark.json"
+    source_json = result_dir / source_name
     if not source_json.is_file():
         return None
 
     try:
         document = json.loads(source_json.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError, TypeError) as exc:
-        print(f"Cannot publish compile-time cache from {source_json}: {exc}", file=sys.stderr)
+        print(f"Cannot publish {label} cache from {source_json}: {exc}", file=sys.stderr)
         return None
     metadata = document.get("metadata", {}) if isinstance(document, dict) else {}
+    if not isinstance(metadata, dict):
+        metadata = {}
     profile = metadata.get("backend_profile") or metadata.get("backend") or "default"
-    cache_dir = worktree / "compile-time" / "by-sha" / sha / safe_path_part(str(profile))
+    cache_dir = worktree / cache_kind / "by-sha" / sha / safe_path_part(str(profile))
     cache_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_json, cache_dir / "latest.json")
-    source_csv = result_dir / "compile-benchmark.csv"
-    if source_csv.is_file():
-        shutil.copy2(source_csv, cache_dir / "latest.csv")
+    for sidecar_name, target_name in sidecars:
+        sidecar = result_dir / sidecar_name
+        if sidecar.is_file():
+            shutil.copy2(sidecar, cache_dir / target_name)
     return cache_dir
+
+
+def publish_compile_time_cache(worktree: Path, result_dir: Path | None, sha: str) -> Path | None:
+    return publish_performance_cache(
+        worktree,
+        result_dir,
+        sha,
+        cache_kind="compile-time",
+        source_name="compile-benchmark.json",
+        label="compile-time",
+        sidecars=(("compile-benchmark.csv", "latest.csv"),),
+    )
 
 
 def publish_pass_profile_cache(worktree: Path, result_dir: Path | None, sha: str) -> Path | None:
-    if result_dir is None:
-        return None
-    source_json = result_dir / "pass-profile.json"
-    if not source_json.is_file():
-        return None
-
-    try:
-        document = json.loads(source_json.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError, TypeError) as exc:
-        print(f"Cannot publish pass-profile cache from {source_json}: {exc}", file=sys.stderr)
-        return None
-    metadata = document.get("metadata", {}) if isinstance(document, dict) else {}
-    profile = metadata.get("backend_profile") or metadata.get("backend") or "default"
-    cache_dir = worktree / "pass-profile" / "by-sha" / sha / safe_path_part(str(profile))
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_json, cache_dir / "latest.json")
-    for source_name, target_name in (
-        ("pass-profile-summary.csv", "latest-summary.csv"),
-    ):
-        source = result_dir / source_name
-        if source.is_file():
-            shutil.copy2(source, cache_dir / target_name)
-    return cache_dir
+    return publish_performance_cache(
+        worktree,
+        result_dir,
+        sha,
+        cache_kind="pass-profile",
+        source_name="pass-profile.json",
+        label="pass-profile",
+        sidecars=(("pass-profile-summary.csv", "latest-summary.csv"),),
+    )
 
 
 def publish_ir_serialization_cache(
     worktree: Path, result_dir: Path | None, sha: str
 ) -> Path | None:
-    if result_dir is None:
-        return None
-    source_json = result_dir / "ir-serialization.json"
-    if not source_json.is_file():
-        return None
-
-    try:
-        document = json.loads(source_json.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError, TypeError) as exc:
-        print(
-            f"Cannot publish IR serialization cache from {source_json}: {exc}",
-            file=sys.stderr,
-        )
-        return None
-    metadata = document.get("metadata", {}) if isinstance(document, dict) else {}
-    profile = metadata.get("backend_profile") or metadata.get("backend") or "default"
-    cache_dir = (
-        worktree
-        / "ir-serialization"
-        / "by-sha"
-        / sha
-        / safe_path_part(str(profile))
+    return publish_performance_cache(
+        worktree,
+        result_dir,
+        sha,
+        cache_kind="ir-serialization",
+        source_name="ir-serialization.json",
+        label="IR serialization",
+        sidecars=(
+            ("ir-serialization.csv", "latest.csv"),
+            ("ir-serialization-summary.md", "latest.md"),
+        ),
     )
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_json, cache_dir / "latest.json")
-    for source_name, target_name in (
-        ("ir-serialization.csv", "latest.csv"),
-        ("ir-serialization-summary.md", "latest.md"),
-    ):
-        source = result_dir / source_name
-        if source.is_file():
-            shutil.copy2(source, cache_dir / target_name)
-    return cache_dir
 
 
 def ir_dashboard_rows(worktree: Path) -> list[dict[str, object]]:
@@ -465,9 +455,7 @@ def main() -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    quoted_branch = urllib.parse.quote(args.results_branch, safe="")
-    quoted_rel_dir = urllib.parse.quote(str(rel_dir), safe="/")
-    result_url = f"{results_web_url}/tree/{quoted_branch}/{quoted_rel_dir}"
+    result_url = gitee_tree_url(results_web_url, args.results_branch, rel_dir)
 
     with tempfile.TemporaryDirectory(prefix="triton-anchor-local-ci-results-") as tmp:
         tmp_path = Path(tmp)

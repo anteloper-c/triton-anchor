@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
-import json
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
-
-DEFAULT_KERNELS = ("add", "mm", "softmax", "layernorm")
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from common import DEFAULT_KERNELS, load_json  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,13 +25,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--output-markdown", required=True)
     return parser.parse_args()
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8-sig"))
-    if not isinstance(value, dict):
-        raise ValueError(f"Expected a JSON object in {path}")
-    return value
 
 
 def compile_median(document: dict[str, Any], kernel: str) -> float:

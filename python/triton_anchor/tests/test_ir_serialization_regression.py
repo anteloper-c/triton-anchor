@@ -6,8 +6,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def load_script(name):
-    path = ROOT / "scripts" / "local_ci" / name
+def load_script(relative_path):
+    path = ROOT / "scripts" / "local_ci" / relative_path
     spec = importlib.util.spec_from_file_location(path.stem, path)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
@@ -15,9 +15,9 @@ def load_script(name):
     return module
 
 
-COMPARE = load_script("compare_ir_serialization.py")
-BENCHMARK = load_script("ir_serialization_benchmark.py")
-PUBLISH = load_script("publish_gitee_result.py")
+COMPARE = load_script("deterministic_ci/performance/compare_ir_serialization.py")
+BENCHMARK = load_script("deterministic_ci/performance/ir_serialization_benchmark.py")
+PUBLISH = load_script("results/publish_gitee_result.py")
 
 
 def benchmark_document(values, *, generated_at="2026-07-20T00:00:00Z"):

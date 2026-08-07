@@ -28,6 +28,16 @@ ${CHANGE_REQUEST_CONTEXT_JSON}
 
 其中 `title` 和 `description` 仅用于理解贡献者声称的修改目标、背景和预期行为。缺陷结论必须由 diff、实际代码行为、日志、测试结果或命令输出支撑。若声明和实现不一致，以实际代码为准，并检查是否存在实现遗漏、行为偏差或超出声明范围的重要变化。
 
+`change_request_assessment` 必须把贡献者声明和实际实现的对照结果单独表达，不能只在 `summary` 或 finding 中隐含说明：
+
+- `contributor_goal`：用简洁中文归纳贡献者想解决的问题或完成的功能；不能照抄大段 PR 描述。
+- `expected_behavior`：说明贡献者声明的用户可观察行为、接口契约或验收结果；没有明确说明时如实写“PR 描述未明确说明预期行为”。
+- `implementation_summary`：结合 diff 和失败证据说明当前实际实现了什么、是否完整，以及 Local CI 失败是否妨碍判断。
+- `evidence`：引用支持判断的关键文件、代码路径、失败日志、测试或 Local CI 证据，不得使用主观猜测。
+- `status`：声明和实现一致且证据充分时使用 `implemented`；只实现部分目标或仍有具体缺口时使用 `partially_implemented`；目标明确但 diff 没有实现或与预期相反时使用 `not_implemented`；PR 元数据缺失、无效或失败证据不足以判断时使用 `not_assessable`；仅在当前任务不是 PR 时使用 `not_applicable`。
+
+该状态描述“贡献者声明与实现的一致程度”，不直接代替 `verdict`。如果不一致构成可验证且影响合入的产品缺陷，应同时记录 finding；基础设施失败或证据不足不能包装成实现缺陷。
+
 以下是 runner 根据真实 Git diff 生成的标准变更文件清单：
 
 <changed_files_manifest_json>
@@ -80,7 +90,7 @@ ${CHANGED_FILES_MANIFEST_JSON}
    - 环境、权限、网络、容器、依赖、设备、后端服务、凭据、Gitee/GitHub API 或 runner 资源错误记录为基础设施失败，不能描述成产品代码缺陷；
    - 证据不足时使用 `insufficient_evidence`，不能猜测根因。
 7. `findings` 只记录可验证、可复现且对合入有意义的问题。风险猜测、代码风格建议和未来优化方向不能作为 finding。
-8. 每个 finding 必须包含明确的 `file`、`line`、`evidence`、`impact` 和 `fix_direction`。如果诊断结果推翻初始判断，应删除或降低对应 finding。
+8. 每个 finding 必须包含明确的 `file`、`line`、`code_role`、`evidence`、`impact` 和 `fix_direction`。`file` 必须是本次 Git diff 中未删除的文件；`line` 必须是单个正整数或不超过 12 行的连续范围，并精确指向导致问题的语句、条件、调用或数据定义。不要定位到文件头、空行、纯注释、整段函数或无关上下文；若问题是“缺少逻辑”，定位到最近的变更调用点或决策点，并在证据中说明缺少什么。`code_role` 用简洁中文说明该行或范围实际负责的功能。如果诊断结果推翻初始判断，应删除或降低对应 finding。
 
 ## Finding 问题类型与严重度
 
@@ -126,11 +136,13 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 
 ## 输出要求
 
-最终只能输出一个符合 `triton-anchor-codex-ai-report/v2` schema 的 JSON 对象，不要输出 Markdown、解释或代码围栏。
+最终只能输出一个符合 `triton-anchor-codex-ai-report/v3` schema 的 JSON 对象，不要输出 Markdown、解释或代码围栏。
 
 - JSON 键名、固定枚举、ID、命令、代码符号和路径保持原样。
-- `summary`、`merge_recommendation`、`changed_files` 的说明字段、`behavior_coverage`、`findings`、`suggested_tests`、`residual_risks`、`test_execution.summary` 和命令证据必须使用简体中文。
+- `summary`、`merge_recommendation`、`change_request_assessment` 的说明字段、`changed_files` 的说明字段、`behavior_coverage`、`findings`、`suggested_tests`、`residual_risks`、`test_execution.summary` 和命令证据必须使用简体中文。
+- `change_request_assessment` 必须完整包含 `status`、`contributor_goal`、`expected_behavior`、`implementation_summary` 和 `evidence`。
 - `changed_files` 条目数必须等于 ${CHANGED_FILE_COUNT}，并与标准清单完全一致。
+- 每个 finding 的 `file`、`line`、`code_role` 必须能让提交者直接定位到需要理解或修复的代码功能；`line` 使用 `42` 或 `42-47` 格式，不能使用模糊描述或函数名代替行号。
 - `behavior_coverage` 必须完整包含 `normal`、`boundary`、`error`、`compatibility`、`integration`，每项包含 `scope`、`strategy`、`result`。
 - 没有具体产品缺陷时 `findings` 必须为空数组，不得把基础设施失败包装成 finding。
 - `completion_marker` 必须是 `CODEX_AI_CI_COMPLETE`。

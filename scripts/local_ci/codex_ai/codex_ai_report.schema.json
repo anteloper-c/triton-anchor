@@ -11,6 +11,33 @@
     "merge_recommendation": {
       "type": "string"
     },
+    "change_request_assessment": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "implemented",
+            "partially_implemented",
+            "not_implemented",
+            "not_assessable",
+            "not_applicable"
+          ]
+        },
+        "contributor_goal": {"type": "string"},
+        "expected_behavior": {"type": "string"},
+        "implementation_summary": {"type": "string"},
+        "evidence": {"type": "string"}
+      },
+      "required": [
+        "status",
+        "contributor_goal",
+        "expected_behavior",
+        "implementation_summary",
+        "evidence"
+      ],
+      "additionalProperties": false
+    },
     "changed_files": {
       "type": "array",
       "items": {
@@ -125,7 +152,11 @@
             ]
           },
           "file": {"type": "string"},
-          "line": {"type": "string"},
+          "line": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*(?:-[1-9][0-9]*)?$"
+          },
+          "code_role": {"type": "string"},
           "title": {"type": "string"},
           "evidence": {"type": "string"},
           "impact": {"type": "string"},
@@ -137,6 +168,7 @@
           "category",
           "file",
           "line",
+          "code_role",
           "title",
           "evidence",
           "impact",
@@ -228,6 +260,7 @@
     "verdict",
     "summary",
     "merge_recommendation",
+    "change_request_assessment",
     "changed_files",
     "behavior_coverage",
     "findings",

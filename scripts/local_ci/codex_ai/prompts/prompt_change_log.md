@@ -73,6 +73,36 @@
 
 ---
 
+## 2026-08-06：补充贡献者目标对照并统一可读 PR comment
+
+### 修改原因
+
+原报告虽然包含摘要、finding 和测试证据，但没有结构化表达“贡献者声称要完成什么、预期行为是什么、当前 diff 实际实现到什么程度”。PR comment 也把结论、验证和文件明细混在一起，普通开发者需要阅读完整报告才能理解合入影响。
+
+### 修改内容
+
+- 将 Codex 报告格式升级为 `triton-anchor-codex-ai-report/v3`。
+- 新增 `change_request_assessment`，包含 `status`、`contributor_goal`、`expected_behavior`、`implementation_summary` 和 `evidence`。
+- success/failure prompt 明确五种实现状态及其与 `verdict`、finding 的关系。
+- renderer 和失败 fallback 同步校验、生成并展示该章节；PR comment 改为“审查结论、贡献者目标与实现情况、需要处理的问题、验证情况、变更文件”的顺序。
+- finding 新增 `code_role`，行号只接受单行或最多 12 行的连续范围；renderer 使用 exact-SHA checkout 校验变更文件、行范围和非空内容，bridge 生成固定提交的 GitHub 代码链接。
+- 两个 shell runner 共用 `shared/path_utils.sh`；三个性能比较器共用 JSON 对象读取 helper；保留不同性能判定语义。
+- 补充 renderer、prompt、容器 harness、bridge 和模块布局测试，扩充 Local CI README 与维护文档。
+
+### 兼容性与风险
+
+- 报告 JSON 是持久化协议，新增必填字段并升级为 v3；旧 v2 报告不会被当前 renderer 重新渲染。
+- finding 必须锚定未删除的变更文件；原先使用函数名、模糊行号、未变更文件或已删除文件的输出会被拒绝并进入失败 fallback。
+- Codex 仍是非阻塞 advisory，不改变确定性 Local CI exit code、status context 或 PR comment marker。
+- `safe_path_part` 的历史归一化语义未改变，只合并了两个 shell runner 的重复实现。
+- 性能比较器只共享输入读取逻辑，compile-time、pass-profile 和 IR serialization 的阈值与 slowdown 口径保持独立。
+
+### 验证
+
+执行 Python 契约、性能回归、报告 renderer、Shell harness、Python 语法、bash 语法和 `git diff --check`；Windows 环境无法替代 Linux Docker harness 时，明确记录未执行原因。
+
+---
+
 ## 2026-08-05：补充 Local CI 语境、项目专项审查和模板变量测试
 
 ### 修改原因
@@ -438,3 +468,31 @@ Prompt 一方面要求使用 runner 注入的 `${DIFF_COMMAND}` 获取审查范�
 ### 验证
 
 运行 Local CI 布局和 Codex 契约测试、bridge unittest、性能/dashboard 回归、Python 编译、全部相关 shell 语法、工作树旧路径扫描和 `git diff --check`。
+
+---
+
+## 2026-08-06：将 Local CI 专属测试归入模块目录
+
+### 修改原因
+
+Local CI bridge 和 Codex harness 原先位于仓库外层 `tests/`，与产品 smoke 测试混在一起，导致测试职责、workflow 收集范围和安全控制面边界不清晰。
+
+### 修改内容
+
+- 保留产品级 `tests/test_smoke.py` 在外层 `tests/`；
+- 将 Codex renderer、容器和 setup harness 移入 `scripts/local_ci/codex_ai/tests/`；
+- 将 bridge 单测移入 `scripts/local_ci/results/tests/`；
+- 保留 Local CI 布局测试在 `scripts/local_ci/tests/`；
+- 更新 workflow、Ruff 范围、README、AGENTS 和测试命令；
+- workflow 显式执行 Python 契约测试和三个 Shell harness，避免依赖 pytest 自动收集 `.sh`。
+
+### 兼容性与风险
+
+- 不改变测试逻辑、测试数据协议或产品 smoke 测试归属；
+- 移入 `scripts/local_ci` 后，测试文件属于受保护的可信控制面，修改会遵守 Local CI 安全扫描规则；
+- runner 快照会包含这些测试，但不会自动执行它们；
+- 旧外层 Local CI 测试路径不再作为稳定命令。
+
+### 验证
+
+运行 `scripts/local_ci/codex_ai/tests`、`scripts/local_ci/tests`、`scripts/local_ci/results/tests`、bridge unittest、Shell harness、Python 语法和 `git diff --check`。

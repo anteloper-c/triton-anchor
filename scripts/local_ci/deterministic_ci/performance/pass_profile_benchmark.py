@@ -15,7 +15,6 @@ import os
 import platform
 import re
 import shutil
-import statistics
 import subprocess
 import sys
 import time
@@ -23,19 +22,16 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-
-DEFAULT_KERNELS = ("add", "mm", "softmax", "layernorm")
-DEFAULT_SHAPES = {
-    "add": {"shape": [1024, 1024], "dtype": "float32"},
-    "mm": {"m": 256, "n": 256, "k": 256, "dtype": "float32"},
-    "softmax": {"shape": [128, 1024], "dim": -1, "dtype": "float32"},
-    "layernorm": {
-        "shape": [128, 1024],
-        "normalized_shape": [1024],
-        "dtype": "float32",
-        "eps": 1.0e-5,
-    },
-}
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from common import (  # noqa: E402
+    DEFAULT_KERNELS,
+    DEFAULT_SHAPES,
+    neighboring_compile_benchmark,
+    summarize,
+    write_projected_csv,
+)
 
 _TIMING_ROW_RE = re.compile(
     r"^\s*(?P<wall>[0-9]+(?:\.[0-9]+)?)\s*"
@@ -77,13 +73,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-correctness", action="store_true")
     parser.add_argument("--verbose-worker", action="store_true")
     return parser.parse_args()
-
-
-def compile_benchmark_script() -> Path:
-    path = Path(__file__).resolve().with_name("compile_benchmark.py")
-    if not path.is_file():
-        raise FileNotFoundError(f"compile_benchmark.py not found next to {__file__}")
-    return path
 
 
 def to_ms(value: str, unit: str | None) -> float:
@@ -137,26 +126,6 @@ def parse_timing_output(
     return events
 
 
-def summarize(values: list[float]) -> dict[str, float | int | None]:
-    if not values:
-        return {
-            "count": 0,
-            "mean_ms": None,
-            "median_ms": None,
-            "stdev_ms": None,
-            "min_ms": None,
-            "max_ms": None,
-        }
-    return {
-        "count": len(values),
-        "mean_ms": statistics.mean(values),
-        "median_ms": statistics.median(values),
-        "stdev_ms": statistics.stdev(values) if len(values) > 1 else 0.0,
-        "min_ms": min(values),
-        "max_ms": max(values),
-    }
-
-
 def run_child(
     args: argparse.Namespace,
     kernel: str,
@@ -172,7 +141,7 @@ def run_child(
 
     cmd = [
         sys.executable,
-        str(compile_benchmark_script()),
+        str(neighboring_compile_benchmark(Path(__file__))),
         "--worker",
         "--backend",
         args.backend,
@@ -331,12 +300,7 @@ def write_events_csv(path: Path, events: list[dict[str, Any]]) -> None:
         "worker_log",
         "raw_line",
     ]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for event in events:
-            writer.writerow({key: event.get(key) for key in fieldnames})
+    write_projected_csv(path, fieldnames, events)
 
 
 def write_summary_csv(path: Path, summary: dict[str, Any]) -> None:

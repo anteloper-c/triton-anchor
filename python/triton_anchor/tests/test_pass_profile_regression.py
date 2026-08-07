@@ -4,7 +4,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 
-PROFILE_SCRIPT = ROOT / "scripts" / "local_ci" / "pass_profile_benchmark.py"
+PERFORMANCE_DIR = ROOT / "scripts" / "local_ci" / "deterministic_ci" / "performance"
+PROFILE_SCRIPT = PERFORMANCE_DIR / "pass_profile_benchmark.py"
 PROFILE_SPEC = importlib.util.spec_from_file_location(
     "pass_profile_benchmark", PROFILE_SCRIPT
 )
@@ -12,7 +13,7 @@ PROFILE_MODULE = importlib.util.module_from_spec(PROFILE_SPEC)
 assert PROFILE_SPEC and PROFILE_SPEC.loader
 PROFILE_SPEC.loader.exec_module(PROFILE_MODULE)
 
-COMPARE_SCRIPT = ROOT / "scripts" / "local_ci" / "compare_pass_profile.py"
+COMPARE_SCRIPT = PERFORMANCE_DIR / "compare_pass_profile.py"
 COMPARE_SPEC = importlib.util.spec_from_file_location(
     "compare_pass_profile", COMPARE_SCRIPT
 )
@@ -20,7 +21,7 @@ COMPARE_MODULE = importlib.util.module_from_spec(COMPARE_SPEC)
 assert COMPARE_SPEC and COMPARE_SPEC.loader
 COMPARE_SPEC.loader.exec_module(COMPARE_MODULE)
 
-PUBLISH_SCRIPT = ROOT / "scripts" / "local_ci" / "publish_gitee_result.py"
+PUBLISH_SCRIPT = ROOT / "scripts" / "local_ci" / "results" / "publish_gitee_result.py"
 PUBLISH_SPEC = importlib.util.spec_from_file_location(
     "publish_gitee_result", PUBLISH_SCRIPT
 )

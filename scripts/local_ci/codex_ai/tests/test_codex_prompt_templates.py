@@ -54,8 +54,15 @@ def test_codex_ai_prompt_templates_only_use_runner_provided_variables():
 def test_codex_ai_prompt_templates_keep_required_output_contract():
     for prompt_name in ["codex_ai_success.md", "codex_ai_failure.md"]:
         text = (PROMPT_DIR / prompt_name).read_text(encoding="utf-8")
-        assert "triton-anchor-codex-ai-report/v2" in text
+        assert "triton-anchor-codex-ai-report/v3" in text
         assert "CODEX_AI_CI_COMPLETE" in text
+        assert "change_request_assessment" in text
+        assert "contributor_goal" in text
+        assert "expected_behavior" in text
+        assert "implementation_summary" in text
+        assert "not_assessable" in text
+        assert "code_role" in text
+        assert "不超过 12 行" in text
         assert "changed_files" in text
         assert "behavior_coverage" in text
         assert "Finding 问题类型与严重度" in text

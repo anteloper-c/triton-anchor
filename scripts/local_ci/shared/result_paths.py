@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import urllib.parse
 from pathlib import PurePosixPath
 
 
@@ -58,3 +59,15 @@ def result_commit_dir(task_ref: str, sha: str) -> PurePosixPath:
 
 def result_run_dir(task_ref: str, sha: str, run_id: str) -> PurePosixPath:
     return result_commit_dir(task_ref, sha) / safe_path_part(run_id)
+
+
+def gitee_tree_url(web_url: str, ref: str, relative_path: str | PurePosixPath) -> str:
+    quoted_ref = urllib.parse.quote(ref, safe="")
+    quoted_path = urllib.parse.quote(str(relative_path), safe="/")
+    return f"{web_url.rstrip('/')}/tree/{quoted_ref}/{quoted_path}"
+
+
+def gitee_blob_url(web_url: str, ref: str, relative_path: str | PurePosixPath) -> str:
+    quoted_ref = urllib.parse.quote(ref, safe="")
+    quoted_path = urllib.parse.quote(str(relative_path), safe="/")
+    return f"{web_url.rstrip('/')}/blob/{quoted_ref}/{quoted_path}"
