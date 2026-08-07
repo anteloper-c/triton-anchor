@@ -15,8 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-LOCAL_CI_SCRIPT_DIR = Path(__file__).resolve().parents[1] / "local_ci"
-sys.path.insert(0, str(LOCAL_CI_SCRIPT_DIR))
+SHARED_SCRIPT_DIR = Path(__file__).resolve().parents[1] / "local_ci" / "shared"
+sys.path.insert(0, str(SHARED_SCRIPT_DIR))
 from result_paths import result_run_dir, result_task_dir  # noqa: E402
 
 
