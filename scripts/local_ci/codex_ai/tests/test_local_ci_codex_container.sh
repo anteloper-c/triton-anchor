@@ -880,10 +880,12 @@ grep -Fq "贡献者希望增强适配器在新边界条件下的稳健性" \
 [[ ! -e /tmp/codex-pr-metadata-must-not-run ]]
 
 run_case pr-metadata-supplies-head-sha success 0 30 0 \
-  "${pr_merge_sha}" "${pr_target_base_sha}" "${pr_branch}" "${pr_base_branch}" \
+  "${pr_merge_sha}" "${pr_target_base_sha}" "${pr_branch}" "" \
   "${pr_metadata_file}" "" ""
 pr_metadata_supplies_head_output="${test_root}/pr-metadata-supplies-head-sha/output"
 grep -Fxq "status: pass" \
+  "${pr_metadata_supplies_head_output}/codex-ai-ci-summary.txt"
+grep -Fxq "requested_base_ref: ${pr_base_branch}" \
   "${pr_metadata_supplies_head_output}/codex-ai-ci-summary.txt"
 grep -Fxq "requested_head_sha: ${pr_head_sha}" \
   "${pr_metadata_supplies_head_output}/codex-ai-ci-summary.txt"

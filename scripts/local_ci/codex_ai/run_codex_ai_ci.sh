@@ -682,8 +682,8 @@ print(metadata["pr_number"])
 print(json.dumps(context, ensure_ascii=False, separators=(",", ":")))
 print(metadata.get("base_sha", ""))
 print(metadata.get("head_sha", ""))
-print(metadata.get("base_branch", ""))
-print(metadata.get("head_branch", ""))
+print(metadata.get("base_task_ref", ""))
+print(metadata.get("head_task_ref", ""))
 PY
   )
   if [[ "${#context_parts[@]}" -lt 2 || -z "${context_parts[1]}" ]]; then
