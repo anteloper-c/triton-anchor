@@ -680,9 +680,13 @@ for key in (
         context[key] = metadata[key]
 print(metadata["pr_number"])
 print(json.dumps(context, ensure_ascii=False, separators=(",", ":")))
+print(metadata.get("base_sha", ""))
+print(metadata.get("head_sha", ""))
+print(metadata.get("base_branch", ""))
+print(metadata.get("head_branch", ""))
 PY
   )
-  if [[ "${#context_parts[@]}" -ne 2 || -z "${context_parts[1]}" ]]; then
+  if [[ "${#context_parts[@]}" -lt 2 || -z "${context_parts[1]}" ]]; then
     rm -f -- "${task_metadata_output_path}"
     change_request_context_status="invalid"
     change_request_context_reason="规范化后的 PR 功能声明元数据无法读取；继续依据代码差异和测试证据分析。"
@@ -690,6 +694,23 @@ PY
       fail_ai_ci "无法生成 PR 元数据读取失败上下文"
     echo "${change_request_context_reason}" >> "${log_path}"
     return 0
+  fi
+
+  local metadata_base_sha="${context_parts[2]:-}"
+  local metadata_head_sha="${context_parts[3]:-}"
+  local metadata_base_ref="${context_parts[4]:-}"
+  local metadata_head_ref="${context_parts[5]:-}"
+  if [[ -z "${requested_base_sha}" && -n "${metadata_base_sha}" ]]; then
+    requested_base_sha="${metadata_base_sha}"
+  fi
+  if [[ -z "${requested_head_sha}" && -n "${metadata_head_sha}" ]]; then
+    requested_head_sha="${metadata_head_sha}"
+  fi
+  if [[ -z "${requested_base_ref}" && -n "${metadata_base_ref}" ]]; then
+    requested_base_ref="${metadata_base_ref}"
+  fi
+  if [[ -z "${requested_head_ref}" && -n "${metadata_head_ref}" ]]; then
+    requested_head_ref="${metadata_head_ref}"
   fi
 
   change_request_context_status="available"
