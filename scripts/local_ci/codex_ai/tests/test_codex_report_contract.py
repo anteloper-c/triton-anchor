@@ -149,11 +149,15 @@ def test_comment_explains_goal_implementation_and_non_blocking_role():
     )
 
     assert "## Codex AI 代码审查" in comment
-    assert "非阻塞的辅助审查" in comment
+    assert "AI 评论仅供参考" in comment
+    assert "合入门禁" in comment
+    assert "### 审查摘要" in comment
+    assert "确定性 CI：" in comment
     assert "### 贡献者目标与实现情况" in comment
-    assert "修改目标：贡献者希望修复当前代码路径中的问题" in comment
-    assert "预期行为：修改后相关路径应按声明正常工作" in comment
-    assert "实现情况：代码差异实现了声明目标" in comment
+    assert "贡献者目标：贡献者希望修复当前代码路径中的问题" in comment
+    assert "预期效果：修改后相关路径应按声明正常工作" in comment
+    assert "当前实现情况：代码差异实现了声明目标" in comment
+    assert "判断依据：" in comment
     assert "### 验证情况" in comment
 
 

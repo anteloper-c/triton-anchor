@@ -34,6 +34,7 @@ from result_paths import (  # noqa: E402
 RESULT_NOT_READY_EXIT_CODE = 3
 RESULT_FAILED_EXIT_CODE = 10
 CODEX_COMMENT_MARKER = "<!-- triton-anchor-codex-ai-comment -->"
+CODEX_COMMENT_SHA_MARKER_PREFIX = "triton-anchor-codex-ai-comment-sha"
 FINDING_ID_RE = re.compile(r"^AI-[0-9]{3}$")
 GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
@@ -291,17 +292,24 @@ def list_open_pr_targets(limit: int) -> list[Target]:
             if not isinstance(head_repo, str):
                 head_repo = ""
             branch = head.get("ref")
-            sha = head.get("sha")
+            head_sha = head.get("sha")
+            merge_sha = item.get("merge_commit_sha")
             number = item.get("number")
-            if isinstance(branch, str) and isinstance(sha, str) and isinstance(number, int):
+            if (
+                isinstance(branch, str)
+                and isinstance(head_sha, str)
+                and isinstance(merge_sha, str)
+                and re.fullmatch(r"[0-9a-f]{40}", merge_sha)
+                and isinstance(number, int)
+            ):
                 source_label = f"{head_repo}:{branch}" if head_repo and head_repo != github_repo() else branch
                 targets.append(
                     Target(
                         branch,
                         f"ci/pr-{number}/{branch}",
-                        sha,
+                        merge_sha,
                         f"PR #{number} {source_label}",
-                        head_repo,
+                        github_repo(),
                     )
                 )
         if len(payload) < per_page:
@@ -478,6 +486,10 @@ def pr_number_from_task_ref(task_ref: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def codex_pr_commit_marker(target: Target) -> str:
+    return f"<!-- {CODEX_COMMENT_SHA_MARKER_PREFIX}:{target.sha} -->"
+
+
 def codex_pr_comment_body(target: Target, result: LocalCIResult) -> str:
     body = result.codex_ai.comment_markdown.strip()
     if not body:
@@ -497,9 +509,10 @@ def codex_pr_comment_body(target: Target, result: LocalCIResult) -> str:
     return (
         f"{body}\n\n"
         f"---\n\n"
-        f"- 审查提交：`{target.sha[:12]}`\n"
+        f"- 测试提交：`{target.sha[:12]}`\n"
         f"- [查看完整 Codex AI CI 报告]({report_url})\n\n"
         f"{CODEX_COMMENT_MARKER}\n"
+        f"{codex_pr_commit_marker(target)}\n"
     )
 
 
@@ -514,7 +527,7 @@ def github_finding_location_links(
     lines = [
         "### 可点击代码定位",
         "",
-        "链接固定到本次审查提交，便于提交者修复和审核者核对代码功能。",
+        "链接固定到本次测试提交，便于提交者修复和审核者核对代码功能。",
         "",
     ]
     for location in locations[:5]:
@@ -536,6 +549,7 @@ def post_codex_pr_comment(target: Target, result: LocalCIResult) -> None:
     if pr_number is None or not body:
         return
 
+    commit_marker = codex_pr_commit_marker(target)
     comments_path = f"/repos/{github_repo()}/issues/{pr_number}/comments"
     comments = get_github_json(comments_path, {"per_page": "100"})
     if not isinstance(comments, list):
@@ -550,6 +564,7 @@ def post_codex_pr_comment(target: Target, result: LocalCIResult) -> None:
         if (
             isinstance(comment_body, str)
             and CODEX_COMMENT_MARKER in comment_body
+            and commit_marker in comment_body
             and isinstance(comment_id, int)
             and is_bot
         ):

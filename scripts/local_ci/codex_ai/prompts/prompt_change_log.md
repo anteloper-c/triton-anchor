@@ -84,7 +84,7 @@
 - 将 Codex 报告格式升级为 `triton-anchor-codex-ai-report/v3`。
 - 新增 `change_request_assessment`，包含 `status`、`contributor_goal`、`expected_behavior`、`implementation_summary` 和 `evidence`。
 - success/failure prompt 明确五种实现状态及其与 `verdict`、finding 的关系。
-- renderer 和失败 fallback 同步校验、生成并展示该章节；PR comment 改为“审查结论、贡献者目标与实现情况、需要处理的问题、验证情况、变更文件”的顺序。
+- renderer 和失败 fallback 同步校验、生成并展示该章节；PR comment 改为“审查摘要、贡献者目标与实现情况、需要处理的问题、验证情况、变更文件”的顺序，并在摘要中保留确定性 CI 结论的简短描述。
 - finding 新增 `code_role`，行号只接受单行或最多 12 行的连续范围；renderer 使用 exact-SHA checkout 校验变更文件、行范围和非空内容，bridge 生成固定提交的 GitHub 代码链接。
 - 两个 shell runner 共用 `shared/path_utils.sh`；三个性能比较器共用 JSON 对象读取 helper；保留不同性能判定语义。
 - 补充 renderer、prompt、容器 harness、bridge 和模块布局测试，扩充 Local CI README 与维护文档。
@@ -323,7 +323,7 @@ PYTHONPATH=python python -m pytest scripts/local_ci/codex_ai/tests/test_codex_pr
 
 - 将面向人的 `stable_failure` 表述统一为“可稳定复现的失败”；
 - 将面向人的 `flaky_failure` 表述统一为“非确定性失败”，表示相同用例在可比环境中的复跑结果不一致；
-- 同步更新 success/failure prompt、报告 renderer、GitHub receiver 展示和工程记忆。
+- 同步更新 success/failure prompt、报告 renderer、GitHub receiver 展示和开发指南。
 
 ### 兼容性与风险
 
@@ -456,7 +456,7 @@ Prompt 一方面要求使用 runner 注入的 `${DIFF_COMMAND}` 获取审查范�
 - workflow 除稳定 poller 入口外全部引用分层目录中的 canonical 路径；
 - 布局测试要求根目录只能存在 `poll_gitee_and_run.sh`，并禁止恢复旧 poller 模块；
 - runner 快照前检查完整运行时文件集，并从快照中移除 `__pycache__`、`.pyc` 和 `.pyo`；
-- 同步 README、AGENTS 和 CI 指南中的入口、调用示例和职责说明。
+- 同步 README、DEVELOPMENT_GUIDE 和 CI 指南中的入口、调用示例和职责说明。
 
 ### 兼容性与风险
 
@@ -483,7 +483,7 @@ Local CI bridge 和 Codex harness 原先位于仓库外层 `tests/`，与产品 
 - 将 Codex renderer、容器和 setup harness 移入 `scripts/local_ci/codex_ai/tests/`；
 - 将 bridge 单测移入 `scripts/local_ci/results/tests/`；
 - 保留 Local CI 布局测试在 `scripts/local_ci/tests/`；
-- 更新 workflow、Ruff 范围、README、AGENTS 和测试命令；
+- 更新 workflow、Ruff 范围、README、DEVELOPMENT_GUIDE 和测试命令；
 - workflow 显式执行 Python 契约测试和三个 Shell harness，避免依赖 pytest 自动收集 `.sh`。
 
 ### 兼容性与风险

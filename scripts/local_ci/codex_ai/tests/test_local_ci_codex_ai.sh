@@ -144,14 +144,17 @@ grep -Fq "测试命令数量超过轻量约束" "${report_md}"
 grep -Fq "## 剩余风险" "${report_md}"
 grep -Fq "## Codex AI 代码审查" "${comment_md}"
 grep -Fq "非阻塞的辅助审查" "${comment_md}"
+grep -Fq "### 审查摘要" "${comment_md}"
+grep -Fq "确定性 CI：" "${comment_md}"
 grep -Fq "### 贡献者目标与实现情况" "${comment_md}"
-grep -Fq "修改目标：贡献者希望修复缓存命中后的状态读取逻辑" "${comment_md}"
+grep -Fq "贡献者目标：贡献者希望修复缓存命中后的状态读取逻辑" "${comment_md}"
+grep -Fq "判断依据：" "${comment_md}"
 grep -Fq "### 验证情况" "${comment_md}"
 grep -Fq "### 需要处理的问题" "${comment_md}"
 grep -Fq "### 变更文件" "${comment_md}"
 grep -Fq "这段代码负责：该条件决定缓存命中后是否继续复用旧状态" "${comment_md}"
 grep -Fq "<details>" "${comment_md}"
-grep -Fq "运行约束提醒：" "${comment_md}"
+grep -Fq "验证范围提醒：" "${comment_md}"
 grep -Fq "测试命令数量超过轻量约束" "${comment_md}"
 if grep -Fq "新分支直接复用缓存值" "${comment_md}"; then
   echo "PR 评论不应包含 finding 的完整证据" >&2
@@ -161,7 +164,13 @@ if grep -Eq '^## (Metadata|Verdict|Summary|Findings|Suggested Tests|Test Executi
   echo "报告仍包含英文模板标题" >&2
   exit 1
 fi
-python3 -c 'from pathlib import Path; Path("'"${report_md}"'").read_text(encoding="utf-8"); Path("'"${comment_md}"'").read_text(encoding="utf-8")'
+python3 - "${report_md}" "${comment_md}" <<'PY'
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).read_text(encoding="utf-8")
+Path(sys.argv[2]).read_text(encoding="utf-8")
+PY
 
 invalid_verdict="${test_root}/invalid-verdict.json"
 sed 's/"verdict": "WARNING"/"verdict": "PASS"/' "${valid_json}" > "${invalid_verdict}"

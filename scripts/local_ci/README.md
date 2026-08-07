@@ -56,7 +56,8 @@ scripts/local_ci/
 ├── poll_gitee_and_run.sh                  # 稳定入口：轮询 Gitee task ref，串起确定性 CI、Codex 和结果发布
 ├── config.example.env                     # 部署配置模板；生产配置放在服务器环境，不提交仓库
 ├── README.md                              # 面向日常维护者的使用说明
-├── AGENTS.md                              # 面向后续维护的长期工程记忆和约束
+├── DEVELOPMENT_GUIDE.md                  # 面向开发者和 agent coding 的长期上下文与规范
+├── DEVELOPMENT_CONTEXT.md                 # 临时协作上下文；完成后沉淀到正式文档
 ├── orchestration/                         # 任务上下文准备和容器内确定性 CI 编排
 │   ├── fetch_task_metadata.sh             # 读取 PR 标题、描述、base/head 等元数据
 │   └── run_deterministic_ci_in_container.sh # 把任务参数传入 Local CI 容器并启动确定性 runner
@@ -114,10 +115,12 @@ runs/ci_full/ci_full_<branch>/<sha>/<run-id>/
 
 `safe_path_part` 是历史结果协议的一部分，会压缩非法字符并可能发生碰撞。`shared/path_utils.sh` 和 `shared/result_paths.py` 必须保持现有归一化语义；修改前要先补历史路径兼容测试和迁移方案。
 
+`DEVELOPMENT_CONTEXT.md` 只用于临时交接开发过程、AI 协作记录和未完成事项。它不会被列为 Local CI runtime 必需文件；长期有效的信息应在完成后沉淀到 `DEVELOPMENT_GUIDE.md`、`README.md`、`docs/ci_guide_zh.md` 或 `codex_ai/prompts/prompt_change_log.md`。
+
 ## 一次任务的生命周期
 
 1. Poller 发现符合规则的 Gitee ref，并用 lock 文件保证同一服务器不会并发处理相同 poller 状态。
-2. PR 任务读取并校验与 head SHA 匹配的 `task-metadata.json`。标题和描述只作为声明证据，不能作为命令执行。
+2. PR 任务读取并校验与 GitHub test merge SHA 匹配的 `task-metadata.json`，同时保留 base/head SHA 供 diff 和身份校验。标题和描述只作为声明证据，不能作为命令执行。
 3. Runner 将 Local CI 控制脚本复制到容器内临时目录，并执行 `deterministic_ci/run_deterministic_ci.sh`。
 4. 确定性 runner 在独立 artifact 目录写入 smoke、FlagGems、benchmark、比较结果和 `delivery-summary.txt`。
 5. 如果分支匹配 `CODEX_AI_CI_BRANCH_REGEX`，Codex 从 Local CI 容器快照创建一次性容器，使用只读 `/workspace` 和目标 SHA 的 writable checkout。
@@ -172,14 +175,14 @@ codex-workspace.patch
 codex-generated-files.tar.gz
 ```
 
-Codex 报告格式为 `triton-anchor-codex-ai-report/v3`。除审查结论、文件变更、行为覆盖、findings、测试证据和剩余风险外，`change_request_assessment` 还必须说明：
+Codex 报告格式为 `triton-anchor-codex-ai-report/v3`。除审查摘要、文件变更、行为覆盖、findings、测试证据和剩余风险外，`change_request_assessment` 还必须说明：
 
 - 贡献者的修改目标；
 - 声明的预期行为；
 - 当前 diff 实际实现情况；
 - 支持该判断的代码、测试或 Local CI 证据。
 
-实现状态 `implemented`、`partially_implemented`、`not_implemented`、`not_assessable` 和 `not_applicable` 只表示声明与实现的一致程度，不替代 `PASS`/`WARNING`/`FAIL`。PR comment 会优先展示结论、目标对照、需要处理的问题和验证情况，文件级明细折叠在评论底部；完整报告保留全部证据。
+实现状态 `implemented`、`partially_implemented`、`not_implemented`、`not_assessable` 和 `not_applicable` 只表示声明与实现的一致程度，不替代 `PASS`/`WARNING`/`FAIL`。PR comment 会优先展示审查摘要、确定性 CI 简述、贡献者目标与实现情况、需要处理的问题和验证情况；判断依据应使用提交者和审核者可理解的自然语言，必要时再引用关键代码、测试或 Local CI 证据。文件级明细折叠在评论底部；完整报告保留全部证据。
 
 每个 finding 必须定位到本次 diff 中未删除的文件，并使用单行或最多 12 行的连续范围。Renderer 会在 exact-SHA checkout 中确认文件存在、范围没有越界且不全是空行；`code_role` 说明该行实际负责的功能。Bridge 从结构化报告生成固定到审查 SHA 的 GitHub 链接，PR 提交者可直接打开修复位置，审核者可核对行号、功能说明和完整证据是否一致。
 
@@ -240,4 +243,4 @@ Windows Git Bash 不能替代 Linux harness：`python3`、`/tmp`、symlink 权�
 | 性能 warning | 先确认 baseline SHA/profile、backend commit 和 artifact 有效性，再判断是否是真回归。 |
 | PR comment 没有更新 | task ref 必须是 `ci/pr-<number>/...`，comment 必须包含稳定 marker 且由 Bot 发布。 |
 
-更完整的协议和已知风险见 [`AGENTS.md`](AGENTS.md)、[`docs/ci_guide_zh.md`](../../docs/ci_guide_zh.md)、[`config.example.env`](config.example.env) 和 [`codex_ai/prompts/prompt_change_log.md`](codex_ai/prompts/prompt_change_log.md)。
+更完整的协议和已知风险见 [`DEVELOPMENT_GUIDE.md`](DEVELOPMENT_GUIDE.md)、[`docs/ci_guide_zh.md`](../../docs/ci_guide_zh.md)、[`config.example.env`](config.example.env) 和 [`codex_ai/prompts/prompt_change_log.md`](codex_ai/prompts/prompt_change_log.md)。

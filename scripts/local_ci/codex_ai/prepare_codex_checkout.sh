@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-usage="prepare_codex_checkout.sh <repo-url> <branch> <workspace-root> <name> <target-sha> [base-branch] [base-sha]"
+usage="prepare_codex_checkout.sh <repo-url> <branch> <workspace-root> <name> <target-sha> [base-branch] [base-sha] [head-branch] [head-sha]"
 repo_url="${1:?usage: ${usage}}"
 branch="${2:?usage: ${usage}}"
 workspace_root="${3:?usage: ${usage}}"
@@ -9,6 +9,8 @@ checkout_name="${4:?usage: ${usage}}"
 target_sha="${5:?usage: ${usage}}"
 base_branch="${6:-}"
 base_sha="${7:-}"
+head_branch="${8:-}"
+head_sha="${9:-}"
 
 case "${checkout_name}" in
   "" | *[!A-Za-z0-9._-]*)
@@ -34,6 +36,18 @@ if [[ -n "${base_sha}" && ! "${base_sha}" =~ ^[0-9a-fA-F]{40}$ ]]; then
 fi
 if [[ -n "${base_branch}" && -z "${base_sha}" ]]; then
   echo "Codex base branch requires an exact base SHA" >&2
+  exit 1
+fi
+if [[ -n "${head_branch}" ]] && ! git check-ref-format --branch "${head_branch}" >/dev/null 2>&1; then
+  echo "Invalid Codex head branch: ${head_branch}" >&2
+  exit 1
+fi
+if [[ -n "${head_sha}" && ! "${head_sha}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "Invalid Codex head SHA: ${head_sha}" >&2
+  exit 1
+fi
+if [[ -n "${head_branch}" && -z "${head_sha}" ]]; then
+  echo "Codex head branch requires an exact head SHA" >&2
   exit 1
 fi
 
@@ -90,6 +104,21 @@ elif [[ -n "${base_sha}" ]] &&
   # A previous push SHA is normally present in the target branch history. A
   # best-effort direct fetch also preserves useful comparisons after a force push.
   git -C "${checkout_dir}" fetch --quiet --no-tags gitee "${base_sha}" >/dev/null 2>&1 || true
+fi
+if [[ -n "${head_branch}" ]]; then
+  if ! git -C "${checkout_dir}" fetch --quiet --no-tags gitee \
+    "+refs/heads/${head_branch}:refs/codex/head"; then
+    echo "Failed to fetch Codex head branch ${head_branch}" >&2
+    exit 1
+  fi
+  fetched_head_sha="$(git -C "${checkout_dir}" rev-parse refs/codex/head 2>/dev/null || true)"
+  if [[ "${fetched_head_sha}" != "${head_sha}" ]]; then
+    echo "Codex head SHA mismatch: expected ${head_sha}, got ${fetched_head_sha:-unavailable}" >&2
+    exit 1
+  fi
+elif [[ -n "${head_sha}" ]] &&
+  ! git -C "${checkout_dir}" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
+  git -C "${checkout_dir}" fetch --quiet --no-tags gitee "${head_sha}" >/dev/null 2>&1 || true
 fi
 if ! git -C "${checkout_dir}" checkout --quiet --detach "${target_sha}"; then
   echo "Failed to check out Codex target SHA: ${target_sha}" >&2

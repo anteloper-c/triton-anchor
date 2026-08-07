@@ -39,6 +39,12 @@ def test_canonical_local_ci_modules_exist():
     assert not missing, f"missing canonical Local CI modules: {missing}"
 
 
+def test_development_guide_is_not_a_runtime_module():
+    guide = LOCAL_CI_ROOT / "DEVELOPMENT_GUIDE.md"
+    assert guide.is_file()
+    assert "DEVELOPMENT_GUIDE.md" not in CANONICAL_PATHS
+
+
 def test_local_ci_root_has_only_the_stable_poller_entrypoint():
     root_scripts = {
         path.name
