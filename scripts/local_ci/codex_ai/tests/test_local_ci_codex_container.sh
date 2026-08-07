@@ -370,7 +370,7 @@ def write_report(
         }
 
     report = {
-        "verdict": "PASS",
+        "verdict": "WARNING" if scenario == "zero_tests" else "PASS",
         "summary": summary,
         "merge_recommendation": (
             "建议先确认确定性 Local CI 的失败原因并完成复测后再合入。"
