@@ -268,9 +268,12 @@ uv pip install -e ".[dev]"
 # 运行单元测试
 pytest python/triton_anchor/tests/ -v
 
+# 运行 Local CI/Codex 契约测试
+pytest scripts/local_ci/codex_ai/tests scripts/local_ci/tests scripts/local_ci/results/tests -v
+
 # 代码风格检查
 pip install ruff
-ruff check python/ tests/
+ruff check python/ tests/ scripts/local_ci/
 ```
 
 > 💡 **完整构建指南**（Docker 环境配置、LLVM 源码编译、Wheel 打包等）请参阅 [docs/build.md](docs/build.md)。
@@ -284,9 +287,12 @@ triton-anchor/
 ├── docs/                        # 文档
 │   ├── build.md                 #   构建与环境配置指南
 │   └── custom_backend.md        #   自定义硬件后端接入指南
-├── tests/                       # 框架级和端到端测试
-│   ├── test_discovery.py        #   entry_points 后端发现测试
-│   └── test_e2e.py              #   端到端编译链路测试
+├── tests/                       # 产品级和端到端测试
+│   └── test_smoke.py            #   安装后 smoke、binding 和编译链路测试
+├── scripts/local_ci/            # Local CI 控制面及模块内契约测试
+│   ├── tests/                   #   Local CI 布局测试
+│   ├── codex_ai/tests/          #   Codex prompt、报告和容器 harness
+│   └── results/tests/           #   Gitee/GitHub bridge 测试
 ├── .github/                     # GitHub 配置
 │   ├── workflows/ci.yml         #   CI 流水线（lint + 单元测试）
 │   └── ISSUE_TEMPLATE/          #   Issue 模板（Feature Request / Bug Report）

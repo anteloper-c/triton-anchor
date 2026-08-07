@@ -19,6 +19,8 @@ fi
 RUNNER_ROOT="${LOCAL_CI_RUNNER_DIR:-${LOCAL_CI_ROOT}}"
 PERFORMANCE_SCRIPT_DIR="${RUNNER_ROOT}/deterministic_ci/performance"
 FLAGGEMS_SCRIPT_DIR="${RUNNER_ROOT}/deterministic_ci/flaggems"
+# shellcheck disable=SC1091
+source "${RUNNER_ROOT}/shared/path_utils.sh"
 target_sha="${1:?usage: run_deterministic_ci.sh <commit-sha>}"
 
 WORKSPACE="${WORKSPACE:-/workspace}"
@@ -131,14 +133,7 @@ setup_gitee_git_auth() {
 
   local askpass
   askpass="$(mktemp /tmp/local-ci-gitee-askpass.XXXXXX)"
-  cat > "${askpass}" <<'EOF'
-#!/usr/bin/env sh
-case "$1" in
-  *Username*) printf '%s\n' "${GITEE_USERNAME:-likehupochuan}" ;;
-  *) printf '%s\n' "${GITEE_TOKEN}" ;;
-esac
-EOF
-  chmod 700 "${askpass}"
+  write_gitee_askpass "${askpass}"
   export GITEE_USERNAME GITEE_TOKEN
   export GIT_ASKPASS="${askpass}"
   export GIT_TERMINAL_PROMPT=0
@@ -444,88 +439,55 @@ source_backend_env() {
   set -u
 }
 
-safe_path_part() {
-  local value="$1"
-  value="${value//\//_}"
-  value="$(printf '%s' "${value}" | tr -c 'A-Za-z0-9._-' '_')"
-  value="${value##_}"
-  value="${value%%_}"
-  printf '%s' "${value:-default}"
+fetch_performance_baseline() {
+  local result_dir="$1"
+  local branch_label="$2"
+  local cache_label="$3"
+  local sha="$4"
+  local output="$5"
+  local safe_profile
+  safe_profile="$(safe_path_part "${BACKEND_PROFILE}")"
+  local rel_path="${result_dir}/by-sha/${sha}/${safe_profile}/latest.json"
+
+  if git remote get-url gitee-results >/dev/null 2>&1; then
+    git remote set-url gitee-results "${GITEE_RESULTS_REPO_URL}"
+  else
+    git remote add gitee-results "${GITEE_RESULTS_REPO_URL}"
+  fi
+  if ! git fetch -q --depth=1 gitee-results \
+    "refs/heads/${GITEE_RESULTS_BRANCH}:refs/remotes/gitee-results/${GITEE_RESULTS_BRANCH}"; then
+    echo "${branch_label} results branch is not available: ${GITEE_RESULTS_BRANCH}" >&2
+    return 1
+  fi
+  if ! git show "gitee-results/${GITEE_RESULTS_BRANCH}:${rel_path}" > "${output}"; then
+    rm -f "${output}"
+    echo "No cached ${cache_label} baseline at ${rel_path}" >&2
+    return 1
+  fi
+  echo "Loaded ${cache_label} baseline for ${sha}: ${rel_path}"
 }
 
 fetch_compile_baseline() {
-  local sha="$1"
-  local output="$2"
-  local safe_profile
-  safe_profile="$(safe_path_part "${BACKEND_PROFILE}")"
-  local rel_path="compile-time/by-sha/${sha}/${safe_profile}/latest.json"
-
-  if git remote get-url gitee-results >/dev/null 2>&1; then
-    git remote set-url gitee-results "${GITEE_RESULTS_REPO_URL}"
-  else
-    git remote add gitee-results "${GITEE_RESULTS_REPO_URL}"
-  fi
-  if ! git fetch -q --depth=1 gitee-results \
-    "refs/heads/${GITEE_RESULTS_BRANCH}:refs/remotes/gitee-results/${GITEE_RESULTS_BRANCH}"; then
-    echo "Compile-time results branch is not available: ${GITEE_RESULTS_BRANCH}" >&2
-    return 1
-  fi
-  if ! git show "gitee-results/${GITEE_RESULTS_BRANCH}:${rel_path}" > "${output}"; then
-    rm -f "${output}"
-    echo "No cached compile-time baseline at ${rel_path}" >&2
-    return 1
-  fi
-  echo "Loaded compile-time baseline for ${sha}: ${rel_path}"
+  fetch_performance_baseline "compile-time" "Compile-time" "compile-time" "$@"
 }
 
 fetch_pass_profile_baseline() {
-  local sha="$1"
-  local output="$2"
-  local safe_profile
-  safe_profile="$(safe_path_part "${BACKEND_PROFILE}")"
-  local rel_path="pass-profile/by-sha/${sha}/${safe_profile}/latest.json"
-
-  if git remote get-url gitee-results >/dev/null 2>&1; then
-    git remote set-url gitee-results "${GITEE_RESULTS_REPO_URL}"
-  else
-    git remote add gitee-results "${GITEE_RESULTS_REPO_URL}"
-  fi
-  if ! git fetch -q --depth=1 gitee-results \
-    "refs/heads/${GITEE_RESULTS_BRANCH}:refs/remotes/gitee-results/${GITEE_RESULTS_BRANCH}"; then
-    echo "Pass-profile results branch is not available: ${GITEE_RESULTS_BRANCH}" >&2
-    return 1
-  fi
-  if ! git show "gitee-results/${GITEE_RESULTS_BRANCH}:${rel_path}" > "${output}"; then
-    rm -f "${output}"
-    echo "No cached pass-profile baseline at ${rel_path}" >&2
-    return 1
-  fi
-  echo "Loaded pass-profile baseline for ${sha}: ${rel_path}"
+  fetch_performance_baseline "pass-profile" "Pass-profile" "pass-profile" "$@"
 }
 
 fetch_ir_serialization_baseline() {
-  local sha="$1"
-  local output="$2"
-  local safe_profile
-  safe_profile="$(safe_path_part "${BACKEND_PROFILE}")"
-  local rel_path="ir-serialization/by-sha/${sha}/${safe_profile}/latest.json"
+  fetch_performance_baseline \
+    "ir-serialization" "IR serialization" "IR serialization" "$@"
+}
 
-  if git remote get-url gitee-results >/dev/null 2>&1; then
-    git remote set-url gitee-results "${GITEE_RESULTS_REPO_URL}"
-  else
-    git remote add gitee-results "${GITEE_RESULTS_REPO_URL}"
-  fi
-  if ! git fetch -q --depth=1 gitee-results \
-    "refs/heads/${GITEE_RESULTS_BRANCH}:refs/remotes/gitee-results/${GITEE_RESULTS_BRANCH}"; then
-    echo "IR serialization results branch is not available: ${GITEE_RESULTS_BRANCH}" >&2
-    return 1
-  fi
-  if ! git show "gitee-results/${GITEE_RESULTS_BRANCH}:${rel_path}" > "${output}"; then
-    rm -f "${output}"
-    echo "No cached IR serialization baseline at ${rel_path}" >&2
-    return 1
-  fi
-  echo "Loaded IR serialization baseline for ${sha}: ${rel_path}"
+read_comparison_status() {
+  "${PYTHON_BIN}" - "$1" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    print(json.load(stream)["status"])
+PY
 }
 
 run_compile_benchmark() {
@@ -586,8 +548,7 @@ run_compile_benchmark() {
       return 1
     fi
     local comparison_status=""
-    if ! comparison_status="$("${PYTHON_BIN}" -c \
-      'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["status"])' \
+    if ! comparison_status="$(read_comparison_status \
       "${DELIVERY_ARTIFACT_DIR}/compile-time-comparison.json")"; then
       COMPILE_TIME_STATUS="fail"
       return 1
@@ -662,8 +623,7 @@ run_pass_profile() {
       return 1
     fi
     local comparison_status=""
-    if ! comparison_status="$("${PYTHON_BIN}" -c \
-      'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["status"])' \
+    if ! comparison_status="$(read_comparison_status \
       "${DELIVERY_ARTIFACT_DIR}/pass-profile-comparison.json")"; then
       PASS_PROFILE_STATUS="fail"
       return 1
@@ -737,8 +697,7 @@ run_ir_serialization_benchmark() {
       return 1
     fi
     local comparison_status=""
-    if ! comparison_status="$("${PYTHON_BIN}" -c \
-      'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["status"])' \
+    if ! comparison_status="$(read_comparison_status \
       "${DELIVERY_ARTIFACT_DIR}/ir-serialization-comparison.json")"; then
       IR_SERIALIZATION_STATUS="fail"
       return 1

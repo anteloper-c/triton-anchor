@@ -2,6 +2,8 @@
 set -euo pipefail
 
 LOCAL_CI_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${LOCAL_CI_ROOT}/shared/path_utils.sh"
 
 CONFIG_FILE="${LOCAL_CI_CONFIG:-${LOCAL_CI_ROOT}/config.env}"
 if [[ -f "${CONFIG_FILE}" ]]; then
@@ -58,14 +60,7 @@ mkdir -p "${LOCAL_CI_STATE_DIR}"
 export GIT_TERMINAL_PROMPT=0
 if [[ -n "${GITEE_TOKEN}" ]]; then
   gitee_askpass="${LOCAL_CI_STATE_DIR}/gitee-askpass.sh"
-  cat > "${gitee_askpass}" <<'SH'
-#!/usr/bin/env sh
-case "$1" in
-  *Username*) printf '%s\n' "${GITEE_USERNAME}" ;;
-  *) printf '%s\n' "${GITEE_TOKEN}" ;;
-esac
-SH
-  chmod 700 "${gitee_askpass}"
+  write_gitee_askpass "${gitee_askpass}"
   export GIT_ASKPASS="${gitee_askpass}"
 fi
 
@@ -80,15 +75,6 @@ fi
 latest_sha() {
   local branch="$1"
   git ls-remote "${GITEE_REPO_URL}" "refs/heads/${branch}" | awk '{print $1}'
-}
-
-safe_path_part() {
-  local value="$1"
-  value="${value//\//_}"
-  value="$(printf '%s' "${value}" | tr -c 'A-Za-z0-9._-' '_')"
-  value="${value##_}"
-  value="${value%%_}"
-  printf '%s' "${value:-default}"
 }
 
 list_branches() {
@@ -216,6 +202,7 @@ stage_runner_scripts() {
     deterministic_ci/flaggems/flaggems_all_ops.tsv \
     deterministic_ci/flaggems/flaggems_pass_whitelist.tsv \
     deterministic_ci/performance/compile_benchmark.py \
+    deterministic_ci/performance/common.py \
     deterministic_ci/performance/compare_compile_time.py \
     deterministic_ci/performance/pass_profile_benchmark.py \
     deterministic_ci/performance/compare_pass_profile.py \
@@ -231,7 +218,9 @@ stage_runner_scripts() {
     codex_ai/prompts/codex_ai_failure.md \
     results/publish_gitee_result.py \
     results/bridge_gitee_to_github_status.py \
+    shared/finding_locations.py \
     shared/result_paths.py \
+    shared/path_utils.sh \
     shared/validate_task_metadata.py; do
     if [[ ! -f "${LOCAL_CI_SCRIPT_DIR}/${required_path}" ]]; then
       echo "LOCAL_CI_SCRIPT_DIR is not a complete Local CI root; missing ${required_path}" >&2

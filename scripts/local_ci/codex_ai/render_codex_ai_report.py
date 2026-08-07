@@ -12,10 +12,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+SHARED_SCRIPT_DIR = Path(__file__).resolve().parents[1] / "shared"
+if str(SHARED_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SHARED_SCRIPT_DIR))
+from finding_locations import (  # noqa: E402
+    MAX_FINDING_LINE_SPAN,
+    normalized_repository_path,
+    parse_finding_line_range as parse_shared_finding_line_range,
+)
+
 ROOT_KEYS = {
     "verdict",
     "summary",
     "merge_recommendation",
+    "change_request_assessment",
     "changed_files",
     "behavior_coverage",
     "findings",
@@ -23,6 +33,13 @@ ROOT_KEYS = {
     "residual_risks",
     "test_execution",
     "completion_marker",
+}
+CHANGE_REQUEST_ASSESSMENT_KEYS = {
+    "status",
+    "contributor_goal",
+    "expected_behavior",
+    "implementation_summary",
+    "evidence",
 }
 CHANGED_FILE_KEYS = {
     "path",
@@ -47,6 +64,7 @@ FINDING_KEYS = {
     "category",
     "file",
     "line",
+    "code_role",
     "title",
     "evidence",
     "impact",
@@ -84,6 +102,13 @@ COMMAND_STATUSES = {
     "infrastructure_failure",
     "not_executed",
 }
+CHANGE_REQUEST_ASSESSMENT_STATUSES = {
+    "implemented",
+    "partially_implemented",
+    "not_implemented",
+    "not_assessable",
+    "not_applicable",
+}
 CHANGE_TYPES = {"modified", "added", "deleted", "renamed"}
 CATEGORIES = {
     "algorithm",
@@ -120,6 +145,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-sha", required=True)
     parser.add_argument("--changed-file-count", required=True, type=int)
     parser.add_argument("--changed-files-manifest", required=True)
+    parser.add_argument("--repository-root", default="")
     parser.add_argument(
         "--constraint-status",
         choices=("pass", "warning", "not_applicable"),
@@ -182,11 +208,81 @@ def validate_changed_files_manifest(document: Any) -> list[dict[str, str]]:
     return manifest
 
 
+def parse_finding_line_range(value: Any, location: str) -> tuple[int, int]:
+    text = require_string(value, location)
+    line_range = parse_shared_finding_line_range(text)
+    if line_range is None:
+        raise ValueError(
+            f"{location} must be a positive line number or a line range of at most "
+            f"{MAX_FINDING_LINE_SPAN} lines"
+        )
+    return line_range
+
+
+def validate_finding_location(
+    finding_file: str,
+    line_range: tuple[int, int],
+    expected_files: list[dict[str, str]],
+    repository_root: Path | None,
+    location: str,
+) -> None:
+    relative_path = normalized_repository_path(finding_file)
+    if relative_path is None:
+        raise ValueError(
+            f"{location}.file must be a normalized repository-relative path"
+        )
+
+    change_types = {item["path"]: item["change_type"] for item in expected_files}
+    change_type = change_types.get(finding_file)
+    if change_type is None:
+        raise ValueError(f"{location}.file must be a changed file in the Git diff")
+    if change_type == "deleted":
+        raise ValueError(
+            f"{location}.file is deleted; anchor the finding to a retained changed call site"
+        )
+
+    if repository_root is None:
+        return
+    source_path = repository_root.joinpath(*relative_path.parts)
+    try:
+        resolved_source = source_path.resolve(strict=True)
+        resolved_source.relative_to(repository_root)
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"{location}.file is not a readable file in the review checkout"
+        ) from exc
+    if not resolved_source.is_file():
+        raise ValueError(
+            f"{location}.file is not a regular file in the review checkout"
+        )
+    try:
+        source_lines = resolved_source.read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines()
+    except OSError as exc:
+        raise ValueError(
+            f"{location}.file could not be read from the review checkout"
+        ) from exc
+    start, end = line_range
+    if end > len(source_lines):
+        raise ValueError(
+            f"{location}.line {start}-{end} is outside {finding_file} with "
+            f"{len(source_lines)} lines"
+        )
+    relevant_lines = source_lines[start - 1 : end]
+    if not any(line.strip() for line in relevant_lines):
+        raise ValueError(f"{location}.line points only to blank lines")
+
+
 def validate_report(
-    document: Any, expected_files: list[dict[str, str]]
+    document: Any,
+    expected_files: list[dict[str, str]],
+    repository_root: Path | None = None,
 ) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise ValueError("report root must be an object")
+    if repository_root is not None:
+        repository_root = repository_root.resolve()
     require_exact_keys(document, ROOT_KEYS, "report")
 
     verdict = require_string(document["verdict"], "verdict")
@@ -194,6 +290,26 @@ def validate_report(
         raise ValueError(f"unsupported verdict: {verdict}")
     require_chinese_string(document["summary"], "summary")
     require_chinese_string(document["merge_recommendation"], "merge_recommendation")
+    assessment = document["change_request_assessment"]
+    if not isinstance(assessment, dict):
+        raise ValueError("change_request_assessment must be an object")
+    require_exact_keys(
+        assessment,
+        CHANGE_REQUEST_ASSESSMENT_KEYS,
+        "change_request_assessment",
+    )
+    assessment_status = require_string(
+        assessment["status"], "change_request_assessment.status"
+    )
+    if assessment_status not in CHANGE_REQUEST_ASSESSMENT_STATUSES:
+        raise ValueError("change_request_assessment.status is invalid")
+    for key in {
+        "contributor_goal",
+        "expected_behavior",
+        "implementation_summary",
+        "evidence",
+    }:
+        require_chinese_string(assessment[key], f"change_request_assessment.{key}")
     if document["completion_marker"] != "CODEX_AI_CI_COMPLETE":
         raise ValueError("completion_marker is invalid")
 
@@ -271,9 +387,16 @@ def validate_report(
             raise ValueError(f"{location}.severity is invalid")
         if category not in CATEGORIES:
             raise ValueError(f"{location}.category is invalid")
-        for key in {"file", "line"}:
-            require_string(finding[key], f"{location}.{key}")
-        for key in {"title", "evidence", "impact", "fix_direction"}:
+        finding_file = require_string(finding["file"], f"{location}.file")
+        line_range = parse_finding_line_range(finding["line"], f"{location}.line")
+        validate_finding_location(
+            finding_file,
+            line_range,
+            expected_files,
+            repository_root,
+            location,
+        )
+        for key in {"code_role", "title", "evidence", "impact", "fix_direction"}:
             require_chinese_string(finding[key], f"{location}.{key}")
 
     tests = document["suggested_tests"]
@@ -491,6 +614,13 @@ CHANGE_TYPE_LABELS = {
     "deleted": "删除",
     "renamed": "重命名",
 }
+CHANGE_REQUEST_ASSESSMENT_LABELS = {
+    "implemented": "已实现",
+    "partially_implemented": "部分实现",
+    "not_implemented": "未实现",
+    "not_assessable": "无法判断",
+    "not_applicable": "不适用",
+}
 BEHAVIOR_LABELS = {
     "normal": "正常路径",
     "boundary": "边界路径",
@@ -527,7 +657,7 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
         "",
         "| 字段 | 值 |",
         "| --- | --- |",
-        "| 报告格式 | `triton-anchor-codex-ai-report/v2` |",
+        "| 报告格式 | `triton-anchor-codex-ai-report/v3` |",
         f"| 分支 | `{inline(args.branch)}` |",
         *base_rows,
         f"| 目标提交 | `{inline(args.target_sha)}` |",
@@ -541,6 +671,14 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
         "## 摘要",
         "",
         inline(document["summary"]),
+        "",
+        "## 贡献者目标与实现情况",
+        "",
+        f"- 判断：{CHANGE_REQUEST_ASSESSMENT_LABELS[document['change_request_assessment']['status']]}",
+        f"- 修改目标：{inline(document['change_request_assessment']['contributor_goal'])}",
+        f"- 预期行为：{inline(document['change_request_assessment']['expected_behavior'])}",
+        f"- 实现情况：{inline(document['change_request_assessment']['implementation_summary'])}",
+        f"- 判断依据：{inline(document['change_request_assessment']['evidence'])}",
         "",
         "## 合入建议",
         "",
@@ -594,6 +732,7 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
                 f"| 风险级别 | **{SEVERITY_LABELS[finding['severity']]}** |",
                 f"| 类别 | {CATEGORY_LABELS[finding['category']]} |",
                 f"| 位置 | `{location}` |",
+                f"| 这段代码负责 | {inline(finding['code_role'])} |",
                 f"| 证据 | {inline(finding['evidence'])} |",
                 f"| 影响 | {inline(finding['impact'])} |",
                 f"| 修复方向 | {inline(finding['fix_direction'])} |",
@@ -673,28 +812,35 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
         ],
     )
     test_execution = document["test_execution"]
+    assessment = document["change_request_assessment"]
     lines = [
-        "## Codex AI 审核摘要",
+        "## Codex AI 代码审查",
+        "",
+        "> 这是非阻塞的辅助审查；确定性 CI 结果仍是合入门禁。",
+        "",
+        "### 审查结论",
+        "",
+        f"- 结果：**{VERDICT_LABELS[document['verdict']]}**",
+        f"- 合入建议：{comment_inline(document['merge_recommendation'], 1_000)}",
         "",
         comment_inline(document["summary"]),
         "",
-        f"合入建议：**{comment_inline(document['merge_recommendation'], 1_000)}**",
+        "### 贡献者目标与实现情况",
         "",
-        "### 补充验证",
+        f"- 判断：**{CHANGE_REQUEST_ASSESSMENT_LABELS[assessment['status']]}**",
+        f"- 修改目标：{comment_inline(assessment['contributor_goal'], 1_500)}",
+        f"- 预期行为：{comment_inline(assessment['expected_behavior'], 1_500)}",
+        f"- 实现情况：{comment_inline(assessment['implementation_summary'], 2_000)}",
+        f"- 判断依据：{comment_inline(assessment['evidence'], 2_000)}",
         "",
-        f"测试状态：**{TEST_EXECUTION_STATUS_LABELS[test_execution['status']]}**。"
-        f"{comment_inline(test_execution['summary'], 1_500)}",
+        "### 需要处理的问题",
         "",
     ]
-    if args.constraint_status == "warning":
+    if not findings:
         lines.extend([
-            f"约束提醒：{comment_inline(args.constraint_reason, 1_500)}",
+            "基于当前代码差异和验证证据，没有发现需要处理的具体缺陷。",
             "",
         ])
-
-    lines.extend(["### 需要重点关注的问题", ""])
-    if not findings:
-        lines.extend(["未发现需要阻塞合并的关键问题。", ""])
     else:
         shown = findings[:5]
         for index, finding in enumerate(shown, start=1):
@@ -705,25 +851,36 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
                 f"{comment_inline(finding['line'])}"
             )
             lines.append(
-                f"{index}. **[{severity}][{category}] "
-                f"{comment_inline(finding['title'], 400)}**"
+                f"#### {index}. [{severity}] {comment_inline(finding['title'], 400)}"
             )
-            lines.append(f"   - 位置：`{location}`")
-            lines.append(
-                f"   - 影响：{comment_inline(finding['impact'], 1_000)}"
-            )
-            lines.append(
-                f"   - 建议：{comment_inline(finding['fix_direction'], 1_000)}"
-            )
+            lines.append("")
+            lines.append(f"- 问题类型：{category}")
+            lines.append(f"- 代码定位：`{location}`")
+            lines.append(f"- 这段代码负责：{comment_inline(finding['code_role'], 1_000)}")
+            lines.append(f"- 影响：{comment_inline(finding['impact'], 1_000)}")
+            lines.append(f"- 建议：{comment_inline(finding['fix_direction'], 1_000)}")
+            lines.append("")
         if len(findings) > len(shown):
             lines.extend([
-                "",
                 f"另有 {len(findings) - len(shown)} 个问题，请查看完整报告。",
+                "",
             ])
-        lines.append("")
 
     lines.extend([
-        "### 具体文件变更",
+        "### 验证情况",
+        "",
+        f"- 状态：**{TEST_EXECUTION_STATUS_LABELS[test_execution['status']]}**",
+        f"- 说明：{comment_inline(test_execution['summary'], 1_500)}",
+        "",
+    ])
+    if args.constraint_status == "warning":
+        lines.extend([
+            f"- 运行约束提醒：{comment_inline(args.constraint_reason, 1_500)}",
+            "",
+        ])
+
+    lines.extend([
+        "### 变更文件",
         "",
         "<details>",
         "<summary>展开文件级变更表</summary>",
@@ -770,8 +927,15 @@ def main() -> int:
                 "changed file count does not match manifest; "
                 f"count={args.changed_file_count}, manifest={len(expected_files)}"
             )
+        repository_root = None
+        if args.repository_root:
+            repository_root = Path(args.repository_root).resolve()
+            if not repository_root.is_dir():
+                raise ValueError("repository_root must be an existing directory")
         document = validate_report(
-            json.loads(input_path.read_text(encoding="utf-8")), expected_files
+            json.loads(input_path.read_text(encoding="utf-8")),
+            expected_files,
+            repository_root,
         )
         require_chinese_string(args.constraint_reason, "constraint_reason")
         rendered = render_report(document, args)

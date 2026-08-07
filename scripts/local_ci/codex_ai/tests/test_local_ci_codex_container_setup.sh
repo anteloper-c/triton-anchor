@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+codex_ai_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="$(cd "${codex_ai_dir}/../../.." && pwd)"
 setup_script="${repo_root}/scripts/local_ci/codex_ai/setup_codex_ai_container.sh"
 test_root="$(mktemp -d /tmp/local-ci-codex-container-setup.XXXXXX)"
 trap 'rm -rf -- "${test_root}"' EXIT

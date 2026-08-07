@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+codex_ai_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="$(cd "${codex_ai_dir}/../../.." && pwd)"
 renderer="${repo_root}/scripts/local_ci/codex_ai/render_codex_ai_report.py"
 test_root="$(mktemp -d /tmp/local-ci-codex-report-test.XXXXXX)"
 trap 'rm -rf -- "${test_root}"' EXIT
@@ -20,6 +21,13 @@ cat > "${valid_json}" <<'JSON'
   "verdict": "WARNING",
   "summary": "发现一个可能引起行为回归的中风险问题。",
   "merge_recommendation": "建议修复缓存版本校验问题并重新运行定向测试后合入。",
+  "change_request_assessment": {
+    "status": "partially_implemented",
+    "contributor_goal": "贡献者希望修复缓存命中后的状态读取逻辑。",
+    "expected_behavior": "版本变化后旧缓存应失效，调用方应读取当前状态。",
+    "implementation_summary": "正常缓存命中已调整，但版本失配路径仍未完整处理。",
+    "evidence": "代码差异缺少版本校验，定向测试复现了过期状态。"
+  },
   "changed_files": [
     {
       "path": "python/example.py",
@@ -63,6 +71,7 @@ cat > "${valid_json}" <<'JSON'
       "category": "regression",
       "file": "python/example.py",
       "line": "17",
+      "code_role": "该条件决定缓存命中后是否继续复用旧状态。",
       "title": "缓存命中后返回了过期状态",
       "evidence": "新分支直接复用缓存值，但没有核对当前版本号。",
       "impact": "调用方可能读取到上一次任务遗留的状态。",
@@ -118,25 +127,31 @@ grep -Fq "# Codex AI CI 报告" "${report_md}"
 grep -Fq "## 元数据" "${report_md}"
 grep -Fq "## 结论" "${report_md}"
 grep -Fq "**警告**" "${report_md}"
-grep -Fq 'triton-anchor-codex-ai-report/v2' "${report_md}"
+grep -Fq 'triton-anchor-codex-ai-report/v3' "${report_md}"
+grep -Fq "## 贡献者目标与实现情况" "${report_md}"
+grep -Fq "判断：部分实现" "${report_md}"
 grep -Fq "## 合入建议" "${report_md}"
 grep -Fq "## 具体文件变更" "${report_md}"
 grep -Fq "## 行为覆盖" "${report_md}"
 grep -Fq "## 关键问题" "${report_md}"
 grep -Fq "缓存命中后返回了过期状态" "${report_md}"
+grep -Fq "这段代码负责" "${report_md}"
 grep -Fq "## 建议测试" "${report_md}"
 grep -Fq "## 测试执行" "${report_md}"
 grep -Fq "## 测试执行约束" "${report_md}"
 grep -Fq "状态：警告" "${report_md}"
 grep -Fq "测试命令数量超过轻量约束" "${report_md}"
 grep -Fq "## 剩余风险" "${report_md}"
-grep -Fq "## Codex AI 审核摘要" "${comment_md}"
-grep -Fq "合入建议：**" "${comment_md}"
-grep -Fq "### 补充验证" "${comment_md}"
-grep -Fq "### 需要重点关注的问题" "${comment_md}"
-grep -Fq "### 具体文件变更" "${comment_md}"
+grep -Fq "## Codex AI 代码审查" "${comment_md}"
+grep -Fq "非阻塞的辅助审查" "${comment_md}"
+grep -Fq "### 贡献者目标与实现情况" "${comment_md}"
+grep -Fq "修改目标：贡献者希望修复缓存命中后的状态读取逻辑" "${comment_md}"
+grep -Fq "### 验证情况" "${comment_md}"
+grep -Fq "### 需要处理的问题" "${comment_md}"
+grep -Fq "### 变更文件" "${comment_md}"
+grep -Fq "这段代码负责：该条件决定缓存命中后是否继续复用旧状态" "${comment_md}"
 grep -Fq "<details>" "${comment_md}"
-grep -Fq "约束提醒：" "${comment_md}"
+grep -Fq "运行约束提醒：" "${comment_md}"
 grep -Fq "测试命令数量超过轻量约束" "${comment_md}"
 if grep -Fq "新分支直接复用缓存值" "${comment_md}"; then
   echo "PR 评论不应包含 finding 的完整证据" >&2
@@ -232,6 +247,20 @@ if python3 "${renderer}" \
   --changed-files-manifest "${manifest_json}" \
   >/dev/null 2>&1; then
   echo "渲染器接受了缺少集成路径的 behavior_coverage" >&2
+  exit 1
+fi
+
+invalid_assessment="${test_root}/invalid-assessment.json"
+sed 's/"status": "partially_implemented"/"status": "unknown"/' \
+  "${valid_json}" > "${invalid_assessment}"
+if python3 "${renderer}" \
+  --input "${invalid_assessment}" \
+  --output "${test_root}/invalid-assessment.md" \
+  --comment-output "${test_root}/invalid-assessment-comment.md" \
+  --branch test --base-sha a --target-sha b --changed-file-count 1 \
+  --changed-files-manifest "${manifest_json}" \
+  >/dev/null 2>&1; then
+  echo "渲染器接受了未知的贡献目标实现状态" >&2
   exit 1
 fi
 

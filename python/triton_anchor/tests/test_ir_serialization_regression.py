@@ -4,12 +4,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
-LOCAL_CI_ROOT = ROOT / "scripts" / "local_ci"
-PERFORMANCE_ROOT = LOCAL_CI_ROOT / "deterministic_ci" / "performance"
-RESULTS_ROOT = LOCAL_CI_ROOT / "results"
 
 
-def load_script(path):
+def load_script(relative_path):
+    path = ROOT / "scripts" / "local_ci" / relative_path
     spec = importlib.util.spec_from_file_location(path.stem, path)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
@@ -17,9 +15,9 @@ def load_script(path):
     return module
 
 
-COMPARE = load_script(PERFORMANCE_ROOT / "compare_ir_serialization.py")
-BENCHMARK = load_script(PERFORMANCE_ROOT / "ir_serialization_benchmark.py")
-PUBLISH = load_script(RESULTS_ROOT / "publish_gitee_result.py")
+COMPARE = load_script("deterministic_ci/performance/compare_ir_serialization.py")
+BENCHMARK = load_script("deterministic_ci/performance/ir_serialization_benchmark.py")
+PUBLISH = load_script("results/publish_gitee_result.py")
 
 
 def benchmark_document(values, *, generated_at="2026-07-20T00:00:00Z"):

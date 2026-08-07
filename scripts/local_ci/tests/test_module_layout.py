@@ -27,7 +27,10 @@ CANONICAL_PATHS = (
     "results/publish_gitee_result.py",
     "results/bridge_gitee_to_github_status.py",
     "shared/result_paths.py",
+    "shared/finding_locations.py",
+    "shared/path_utils.sh",
     "shared/validate_task_metadata.py",
+    "deterministic_ci/performance/common.py",
 )
 
 
@@ -47,3 +50,16 @@ def test_local_ci_root_has_only_the_stable_poller_entrypoint():
 
 def test_obsolete_poller_module_is_removed():
     assert not (LOCAL_CI_ROOT / "orchestration" / "poll_gitee_tasks.sh").exists()
+
+
+def test_shell_runners_use_the_shared_path_normalizer():
+    expected_sources = {
+        "poll_gitee_and_run.sh": 'source "${LOCAL_CI_ROOT}/shared/path_utils.sh"',
+        "deterministic_ci/run_deterministic_ci.sh": (
+            'source "${RUNNER_ROOT}/shared/path_utils.sh"'
+        ),
+    }
+    for relative_path, expected_source in expected_sources.items():
+        text = (LOCAL_CI_ROOT / relative_path).read_text(encoding="utf-8")
+        assert expected_source in text
+        assert "safe_path_part() {" not in text

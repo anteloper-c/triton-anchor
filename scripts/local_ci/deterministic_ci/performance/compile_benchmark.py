@@ -16,12 +16,10 @@ that Triton in-memory JIT caches cannot make a later "cold" run warm.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
 import platform
 import shutil
-import statistics
 import subprocess
 import sys
 import tempfile
@@ -30,20 +28,15 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
-
-DEFAULT_KERNELS = ("add", "mm", "softmax", "layernorm")
-DEFAULT_SHAPES = {
-    "add": {"shape": [1024, 1024], "dtype": "float32"},
-    "mm": {"m": 256, "n": 256, "k": 256, "dtype": "float32"},
-    "softmax": {"shape": [128, 1024], "dim": -1, "dtype": "float32"},
-    "layernorm": {
-        "shape": [128, 1024],
-        "normalized_shape": [1024],
-        "dtype": "float32",
-        "eps": 1.0e-5,
-    },
-}
-
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from common import (  # noqa: E402
+    DEFAULT_KERNELS,
+    DEFAULT_SHAPES,
+    summarize,
+    write_projected_csv,
+)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -302,26 +295,6 @@ def run_worker(args: argparse.Namespace) -> int:
     return 0 if result["status"] == "pass" else 1
 
 
-def summarize(values: list[float]) -> dict[str, float | None]:
-    if not values:
-        return {
-            "count": 0,
-            "mean_ms": None,
-            "median_ms": None,
-            "stdev_ms": None,
-            "min_ms": None,
-            "max_ms": None,
-        }
-    return {
-        "count": len(values),
-        "mean_ms": statistics.mean(values),
-        "median_ms": statistics.median(values),
-        "stdev_ms": statistics.stdev(values) if len(values) > 1 else 0.0,
-        "min_ms": min(values),
-        "max_ms": max(values),
-    }
-
-
 def run_child(args: argparse.Namespace, kernel: str, phase: str, run_index: int, work_root: Path) -> dict[str, Any]:
     cache_dir = work_root / "cache" / kernel / f"{phase}_{run_index}"
     dump_dir = work_root / "dump" / kernel / f"{phase}_{run_index}"
@@ -412,26 +385,17 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "status",
         "spec",
     ]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(
-                {
-                    "backend": row.get("backend"),
-                    "vendor": row.get("vendor"),
-                    "kernel": row.get("kernel"),
-                    "run_id": row.get("run_id"),
-                    "cold_ms": row.get("cold_ms"),
-                    "warm_ms": row.get("warm_ms"),
-                    "compile_est_ms": row.get("compile_est_ms"),
-                    "correctness_ok": row.get("correctness_ok"),
-                    "max_abs_diff": row.get("max_abs_diff"),
-                    "status": row.get("status"),
-                    "spec": json.dumps(row.get("spec", {}), sort_keys=True),
-                }
-            )
+    write_projected_csv(
+        path,
+        fieldnames,
+        (
+            {
+                **row,
+                "spec": json.dumps(row.get("spec", {}), sort_keys=True),
+            }
+            for row in rows
+        ),
+    )
 
 
 def run_parent(args: argparse.Namespace) -> int:

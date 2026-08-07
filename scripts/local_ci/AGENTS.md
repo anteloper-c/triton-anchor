@@ -1,8 +1,4 @@
 # triton-anchor Local CI 工程记忆
-开始分析后、执行其他命令之前，必须执行一次：
-
-```bash
-printf '%s\n' 'AGENTS_MD_LOADED_20260806'
 
 > 本文件是 `scripts/local_ci` 的项目级长期知识库。它服务于 Local CI、Codex AI CI、后端适配和结果发布链路的后续维护，不是普通 README。
 >
@@ -391,13 +387,14 @@ Codex AI CI 是非阻塞的审查和 targeted diagnosis 辅助层：
 | `codex_ai/setup_codex_ai_container.sh` | 部署前 prerequisite check；只检查，不创建长期 Docker resource。 |
 | `shared/validate_task_metadata.py` | 校验 PR metadata schema、task ref、target SHA、PR number、UTC timestamp 和文本长度，输出 canonical JSON。 |
 | `orchestration/fetch_task_metadata.sh` | 从 `ci/meta/...` 获取 `task-metadata.json`，交给 validator。 |
-| `codex_ai/codex_ai_report.schema.json` | Codex 结构化 JSON schema，报告格式为 `triton-anchor-codex-ai-report/v2`。 |
+| `codex_ai/codex_ai_report.schema.json` | Codex 结构化 JSON schema，报告格式为 `triton-anchor-codex-ai-report/v3`，包含贡献者目标与实现情况评估。 |
 | `codex_ai/prompts/codex_ai_success.md` | Local CI 成功时的完整审查 prompt，要求覆盖 diff 并按约束生成/执行 targeted validation。 |
 | `codex_ai/prompts/codex_ai_failure.md` | Local CI 失败时的诊断 prompt，要求区分产品代码可稳定复现的失败、非确定性失败和基础设施失败。 |
 | `codex_ai/render_codex_ai_report.py` | 校验固定 JSON 结构、changed-files manifest、中文说明、verdict 规则并渲染完整 Markdown 和 PR comment。 |
-| `tests/test_local_ci_codex_ai.sh` | renderer 的成功、warning、中文、manifest 和字段校验测试。 |
-| `tests/test_local_ci_codex_container.sh` | fake Docker 下的 Codex 容器、PR merge-base、metadata、timeout、failure fallback、产物和凭据 hash 测试。 |
-| `tests/test_local_ci_codex_container_setup.sh` | setup prerequisite 的 fake Docker 测试。 |
+| `codex_ai/tests/test_local_ci_codex_ai.sh` | renderer 的成功、warning、中文、manifest 和字段校验测试。 |
+| `codex_ai/tests/test_local_ci_codex_container.sh` | fake Docker 下的 Codex 容器、PR merge-base、metadata、timeout、failure fallback、产物和凭据 hash 测试。 |
+| `codex_ai/tests/test_local_ci_codex_container_setup.sh` | setup prerequisite 的 fake Docker 测试。 |
+| `results/tests/test_local_ci_bridge.py` | bridge 状态、PR 评论和结果解析单元测试。 |
 
 ### 6.3 Exact SHA 与差异范围
 
@@ -419,9 +416,10 @@ Codex checkout 的行为：
 
 - `verdict`：`PASS`/`WARNING`/`FAIL`；
 - `summary`、`merge_recommendation`；
+- `change_request_assessment`：贡献者目标、预期行为、实际实现情况、证据和一致性状态；
 - 完整且不重复的 `changed_files`；
 - `normal`、`boundary`、`error`、`compatibility`、`integration` 五类 `behavior_coverage`；
-- 可验证的 `findings`，ID 为 `AI-001` 形式；
+- 可验证的 `findings`，ID 为 `AI-001` 形式；每项包含未删除变更文件、单行或最多 12 行的连续范围、`code_role`、证据、影响和修复方向；
 - `suggested_tests`，ID 为 `TEST-001` 形式；
 - `residual_risks`；
 - `test_execution`，包含 status、生成测试文件和命令证据；
@@ -435,6 +433,8 @@ Codex checkout 的行为：
 - 没有 finding，且测试状态为通过或合理的未执行 -> `PASS`；
 - 说明性字段必须包含中文文本；
 - renderer 会拒绝 verdict 与 findings/测试状态不一致、命令状态与退出码不一致、manifest 不一致、字段缺失、中文缺失或额外字段；
+- renderer 使用 exact-SHA checkout 校验 finding 文件和行范围；finding 必须锚定本次 diff 中保留的文件，不能指向空行、越界行、已删除文件或未变更的历史代码；
+- bridge 读取 `codex-ai-report.json` 中通过基本安全校验的 finding 定位，生成固定到审查 SHA 的 GitHub 代码链接；fork PR 优先使用 head repository；
 - Local CI 失败诊断模式下，基础设施失败不能包装成产品 finding。
 
 #### 6.4.1 Prompt 模板
@@ -453,15 +453,15 @@ Codex checkout 的行为：
 `scripts/local_ci/codex_ai/tests/test_codex_prompt_templates.py` 是 prompt 配套的纯 Python 静态契约测试；`test_codex_report_contract.py` 检查 renderer 的 verdict、整体测试状态、命令状态和退出码矩阵。它们不替代完整 Codex 容器集成 harness。
 
 - 解析 success/failure prompt 中的全部 `${...}` 占位符，并从 runner 的实际渲染调用中解析传入变量，确保 prompt 不使用 runner 未提供的变量；
-- 确保两个 prompt 仍包含 `triton-anchor-codex-ai-report/v2`、`CODEX_AI_CI_COMPLETE`、`changed_files` 和 `behavior_coverage` 等后续输出契约关键字。
+- 确保两个 prompt 仍包含 `triton-anchor-codex-ai-report/v3`、`CODEX_AI_CI_COMPLETE`、`change_request_assessment`、`changed_files` 和 `behavior_coverage` 等后续输出契约关键字。
 
 最小完整验证命令为：
 
 ```bash
-PYTHONPATH=python python -m pytest scripts/local_ci/codex_ai/tests scripts/local_ci/tests/test_module_layout.py -v --tb=short
+PYTHONPATH=python python -m pytest scripts/local_ci/codex_ai/tests scripts/local_ci/tests scripts/local_ci/results/tests -v --tb=short
 ```
 
-2026-08-06 在当前工作区使用 Python 3.13.7 实际结果为 `18 passed in 0.07s`。这些测试依赖 pytest，但不需要 Docker、LLVM、后端或 Codex 凭据。
+2026-08-06 在当前工作区使用 Python 3.13.7 实际结果为 `28 passed in 0.22s`。这些测试依赖 pytest，但不需要 Docker、LLVM、后端或 Codex 凭据。
 
 ### 6.5 测试预算
 
@@ -580,7 +580,7 @@ bridge 从 Gitee API 读取：
 - `latest.txt`；
 - `delivery-summary.txt`；
 - `result.json`；
-- Codex summary/comment。
+- Codex summary、结构化报告和 comment。
 
 然后：
 
@@ -727,10 +727,10 @@ python3 tests/test_smoke.py
 根目录 Local CI/Codex 测试：
 
 ```bash
-bash tests/test_local_ci_codex_ai.sh
-bash tests/test_local_ci_codex_container_setup.sh
-bash tests/test_local_ci_codex_container.sh
-python -m unittest tests/test_local_ci_bridge.py -v
+bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_ai.sh
+bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_container_setup.sh
+bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_container.sh
+python -m unittest scripts/local_ci/results/tests/test_local_ci_bridge.py -v
 ```
 
 脚本预检：
@@ -908,7 +908,7 @@ CODEX_AI_CI_HOME=/path/to/codex-ai \
 
 - 模板默认 `FRONTEND_BUILD_MODE=incremental`，会保留 frontend `build/`；增量 checkout 清理时显式排除 `/build/`。
 - backend 和 FlagGems 工作树没有统一的 clean/reset/dirty-state fingerprint；FlagGems 可能只 checkout 指定 ref。结果 summary 记录 commit，但不完整记录 dirty state。
-- `safe_path_part()` 和 shell 中的同名实现是 lossy normalization，可能造成 branch、run 或 profile 目录碰撞。
+- `shared/result_paths.py::safe_path_part()` 与 `shared/path_utils.sh::safe_path_part()` 是有历史兼容约束的 lossy normalization，可能造成 branch、run 或 profile 目录碰撞；两个 shell runner 共用后者，但 Python 和 shell 实现仍需保持跨语言结果一致。
 - Publisher 的正常 allowlist 漏掉部分 build、backend、FlagGems 和 Local CI 原始日志，可能导致远端报告链接失效。
 - publisher 没有专门的 non-fast-forward retry/并发合并策略；多个独立 publisher 操作同一结果分支时存在冲突风险。
 - 没有明确的 retention policy；host runs、snapshot image、Codex workspace、cache 和 Gitee 结果会持续增长。
@@ -976,13 +976,13 @@ CODEX_AI_CI_HOME=/path/to/codex-ai \
 | --- | --- |
 | `shared/result_paths.py`、task ref、SHA、run ID | `python -m unittest python/triton_anchor/tests/test_dashboard_sync.py -v`；相关 publisher/bridge 单测；手工检查 collision、URL encode 和历史路径。 |
 | `shared/validate_task_metadata.py`、metadata fetch/dispatch | `python -m py_compile`；构造有效、错 SHA、错 ref、超长、NUL、非 UTC 输入测试；Codex container harness 的 PR metadata 场景。 |
-| Codex schema、prompt、renderer | `PYTHONPATH=python python -m pytest scripts/local_ci/codex_ai/tests/test_codex_prompt_templates.py -v --tb=short`；`bash tests/test_local_ci_codex_ai.sh`；renderer 直接校验完整 schema、中文、manifest、verdict 和 fallback。 |
-| `codex_ai/run_codex_ai_ci.sh`、checkout、credential、setup container | `bash tests/test_local_ci_codex_container_setup.sh` 和 `bash tests/test_local_ci_codex_container.sh`；重点检查 exact SHA、merge-base、timeout、cleanup、workspace、token 不泄露和凭据完整性。 |
+| Codex schema、prompt、renderer | `PYTHONPATH=python python -m pytest scripts/local_ci/codex_ai/tests -v --tb=short`；`bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_ai.sh`；renderer 直接校验完整 schema、中文、manifest、verdict 和 fallback。 |
+| `codex_ai/run_codex_ai_ci.sh`、checkout、credential、setup container | `bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_container_setup.sh` 和 `bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_container.sh`；重点检查 exact SHA、merge-base、timeout、cleanup、workspace、token 不泄露和凭据完整性。 |
 | `poll_gitee_and_run.sh`、`orchestration/run_deterministic_ci_in_container.sh` | `bash -n`；fake/local relay 或受控 `--once`；验证 lock、last-processed、snapshot、publish 失败重试和 token forwarding。 |
 | `deterministic_ci/run_deterministic_ci.sh`、backend profile | `bash -n`；完整容器中 frontend build/install/smoke、backend discovery/rebuild/smoke/JIT；不能只跑纯 Python。 |
 | `deterministic_ci/flaggems/select_flaggems_tests.py`、`deterministic_ci/flaggems/batch_test_flaggems.py`、TSV | 选择器单测/命令检查；sample/full/single、marker alias、空列表、timeout、cache clear、progress extension；有 FlagGems/后端时运行代表性 operator。 |
 | compile/pass/IR benchmark 或 compare | 对应 `test_compile_time_regression.py`、`test_pass_profile_regression.py`、`test_ir_serialization_regression.py`；确认缺基线、空 event、错误 schema 和 slowdown 语义。 |
-| publisher、bridge、receiver、dashboard 协议 | `python -m unittest tests/test_local_ci_bridge.py -v`；dashboard contract/sync tests；用 fake results 验证 pending/success/failure/warning、PR comment 幂等和 URL。 |
+| publisher、bridge、receiver、dashboard 协议 | `python -m unittest scripts/local_ci/results/tests/test_local_ci_bridge.py -v`；dashboard contract/sync tests；用 fake results 验证 pending/success/failure/warning、PR comment 幂等和 URL。 |
 | Python API、Adapter、AnchorIR、pipeline | `PYTHONPATH=python pytest python/triton_anchor/tests/ -v`；更新 API contract 时运行 compatibility checker；完整 C++ 构建和 `python3 tests/test_smoke.py`。 |
 | C++/MLIR/dialect/pass/CMake | Docker/LLVM/Ninja 完整构建；`tests/test_smoke.py`；代表性 Triton kernel、backend smoke/JIT、FlagGems 和必要性能基线。 |
 | workflow/security scanner | YAML 静态检查、对应 `bash -n`/`py_compile`、GitHub Actions dry-run 或受控分支验证；安全相关改动要重新检查 token 权限、PR SHA race、候选代码执行面和 artifact 内容。 |

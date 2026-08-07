@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import argparse
-import csv
-import json
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from common import DEFAULT_KERNELS, load_json, write_projected_csv  # noqa: E402
 
-DEFAULT_KERNELS = ("add", "mm", "softmax", "layernorm")
+
 DEFAULT_METRICS = ("serialize", "deserialize")
 
 
@@ -29,13 +32,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-csv", required=True)
     parser.add_argument("--output-markdown", required=True)
     return parser.parse_args()
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8-sig"))
-    if not isinstance(value, dict):
-        raise ValueError(f"Expected a JSON object in {path}")
-    return value
 
 
 def metric_median(document: dict[str, Any], kernel: str, metric: str) -> float:
@@ -155,11 +151,7 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "status",
         "exceeds_threshold",
     ]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows({key: row.get(key) for key in fieldnames} for row in rows)
+    write_projected_csv(path, fieldnames, rows)
 
 
 def write_markdown(path: Path, result: dict[str, Any]) -> None:

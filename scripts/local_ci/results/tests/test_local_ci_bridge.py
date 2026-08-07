@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "local_ci" / "results"))
 
 import bridge_gitee_to_github_status as bridge
@@ -40,15 +40,20 @@ class CodexCommentTests(unittest.TestCase):
                 "生成测试和执行命令均在限制内。",
                 "",
                 (
-                    "## Codex AI 审核摘要\n\n"
-                    "发现一个问题。\n\n"
-                    "合入建议：**修复后合入。**\n\n"
-                    "### 补充验证\n\n定向测试稳定复现。\n\n"
-                    "### 需要重点关注的问题\n\n"
-                    "1. **[中风险] 示例问题**\n\n"
-                    "### 具体文件变更\n\n<details></details>"
+                    "## Codex AI 代码审查\n\n"
+                    "> 这是非阻塞的辅助审查；确定性 CI 结果仍是合入门禁。\n\n"
+                    "### 审查结论\n\n发现一个问题。\n\n"
+                    "### 贡献者目标与实现情况\n\n实现不完整。\n\n"
+                    "### 需要处理的问题\n\n#### 1. [中风险] 示例问题\n\n"
+                    "### 验证情况\n\n定向测试稳定复现。\n\n"
+                    "### 变更文件\n\n<details></details>"
                 ),
                 "https://gitee.example/results/run/codex-ai-report.md",
+                (
+                    bridge.FindingLocation(
+                        "AI-001", "python/example.py", "17-18"
+                    ),
+                ),
             ),
         )
 
@@ -59,12 +64,43 @@ class CodexCommentTests(unittest.TestCase):
     def test_comment_body_contains_summary_link_and_stable_marker(self) -> None:
         body = bridge.codex_pr_comment_body(self.target, self.result)
         self.assertIn("发现一个问题。", body)
-        self.assertIn("## Codex AI 审核摘要", body)
-        self.assertIn("### 具体文件变更", body)
-        self.assertIn("- 提交：", body)
+        self.assertIn("## Codex AI 代码审查", body)
+        self.assertIn("### 贡献者目标与实现情况", body)
+        self.assertIn("### 变更文件", body)
+        self.assertIn("- 审查提交：", body)
         self.assertIn("`aaaaaaaaaaaa`", body)
         self.assertIn(self.result.codex_ai.report_url, body)
         self.assertIn(bridge.CODEX_COMMENT_MARKER, body)
+
+    def test_comment_body_links_findings_to_the_reviewed_commit(self) -> None:
+        with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}):
+            body = bridge.codex_pr_comment_body(self.target, self.result)
+
+        self.assertIn("### 可点击代码定位", body)
+        self.assertIn("提交者修复和审核者核对代码功能", body)
+        self.assertIn("AI-001", body)
+        self.assertLess(
+            body.index("### 可点击代码定位"),
+            body.index("### 验证情况"),
+        )
+        self.assertIn(
+            "https://github.com/owner/repo/blob/"
+            f"{self.target.sha}/python/example.py#L17-L18",
+            body,
+        )
+
+    def test_fork_pr_location_uses_head_repository(self) -> None:
+        fork_target = bridge.Target(
+            self.target.source_branch,
+            self.target.task_ref,
+            self.target.sha,
+            self.target.label,
+            "fork-owner/fork-repo",
+        )
+        with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}):
+            body = bridge.codex_pr_comment_body(fork_target, self.result)
+
+        self.assertIn("https://github.com/fork-owner/fork-repo/blob/", body)
 
     @mock.patch.object(bridge, "request_json")
     @mock.patch.object(bridge, "get_github_json", return_value=[])
@@ -196,6 +232,10 @@ class CodexCommentTests(unittest.TestCase):
         self.assertEqual(payload["test_status"], "stable_failure")
         self.assertIn("发现一个问题", payload["comment_markdown"])
         self.assertEqual(
+            payload["finding_locations"],
+            [{"id": "AI-001", "file": "python/example.py", "line": "17-18"}],
+        )
+        self.assertEqual(
             payload["report_url"],
             self.result.codex_ai.report_url,
         )
@@ -262,11 +302,23 @@ class CodexCommentTests(unittest.TestCase):
                 )
             if path.endswith("/codex-ai-comment.md"):
                 return (
-                    "## Codex AI 审核摘要\n\n发现一个问题。\n\n"
-                    "合入建议：**修复后合入。**\n\n"
-                    "### 补充验证\n\n定向测试稳定复现。\n\n"
-                    "### 需要重点关注的问题\n\n1. 示例问题。\n\n"
-                    "### 具体文件变更\n\n<details></details>\n"
+                    "## Codex AI 代码审查\n\n发现一个问题。\n\n"
+                    "### 贡献者目标与实现情况\n\n实现不完整。\n\n"
+                    "### 需要处理的问题\n\n1. 示例问题。\n\n"
+                    "### 验证情况\n\n定向测试稳定复现。\n\n"
+                    "### 变更文件\n\n<details></details>\n"
+                )
+            if path.endswith("/codex-ai-report.json"):
+                return json.dumps(
+                    {
+                        "findings": [
+                            {
+                                "id": "AI-001",
+                                "file": "python/example.py",
+                                "line": "17",
+                            }
+                        ]
+                    }
                 )
             return None
 
@@ -287,6 +339,10 @@ class CodexCommentTests(unittest.TestCase):
         self.assertEqual(result.codex_ai.constraint_status, "warning")
         self.assertIn("/blob/local-ci-results/", result.codex_ai.report_url)
         self.assertTrue(result.codex_ai.report_url.endswith("codex-ai-report.md"))
+        self.assertEqual(
+            result.codex_ai.finding_locations,
+            (bridge.FindingLocation("AI-001", "python/example.py", "17"),),
+        )
 
 
 if __name__ == "__main__":
