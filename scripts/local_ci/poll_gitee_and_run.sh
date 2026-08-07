@@ -129,6 +129,8 @@ run_codex_ai_ci_for_run() {
   local branch="$5"
   local local_ci_status="$6"
   local task_metadata_file="$7"
+  local head_sha="$8"
+  local head_ref="$9"
 
   CODEX_BIN="${CODEX_BIN}" \
     CODEX_AI_CI_HOME="${CODEX_AI_CI_HOME}" \
@@ -152,7 +154,7 @@ run_codex_ai_ci_for_run() {
     BACKEND_ENVSETUP_ARGS="${BACKEND_ENVSETUP_ARGS:-}" \
     bash "${LOCAL_CI_RUNNER_DIR}/codex_ai/run_codex_ai_ci.sh" \
     "${GITEE_REPO_URL}" "${run_dir}" "${sha}" "${base_sha}" "${base_ref}" \
-    "${branch}" "${local_ci_status}" "${task_metadata_file}"
+    "${branch}" "${local_ci_status}" "${task_metadata_file}" "${head_sha}" "${head_ref}"
 }
 
 publish_result() {
@@ -306,6 +308,25 @@ run_once() {
   export LOCAL_CI_RUNNER_DIR
   echo "Runner script snapshot: ${LOCAL_CI_RUNNER_DIR}"
 
+  local base_branch=""
+  local base_sha=""
+  local head_branch=""
+  local head_sha=""
+  if [[ "${branch}" =~ ^ci/pr-([0-9]+)/(.+)$ ]]; then
+    base_branch="ci/base/pr-${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+    head_branch="ci/head/pr-${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+    base_sha="$(latest_sha "${base_branch}")"
+    head_sha="$(latest_sha "${head_branch}")"
+    if [[ -z "${base_sha}" ]]; then
+      echo "No exact PR base SHA found for ${branch}; refusing to run head-only Local CI." >&2
+      return 1
+    fi
+    if [[ -z "${head_sha}" ]]; then
+      echo "No exact PR head SHA found for ${branch}; refusing to run PR Local CI without base/head identity." >&2
+      return 1
+    fi
+  fi
+
   local task_metadata_file=""
   local task_metadata_ref=""
   if task_metadata_ref="$(metadata_ref_for_task "${branch}")"; then
@@ -314,7 +335,7 @@ run_once() {
     if task_metadata_message="$(
       bash "${LOCAL_CI_RUNNER_DIR}/orchestration/fetch_task_metadata.sh" \
         "${GITEE_REPO_URL}" "${task_metadata_ref}" "${branch}" "${sha}" \
-        "${task_metadata_file}" 2>&1
+        "${task_metadata_file}" "${base_sha}" "${head_sha}" 2>&1
     )"; then
       echo "Fetched PR task metadata from ${task_metadata_ref}."
       if [[ -n "${task_metadata_message}" ]]; then
@@ -334,13 +355,9 @@ run_once() {
   flaggems_test_mode="$(flaggems_mode_for_branch "${branch}")"
   echo "FlagGems test mode: ${flaggems_test_mode}"
 
-  local base_branch=""
-  local base_sha=""
-  if [[ "${branch}" =~ ^ci/pr-([0-9]+)/(.+)$ ]]; then
-    base_branch="ci/base/pr-${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
-    base_sha="$(latest_sha "${base_branch}")"
+  if [[ "${branch}" =~ ^ci/pr-[0-9]+/.+$ ]]; then
     if [[ -z "${base_sha}" ]]; then
-      echo "No exact PR base SHA found for ${branch}; performance and Codex comparisons are unavailable." >&2
+      echo "Skipping PR performance baseline because exact base SHA is unavailable." >&2
     else
       local missing_baseline=0
       if [[ "${RUN_COMPILE_BENCHMARK}" == "true" ]]; then
@@ -429,7 +446,7 @@ run_once() {
     set +e
     run_codex_ai_ci_for_run \
       "${sha}" "${run_dir}" "${codex_ai_base_sha}" "${codex_ai_base_ref}" "${branch}" "${status}" \
-      "${task_metadata_file}" 2>&1 |
+      "${task_metadata_file}" "${head_sha}" "${head_branch}" 2>&1 |
       tee -a "${run_dir}/local-ci.log"
     codex_ai_ci_exit=${PIPESTATUS[0]}
     set -e
@@ -459,8 +476,45 @@ run_once() {
     echo "Codex AI CI skipped for ${branch}." | tee -a "${run_dir}/local-ci.log"
   fi
 
-  echo "{\"sha\":\"${sha}\",\"status\":${status},\"codex_ai_ci_status\":\"${codex_ai_ci_status}\",\"codex_ai_ci_mode\":\"${codex_ai_mode}\",\"codex_ai_ci_verdict\":\"${codex_ai_ci_verdict}\",\"codex_ai_test_status\":\"${codex_ai_test_status}\",\"run_dir\":\"${run_dir}\"}" \
-    > "${run_dir}/result.json"
+  "${PYTHON_BIN:-python3}" - "${run_dir}/result.json" "${sha}" "${status}" \
+    "${codex_ai_ci_status}" "${codex_ai_mode}" "${codex_ai_ci_verdict}" \
+    "${codex_ai_test_status}" "${run_dir}" "${base_sha}" "${head_sha}" \
+    "${branch}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+output = Path(sys.argv[1])
+(
+    tested_sha,
+    status,
+    codex_ai_ci_status,
+    codex_ai_ci_mode,
+    codex_ai_ci_verdict,
+    codex_ai_test_status,
+    run_dir,
+    base_sha,
+    head_sha,
+    branch,
+) = sys.argv[2:]
+result = {
+    "sha": tested_sha,
+    "target_sha": tested_sha,
+    "tested_sha": tested_sha,
+    "tested_sha_kind": "pr_merge" if branch.startswith("ci/pr-") else "commit",
+    "status": int(status),
+    "codex_ai_ci_status": codex_ai_ci_status,
+    "codex_ai_ci_mode": codex_ai_ci_mode,
+    "codex_ai_ci_verdict": codex_ai_ci_verdict,
+    "codex_ai_test_status": codex_ai_test_status,
+    "run_dir": run_dir,
+}
+if base_sha:
+    result["base_sha"] = base_sha
+if head_sha:
+    result["head_sha"] = head_sha
+output.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
 
   local publish_status=0
   set +e

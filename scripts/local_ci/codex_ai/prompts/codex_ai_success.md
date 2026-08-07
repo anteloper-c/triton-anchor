@@ -12,7 +12,9 @@
 - Target Branch Ref: ${REQUESTED_BASE_REF}
 - Requested Base SHA: ${REQUESTED_BASE_SHA}
 - Review Base SHA: ${BASE_SHA}
-- Target SHA: ${TARGET_SHA}
+- Tested SHA: ${TARGET_SHA}
+- PR Head Ref: ${REQUESTED_HEAD_REF}
+- PR Head SHA: ${REQUESTED_HEAD_SHA}
 - Local CI Exit Code: ${LOCAL_CI_STATUS}
 - Analysis Mode: ${ANALYSIS_MODE}
 - Diff Mode: ${DIFF_MODE}
@@ -33,7 +35,7 @@ ${CHANGE_REQUEST_CONTEXT_JSON}
 - `contributor_goal`：用简洁中文归纳贡献者想解决的问题或完成的功能；不能照抄大段 PR 描述。
 - `expected_behavior`：说明贡献者声明的用户可观察行为、接口契约或验收结果；没有明确说明时如实写“PR 描述未明确说明预期行为”。
 - `implementation_summary`：说明当前 diff 实际实现了什么，以及与声明相比是否完整、存在偏差或无法确认。
-- `evidence`：引用支持判断的关键文件、代码路径、测试或 Local CI 证据，不得使用主观猜测。
+- `evidence`：用自然语言说明为什么得出上述判断。可以引用关键文件、代码路径、测试或 Local CI 证据，但要让 PR 提交者和审核者能直接理解，不要堆叠内部字段名、散碎路径或只有维护者才看得懂的事实清单；不得使用主观猜测。
 - `status`：声明和实现一致且证据充分时使用 `implemented`；只实现部分目标或仍有具体缺口时使用 `partially_implemented`；目标明确但 diff 没有实现或与预期相反时使用 `not_implemented`；PR 元数据缺失、无效或现有证据不足以判断时使用 `not_assessable`；仅在当前任务不是 PR 时使用 `not_applicable`。
 
 该状态描述“贡献者声明与实现的一致程度”，不直接代替 `verdict`。如果不一致构成可验证且影响合入的产品缺陷，应同时记录 finding；如果只是声明不完整或证据不足，应如实说明，不得编造 finding。

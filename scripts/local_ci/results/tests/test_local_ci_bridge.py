@@ -42,7 +42,7 @@ class CodexCommentTests(unittest.TestCase):
                 (
                     "## Codex AI 代码审查\n\n"
                     "> 这是非阻塞的辅助审查；确定性 CI 结果仍是合入门禁。\n\n"
-                    "### 审查结论\n\n发现一个问题。\n\n"
+                    "### 审查摘要\n\n发现一个问题。\n\n"
                     "### 贡献者目标与实现情况\n\n实现不完整。\n\n"
                     "### 需要处理的问题\n\n#### 1. [中风险] 示例问题\n\n"
                     "### 验证情况\n\n定向测试稳定复现。\n\n"
@@ -65,12 +65,14 @@ class CodexCommentTests(unittest.TestCase):
         body = bridge.codex_pr_comment_body(self.target, self.result)
         self.assertIn("发现一个问题。", body)
         self.assertIn("## Codex AI 代码审查", body)
+        self.assertIn("### 审查摘要", body)
         self.assertIn("### 贡献者目标与实现情况", body)
         self.assertIn("### 变更文件", body)
-        self.assertIn("- 审查提交：", body)
+        self.assertIn("- 测试提交：", body)
         self.assertIn("`aaaaaaaaaaaa`", body)
         self.assertIn(self.result.codex_ai.report_url, body)
         self.assertIn(bridge.CODEX_COMMENT_MARKER, body)
+        self.assertIn(bridge.codex_pr_commit_marker(self.target), body)
 
     def test_comment_body_links_findings_to_the_reviewed_commit(self) -> None:
         with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}):
@@ -102,6 +104,44 @@ class CodexCommentTests(unittest.TestCase):
 
         self.assertIn("https://github.com/fork-owner/fork-repo/blob/", body)
 
+    @mock.patch.object(bridge, "get_github_json")
+    def test_reconcile_pr_targets_use_test_merge_sha(self, get_json: mock.Mock) -> None:
+        get_json.return_value = [
+            {
+                "number": 42,
+                "head": {
+                    "ref": "feature",
+                    "sha": "a" * 40,
+                    "repo": {"full_name": "owner/repo"},
+                },
+                "merge_commit_sha": "b" * 40,
+            }
+        ]
+        with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}):
+            targets = bridge.list_open_pr_targets(10)
+
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0].sha, "b" * 40)
+        self.assertEqual(targets[0].task_ref, "ci/pr-42/feature")
+
+    @mock.patch.object(bridge, "get_github_json")
+    def test_reconcile_pr_targets_do_not_fallback_to_head_sha(
+        self, get_json: mock.Mock
+    ) -> None:
+        get_json.return_value = [
+            {
+                "number": 42,
+                "head": {
+                    "ref": "feature",
+                    "sha": "a" * 40,
+                    "repo": {"full_name": "owner/repo"},
+                },
+                "merge_commit_sha": None,
+            }
+        ]
+        with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}):
+            self.assertEqual(bridge.list_open_pr_targets(10), [])
+
     @mock.patch.object(bridge, "request_json")
     @mock.patch.object(bridge, "get_github_json", return_value=[])
     def test_new_pr_comment_is_created(
@@ -121,11 +161,18 @@ class CodexCommentTests(unittest.TestCase):
 
     @mock.patch.object(bridge, "request_json")
     @mock.patch.object(bridge, "get_github_json")
-    def test_existing_codex_comment_is_updated(
+    def test_existing_codex_comment_for_same_commit_is_updated(
         self, get_json: mock.Mock, request_json: mock.Mock
     ) -> None:
         get_json.return_value = [
-            {"id": 99, "body": bridge.CODEX_COMMENT_MARKER, "user": {"type": "Bot"}}
+            {
+                "id": 99,
+                "body": (
+                    f"{bridge.CODEX_COMMENT_MARKER}\n"
+                    f"{bridge.codex_pr_commit_marker(self.target)}"
+                ),
+                "user": {"type": "Bot"},
+            }
         ]
         request_json.return_value = (200, {}, "")
         with mock.patch.dict(
@@ -136,6 +183,37 @@ class CodexCommentTests(unittest.TestCase):
 
         self.assertEqual(request_json.call_args.kwargs["method"], "PATCH")
         self.assertIn("/issues/comments/99", request_json.call_args.args[0])
+
+    @mock.patch.object(bridge, "request_json")
+    @mock.patch.object(bridge, "get_github_json")
+    def test_existing_codex_comment_for_different_commit_is_not_updated(
+        self, get_json: mock.Mock, request_json: mock.Mock
+    ) -> None:
+        other_target = bridge.Target(
+            self.target.source_branch,
+            self.target.task_ref,
+            "b" * 40,
+            self.target.label,
+        )
+        get_json.return_value = [
+            {
+                "id": 99,
+                "body": (
+                    f"{bridge.CODEX_COMMENT_MARKER}\n"
+                    f"{bridge.codex_pr_commit_marker(other_target)}"
+                ),
+                "user": {"type": "Bot"},
+            }
+        ]
+        request_json.return_value = (201, {}, "")
+        with mock.patch.dict(
+            os.environ,
+            {"GITHUB_REPOSITORY": "owner/repo", "GITHUB_TOKEN": "token"},
+        ):
+            bridge.post_codex_pr_comment(self.target, self.result)
+
+        self.assertEqual(request_json.call_args.kwargs["method"], "POST")
+        self.assertIn("/issues/42/comments", request_json.call_args.args[0])
 
     def test_push_does_not_publish_pr_comment(self) -> None:
         push_target = bridge.Target(
@@ -302,7 +380,8 @@ class CodexCommentTests(unittest.TestCase):
                 )
             if path.endswith("/codex-ai-comment.md"):
                 return (
-                    "## Codex AI 代码审查\n\n发现一个问题。\n\n"
+                    "## Codex AI 代码审查\n\n"
+                    "### 审查摘要\n\n发现一个问题。\n\n"
                     "### 贡献者目标与实现情况\n\n实现不完整。\n\n"
                     "### 需要处理的问题\n\n1. 示例问题。\n\n"
                     "### 验证情况\n\n定向测试稳定复现。\n\n"

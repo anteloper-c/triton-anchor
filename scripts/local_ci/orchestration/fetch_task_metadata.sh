@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-usage="fetch_task_metadata.sh <repo-url> <metadata-ref> <task-ref> <target-sha> <output-file>"
+usage="fetch_task_metadata.sh <repo-url> <metadata-ref> <task-ref> <target-sha> <output-file> [base-sha] [head-sha]"
 repo_url="${1:?usage: ${usage}}"
 metadata_ref="${2:?usage: ${usage}}"
 task_ref="${3:?usage: ${usage}}"
 target_sha="${4:?usage: ${usage}}"
 output_file="${5:?usage: ${usage}}"
+base_sha="${6:-}"
+head_sha="${7:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_CI_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -38,8 +40,17 @@ if ! git -C "${temporary_dir}" show \
   exit 1
 fi
 
-"${PYTHON_BIN}" "${validator}" \
-  --input "${raw_metadata}" \
-  --output "${output_file}" \
-  --task-ref "${task_ref}" \
+validator_args=(
+  --input "${raw_metadata}"
+  --output "${output_file}"
+  --task-ref "${task_ref}"
   --target-sha "${target_sha}"
+)
+if [[ -n "${base_sha}" ]]; then
+  validator_args+=(--base-sha "${base_sha}")
+fi
+if [[ -n "${head_sha}" ]]; then
+  validator_args+=(--head-sha "${head_sha}")
+fi
+
+"${PYTHON_BIN}" "${validator}" "${validator_args[@]}"

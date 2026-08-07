@@ -143,6 +143,9 @@ def parse_args() -> argparse.Namespace:
         default="two-point",
     )
     parser.add_argument("--target-sha", required=True)
+    parser.add_argument("--head-sha", default="")
+    parser.add_argument("--local-ci-status", default="")
+    parser.add_argument("--tested-sha-kind", default="commit")
     parser.add_argument("--changed-file-count", required=True, type=int)
     parser.add_argument("--changed-files-manifest", required=True)
     parser.add_argument("--repository-root", default="")
@@ -660,7 +663,9 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
         "| 报告格式 | `triton-anchor-codex-ai-report/v3` |",
         f"| 分支 | `{inline(args.branch)}` |",
         *base_rows,
-        f"| 目标提交 | `{inline(args.target_sha)}` |",
+        f"| 测试提交 | `{inline(args.target_sha)}` |",
+        f"| 测试提交类型 | `{inline(args.tested_sha_kind)}` |",
+        *([f"| PR Head 提交 | `{inline(args.head_sha)}` |"] if args.head_sha else []),
         f"| 变更文件数 | {args.changed_file_count} |",
         f"| 生成时间（UTC） | `{generated_at}` |",
         "",
@@ -804,6 +809,15 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
     return "\n".join(lines)
 
 
+def deterministic_ci_comment_line(args: argparse.Namespace) -> str:
+    status = getattr(args, "local_ci_status", "")
+    if status in {0, "0"}:
+        return "确定性 Local CI 已通过；这条 AI 评论只提供补充审查意见，不改变门禁结果。"
+    if status:
+        return "确定性 Local CI 未通过；这条 AI 评论用于辅助定位原因，最终仍以确定性 CI 结果和复测为准。"
+    return "确定性 Local CI 结果仍是合入门禁；这条 AI 评论只提供补充审查意见。"
+
+
 def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
     findings = sorted(
         document["findings"],
@@ -816,11 +830,12 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
     lines = [
         "## Codex AI 代码审查",
         "",
-        "> 这是非阻塞的辅助审查；确定性 CI 结果仍是合入门禁。",
+        "> 这条 AI 评论仅供参考，是非阻塞的辅助审查；确定性 CI 结果才是合入门禁。",
         "",
-        "### 审查结论",
+        "### 审查摘要",
         "",
-        f"- 结果：**{VERDICT_LABELS[document['verdict']]}**",
+        f"- AI 审查摘要：**{VERDICT_LABELS[document['verdict']]}**",
+        f"- 确定性 CI：{deterministic_ci_comment_line(args)}",
         f"- 合入建议：{comment_inline(document['merge_recommendation'], 1_000)}",
         "",
         comment_inline(document["summary"]),
@@ -828,9 +843,9 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
         "### 贡献者目标与实现情况",
         "",
         f"- 判断：**{CHANGE_REQUEST_ASSESSMENT_LABELS[assessment['status']]}**",
-        f"- 修改目标：{comment_inline(assessment['contributor_goal'], 1_500)}",
-        f"- 预期行为：{comment_inline(assessment['expected_behavior'], 1_500)}",
-        f"- 实现情况：{comment_inline(assessment['implementation_summary'], 2_000)}",
+        f"- 贡献者目标：{comment_inline(assessment['contributor_goal'], 1_500)}",
+        f"- 预期效果：{comment_inline(assessment['expected_behavior'], 1_500)}",
+        f"- 当前实现情况：{comment_inline(assessment['implementation_summary'], 2_000)}",
         f"- 判断依据：{comment_inline(assessment['evidence'], 2_000)}",
         "",
         "### 需要处理的问题",
@@ -875,7 +890,7 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
     ])
     if args.constraint_status == "warning":
         lines.extend([
-            f"- 运行约束提醒：{comment_inline(args.constraint_reason, 1_500)}",
+            f"- 验证范围提醒：{comment_inline(args.constraint_reason, 1_500)}",
             "",
         ])
 
@@ -883,7 +898,7 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
         "### 变更文件",
         "",
         "<details>",
-        "<summary>展开文件级变更表</summary>",
+        "<summary>查看变更文件</summary>",
         "",
         "| 文件 | 类型 | 改动说明 | 影响 |",
         "| --- | --- | --- | --- |",

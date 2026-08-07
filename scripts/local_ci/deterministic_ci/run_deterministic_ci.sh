@@ -716,14 +716,22 @@ write_summary() {
   local status="$1"
   set +e
   {
-    echo "schema: triton-anchor-local-ci/v2"
+    actual_anchor_commit="$(git_commit "${ANCHOR_DIR}")"
+    tested_sha_kind="commit"
+    if [[ "${GITEE_BRANCH}" =~ ^ci/pr-[0-9]+/.+ ]]; then
+      tested_sha_kind="pr_merge"
+    fi
+    echo "schema: triton-anchor-local-ci/v3"
     echo "status: ${status}"
     echo "target_sha: ${target_sha}"
+    echo "tested_sha: ${target_sha}"
+    echo "tested_sha_kind: ${tested_sha_kind}"
+    echo "actual_checkout_sha: ${actual_anchor_commit}"
     echo "base_sha: ${LOCAL_CI_BASE_SHA}"
     echo "base_ref: ${LOCAL_CI_BASE_REF}"
     echo "branch: ${GITEE_BRANCH}"
     echo "anchor_dir: ${ANCHOR_DIR}"
-    echo "anchor_commit: $(git_commit "${ANCHOR_DIR}")"
+    echo "anchor_commit: ${actual_anchor_commit}"
     echo "frontend_build_mode: ${FRONTEND_BUILD_MODE}"
     echo "frontend_checkout_mode: ${FRONTEND_CHECKOUT_MODE}"
     echo "frontend_build_cache_preserved: ${FRONTEND_BUILD_CACHE_PRESERVED}"

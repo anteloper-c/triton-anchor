@@ -387,10 +387,14 @@ def write_fallback_results(run_dir: Path, target_dir: Path, args: argparse.Names
             copied.append(file_name)
 
     artifact_dir_text = discover_artifact_dir(run_dir / "local-ci.log") or "unavailable"
+    tested_sha_kind = "pr_merge" if args.source_branch.startswith("ci/pr-") else "commit"
     summary_lines = [
-        "schema: triton-anchor-local-ci/v2",
+        "schema: triton-anchor-local-ci/v3",
         f"status: {args.exit_code}",
         f"target_sha: {args.sha}",
+        f"tested_sha: {args.sha}",
+        f"tested_sha_kind: {tested_sha_kind}",
+        f"actual_checkout_sha: unavailable",
         f"branch: {args.source_branch}",
         f"run_id: {args.run_id}",
         f"artifact_dir: {artifact_dir_text}",

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-usage="run_codex_ai_ci.sh <repo-url> <output-dir> <target-sha> <base-sha> <base-ref> <branch> [local-ci-status] [task-metadata-file]"
+usage="run_codex_ai_ci.sh <repo-url> <output-dir> <target-sha> <base-sha> <base-ref> <branch> [local-ci-status] [task-metadata-file] [head-sha] [head-ref]"
 repo_url="${1:?usage: ${usage}}"
 output_dir="${2:?usage: ${usage}}"
 target_sha="${3:?usage: ${usage}}"
@@ -10,6 +10,8 @@ requested_base_ref="${5:-}"
 branch="${6:?usage: ${usage}}"
 local_ci_status="${7:-0}"
 task_metadata_file="${8:-}"
+requested_head_sha="${9:-}"
+requested_head_ref="${10:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_CI_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -143,9 +145,12 @@ write_summary() {
     echo "status: ${status}"
     echo "exit_code: ${exit_code}"
     echo "target_sha: ${target_sha}"
+    echo "tested_sha: ${target_sha}"
     echo "actual_sha: ${actual_sha}"
     echo "requested_base_sha: ${requested_base_sha}"
     echo "requested_base_ref: ${requested_base_ref}"
+    echo "requested_head_sha: ${requested_head_sha}"
+    echo "requested_head_ref: ${requested_head_ref}"
     echo "base_sha: ${base_sha}"
     echo "base_source: ${base_source}"
     echo "diff_mode: ${diff_mode}"
@@ -273,7 +278,7 @@ for key, label in labels.items():
 
 document = {
     "verdict": "WARNING",
-    "summary": f"Codex AI CI 未完成：{failure_reason}。本次没有生成可信的结构化审查结论。",
+    "summary": f"Codex AI CI 未完成：{failure_reason}。本次没有生成可信的结构化审查摘要。",
     "merge_recommendation": "请先排查 AI 执行问题并重新运行，当前不要仅依据本次 AI 结果决定合入。",
     "change_request_assessment": {
         "status": "not_applicable" if context_status == "not_applicable" else "not_assessable",
@@ -326,6 +331,9 @@ PY
       --requested-base-sha "${requested_base_sha}" \
       --diff-mode "${rendered_diff_mode}" \
       --target-sha "${target_sha}" \
+      --head-sha "${requested_head_sha}" \
+      --tested-sha-kind "$([[ "${branch}" =~ ^ci/pr-[0-9]+/.+ ]] && printf '%s' pr_merge || printf '%s' commit)" \
+      --local-ci-status "${local_ci_status}" \
       --changed-file-count "${changed_file_count}" \
       --changed-files-manifest "${changed_files_manifest_path}" \
       --constraint-status "${constraint_status}" \
@@ -345,9 +353,10 @@ PY
     echo "| 报告格式 | \`triton-anchor-codex-ai-report/v3\` |"
     echo "| 分支 | \`${branch}\` |"
     echo "| 请求的基础提交 | \`${requested_base_sha:-不可用}\` |"
+    echo "| PR Head 提交 | \`${requested_head_sha:-不可用}\` |"
     echo "| 实际审查起点 | \`${base_sha:-不可用}\` |"
     echo "| 差异模式 | \`${diff_mode}\` |"
-    echo "| 目标提交 | \`${target_sha}\` |"
+    echo "| 测试提交 | \`${target_sha}\` |"
     echo "| 变更文件数 | ${changed_file_count} |"
     echo "| 生成时间（UTC） | \`${start_time}\` |"
     echo
@@ -404,9 +413,14 @@ PY
     echo
     echo "> 这是非阻塞的辅助审查；确定性 CI 结果仍是合入门禁。"
     echo
-    echo "### 审查结论"
+    echo "### 审查摘要"
     echo
-    echo "- 结果：**警告**"
+    echo "- AI 审查摘要：**警告**"
+    if [[ "${local_ci_status}" == "0" ]]; then
+      echo "- 确定性 CI：确定性 Local CI 已通过；本次失败只影响 AI 辅助审查，不改变门禁结果。"
+    else
+      echo "- 确定性 CI：确定性 Local CI 未通过；需要先根据确定性 CI 日志和复测结果判断合入风险。"
+    fi
     echo "- 合入建议：请先排查 AI 执行问题并重新运行，再决定是否合入。"
     echo
     echo "Codex AI CI 未完成：${failure_reason:-未知原因}。"
@@ -414,9 +428,10 @@ PY
     echo "### 贡献者目标与实现情况"
     echo
     echo "- 判断：**${fallback_assessment_label}**"
-    echo "- 修改目标：${fallback_contributor_goal}"
-    echo "- 预期行为：${fallback_expected_behavior}"
-    echo "- 实现情况：${fallback_implementation_summary}"
+    echo "- 贡献者目标：${fallback_contributor_goal}"
+    echo "- 预期效果：${fallback_expected_behavior}"
+    echo "- 当前实现情况：${fallback_implementation_summary}"
+    echo "- 判断依据：Codex AI CI 执行未完成，当前没有足够证据可靠判断贡献者声明和实际实现是否一致。"
     echo
     echo "### 需要处理的问题"
     echo
@@ -600,7 +615,7 @@ load_change_request_context() {
 
   if [[ -z "${task_metadata_file}" || ! -f "${task_metadata_file}" ]]; then
     change_request_context_status="missing"
-    change_request_context_reason="未取得与当前 PR head SHA 匹配的功能声明元数据；继续依据代码差异和测试证据分析。"
+    change_request_context_reason="未取得与当前 PR 测试提交匹配的功能声明元数据；继续依据代码差异和测试证据分析。"
     change_request_context_json="$(build_unavailable_change_request_context)" || \
       fail_ai_ci "无法生成 PR 元数据缺失上下文"
     echo "${change_request_context_reason}" >> "${log_path}"
@@ -616,7 +631,9 @@ load_change_request_context() {
       --input "${task_metadata_file}" \
       --output "${task_metadata_output_path}" \
       --task-ref "${branch}" \
-      --target-sha "${target_sha}" 2>&1
+      --target-sha "${target_sha}" \
+      --base-sha "${requested_base_sha}" \
+      --head-sha "${requested_head_sha}" 2>&1
   )"; then
     rm -f -- "${task_metadata_output_path}"
     validation_message="${validation_message//$'\n'/ }"
@@ -648,6 +665,19 @@ context = {
     "title_truncated": metadata["title_truncated"],
     "description_truncated": metadata["description_truncated"],
 }
+for key in (
+    "event_kind",
+    "base_branch",
+    "base_sha",
+    "head_branch",
+    "head_sha",
+    "head_repo",
+    "tested_ref",
+    "tested_sha",
+    "tested_sha_kind",
+):
+    if key in metadata:
+        context[key] = metadata[key]
 print(metadata["pr_number"])
 print(json.dumps(context, ensure_ascii=False, separators=(",", ":")))
 PY
@@ -663,7 +693,7 @@ PY
   fi
 
   change_request_context_status="available"
-  change_request_context_reason="已校验并载入与当前 PR head SHA 匹配的功能声明元数据。"
+  change_request_context_reason="已校验并载入与当前 PR 测试提交匹配的功能声明元数据。"
   change_request_context_pr_number="${context_parts[0]}"
   change_request_context_json="${context_parts[1]}"
 }
@@ -777,6 +807,10 @@ discover_artifact_dir() {
       "${output_dir}/local-ci.log" | tail -n 1
   )"
   if [[ -z "${candidate}" ]]; then
+    return 0
+  fi
+  if [[ -z "${ephemeral_container}" ]]; then
+    artifact_dir=""
     return 0
   fi
   resolved_root="$(
@@ -1052,7 +1086,9 @@ if ! workspace_dir="$(
     "codex-ai" \
     "${target_sha}" \
     "${requested_base_ref}" \
-    "${requested_base_sha}" 2>> "${log_path}"
+    "${requested_base_sha}" \
+    "${requested_head_ref}" \
+    "${requested_head_sha}" 2>> "${log_path}"
 )"; then
   fail_ai_ci "无法创建一次性分析 checkout"
 fi
@@ -1069,18 +1105,24 @@ if [[ "${branch}" =~ ^ci/pr-[0-9]+/.+ ]]; then
   if [[ -z "${requested_base_sha}" ]]; then
     fail_ai_ci "PR Codex 审查缺少目标分支精确 SHA"
   fi
+  if [[ -z "${requested_head_sha}" ]]; then
+    fail_ai_ci "PR Codex 审查缺少贡献分支精确 SHA"
+  fi
   if ! git -C "${workspace_dir}" cat-file -e "${requested_base_sha}^{commit}" 2>/dev/null; then
     fail_ai_ci "PR 目标分支提交在 Codex checkout 中不可用：${requested_base_sha}"
   fi
+  if ! git -C "${workspace_dir}" cat-file -e "${requested_head_sha}^{commit}" 2>/dev/null; then
+    fail_ai_ci "PR head 提交在 Codex checkout 中不可用：${requested_head_sha}"
+  fi
   if ! base_sha="$(
-    git -C "${workspace_dir}" merge-base "${requested_base_sha}" "${target_sha}" 2>/dev/null
+    git -C "${workspace_dir}" merge-base "${requested_base_sha}" "${requested_head_sha}" 2>/dev/null
   )"; then
     fail_ai_ci "PR head 与目标分支提交没有共同祖先"
   fi
   base_source="merge-base"
   diff_mode="merge-base"
-  diff_revisions=("${requested_base_sha}...${target_sha}")
-  diff_command="git diff --find-renames ${requested_base_sha}...${target_sha}"
+  diff_revisions=("${requested_base_sha}...${requested_head_sha}")
+  diff_command="git diff --find-renames ${requested_base_sha}...${requested_head_sha}"
 else
   if [[ -n "${requested_base_sha}" ]] &&
     git -C "${workspace_dir}" cat-file -e "${requested_base_sha}^{commit}" 2>/dev/null; then
@@ -1124,6 +1166,8 @@ if ! prompt="$(
     BRANCH "${branch}" \
     REQUESTED_BASE_REF "${requested_base_ref:-不适用}" \
     REQUESTED_BASE_SHA "${requested_base_sha:-不适用}" \
+    REQUESTED_HEAD_REF "${requested_head_ref:-不适用}" \
+    REQUESTED_HEAD_SHA "${requested_head_sha:-不适用}" \
     BASE_SHA "${base_sha}" \
     TARGET_SHA "${target_sha}" \
     LOCAL_CI_STATUS "${local_ci_status}" \
@@ -1325,6 +1369,9 @@ print(
     --requested-base-sha "${requested_base_sha}"
     --diff-mode "${diff_mode}"
     --target-sha "${target_sha}"
+    --head-sha "${requested_head_sha}"
+    --tested-sha-kind "$([[ "${branch}" =~ ^ci/pr-[0-9]+/.+ ]] && printf '%s' pr_merge || printf '%s' commit)"
+    --local-ci-status "${local_ci_status}"
     --changed-file-count "${changed_file_count}"
     --changed-files-manifest "${changed_files_manifest_path}"
     --repository-root "${workspace_dir}"
