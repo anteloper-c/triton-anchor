@@ -1,10 +1,8 @@
 name: Local CI Contracts
 
+# Temporarily disable automatic Local CI contract checks.
+# Keep manual dispatch available while this workflow is paused.
 on:
-  pull_request:
-    branches: [main, develop, ai-ci]
-  push:
-    branches: [main, develop, jiwang-delivery-ci, ai-ci]
   workflow_dispatch:
 
 concurrency:
