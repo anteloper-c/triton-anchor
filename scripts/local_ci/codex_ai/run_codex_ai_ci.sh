@@ -780,11 +780,11 @@ discover_artifact_dir() {
     return 0
   fi
   resolved_root="$(
-    docker exec --user 0 "${LOCAL_CI_CONTAINER}" \
+    docker exec --user 0 "${ephemeral_container}" \
       readlink -e -- "${LOCAL_CI_ARTIFACT_ROOT}" 2>> "${log_path}" || true
   )"
   resolved_candidate="$(
-    docker exec --user 0 "${LOCAL_CI_CONTAINER}" \
+    docker exec --user 0 "${ephemeral_container}" \
       readlink -e -- "${candidate}" 2>> "${log_path}" || true
   )"
   if [[ -z "${resolved_root}" || -z "${resolved_candidate}" \
@@ -1043,7 +1043,6 @@ printf '[]\n' > "${changed_files_manifest_path}"
 
 validate_prerequisites
 load_change_request_context
-discover_artifact_dir
 
 if ! workspace_dir="$(
   bash "${checkout_helper}" \
@@ -1111,6 +1110,7 @@ if diff_requires_generated_tests; then
 fi
 
 create_ephemeral_container
+discover_artifact_dir
 
 if [[ "${analysis_mode}" == "full" ]]; then
   selected_prompt_template="${success_prompt_template}"

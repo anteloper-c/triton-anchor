@@ -487,6 +487,12 @@ if not command_args:
     raise SystemExit(7)
 
 program = command_args[0]
+if program == "readlink" and command_args[1:3] == ["-e", "--"]:
+    candidate = posixpath.normpath(command_args[3])
+    if mapped(candidate).exists():
+        print(candidate)
+        raise SystemExit(0)
+    raise SystemExit(1)
 if program == "mkdir":
     for value in command_args[1:]:
         if value != "-p":
