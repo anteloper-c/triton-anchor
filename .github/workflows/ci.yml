@@ -51,7 +51,8 @@ jobs:
             --output-format=concise \
             python/ tests/ scripts/local_ci/ \
             scripts/ci/mirror_upstream_prs.py \
-            scripts/ci/tests/test_mirror_upstream_prs.py; then
+            scripts/ci/scan_pr_security.py \
+            scripts/ci/tests/; then
             has_warning=true
           fi
 
@@ -60,7 +61,8 @@ jobs:
             --exclude "$RUFF_EXCLUDE" \
             python/ tests/ scripts/local_ci/ \
             scripts/ci/mirror_upstream_prs.py \
-            scripts/ci/tests/test_mirror_upstream_prs.py; then
+            scripts/ci/scan_pr_security.py \
+            scripts/ci/tests/; then
             has_warning=true
           fi
 
@@ -76,7 +78,8 @@ jobs:
             --output-format=github \
             python/ tests/ scripts/local_ci/ \
             scripts/ci/mirror_upstream_prs.py \
-            scripts/ci/tests/test_mirror_upstream_prs.py
+            scripts/ci/scan_pr_security.py \
+            scripts/ci/tests/
 
   # ───────────── Job 2: Pure-Python unit tests ────────────────
   unit-test:
@@ -102,7 +105,7 @@ jobs:
       - name: Run pure-Python unit tests
         run: |
           pytest python/triton_anchor/tests/ \
-            scripts/ci/tests/test_mirror_upstream_prs.py \
+            scripts/ci/tests/ \
             -v \
             --tb=short \
             --cov=python/triton_anchor \
