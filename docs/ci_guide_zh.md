@@ -622,7 +622,7 @@ GitHub commit status 没有 warning 状态，因此性能 warning 会映射为 s
 `ai-ci` 通过两个独立 workflow 跟踪 `RACE-org/triton-anchor`，不要求对上游仓库拥有写权限：
 
 - `Sync RACE-org Main` 每周获取上游 `main`，在 `sync/upstream-main` 创建 merge commit，并向 `ai-ci` 创建或更新同步 PR；出现冲突时停止并在 Job Summary 中列出冲突文件。
-- `Mirror RACE-org Pull Requests` 每天读取上游全部 open PR，把实时 base 和精确 head SHA 推送到 `review/race-pr-<编号>/base` 与 `review/race-pr-<编号>/head`，再在 fork 内创建审核 PR。
+- `Mirror RACE-org Pull Requests` 每天读取上游全部 open PR，默认只镜像目标分支为 `main`、`triton_v3.0` 或 `anchorbase_dev` 的 PR，把实时 base 和精确 head SHA 推送到 `review/race-pr-<编号>/base` 与 `review/race-pr-<编号>/head`，再在 fork 内创建审核 PR。
 - 镜像 PR 继续使用现有 Security Gate、Local CI 和 Codex AI CI；审核结果仅保留在 fork，不写回上游 PR。
 
 在 fork 的 Actions secrets 中配置 `FORK_AUTOMATION_TOKEN`。该 fine-grained PAT 只授权 `likehupochuan/triton-anchor`，仓库权限为：
@@ -632,11 +632,14 @@ GitHub commit status 没有 warning 状态，因此性能 warning 会映射为 s
 - Workflows: Read and write
 - Metadata: Read-only
 
-手动运行 `Mirror RACE-org Pull Requests` 时，可以填写单个上游 PR 编号，或启用 `dry_run` 只校验远端 refs 和可合并性。命令行等价检查示例：
+镜像分支白名单通过 workflow 输入 `allowed_base_refs` 或仓库变量 `MIRROR_UPSTREAM_ALLOWED_BASE_REFS` 配置，默认值为 `main,triton_v3.0,anchorbase_dev`。填写 `*` 或 `all` 表示镜像所有上游目标分支；在后续按 Triton 版本动态选择 LLVM/profile 的逻辑就绪前，不建议打开全量分支。
+
+手动运行 `Mirror RACE-org Pull Requests` 时，可以填写单个上游 PR 编号，调整 `allowed_base_refs`，或启用 `dry_run` 只校验远端 refs 和可合并性。命令行等价检查示例：
 
 ```bash
 python scripts/ci/mirror_upstream_prs.py \
   --mirror-repository likehupochuan/triton-anchor \
+  --allowed-base-refs main,triton_v3.0,anchorbase_dev \
   --pr-number 66 \
   --dry-run
 ```

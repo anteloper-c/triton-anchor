@@ -15,6 +15,11 @@ on:
         required: false
         default: false
         type: boolean
+      allowed_base_refs:
+        description: "Comma-separated upstream base refs to mirror; use * for all"
+        required: false
+        default: "main,triton_v3.0,anchorbase_dev"
+        type: string
 
 permissions:
   contents: read
@@ -60,10 +65,12 @@ jobs:
           GH_TOKEN: ${{ secrets.FORK_AUTOMATION_TOKEN }}
           PR_NUMBER: ${{ inputs.pr_number }}
           DRY_RUN: ${{ inputs.dry_run }}
+          ALLOWED_BASE_REFS: ${{ inputs.allowed_base_refs || vars.MIRROR_UPSTREAM_ALLOWED_BASE_REFS || 'main,triton_v3.0,anchorbase_dev' }}
         run: |
           args=(
             --upstream-repository RACE-org/triton-anchor
             --mirror-repository "${GITHUB_REPOSITORY}"
+            --allowed-base-refs "${ALLOWED_BASE_REFS}"
           )
           if [ -n "${PR_NUMBER}" ]; then
             args+=(--pr-number "${PR_NUMBER}")

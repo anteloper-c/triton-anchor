@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 API_ROOT = "https://api.github.com"
 DEFAULT_UPSTREAM_REPOSITORY = "RACE-org/triton-anchor"
+DEFAULT_ALLOWED_BASE_REFS = ("main", "triton_v3.0", "anchorbase_dev")
 MIRROR_BRANCH_PREFIX = "review/race-pr-"
 MARKER_RE = re.compile(r"<!-- upstream-pr-mirror:RACE-org/triton-anchor#([0-9]+) -->")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -112,6 +113,34 @@ def mirrored_upstream_number(payload: Dict[str, Any]) -> Optional[int]:
         return None
     match = MARKER_RE.search(body)
     return int(match.group(1)) if match else None
+
+
+def parse_allowed_base_refs(value: str) -> Optional[Tuple[str, ...]]:
+    normalized = value.strip()
+    if not normalized:
+        return DEFAULT_ALLOWED_BASE_REFS
+    if normalized in {"*", "all", "ALL"}:
+        return None
+    refs: List[str] = []
+    for item in re.split(r"[\s,]+", normalized):
+        ref = item.strip()
+        if not ref:
+            continue
+        if ref.startswith("-") or ".." in ref or ref.endswith(".lock"):
+            raise MirrorError(f"invalid allowed base ref: {ref}")
+        if not re.fullmatch(r"[A-Za-z0-9._/-]+", ref):
+            raise MirrorError(f"invalid allowed base ref: {ref}")
+        if ref not in refs:
+            refs.append(ref)
+    if not refs:
+        return DEFAULT_ALLOWED_BASE_REFS
+    return tuple(refs)
+
+
+def format_allowed_base_refs(allowed: Optional[Tuple[str, ...]]) -> str:
+    if allowed is None:
+        return "all"
+    return ", ".join(f"`{ref}`" for ref in allowed)
 
 
 def mirror_title(pr: UpstreamPullRequest) -> str:
@@ -407,13 +436,39 @@ class GitRunner:
 
 class MirrorService:
     def __init__(
-        self, github: GitHubClient, git: GitRunner, dry_run: bool = False
+        self,
+        github: GitHubClient,
+        git: GitRunner,
+        dry_run: bool = False,
+        allowed_base_refs: Optional[Tuple[str, ...]] = DEFAULT_ALLOWED_BASE_REFS,
     ) -> None:
         self.github = github
         self.git = git
         self.dry_run = dry_run
+        self.allowed_base_refs = allowed_base_refs
+
+    def base_ref_allowed(self, pr: UpstreamPullRequest) -> bool:
+        return self.allowed_base_refs is None or pr.base_ref in self.allowed_base_refs
+
+    def skip_pr_for_base_ref(self, pr: UpstreamPullRequest) -> str:
+        existing = self.github.find_mirror_pr(pr.number)
+        if existing and existing.get("state") == "open" and not self.dry_run:
+            reason = (
+                f"自动镜像暂停：上游 PR #{pr.number} 的目标分支 `{pr.base_ref}` "
+                f"当前不在 fork CI 分支白名单（{format_allowed_base_refs(self.allowed_base_refs)}）。"
+                "恢复白名单后镜像任务会自动重新打开本 PR。"
+            )
+            self.github.close_mirror_pr(existing, reason)
+        print(
+            f"PR #{pr.number}: skipped; base={pr.base_ref}; "
+            f"allowed={format_allowed_base_refs(self.allowed_base_refs)}"
+        )
+        return "skipped_base_ref"
 
     def sync_pr(self, pr: UpstreamPullRequest) -> str:
+        if not self.base_ref_allowed(pr):
+            return self.skip_pr_for_base_ref(pr)
+
         base_sha, head_sha = self.git.fetch_exact(pr)
         if head_sha != pr.head_sha:
             raise MirrorError(
@@ -491,6 +546,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--pr-number", type=int)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--allowed-base-refs",
+        default=os.getenv(
+            "MIRROR_UPSTREAM_ALLOWED_BASE_REFS",
+            ",".join(DEFAULT_ALLOWED_BASE_REFS),
+        ),
+        help=(
+            "Comma or whitespace separated upstream base refs to mirror; "
+            "use '*' or 'all' for every branch."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -501,9 +567,13 @@ def main() -> int:
         print("FORK_AUTOMATION_TOKEN is required", file=sys.stderr)
         return 2
     try:
+        allowed_base_refs = parse_allowed_base_refs(args.allowed_base_refs)
         github = GitHubClient(args.upstream_repository, args.mirror_repository, token)
         service = MirrorService(
-            github, GitRunner(args.upstream_repository), args.dry_run
+            github,
+            GitRunner(args.upstream_repository),
+            args.dry_run,
+            allowed_base_refs,
         )
         if args.pr_number:
             pr = github.upstream_pr(args.pr_number)

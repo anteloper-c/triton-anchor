@@ -73,9 +73,11 @@ class FakeGit:
         self.changes = changes
         self.pushed = pushed
         self.head_sha = head_sha
+        self.fetch_calls = 0
         self.push_calls = 0
 
     def fetch_exact(self, pr: object) -> tuple[str, str]:
+        self.fetch_calls += 1
         return "c" * 40, self.head_sha
 
     def mergeable(self, base_sha: str, head_sha: str) -> tuple[bool, str]:
@@ -115,6 +117,26 @@ class PayloadTests(unittest.TestCase):
         self.assertIn("`bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb`", body)
         self.assertEqual(mirror.mirrored_upstream_number({"body": body}), 42)
 
+    def test_allowed_base_refs_default_to_active_review_branches(self) -> None:
+        self.assertEqual(
+            mirror.parse_allowed_base_refs(""),
+            ("main", "triton_v3.0", "anchorbase_dev"),
+        )
+
+    def test_allowed_base_refs_accept_all_marker(self) -> None:
+        self.assertIsNone(mirror.parse_allowed_base_refs("all"))
+        self.assertIsNone(mirror.parse_allowed_base_refs("*"))
+
+    def test_allowed_base_refs_deduplicate_comma_or_space_values(self) -> None:
+        self.assertEqual(
+            mirror.parse_allowed_base_refs("main triton_v3.0,main anchorbase_dev"),
+            ("main", "triton_v3.0", "anchorbase_dev"),
+        )
+
+    def test_allowed_base_refs_reject_invalid_ref(self) -> None:
+        with self.assertRaisesRegex(mirror.MirrorError, "invalid allowed base ref"):
+            mirror.parse_allowed_base_refs("main,../bad")
+
 
 class ServiceTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -126,6 +148,55 @@ class ServiceTests(unittest.TestCase):
         result = mirror.MirrorService(github, git).sync_pr(self.pr)
         self.assertEqual(result, "updated")
         self.assertEqual(git.push_calls, 1)
+        self.assertEqual(github.created, 1)
+
+    def test_default_allows_triton_30_and_anchorbase_dev(self) -> None:
+        for base_ref in ("triton_v3.0", "anchorbase_dev"):
+            with self.subTest(base_ref=base_ref):
+                github = FakeGitHub()
+                git = FakeGit()
+                pr = mirror.UpstreamPullRequest.from_payload(
+                    pr_payload(base_ref=base_ref)
+                )
+                result = mirror.MirrorService(github, git).sync_pr(pr)
+                self.assertEqual(result, "updated")
+                self.assertEqual(git.fetch_calls, 1)
+                self.assertEqual(github.created, 1)
+
+    def test_default_skips_unsupported_base_ref_without_fetching(self) -> None:
+        github = FakeGitHub()
+        git = FakeGit()
+        pr = mirror.UpstreamPullRequest.from_payload(
+            pr_payload(base_ref="triton_v3.6")
+        )
+        result = mirror.MirrorService(github, git).sync_pr(pr)
+        self.assertEqual(result, "skipped_base_ref")
+        self.assertEqual(git.fetch_calls, 0)
+        self.assertEqual(git.push_calls, 0)
+        self.assertEqual(github.created, 0)
+
+    def test_skipping_base_ref_closes_existing_open_mirror(self) -> None:
+        github = FakeGitHub(existing={"number": 100, "state": "open"})
+        git = FakeGit()
+        pr = mirror.UpstreamPullRequest.from_payload(
+            pr_payload(base_ref="triton_v3.6")
+        )
+        result = mirror.MirrorService(github, git).sync_pr(pr)
+        self.assertEqual(result, "skipped_base_ref")
+        self.assertEqual(git.fetch_calls, 0)
+        self.assertEqual(github.closed, 1)
+
+    def test_all_base_refs_allows_future_branch_profiles(self) -> None:
+        github = FakeGitHub()
+        git = FakeGit()
+        pr = mirror.UpstreamPullRequest.from_payload(
+            pr_payload(base_ref="triton_v3.6")
+        )
+        result = mirror.MirrorService(
+            github, git, allowed_base_refs=None
+        ).sync_pr(pr)
+        self.assertEqual(result, "updated")
+        self.assertEqual(git.fetch_calls, 1)
         self.assertEqual(github.created, 1)
 
     def test_unchanged_refs_do_not_trigger_a_push(self) -> None:
