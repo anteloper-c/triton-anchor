@@ -210,21 +210,22 @@ PR 场景比较 base SHA 和 PR head SHA；push 场景比较 push 前后的 SHA�
 - PR 的 `opened`、`synchronize`、`reopened`、`ready_for_review`；
 - 手动指定 source branch、commit SHA 和 FlagGems 模式。
 
-PR 使用 `pull_request_target`，目的是让可信的基准分支 workflow 可以读取 Gitee 凭据。该 workflow 只获取并转发 PR 的精确提交，不在 GitHub runner 上执行 PR 代码。
+PR 使用 `pull_request_target`，目的是让可信的基准分支 workflow 可以读取 Gitee 凭据。该 workflow 只获取并转发 GitHub 为 PR 生成的 test merge commit、PR head 和 base 的精确提交，不在 GitHub runner 上执行 PR 代码。
 
 ### 4.2 精确 SHA 和任务引用
 
-调度 workflow 首先确定 `sha`、`base_sha`、`source_branch` 和 `task_ref`，然后核对实际 checkout 的 SHA。任务引用规则如下：
+调度 workflow 首先确定 `tested_sha`、`base_sha`、`head_sha`、`source_branch` 和 `task_ref`，然后核对实际 checkout 的 SHA。PR 场景下 `tested_sha` 是 `refs/pull/<PR号>/merge` 指向的 GitHub test merge commit；如果该 ref 不存在或 parent 与 base/head 不匹配，调度会失败或跳过，不会回退测试 PR head。任务引用规则如下：
 
 | 任务 | Gitee ref | 含义 |
 | --- | --- | --- |
-| PR head | `ci/pr-<PR号>/<源分支>` | 本次 PR 需要测试的精确提交 |
-| PR base | `ci/base/pr-<PR号>/<源分支>` | PR 基准提交，仅用于性能基线 |
+| PR test merge | `ci/pr-<PR号>/<源分支>` | 本次 PR 需要测试的 GitHub test merge commit |
+| PR base | `ci/base/pr-<PR号>/<源分支>` | PR 基准提交，用于性能基线和 base/head diff |
+| PR head | `ci/head/pr-<PR号>/<源分支>` | PR 贡献分支精确提交，用于 metadata、Codex diff 和调试 |
 | push | `ci/push/<分支>` | 指定分支的最新 push 提交 |
 | 手动 full | `ci/full/<分支>` | 使用 full 模式执行 FlagGems |
 | 结果 | `local-ci-results` | 本地执行结果和性能数据 |
 
-同一 PR 更新时，GitHub 会把新的 head SHA 覆盖推送到同一个 PR task ref。本地 poller 按 task ref 和 SHA 判断是否产生新任务，因此每次 PR 更新都能测试最新代码，同时不会把不同 PR 的结果混在一起。
+同一 PR 更新时，GitHub 会把新的 test merge SHA 覆盖推送到同一个 PR task ref。本地 poller 按 task ref 和 SHA 判断是否产生新任务，因此每次 PR 更新都能测试最新合并结果，同时不会把不同 PR 的结果混在一起。
 
 ### 4.3 GitHub 状态初始化
 
@@ -327,7 +328,7 @@ Codex AI CI 不使用 poller 用户的个人 `~/.codex`。启用 `RUN_CODEX_AI_C
 
 部署时先停止 poller，创建 `/home/race_work/local_ci/secrets/codex-ai`，按已验证的中转配置单独写入 `config.toml`（不要复制个人配置中的 `[projects]` 记录），并将 `auth.json` 写为 `{"OPENAI_API_KEY":"<CI 专用 token>"}`，再在 `config.env` 中设置 `CODEX_AI_CI_HOME`。不执行额外的 `chmod` 也可以运行；服务器存在其他用户时，仍建议收紧权限以避免 token 被读取。
 
-每次任务会把宿主机 Codex CLI 和独立凭据实体复制到任务专属临时容器的 `/root/.codex`，不会挂载凭据，也不会把容器内文件复制回宿主机。runner 会比较任务前后的凭据文件哈希；发现外部修改时只记录中文告警，不自动恢复文件，也不改变确定性 Local CI 的结果。可在启动 poller 前运行 `CODEX_AI_CI_HOME=/home/race_work/local_ci/secrets/codex-ai scripts/local_ci/codex_ai/setup_codex_ai_container.sh` 完成前置检查。
+每次任务会把宿主机 Codex CLI 和独立凭据实体复制到任务专属临时容器的 `/root/.codex`，不会挂载凭据，也不会把容器内文件复制回宿主机。当前模式从 Local CI 容器创建 snapshot，只复制 exact-SHA checkout 和必要输入；runner 会比较任务前后的凭据文件哈希，发现外部修改时只记录中文告警，不自动恢复文件，也不改变确定性 Local CI 的结果。可在启动 poller 前运行 `CODEX_AI_CI_HOME=/home/race_work/local_ci/secrets/codex-ai scripts/local_ci/codex_ai/setup_codex_ai_container.sh` 完成前置检查。
 
 ### 4.5 性能监测
 
@@ -337,7 +338,7 @@ Codex AI CI 不使用 poller 用户的个人 `~/.codex`。启用 `RUN_CODEX_AI_C
 - Pass profiling：记录各 Pass 的事件、汇总耗时和热点；
 - IR 序列化：分别测量 TTIR serialize 和 deserialize，并记录 IR 大小及模块信息。
 
-PR 任务通过 `ci/base/pr-*` 获取 base SHA。结果仓库中存在该 SHA 和 backend profile 的缓存时直接复用；缺少时先为 base 生成基线，再测试 PR head。功能失败和 benchmark 执行失败会使任务失败；超过性能阈值通常以 warning 表示，并附带详细 JSON、CSV 和 Markdown 对比报告。
+PR 任务通过 `ci/base/pr-*` 获取 base SHA，并把 `ci/pr-*` 指向 GitHub test merge commit。结果仓库中存在 base SHA 和 backend profile 的缓存时直接复用；缺少时先为 base 生成基线，再测试 PR merge 结果。功能失败和 benchmark 执行失败会使任务失败；超过性能阈值通常以 warning 表示，并附带详细 JSON、CSV 和 Markdown 对比报告。
 
 性能结果按 SHA 和 backend profile 保存，供后续 PR 对比和趋势页面读取。
 
@@ -499,12 +500,12 @@ BACKEND_TEST_COMMAND="python3 tests/test_smoke.py && python3 tests/test_jit.py"
 创建 PR 后，无需手动执行常规 CI：
 
 1. 基础 CI、构建预检和公共 API 兼容性自动运行。
-2. Local CI dispatch 将 PR head 和 base 的精确 SHA 推送到 Gitee。
-3. 本地 poller 执行前端、后端、FlagGems 和性能检查。
+2. Local CI dispatch 将 PR test merge、head 和 base 的精确 SHA 推送到 Gitee。
+3. 本地 poller 在 test merge checkout 上执行前端、后端、FlagGems 和性能检查。
 4. GitHub commit status 保持 pending，直到 receiver 取得本地结果。
 5. 如检测到 Breaking Change，兼容性检查失败，并在 PR 下通知作者。
 
-PR 有新提交时触发 `synchronize`，同一个 PR task ref 更新为新的 SHA，旧结果不会被当作当前提交结果。
+PR 有新提交或 base 更新时触发新的 test merge ref，同一个 PR task ref 更新为新的 tested SHA，旧结果不会被当作当前合并结果。
 
 ### 6.2 分支 push
 
@@ -572,7 +573,7 @@ GitHub commit status 没有 warning 状态，因此性能 warning 会映射为 s
 - PR 代码不在具有 Gitee 写权限的 GitHub dispatch runner 上执行。
 - 本地容器默认不接收可写 Gitee token；私有 relay 应使用只读容器 token。
 - CI 控制脚本来自固定可信目录，与待测 PR 代码分离。
-- 每次任务 fresh-clone 精确 SHA，并清除旧前端安装和构建产物。
+- 每次任务 fresh-clone 精确 tested SHA；PR tested SHA 来自 GitHub test merge commit，并清除旧前端安装和构建产物。
 - task ref、SHA、run ID 和结果目录相互关联，receiver 不接受其他 SHA 的旧结果。
 - API 通知 workflow 会再次校验 artifact schema 和 head SHA，避免过期结果通知当前 PR。
 - Pages 在 GitHub Actions 中读取 token，浏览器只接收静态 JSON/CSV/HTML。

@@ -270,7 +270,11 @@ pytest python/triton_anchor/tests/ -v
 
 # 运行 Local CI/Codex 契约测试
 pytest scripts/local_ci/codex_ai/tests scripts/local_ci/tests scripts/local_ci/results/tests -v
+```
 
+> 更详细的 Local CI 使用、维护和故障排查说明见 `scripts/local_ci/README.md` 和 `scripts/local_ci/DEVELOPMENT_GUIDE.md`。
+
+```bash
 # 代码风格检查
 pip install ruff
 ruff check python/ tests/ scripts/local_ci/
@@ -290,6 +294,8 @@ triton-anchor/
 ├── tests/                       # 产品级和端到端测试
 │   └── test_smoke.py            #   安装后 smoke、binding 和编译链路测试
 ├── scripts/local_ci/            # Local CI 控制面及模块内契约测试
+│   ├── README.md                #   Local CI 使用说明
+│   ├── DEVELOPMENT_GUIDE.md     #   Local CI 长期开发指南
 │   ├── tests/                   #   Local CI 布局测试
 │   ├── codex_ai/tests/          #   Codex prompt、报告和容器 harness
 │   └── results/tests/           #   Gitee/GitHub bridge 测试

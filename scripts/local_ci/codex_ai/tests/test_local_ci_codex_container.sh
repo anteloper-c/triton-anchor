@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
+
 codex_ai_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo_root="$(cd "${codex_ai_dir}/../../.." && pwd)"
 runner="${repo_root}/scripts/local_ci/codex_ai/run_codex_ai_ci.sh"
@@ -59,6 +62,7 @@ git -C "${source_repo}" push -q gitee "HEAD:refs/heads/${docs_branch}"
 
 pr_branch="ci/pr-42/feature"
 pr_base_branch="ci/base/pr-42/feature"
+pr_head_branch="ci/head/pr-42/feature"
 git -C "${source_repo}" checkout -q --detach "${base_sha}"
 printf 'target branch only\n' > "${source_repo}/target-only.txt"
 git -C "${source_repo}" add target-only.txt
@@ -70,19 +74,46 @@ printf 'pull request only\n' > "${source_repo}/pr-only.txt"
 git -C "${source_repo}" add pr-only.txt
 git -C "${source_repo}" commit -q -m pr-head
 pr_head_sha="$(git -C "${source_repo}" rev-parse HEAD)"
+git -C "${source_repo}" push -q gitee "HEAD:refs/heads/${pr_head_branch}"
+git -C "${source_repo}" checkout -q --detach "${pr_target_base_sha}"
+git -C "${source_repo}" merge -q --no-ff --no-edit "${pr_head_sha}"
+pr_merge_sha="$(git -C "${source_repo}" rev-parse HEAD)"
 git -C "${source_repo}" push -q gitee "HEAD:refs/heads/${pr_branch}"
 git -C "${source_repo}" checkout -q --detach "${target_sha}"
 
 pr_metadata_file="${test_root}/pr-task-metadata.json"
-python3 - "${pr_metadata_file}" "${pr_branch}" "${pr_head_sha}" <<'PY'
+python3 - "${pr_metadata_file}" "${pr_branch}" "${pr_base_branch}" \
+  "${pr_head_branch}" "${pr_target_base_sha}" "${pr_head_sha}" \
+  "${pr_merge_sha}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
+(
+    output_path,
+    task_ref,
+    base_task_ref,
+    head_task_ref,
+    base_sha,
+    head_sha,
+    tested_sha,
+) = sys.argv[1:]
+
 document = {
-    "schema": "triton-anchor-local-ci-task-metadata/v1",
-    "task_ref": sys.argv[2],
-    "target_sha": sys.argv[3],
+    "schema": "triton-anchor-local-ci-task-metadata/v2",
+    "event_kind": "pull_request",
+    "task_ref": task_ref,
+    "base_task_ref": base_task_ref,
+    "head_task_ref": head_task_ref,
+    "target_sha": tested_sha,
+    "tested_sha": tested_sha,
+    "tested_ref": "refs/pull/42/merge",
+    "tested_sha_kind": "pr_merge",
+    "base_branch": "main",
+    "base_sha": base_sha,
+    "head_branch": "feature",
+    "head_sha": head_sha,
+    "head_repo": "owner/repo",
     "pr_number": 42,
     "title": "增强 adapter 稳健性",
     "description": (
@@ -94,7 +125,7 @@ document = {
     "title_truncated": False,
     "description_truncated": False,
 }
-Path(sys.argv[1]).write_text(
+Path(output_path).write_text(
     json.dumps(document, ensure_ascii=False, indent=2) + "\n",
     encoding="utf-8",
 )
@@ -245,7 +276,7 @@ def write_report(
         checkout = mapped("/codex-workspace/checkout")
         generated_files = [
             f"generated_tests/test_generated_{index}.py"
-            for index in range(1, 4)
+            for index in range(1, 5)
         ]
         for relative_path in generated_files:
             generated = checkout / relative_path
@@ -254,7 +285,7 @@ def write_report(
                 "def test_generated():\n    assert True\n",
                 encoding="utf-8",
             )
-        durations = [601, 400, 300, 100, 100]
+        durations = [601, 400, 300, 300, 200, 100, 100]
         commands = [
             {
                 "id": f"RUN-{index:03d}",
@@ -536,6 +567,7 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
     assert isinstance(changed_files_manifest, list)
     if "- Branch: ci/pr-42/feature" in prompt:
         assert "- Diff Mode: merge-base" in prompt
+        assert "- PR Head SHA: " in prompt
         assert re.search(r"git diff --find-renames [0-9a-f]{40}\.\.\.[0-9a-f]{40}", prompt)
         assert any(
             f'"status":"{status}"' in prompt
@@ -551,6 +583,8 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
         assert re.search(r"git diff --find-renames [0-9a-f]{40} [0-9a-f]{40}", prompt)
         assert '"status":"not_applicable"' in prompt
     mode = environment.get("AI_ANALYSIS_MODE", "full")
+    assert "不是泛化 AI 审查平台" in prompt
+    assert "不要把纯风格建议、泛化重构建议" in prompt
     if mode == "analysis_only":
         assert "失败诊断与审查要求" in prompt
         assert "有限诊断约束" in prompt
@@ -558,11 +592,11 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
         assert "禁止重新运行完整 Local CI、全量测试、完整重编译" in prompt
     else:
         assert "Local CI 环境、产物复用与验证约束" in prompt
-        assert "且存在可测试代码路径时，应生成 1 至 3 个定向测试用例" in prompt
-        assert "最多创建或修改 2 个测试文件" in prompt
-        assert "最多执行 4 条测试、构建、lint 或诊断命令" in prompt
+        assert "且存在可测试代码路径时，应生成 1 至 5 个定向测试用例" in prompt
+        assert "最多创建或修改 3 个测试文件" in prompt
+        assert "最多执行 6 条测试、构建、lint 或诊断命令" in prompt
         assert "单条命令预计不超过 600 秒" in prompt
-        assert "累计测试预算不超过 1200 秒" in prompt
+        assert "累计测试预算不超过 1800 秒" in prompt
         assert "至少预留 300 秒" in prompt
         assert "失败用例最多额外复跑一次" in prompt
         assert "默认避免运行全量测试或完整重编译" in prompt
@@ -604,6 +638,8 @@ assert_chinese_failure_report() {
   grep -Fq "## 合入建议" "${output_dir}/codex-ai-report.md"
   grep -Fq "## 贡献者目标与实现情况" "${output_dir}/codex-ai-report.md"
   grep -Fq "## Codex AI 代码审查" "${output_dir}/codex-ai-comment.md"
+  grep -Fq "### 审查摘要" "${output_dir}/codex-ai-comment.md"
+  grep -Fq "确定性 CI：" "${output_dir}/codex-ai-comment.md"
   grep -Fq "### 贡献者目标与实现情况" "${output_dir}/codex-ai-comment.md"
   grep -Fq "### 变更文件" "${output_dir}/codex-ai-comment.md"
   python3 "${renderer}" \
@@ -628,6 +664,8 @@ run_case() {
   local case_branch="${8:-${task_branch}}"
   local case_base_ref="${9:-}"
   local case_task_metadata_file="${10:-}"
+  local case_head_sha="${11:-}"
+  local case_head_ref="${12:-}"
   local case_root="${test_root}/${case_name}"
   local output_dir="${case_root}/output"
   local docker_root="${case_root}/container-root"
@@ -684,7 +722,7 @@ run_case() {
   CODEX_AI_CI_REASONING_EFFORT="low" \
     "${runner}" "${repo_url}" "${output_dir}" "${case_target_sha}" \
     "${case_base_sha}" "${case_base_ref}" "${case_branch}" "${local_ci_status}" \
-    "${case_task_metadata_file}"
+    "${case_task_metadata_file}" "${case_head_sha}" "${case_head_ref}"
   local actual_exit=$?
   set -e
 
@@ -730,9 +768,15 @@ run_case() {
     echo "Codex runner 输出泄漏了独立 API token：${case_name}" >&2
     exit 1
   fi
-  if grep -Eq '^exec .*anchor-sophgo-ci|^cp .*anchor-sophgo-ci:' \
-    "${docker_state}/docker.log"; then
+  local original_container_writes
+  original_container_writes="$(
+    grep -E '^exec .*anchor-sophgo-ci|^cp .*anchor-sophgo-ci:' \
+      "${docker_state}/docker.log" |
+      grep -Ev '^exec (--user 0 )?anchor-sophgo-ci readlink -e -- ' || true
+  )"
+  if [[ -n "${original_container_writes}" ]]; then
     echo "Codex runner 修改了原 Local CI 容器：${case_name}" >&2
+    printf '%s\n' "${original_container_writes}" >&2
     exit 1
   fi
   if find "${workspace_root}" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
@@ -755,7 +799,6 @@ grep -Fxq "local_ci_status: 0" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "analysis_mode: full" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "execution_mode: ephemeral_container" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "source_container: anchor-sophgo-ci" "${success_output}/codex-ai-ci-summary.txt"
-grep -Fxq "workspace_reuse: read_only" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_execution_status: passed" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "workspace_dirty: true" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fq -- "--volumes-from anchor-sophgo-ci:ro" "${test_root}/success/docker-state/docker.log"
@@ -800,18 +843,25 @@ grep -Fq "忽略不在预期 artifact 根目录中的日志路径：/root/.codex
   "${untrusted_artifact_output}/codex-ai-ci.log"
 
 run_case pr-merge-base success 0 30 0 \
-  "${pr_head_sha}" "${pr_target_base_sha}" "${pr_branch}" "${pr_base_branch}" \
-  "${pr_metadata_file}"
+  "${pr_merge_sha}" "${pr_target_base_sha}" "${pr_branch}" "${pr_base_branch}" \
+  "${pr_metadata_file}" "${pr_head_sha}" "${pr_head_branch}"
 pr_output="${test_root}/pr-merge-base/output"
 grep -Fxq "requested_base_sha: ${pr_target_base_sha}" "${pr_output}/codex-ai-ci-summary.txt"
 grep -Fxq "requested_base_ref: ${pr_base_branch}" "${pr_output}/codex-ai-ci-summary.txt"
+grep -Fxq "requested_head_sha: ${pr_head_sha}" "${pr_output}/codex-ai-ci-summary.txt"
+grep -Fxq "requested_head_ref: ${pr_head_branch}" "${pr_output}/codex-ai-ci-summary.txt"
+grep -Fxq "tested_sha: ${pr_merge_sha}" "${pr_output}/codex-ai-ci-summary.txt"
 grep -Fxq "base_sha: ${base_sha}" "${pr_output}/codex-ai-ci-summary.txt"
 grep -Fxq "base_source: merge-base" "${pr_output}/codex-ai-ci-summary.txt"
 grep -Fxq "diff_mode: merge-base" "${pr_output}/codex-ai-ci-summary.txt"
 grep -Fxq "changed_file_count: 1" "${pr_output}/codex-ai-ci-summary.txt"
+python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert len(data) == 1 and data[0]["path"] == "pr-only.txt"' \
+  "${pr_output}/codex-changed-files-manifest.json"
 grep -Fq "目标分支提交" "${pr_output}/codex-ai-report.md"
 grep -Fq "实际审查起点（merge-base）" "${pr_output}/codex-ai-report.md"
 grep -Fq "${pr_target_base_sha}" "${pr_output}/codex-ai-report.md"
+grep -Fq "${pr_head_sha}" "${pr_output}/codex-ai-report.md"
+grep -Fq "${pr_merge_sha}" "${pr_output}/codex-ai-report.md"
 grep -Fq "${base_sha}" "${pr_output}/codex-ai-report.md"
 grep -Fxq "change_request_context_status: available" \
   "${pr_output}/codex-ai-ci-summary.txt"
@@ -825,7 +875,8 @@ grep -Fq "贡献者希望增强适配器在新边界条件下的稳健性" \
 [[ ! -e /tmp/codex-pr-metadata-must-not-run ]]
 
 run_case pr-missing-metadata success 0 30 0 \
-  "${pr_head_sha}" "${pr_target_base_sha}" "${pr_branch}" "${pr_base_branch}"
+  "${pr_merge_sha}" "${pr_target_base_sha}" "${pr_branch}" "${pr_base_branch}" \
+  "" "${pr_head_sha}" "${pr_head_branch}"
 pr_missing_metadata_output="${test_root}/pr-missing-metadata/output"
 grep -Fxq "status: pass" \
   "${pr_missing_metadata_output}/codex-ai-ci-summary.txt"
@@ -852,19 +903,19 @@ Path(sys.argv[2]).write_text(
 )
 PY
 run_case pr-invalid-metadata success 0 30 0 \
-  "${pr_head_sha}" "${pr_target_base_sha}" "${pr_branch}" "${pr_base_branch}" \
-  "${invalid_pr_metadata_file}"
+  "${pr_merge_sha}" "${pr_target_base_sha}" "${pr_branch}" "${pr_base_branch}" \
+  "${invalid_pr_metadata_file}" "${pr_head_sha}" "${pr_head_branch}"
 pr_invalid_metadata_output="${test_root}/pr-invalid-metadata/output"
 grep -Fxq "status: pass" \
   "${pr_invalid_metadata_output}/codex-ai-ci-summary.txt"
 grep -Fxq "change_request_context_status: invalid" \
   "${pr_invalid_metadata_output}/codex-ai-ci-summary.txt"
-grep -Fq "target_sha 与当前 PR head SHA 不一致" \
+grep -Fq "target_sha 与当前测试提交不一致" \
   "${pr_invalid_metadata_output}/codex-ai-ci-summary.txt"
 
 run_case pr-analysis-metadata success 1 30 0 \
-  "${pr_head_sha}" "${pr_target_base_sha}" "${pr_branch}" "${pr_base_branch}" \
-  "${pr_metadata_file}"
+  "${pr_merge_sha}" "${pr_target_base_sha}" "${pr_branch}" "${pr_base_branch}" \
+  "${pr_metadata_file}" "${pr_head_sha}" "${pr_head_branch}"
 pr_analysis_output="${test_root}/pr-analysis-metadata/output"
 grep -Fxq "analysis_mode: analysis_only" \
   "${pr_analysis_output}/codex-ai-ci-summary.txt"
@@ -894,7 +945,7 @@ CODEX_AI_CI_HOME="${missing_case_root}/codex-home" \
 LOCAL_CI_CONTAINER="anchor-sophgo-ci" \
 CODEX_AI_CI_WORKSPACE_ROOT="${workspace_root}" \
 CODEX_AI_CI_TIMEOUT_SECONDS="30" \
-  "${runner}" "${repo_url}" "${missing_output}" "${pr_head_sha}" \
+  "${runner}" "${repo_url}" "${missing_output}" "${pr_merge_sha}" \
   "" "" "${pr_branch}" "0"
 missing_exit=$?
 set -e
@@ -916,15 +967,15 @@ fi
 run_case over-limit over_limit 0 30 0
 over_limit_output="${test_root}/over-limit/output"
 grep -Fxq "status: pass" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fxq "generated_test_file_count: 3" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_command_count: 5" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fxq "generated_test_file_count: 4" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_command_count: 7" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fxq "max_test_command_duration_seconds: 601" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fxq "total_test_command_duration_seconds: 1501" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fxq "total_test_command_duration_seconds: 2001" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: warning" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fq "生成测试文件数量 3 超过限制 2" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fq "命令数量 5 超过限制 4" "${over_limit_output}/codex-ai-comment.md"
+grep -Fq "生成测试文件数量 4 超过限制 3" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fq "命令数量 7 超过限制 6" "${over_limit_output}/codex-ai-comment.md"
 grep -Fq "单条命令最长耗时 601 秒" "${over_limit_output}/codex-ai-report.md"
-grep -Fq "测试和诊断命令累计耗时 1501 秒" "${over_limit_output}/codex-ai-report.md"
+grep -Fq "测试和诊断命令累计耗时 2001 秒" "${over_limit_output}/codex-ai-report.md"
 grep -Fq "运行约束提醒：" "${over_limit_output}/codex-ai-comment.md"
 
 run_case zero-tests zero_tests 0 30 0

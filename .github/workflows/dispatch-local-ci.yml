@@ -87,6 +87,10 @@ jobs:
           HEAD_REPO="${REPOSITORY}"
           BASE_SHA=""
           BASE_REF=""
+          TESTED_SHA="${EVENT_SHA}"
+          TESTED_REF=""
+          TESTED_SHA_KIND="commit"
+          HEAD_TASK_REF=""
 
           if [ "${EVENT_NAME}" = "workflow_run" ]; then
             metadata_file="${RUNNER_TEMP}/security-gate/metadata.json"
@@ -110,14 +114,34 @@ jobs:
               }
             done
 
-            current_head_sha="$(
-              gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha'
-            )"
+            pr_payload="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+            current_head_sha="$(jq -r '.head.sha // empty' <<< "${pr_payload}")"
+            current_base_sha="$(jq -r '.base.sha // empty' <<< "${pr_payload}")"
             if [ "${current_head_sha}" != "${HEAD_SHA}" ]; then
               echo "Skip stale authorization: ${HEAD_SHA}"
               echo "should_dispatch=false" >> "${GITHUB_OUTPUT}"
               exit 0
             fi
+            if [ "${current_base_sha}" != "${BASE_SHA}" ]; then
+              echo "Skip stale base authorization: ${BASE_SHA}"
+              echo "should_dispatch=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+
+            TESTED_REF="refs/pull/${PR_NUMBER}/merge"
+            if ! TESTED_SHA="$(
+              git ls-remote "https://github.com/${REPOSITORY}.git" "${TESTED_REF}" |
+                awk '{print $1}'
+            )"; then
+              echo "::error::Unable to resolve PR test merge ref ${TESTED_REF}"
+              exit 1
+            fi
+            if [[ ! "${TESTED_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::PR test merge ref is unavailable; do not fall back to PR head: ${TESTED_REF}"
+              exit 1
+            fi
+            TESTED_SHA_KIND="pr_merge"
+            HEAD_TASK_REF="ci/head/pr-${PR_NUMBER}/${HEAD_REF}"
           fi
 
           flaggems_mode="sample"
@@ -137,17 +161,20 @@ jobs:
             task_ref="ci/pr-${PR_NUMBER}/${HEAD_REF}"
             base_task_ref="ci/base/pr-${PR_NUMBER}/${HEAD_REF}"
             metadata_ref="ci/meta/pr-${PR_NUMBER}/${HEAD_REF}"
+            head_task_ref="${HEAD_TASK_REF}"
             base_fetch_ref="refs/heads/${BASE_REF}"
           elif [ "${flaggems_mode}" = "full" ]; then
             task_ref="ci/full/${HEAD_REF}"
             base_task_ref=""
             metadata_ref=""
+            head_task_ref=""
             base_fetch_ref=""
             context="${CONTEXT}/full"
           else
             task_ref="ci/push/${HEAD_REF}"
             base_task_ref=""
             metadata_ref=""
+            head_task_ref=""
             base_fetch_ref=""
           fi
 
@@ -162,19 +189,27 @@ jobs:
           fi
 
           if [ "${EVENT_NAME}" = "workflow_run" ]; then
-            fetch_ref="refs/pull/${PR_NUMBER}/head"
+            fetch_ref="${TESTED_REF}"
+            head_fetch_ref="refs/pull/${PR_NUMBER}/head"
             source_label="${HEAD_REPO}:${HEAD_REF}"
           elif [ "${EVENT_NAME}" = "push" ]; then
             fetch_ref="${GITHUB_REF}"
+            head_fetch_ref=""
+            TESTED_REF="${GITHUB_REF}"
             source_label="${HEAD_REF}"
           else
             fetch_ref="refs/heads/${HEAD_REF}"
+            head_fetch_ref=""
+            TESTED_REF="refs/heads/${HEAD_REF}"
             source_label="${HEAD_REF}"
           fi
           {
             echo "should_dispatch=true"
             echo "pr_number=${PR_NUMBER}"
-            echo "sha=${HEAD_SHA}"
+            echo "sha=${TESTED_SHA}"
+            echo "tested_sha=${TESTED_SHA}"
+            echo "tested_ref=${TESTED_REF}"
+            echo "tested_sha_kind=${TESTED_SHA_KIND}"
             echo "head_sha=${HEAD_SHA}"
             echo "head_ref=${HEAD_REF}"
             echo "head_repo=${HEAD_REPO}"
@@ -184,8 +219,10 @@ jobs:
             echo "source_label=${source_label}"
             echo "task_ref=${task_ref}"
             echo "base_task_ref=${base_task_ref}"
+            echo "head_task_ref=${head_task_ref}"
             echo "metadata_ref=${metadata_ref}"
             echo "base_fetch_ref=${base_fetch_ref}"
+            echo "head_fetch_ref=${head_fetch_ref}"
             echo "fetch_ref=${fetch_ref}"
             echo "flaggems_mode=${flaggems_mode}"
             echo "context=${context}"
@@ -199,6 +236,9 @@ jobs:
           FETCH_REF: ${{ steps.meta.outputs.fetch_ref }}
           BASE_SHA: ${{ steps.meta.outputs.base_sha }}
           BASE_FETCH_REF: ${{ steps.meta.outputs.base_fetch_ref }}
+          HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
+          HEAD_FETCH_REF: ${{ steps.meta.outputs.head_fetch_ref }}
+          TESTED_SHA_KIND: ${{ steps.meta.outputs.tested_sha_kind }}
         run: |
           set -euo pipefail
 
@@ -207,6 +247,19 @@ jobs:
 
           # Gitee rejects relay updates when the pushed commit has shallow ancestry.
           git fetch --no-tags origin "+${FETCH_REF}:refs/local-ci/task"
+
+          actual_ref_sha="$(git rev-parse refs/local-ci/task)"
+          if [ "${TESTED_SHA_KIND}" = "pr_merge" ] && [ "${actual_ref_sha}" != "${SHA}" ]; then
+            echo "::error::Fetched PR test merge ${actual_ref_sha}, expected ${SHA}"
+            exit 1
+          fi
+          if ! git cat-file -e "${SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "${SHA}"
+          fi
+          if ! git cat-file -e "${SHA}^{commit}" 2>/dev/null; then
+            echo "::error::Task commit is unavailable after fetching ${FETCH_REF}: ${SHA}"
+            exit 1
+          fi
 
           if [ -n "${BASE_SHA}" ]; then
             git fetch --no-tags origin "+${BASE_FETCH_REF}:refs/local-ci/base"
@@ -217,11 +270,29 @@ jobs:
             fi
           fi
 
+          if [ -n "${HEAD_SHA}" ] && [ -n "${HEAD_FETCH_REF}" ]; then
+            git fetch --no-tags origin "+${HEAD_FETCH_REF}:refs/local-ci/head"
+            actual_head_sha="$(git rev-parse refs/local-ci/head)"
+            if [ "${actual_head_sha}" != "${HEAD_SHA}" ]; then
+              echo "::error::Fetched PR head ${actual_head_sha}, expected ${HEAD_SHA}"
+              exit 1
+            fi
+          fi
+
+          if [ "${TESTED_SHA_KIND}" = "pr_merge" ]; then
+            parents="$(git rev-list --parents -n 1 "${SHA}")"
+            set -- ${parents}
+            if [ "$#" -ne 3 ] || [ "$2" != "${BASE_SHA}" ] || [ "$3" != "${HEAD_SHA}" ]; then
+              echo "::error::PR test merge parents do not match base/head: ${parents}"
+              exit 1
+            fi
+          fi
+
           git checkout --detach "${SHA}"
 
-          actual_sha="$(git rev-parse HEAD)"
-          if [ "${actual_sha}" != "${SHA}" ]; then
-            echo "::error::Fetched ${actual_sha}, expected ${SHA}"
+          actual_checkout_sha="$(git rev-parse HEAD)"
+          if [ "${actual_checkout_sha}" != "${SHA}" ]; then
+            echo "::error::Checked out ${actual_checkout_sha}, expected ${SHA}"
             exit 1
           fi
 
@@ -233,7 +304,15 @@ jobs:
           SHA: ${{ steps.meta.outputs.sha }}
           TASK_REF: ${{ steps.meta.outputs.task_ref }}
           BASE_SHA: ${{ steps.meta.outputs.base_sha }}
+          BASE_REF: ${{ steps.meta.outputs.base_ref }}
           BASE_TASK_REF: ${{ steps.meta.outputs.base_task_ref }}
+          HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
+          HEAD_REF: ${{ steps.meta.outputs.head_ref }}
+          HEAD_REPO: ${{ steps.meta.outputs.head_repo }}
+          HEAD_TASK_REF: ${{ steps.meta.outputs.head_task_ref }}
+          TESTED_SHA: ${{ steps.meta.outputs.tested_sha }}
+          TESTED_REF: ${{ steps.meta.outputs.tested_ref }}
+          TESTED_SHA_KIND: ${{ steps.meta.outputs.tested_sha_kind }}
           METADATA_REF: ${{ steps.meta.outputs.metadata_ref }}
           PR_NUMBER: ${{ steps.meta.outputs.pr_number }}
           CAPTURED_AT: ${{ steps.meta.outputs.started_at }}
@@ -267,23 +346,50 @@ jobs:
               git push --force gitee-ci "refs/local-ci/base:refs/heads/${BASE_TASK_REF}"
           fi
 
+          if [ -n "${HEAD_SHA}" ] && [ -n "${HEAD_TASK_REF}" ]; then
+            GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
+              git push --force gitee-ci "refs/local-ci/head:refs/heads/${HEAD_TASK_REF}"
+          fi
+
           if [ -n "${METADATA_REF}" ]; then
             pr_payload="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
             PR_TITLE="$(jq -r '.title // ""' <<< "${pr_payload}")"
             PR_DESCRIPTION="$(jq -r '.body // ""' <<< "${pr_payload}")"
             metadata_file="${RUNNER_TEMP}/task-metadata.json"
             jq -n \
-              --arg schema "triton-anchor-local-ci-task-metadata/v1" \
+              --arg schema "triton-anchor-local-ci-task-metadata/v2" \
+              --arg event_kind "pull_request" \
               --arg task_ref "${TASK_REF}" \
+              --arg base_task_ref "${BASE_TASK_REF}" \
+              --arg head_task_ref "${HEAD_TASK_REF}" \
               --arg target_sha "${SHA}" \
+              --arg tested_sha "${TESTED_SHA}" \
+              --arg tested_ref "${TESTED_REF}" \
+              --arg tested_sha_kind "${TESTED_SHA_KIND}" \
+              --arg base_branch "${BASE_REF}" \
+              --arg base_sha "${BASE_SHA}" \
+              --arg head_branch "${HEAD_REF}" \
+              --arg head_sha "${HEAD_SHA}" \
+              --arg head_repo "${HEAD_REPO}" \
               --arg pr_number "${PR_NUMBER}" \
               --arg title "${PR_TITLE:-}" \
               --arg description "${PR_DESCRIPTION:-}" \
               --arg captured_at "${CAPTURED_AT}" \
               '{
                 schema: $schema,
+                event_kind: $event_kind,
                 task_ref: $task_ref,
+                base_task_ref: $base_task_ref,
+                head_task_ref: $head_task_ref,
                 target_sha: $target_sha,
+                tested_sha: $tested_sha,
+                tested_ref: $tested_ref,
+                tested_sha_kind: $tested_sha_kind,
+                base_branch: $base_branch,
+                base_sha: $base_sha,
+                head_branch: $head_branch,
+                head_sha: $head_sha,
+                head_repo: $head_repo,
                 pr_number: ($pr_number | tonumber),
                 title: (($title | gsub("\r\n?"; "\n"))[0:500]),
                 description: (($description | gsub("\r\n?"; "\n"))[0:8000]),

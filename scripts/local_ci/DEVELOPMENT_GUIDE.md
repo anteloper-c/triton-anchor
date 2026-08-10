@@ -1,8 +1,10 @@
-# triton-anchor Local CI 工程记忆
+# triton-anchor Local CI 开发上下文与规范
 
-> 本文件是 `scripts/local_ci` 的项目级长期知识库。它服务于 Local CI、Codex AI CI、后端适配和结果发布链路的后续维护，不是普通 README。
+> **文件定位**：本开发指南固定存放在 `scripts/local_ci/DEVELOPMENT_GUIDE.md`，是 Local CI / Codex AI CI 相关开发的长期上下文和编码规范入口，供开发者、Claude/Codex 等 agent coding 工具在修改本子系统前阅读和维护。它不是 Codex AI CI 正式执行阶段的审查输入，也不应该作为模型运行时必须读取的 prompt 依赖。
 >
-> 维护原则：以当前代码和 workflow 的实际行为为准；文档中的架构目标不能替代代码证据。发现重要实现变化、部署约束、故障经验或安全事件后，应同步更新本文件。
+> **使用对象**：凡开发或维护 Local CI、Codex AI CI、Gitee/GitHub 结果协议、prompt/schema/renderer、性能基线、dashboard 或相关 workflow，应先阅读本开发指南，理解已有架构、协议边界、风险和验证要求，再修改代码。若使用 AI coding 工具协作开发，也应把本开发指南作为开发上下文提供给工具。
+>
+> **维护边界**：本开发指南记录长期有效的工程事实、开发约束、风险和验证要求，不记录一次性对话流水。以当前代码和 workflow 的实际行为为准；文档中的架构目标不能替代代码证据。发现重要实现变化、部署约束、故障经验或安全事件后，应同步更新本开发指南。一次性协作过程和临时未决事项应先写入 `scripts/local_ci/DEVELOPMENT_CONTEXT.md`，完成后再把长期事实沉淀回本开发指南。
 
 `scripts/local_ci/poll_gitee_and_run.sh` 是 systemd/cron 和人工运行 poller 的稳定根目录入口，并包含 poller 完整实现。其余 canonical 实现按职责分为 `orchestration/`、`deterministic_ci/`、`codex_ai/`、`results/` 和 `shared/`，不提供根目录兼容 wrapper。`LOCAL_CI_SCRIPT_DIR` 必须指向完整的 `scripts/local_ci` 根目录，以便 trusted runner snapshot 包含入口和全部模块。
 
@@ -10,7 +12,9 @@
 
 ### 1.1 文件作用域
 
-本文件位于 `scripts/local_ci/`，重点约束以下内容：
+本开发指南的定位是 `scripts/local_ci` 控制面的长期开发上下文和规范入口，而不是全仓库通用 README，也不是 Codex AI CI 执行阶段的审查资料。正式 AI 审查 prompt 应独立描述运行时规则、输入边界和输出契约；本开发指南服务于开发阶段，帮助人类维护者和 agent coding 工具理解如何安全修改这套控制面。
+
+本开发指南位于 `scripts/local_ci/`，重点约束以下内容：
 
 - Gitee task ref 轮询、SHA 去重、运行目录和可信脚本快照；
 - Docker 容器内的前端构建、后端 rebuild、smoke/JIT、FlagGems 和性能基准；
@@ -18,11 +22,11 @@
 - Gitee 结果仓库的目录协议、性能缓存、GitHub status 和 PR 评论；
 - 修改上述脚本时必须检查相关 workflow、配置模板、测试和 `docs/ci_guide_zh.md`。
 
-本文件同时记录整个 `triton-anchor` 的背景，因为 Local CI 的行为依赖仓库的 Python/C++ 编译前端、vendored Triton、FlagGems 和 out-of-tree 硬件后端。
+本开发指南同时记录整个 `triton-anchor` 的背景，因为 Local CI 的行为依赖仓库的 Python/C++ 编译前端、vendored Triton、FlagGems 和 out-of-tree 硬件后端。
 
 ### 1.2 分析时的仓库状态
 
-本文件不固化易失的分支、HEAD 或远端同步状态。开始维护前必须重新检查 `git status`、当前分支、目标远端和相关 diff，并遵守以下长期事实：
+本开发指南不固化易失的分支、HEAD 或远端同步状态。开始维护前必须重新检查 `git status`、当前分支、目标远端和相关 diff，并遵守以下长期事实：
 
 - `triton/` 是 Git tree 中的 vendored 源码目录，不是当前 Git submodule；
 - `FlagGems/` 是 Git submodule，可能在轻量 checkout 中未初始化；
@@ -375,7 +379,8 @@ Codex AI CI 是非阻塞的审查和 targeted diagnosis 辅助层：
 - 确定性 Local CI 的 exit code 决定最终 Local CI 结果；
 - Codex 报告、AI verdict、生成测试和 AI 执行失败不会改变确定性 Local CI 状态；
 - receiver 为 Codex 发布独立的 `.../codex-ai-advisory` success status，并在 PR task 上更新带 marker 的 Bot 评论；
-- AI 的 `PASS` 不等价于 Local CI 通过，也不等价于没有未覆盖风险。
+- AI 的 `PASS` 不等价于 Local CI 通过，也不等价于没有未覆盖风险；
+- 审查重点服务 `triton-anchor` 仓库及后续分支，不是泛化 AI 审查平台；主要关注 Triton/AnchorIR 前端语义、TTIR pipeline、adapter/ABI、C++/MLIR binding、Public API、Local CI 协议和后端 smoke/FlagGems/性能证据。
 
 ### 6.2 Codex 入口与工具
 
@@ -402,8 +407,8 @@ Codex checkout 的行为：
 
 - 从 Gitee task branch clone `--single-branch --no-tags --no-checkout`；
 - 校验 target SHA 是 40 位 hex，并确认 checkout HEAD 等于 target；
-- PR 任务必须同时提供 base branch 和 exact base SHA；
-- PR diff 使用 `requested_base_sha...target_sha`，实际审查起点是 `git merge-base`；
+- PR 任务必须同时提供 base branch、head branch、exact base SHA 和 exact head SHA；
+- PR checkout 使用 `target_sha`（GitHub test merge commit），但 PR diff 使用 `requested_base_sha...requested_head_sha`，实际审查起点是 `git merge-base`；
 - push/full 使用 previous push SHA、target parent 或 empty tree 的 two-point diff；
 - `codex_ai/run_codex_ai_ci.sh` 生成 `codex-changed-files-manifest.json`，报告的 `changed_files` 必须与该清单完全相同；
 - Codex checkout 移除 Gitee remote，避免 Codex 使用 relay credentials 或向远端推送。
@@ -448,6 +453,8 @@ Codex checkout 的行为：
 
 `codex_ai/run_codex_ai_ci.sh::render_prompt_template()` 使用 Python `string.Template(...).substitute(...)` 严格渲染模板。新增或重命名 `${...}` 变量必须同步 runner 在 `render_prompt_template` 调用中的名称和值；否则 Codex 执行前会失败。当前 runner 同时提供变更清单、目标/基线 SHA、Local CI 状态、日志和 artifact 路径、测试生成与命令预算、Codex 超时和报告预留时间等变量。
 
+runner 会根据 changed-files manifest 生成 `codex-context-summary.json` 和 review context profile（如 `docs_only`、`codex_ai_ci_maintenance`、`local_ci_protocol`、`performance`、`local_ci_control`、`local_ci_failure`、`large_diff`）。该 profile 只用于减少无关上下文读取和确定优先级，不改变必须覆盖全部变更文件、finding 证据标准、非阻塞语义或报告 schema。`codex_ai_ci_maintenance` 表示 diff 只涉及 `scripts/local_ci/codex_ai/` 自身维护文件，不纳入 triton-anchor 产品代码审查，不应生成产品 finding；其同步性通过专用契约测试和人工维护审查处理。
+
 #### 6.4.2 Prompt 模板契约测试
 
 `scripts/local_ci/codex_ai/tests/test_codex_prompt_templates.py` 是 prompt 配套的纯 Python 静态契约测试；`test_codex_report_contract.py` 检查 renderer 的 verdict、整体测试状态、命令状态和退出码矩阵。它们不替代完整 Codex 容器集成 harness。
@@ -467,12 +474,12 @@ PYTHONPATH=python python -m pytest scripts/local_ci/codex_ai/tests scripts/local
 
 默认配置位于 `config.example.env`：
 
-- Codex hard timeout：1800 秒；
-- generated test cases：1 至 3；
-- generated test files：最多 2；
-- test/build/lint/diagnostic commands：最多 4；
+- Codex hard timeout：2400 秒；
+- generated test cases：1 至 5；
+- generated test files：最多 3；
+- test/build/lint/diagnostic commands：最多 6；
 - 单条命令建议不超过 600 秒；
-- 命令总预算 1200 秒；
+- 命令总预算 1800 秒；
 - 报告预留 300 秒；
 - 成功模式的可测试代码改动若没有生成测试或没有记录命令，会产生 constraint warning；
 - 纯文档改动不要求生成测试；
@@ -482,16 +489,14 @@ PYTHONPATH=python python -m pytest scripts/local_ci/codex_ai/tests scripts/local
 
 ### 6.6 临时容器和凭据边界
 
-当前实现的实际流程是：
+当前实现只支持一种临时容器来源：
 
-1. 通过 `docker commit LOCAL_CI_CONTAINER` 创建 snapshot image；
-2. 用 snapshot image 启动临时容器；
-3. 通过 `--volumes-from LOCAL_CI_CONTAINER:ro` 复用 `/workspace`；
-4. 复制 host Codex CLI、`config.toml`、`auth.json` 到临时容器 `/root/.codex`；
-5. 复制 verified checkout、schema 和 Local CI log；
-6. 以 root 执行 Codex，使用 `--ephemeral --json --sandbox danger-full-access --ignore-rules`；
-7. 收集 workspace status、`git diff HEAD` 和 untracked tar；
-8. 删除临时 container 和 snapshot image。
+1. 通过 `docker commit LOCAL_CI_CONTAINER` 创建 snapshot image，用 snapshot image 启动临时容器，并通过 `--volumes-from LOCAL_CI_CONTAINER:ro` 复用 `/workspace`；
+2. 复制 host Codex CLI、`config.toml`、`auth.json` 到临时容器 `/root/.codex`；
+3. 复制 verified checkout、schema 和 Local CI log；
+4. 以 root 执行 Codex，使用 `--ephemeral --json --sandbox danger-full-access --ignore-rules`；
+5. 收集 workspace status、`git diff HEAD` 和 untracked tar；
+6. 删除临时 container；同时删除 snapshot image。
 
 部署要求：
 
@@ -502,9 +507,9 @@ PYTHONPATH=python python -m pytest scripts/local_ci/codex_ai/tests scripts/local
 - `codex_ai/setup_codex_ai_container.sh` 会拒绝 source container 使用 Docker socket；
 - runner 会比较凭据文件执行前后的 sha256，但发现变化只记录 warning，不自动恢复。
 
-**关键安全事实：当前隔离不是完整的 hostile-code 隔离。** snapshot 来自已执行候选代码的 Local CI 容器；Codex 凭据在此后注入；Codex 以 root、联网和 `danger-full-access` 运行；bootstrap 还会 source 候选 checkout 的 `envsetup.sh` 和配置指定的 backend envsetup。候选代码可能影响该环境、读取同一容器中可见的资源，或把秘密带入生成 patch/untracked archive。不能仅凭“删除 GITEE_TOKEN 环境变量”“workspace 只读”“凭据 hash 不变”宣称已防止凭据读取或外泄。
+**关键安全事实：当前隔离不是完整的 hostile-code 隔离。** 默认 snapshot 模式仍来自已执行候选代码的 Local CI 容器；Codex 仍以 root、联网和 `danger-full-access` 运行，bootstrap 还可能 source 候选 checkout 的 `envsetup.sh` 和配置指定的 backend envsetup。候选代码可能影响执行环境，或把秘密带入生成 patch/untracked archive。不能仅凭“删除 GITEE_TOKEN 环境变量”“workspace 只读”“凭据 hash 不变”或“输出扫描”宣称已防止凭据读取或外泄。
 
-长期修复方向是使用全新可信 Codex image、独立 disposable container、明确输入复制、最小权限 token、受限网络和发布前 secret scan；在此修复前，Codex AI CI 只能被视为非阻塞的辅助审查，不能承载高权限长期凭据。
+后续修复方向应保持克制：优先在实际服务器上验证最小权限 token、必要输入复制、受限网络和发布前 secret scan 的效果；除非有明确故障或迁移需求，不应继续加入复杂的通用 AI 审查平台能力。Codex AI CI 只能被视为服务 triton-anchor 的非阻塞辅助审查，不能承载高权限长期凭据。
 
 ## 7. 结果协议与状态流
 
@@ -567,9 +572,10 @@ publisher：
 4. 按固定 allowlist 复制 artifact 和 Codex run 文件；
 5. 为 compile/pass-profile/IR serialization 生成按 SHA/profile 的 cache；
 6. 更新 IR serialization dashboard；
-7. 写 `<commit-dir>/latest.txt` 指向最新 run；
-8. commit/push 结果分支；
-9. 尝试向源 Gitee commit 发 comment。
+7. 写 `publish-manifest.json` 记录 copied files、缺失预期 artifact、target/tested SHA、run ID 和 fallback 状态；
+8. 原子替换 `<commit-dir>/latest.txt` 指向最新 run；
+9. commit/push 结果分支，non-fast-forward 时有限 fetch/rebase retry；
+10. 尝试向源 Gitee commit 发 comment。
 
 publisher 的成功定义主要是结果分支 push 成功；commit comment 失败只记录 warning。当前正常 artifact allowlist 不包含所有原始日志，例如完整 `local-ci.log`、backend rebuild/build/install 日志和部分 FlagGems operator log 可能只在本地保留，导致 summary 中的相对链接在远端不可用。修改产物时要同时更新 allowlist、dashboard、bridge URL 和测试。
 
@@ -578,12 +584,14 @@ publisher 的成功定义主要是结果分支 push 成功；commit comment 失�
 bridge 从 Gitee API 读取：
 
 - `latest.txt`；
+- `publish-manifest.json`；
 - `delivery-summary.txt`；
 - `result.json`；
 - Codex summary、结构化报告和 comment。
 
 然后：
 
+- 校验 publish manifest、summary 和 `result.json` 的 SHA/run ID；
 - 解析 overall exit code；
 - 将 stage 状态映射到 GitHub success/failure；
 - 发布 frontend/backend/FlagGems/三类性能独立 status；
@@ -899,7 +907,7 @@ CODEX_AI_CI_HOME=/path/to/codex-ai \
 ### 12.1 安全风险
 
 - **Codex 凭据暴露边界高风险**：候选代码先运行在 Local CI 容器，再 snapshot 给 Codex；Codex 注入静态凭据后以 root、联网、`danger-full-access` 运行，并 source 候选 `envsetup.sh`/backend envsetup。必须按 hostile input 设计，不能只依赖 prompt、文件 hash 或 `unset GITEE_TOKEN`。
-- **历史 Gitee token 风险**：历史 commit `e080a31` 的 `scripts/local_ci/config.env` 曾包含非空 `GITEE_TOKEN`；删除 commit `6edac24` 仍在 ancestry。token 内容不在本文件记录，但必须视为已泄露并由部署方轮换、吊销和清理历史。
+- **历史 Gitee token 风险**：历史 commit `e080a31` 的 `scripts/local_ci/config.env` 曾包含非空 `GITEE_TOKEN`；删除 commit `6edac24` 仍在 ancestry。token 内容不在本开发指南记录，但必须视为已泄露并由部署方轮换、吊销和清理历史。
 - **当前 `.gitignore` 未忽略 `scripts/local_ci/config.env`**：真实配置可能被误加入仓库。修复该问题时要检查历史和部署文件，不要把现存本地配置内容提交进来。
 - **模板默认允许 write token fallback**：`config.example.env` 的 `LOCAL_CI_ALLOW_WRITE_TOKEN_IN_CONTAINER="1"` 与安全注释冲突。自动 fork PR 环境必须显式设置为 `0`，容器只用只读 relay token 或不带 token。
 - **发布产物没有完整 secret scan**：Codex patch、generated archive、日志和 untracked 文件会被收集/发布；发布前没有覆盖所有 artifact 的可信秘密扫描。
@@ -946,11 +954,12 @@ CODEX_AI_CI_HOME=/path/to/codex-ai \
 ### 13.1 修改前
 
 1. 先识别变更属于 poller、container delivery、Codex、benchmark、publisher/bridge、workflow 还是编译器核心。
-2. 阅读目标文件的调用方、调用的 shell/Python helper、对应 schema/config 和至少一个测试。
-3. 如果涉及 task ref、SHA、结果路径、status 或 artifact，必须同时查 `poll_gitee_and_run.sh`、`shared/result_paths.py`、publisher、bridge、receiver workflow 和 dashboard sync。
-4. 如果涉及 Codex，必须同时查 `codex_ai/run_codex_ai_ci.sh`、两个 prompt、`prompt_change_log.md`、schema、renderer、credential validator、prompt 模板契约测试和三组 Codex harness。
-5. 如果涉及 backend/compile/runtime，必须追踪 `setup.py` -> CMake -> `libtriton` binding -> Triton compiler stage -> Driver/launcher，并确认 out-of-tree 依赖。
-6. 先记录当前工作区状态；不要回滚或重置不属于本次任务的修改，尤其是当前已知的 CRLF 变化。
+2. 如果 `scripts/local_ci/DEVELOPMENT_CONTEXT.md` 存在且非空，先读取其中的临时协作记录；它只能补充上下文，不能覆盖代码、workflow、测试和本开发指南的长期约束。
+3. 阅读目标文件的调用方、调用的 shell/Python helper、对应 schema/config 和至少一个测试。
+4. 如果涉及 task ref、SHA、结果路径、status 或 artifact，必须同时查 `poll_gitee_and_run.sh`、`shared/result_paths.py`、publisher、bridge、receiver workflow 和 dashboard sync。
+5. 如果涉及 Codex，必须同时查 `codex_ai/run_codex_ai_ci.sh`、两个 prompt、`prompt_change_log.md`、schema、renderer、credential validator、prompt 模板契约测试和三组 Codex harness。
+6. 如果涉及 backend/compile/runtime，必须追踪 `setup.py` -> CMake -> `libtriton` binding -> Triton compiler stage -> Driver/launcher，并确认 out-of-tree 依赖。
+7. 先记录当前工作区状态；不要回滚或重置不属于本次任务的修改，尤其是当前已知的 CRLF 变化。
 
 ### 13.2 实施中
 
@@ -968,7 +977,7 @@ CODEX_AI_CI_HOME=/path/to/codex-ai \
 - 至少执行 `bash -n`/`py_compile`/对应单测中的必要部分；不能因本地没有 Docker、LLVM 或硬件而把未运行描述成通过。
 - 检查报告/日志中没有真实 token、个人路径或不可公开的 credential；检查产物 allowlist 和 URL 是否仍可用。
 - 检查 `git diff --check`、目标文件 diff 和状态字段；不要把行尾转换造成的噪音一并提交。
-- 发现新的重要工程知识、设计取舍、故障根因、部署前提或已修复风险后更新本文件，并注明验证时间/commit。
+- 发现新的重要工程知识、设计取舍、故障根因、部署前提或已修复风险后更新本开发指南，并注明验证时间/commit。
 
 ## 14. 按变更范围选择验证
 
@@ -1002,4 +1011,4 @@ CODEX_AI_CI_HOME=/path/to/codex-ai \
 - [ ] 性能 kernel、repeat、warmup、threshold、noise floor 和 baseline validity；
 - [ ] 新增或失效的测试命令、workflow job 和环境要求；
 - [ ] 已知问题、残余风险、修复 commit 和复现步骤；
-- [ ] 本文件中所有“不确定，需要进一步确认”的条目是否已经得到证据。
+- [ ] 本开发指南中所有“不确定，需要进一步确认”的条目是否已经得到证据。

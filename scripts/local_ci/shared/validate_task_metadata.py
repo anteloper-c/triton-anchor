@@ -9,13 +9,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "triton-anchor-local-ci-task-metadata/v1"
+SCHEMA_V1 = "triton-anchor-local-ci-task-metadata/v1"
+SCHEMA_V2 = "triton-anchor-local-ci-task-metadata/v2"
 TITLE_LIMIT = 500
 DESCRIPTION_LIMIT = 8000
 MAX_INPUT_BYTES = 64 * 1024
 TASK_REF_RE = re.compile(r"ci/pr-([0-9]+)/(.+)")
 SHA_RE = re.compile(r"[0-9a-f]{40}")
-REQUIRED_FIELDS = {
+REQUIRED_V1_FIELDS = {
     "schema",
     "task_ref",
     "target_sha",
@@ -26,6 +27,20 @@ REQUIRED_FIELDS = {
     "title_truncated",
     "description_truncated",
 }
+REQUIRED_V2_FIELDS = {
+    *REQUIRED_V1_FIELDS,
+    "event_kind",
+    "base_task_ref",
+    "head_task_ref",
+    "tested_sha",
+    "tested_ref",
+    "tested_sha_kind",
+    "base_branch",
+    "base_sha",
+    "head_branch",
+    "head_sha",
+    "head_repo",
+}
 
 
 class MetadataError(ValueError):
@@ -34,6 +49,18 @@ class MetadataError(ValueError):
 
 def fail(message: str) -> None:
     raise MetadataError(message)
+
+
+def validate_sha(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not SHA_RE.fullmatch(value):
+        fail(f"{field} 必须是 40 位小写十六进制 SHA")
+    return value
+
+
+def validate_nonempty_string(value: Any, field: str, *, limit: int = 512) -> str:
+    if not isinstance(value, str) or not value or len(value) > limit:
+        fail(f"{field} 必须是非空字符串")
+    return value
 
 
 def normalize_text(value: Any, field: str) -> tuple[str, bool]:
@@ -58,33 +85,23 @@ def validate_timestamp(value: Any) -> str:
     return value
 
 
-def validate_document(
-    document: Any,
+def validate_common_fields(
+    document: dict[str, Any],
     *,
     expected_task_ref: str,
     expected_target_sha: str,
-) -> tuple[dict[str, Any], list[str]]:
-    if not isinstance(document, dict):
-        fail("元数据顶层必须是 JSON 对象")
-    missing = sorted(REQUIRED_FIELDS - set(document))
-    extra = sorted(set(document) - REQUIRED_FIELDS)
-    if missing:
-        fail(f"元数据缺少字段：{', '.join(missing)}")
-    if extra:
-        fail(f"元数据包含未知字段：{', '.join(extra)}")
-    if document["schema"] != SCHEMA:
-        fail(f"schema 必须是 {SCHEMA}")
+) -> tuple[int, str, str, str, bool, bool, str, list[str]]:
     if document["task_ref"] != expected_task_ref:
         fail("task_ref 与当前 PR 任务不一致")
     if document["target_sha"] != expected_target_sha:
-        fail("target_sha 与当前 PR head SHA 不一致")
-    if not SHA_RE.fullmatch(expected_target_sha):
-        fail("期望的 target SHA 不是 40 位小写十六进制")
+        fail("target_sha 与当前测试提交不一致")
+    validate_sha(expected_target_sha, "期望的 target SHA")
 
     task_match = TASK_REF_RE.fullmatch(expected_task_ref)
     if not task_match:
         fail("元数据只能用于 ci/pr-<number>/<branch> 任务")
     expected_pr_number = int(task_match.group(1))
+    task_branch = task_match.group(2)
     if isinstance(document["pr_number"], bool) or not isinstance(
         document["pr_number"], int
     ):
@@ -117,18 +134,171 @@ def validate_document(
     if len(description) > DESCRIPTION_LIMIT:
         warnings.append(f"description 超过 {DESCRIPTION_LIMIT} 字符，已截断")
 
+    return (
+        expected_pr_number,
+        task_branch,
+        title[:TITLE_LIMIT],
+        description[:DESCRIPTION_LIMIT],
+        title_truncated,
+        description_truncated,
+        validate_timestamp(document["captured_at"]),
+        warnings,
+    )
+
+
+def validate_v1_document(
+    document: dict[str, Any],
+    *,
+    expected_task_ref: str,
+    expected_target_sha: str,
+) -> tuple[dict[str, Any], list[str]]:
+    missing = sorted(REQUIRED_V1_FIELDS - set(document))
+    extra = sorted(set(document) - REQUIRED_V1_FIELDS)
+    if missing:
+        fail(f"元数据缺少字段：{', '.join(missing)}")
+    if extra:
+        fail(f"元数据包含未知字段：{', '.join(extra)}")
+
+    (
+        expected_pr_number,
+        _,
+        title,
+        description,
+        title_truncated,
+        description_truncated,
+        captured_at,
+        warnings,
+    ) = validate_common_fields(
+        document,
+        expected_task_ref=expected_task_ref,
+        expected_target_sha=expected_target_sha,
+    )
+
     canonical = {
-        "schema": SCHEMA,
+        "schema": SCHEMA_V1,
         "task_ref": expected_task_ref,
         "target_sha": expected_target_sha,
         "pr_number": expected_pr_number,
-        "title": title[:TITLE_LIMIT],
-        "description": description[:DESCRIPTION_LIMIT],
-        "captured_at": validate_timestamp(document["captured_at"]),
+        "title": title,
+        "description": description,
+        "captured_at": captured_at,
         "title_truncated": title_truncated,
         "description_truncated": description_truncated,
     }
     return canonical, warnings
+
+
+def validate_v2_document(
+    document: dict[str, Any],
+    *,
+    expected_task_ref: str,
+    expected_target_sha: str,
+    expected_base_sha: str = "",
+    expected_head_sha: str = "",
+) -> tuple[dict[str, Any], list[str]]:
+    missing = sorted(REQUIRED_V2_FIELDS - set(document))
+    extra = sorted(set(document) - REQUIRED_V2_FIELDS)
+    if missing:
+        fail(f"元数据缺少字段：{', '.join(missing)}")
+    if extra:
+        fail(f"元数据包含未知字段：{', '.join(extra)}")
+
+    (
+        expected_pr_number,
+        task_branch,
+        title,
+        description,
+        title_truncated,
+        description_truncated,
+        captured_at,
+        warnings,
+    ) = validate_common_fields(
+        document,
+        expected_task_ref=expected_task_ref,
+        expected_target_sha=expected_target_sha,
+    )
+
+    if document["event_kind"] != "pull_request":
+        fail("event_kind 必须是 pull_request")
+    if document["tested_sha_kind"] != "pr_merge":
+        fail("tested_sha_kind 必须是 pr_merge")
+    tested_sha = validate_sha(document["tested_sha"], "tested_sha")
+    if tested_sha != expected_target_sha:
+        fail("tested_sha 与当前测试提交不一致")
+    if document["target_sha"] != tested_sha:
+        fail("target_sha 必须等于 tested_sha")
+
+    expected_tested_ref = f"refs/pull/{expected_pr_number}/merge"
+    if document["tested_ref"] != expected_tested_ref:
+        fail("tested_ref 必须指向当前 PR 的 GitHub test merge ref")
+    if document["base_task_ref"] != f"ci/base/pr-{expected_pr_number}/{task_branch}":
+        fail("base_task_ref 与当前 PR 任务不一致")
+    if document["head_task_ref"] != f"ci/head/pr-{expected_pr_number}/{task_branch}":
+        fail("head_task_ref 与当前 PR 任务不一致")
+    if document["head_branch"] != task_branch:
+        fail("head_branch 与当前 PR 任务不一致")
+
+    base_sha = validate_sha(document["base_sha"], "base_sha")
+    head_sha = validate_sha(document["head_sha"], "head_sha")
+    if expected_base_sha and base_sha != expected_base_sha:
+        fail("base_sha 与当前 PR base ref 不一致")
+    if expected_head_sha and head_sha != expected_head_sha:
+        fail("head_sha 与当前 PR head ref 不一致")
+
+    base_branch = validate_nonempty_string(document["base_branch"], "base_branch")
+    head_repo = validate_nonempty_string(document["head_repo"], "head_repo")
+
+    canonical = {
+        "schema": SCHEMA_V2,
+        "event_kind": "pull_request",
+        "task_ref": expected_task_ref,
+        "base_task_ref": f"ci/base/pr-{expected_pr_number}/{task_branch}",
+        "head_task_ref": f"ci/head/pr-{expected_pr_number}/{task_branch}",
+        "target_sha": expected_target_sha,
+        "tested_sha": tested_sha,
+        "tested_ref": expected_tested_ref,
+        "tested_sha_kind": "pr_merge",
+        "base_branch": base_branch,
+        "base_sha": base_sha,
+        "head_branch": task_branch,
+        "head_sha": head_sha,
+        "head_repo": head_repo,
+        "pr_number": expected_pr_number,
+        "title": title,
+        "description": description,
+        "captured_at": captured_at,
+        "title_truncated": title_truncated,
+        "description_truncated": description_truncated,
+    }
+    return canonical, warnings
+
+
+def validate_document(
+    document: Any,
+    *,
+    expected_task_ref: str,
+    expected_target_sha: str,
+    expected_base_sha: str = "",
+    expected_head_sha: str = "",
+) -> tuple[dict[str, Any], list[str]]:
+    if not isinstance(document, dict):
+        fail("元数据顶层必须是 JSON 对象")
+    schema = document.get("schema")
+    if schema == SCHEMA_V1:
+        return validate_v1_document(
+            document,
+            expected_task_ref=expected_task_ref,
+            expected_target_sha=expected_target_sha,
+        )
+    if schema == SCHEMA_V2:
+        return validate_v2_document(
+            document,
+            expected_task_ref=expected_task_ref,
+            expected_target_sha=expected_target_sha,
+            expected_base_sha=expected_base_sha,
+            expected_head_sha=expected_head_sha,
+        )
+    fail(f"schema 必须是 {SCHEMA_V1} 或 {SCHEMA_V2}")
 
 
 def read_document(path: Path) -> Any:
@@ -158,6 +328,8 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--task-ref", required=True)
     parser.add_argument("--target-sha", required=True)
+    parser.add_argument("--base-sha", default="")
+    parser.add_argument("--head-sha", default="")
     args = parser.parse_args()
 
     try:
@@ -165,6 +337,8 @@ def main() -> int:
             read_document(Path(args.input)),
             expected_task_ref=args.task_ref,
             expected_target_sha=args.target_sha,
+            expected_base_sha=args.base_sha,
+            expected_head_sha=args.head_sha,
         )
         write_document(Path(args.output), canonical)
     except MetadataError as exc:

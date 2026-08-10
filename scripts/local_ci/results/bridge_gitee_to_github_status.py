@@ -34,6 +34,7 @@ from result_paths import (  # noqa: E402
 RESULT_NOT_READY_EXIT_CODE = 3
 RESULT_FAILED_EXIT_CODE = 10
 CODEX_COMMENT_MARKER = "<!-- triton-anchor-codex-ai-comment -->"
+CODEX_COMMENT_SHA_MARKER_PREFIX = "triton-anchor-codex-ai-comment-sha"
 FINDING_ID_RE = re.compile(r"^AI-[0-9]{3}$")
 GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
@@ -75,6 +76,17 @@ class CodexAIResult:
     comment_markdown: str
     report_url: str
     finding_locations: tuple[FindingLocation, ...] = ()
+    failure_code: str = ""
+
+
+@dataclass(frozen=True)
+class PublishManifest:
+    status: str
+    target_sha: str
+    tested_sha: str
+    run_id: str
+    missing_expected_files: tuple[str, ...]
+    fallback: bool
 
 
 @dataclass(frozen=True)
@@ -87,6 +99,7 @@ class LocalCIResult:
     ir_serialization_status: str
     stage_statuses: dict[str, str]
     codex_ai: CodexAIResult
+    publish_manifest: PublishManifest | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -180,6 +193,44 @@ def parse_summary_value(summary: str, key: str) -> str:
         if line.startswith(prefix):
             return line.split(":", 1)[1].strip()
     return ""
+
+
+def parse_publish_manifest(manifest_json: str, target: Target, run_id: str) -> PublishManifest | None:
+    if not manifest_json:
+        return None
+    try:
+        document = json.loads(manifest_json)
+    except json.JSONDecodeError:
+        print("Gitee local CI publish manifest is not valid JSON.", file=sys.stderr)
+        return None
+    if not isinstance(document, dict):
+        print("Gitee local CI publish manifest root is not an object.", file=sys.stderr)
+        return None
+    if document.get("schema") != "triton-anchor-local-ci-publish-manifest/v1":
+        print("Gitee local CI publish manifest schema is unsupported.", file=sys.stderr)
+        return None
+    status = document.get("status")
+    manifest_target_sha = document.get("target_sha")
+    tested_sha = document.get("tested_sha")
+    manifest_run_id = document.get("run_id")
+    missing = document.get("missing_expected_files", [])
+    fallback = document.get("fallback", False)
+    if not all(isinstance(value, str) for value in (status, manifest_target_sha, tested_sha, manifest_run_id)):
+        print("Gitee local CI publish manifest is missing required string fields.", file=sys.stderr)
+        return None
+    if manifest_target_sha != target.sha or tested_sha != target.sha or manifest_run_id != run_id:
+        print(
+            "Gitee local CI publish manifest does not match requested SHA/run; "
+            f"target={manifest_target_sha}, tested={tested_sha}, run={manifest_run_id}.",
+            file=sys.stderr,
+        )
+        return None
+    if not isinstance(missing, list) or not all(isinstance(item, str) for item in missing):
+        print("Gitee local CI publish manifest has invalid missing_expected_files.", file=sys.stderr)
+        missing_files: tuple[str, ...] = ()
+    else:
+        missing_files = tuple(missing)
+    return PublishManifest(status, manifest_target_sha, tested_sha, manifest_run_id, missing_files, bool(fallback))
 
 
 def finding_locations_from_report(report_json: str) -> tuple[FindingLocation, ...]:
@@ -291,17 +342,24 @@ def list_open_pr_targets(limit: int) -> list[Target]:
             if not isinstance(head_repo, str):
                 head_repo = ""
             branch = head.get("ref")
-            sha = head.get("sha")
+            head_sha = head.get("sha")
+            merge_sha = item.get("merge_commit_sha")
             number = item.get("number")
-            if isinstance(branch, str) and isinstance(sha, str) and isinstance(number, int):
+            if (
+                isinstance(branch, str)
+                and isinstance(head_sha, str)
+                and isinstance(merge_sha, str)
+                and re.fullmatch(r"[0-9a-f]{40}", merge_sha)
+                and isinstance(number, int)
+            ):
                 source_label = f"{head_repo}:{branch}" if head_repo and head_repo != github_repo() else branch
                 targets.append(
                     Target(
                         branch,
                         f"ci/pr-{number}/{branch}",
-                        sha,
+                        merge_sha,
                         f"PR #{number} {source_label}",
-                        head_repo,
+                        github_repo(),
                     )
                 )
         if len(payload) < per_page:
@@ -334,6 +392,18 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
 
     run_id = run_id_text.strip().splitlines()[0]
     rel_dir = f"{commit_dir}/{run_id}"
+    manifest_text = gitee_content(
+        args.gitee_owner,
+        args.gitee_repo,
+        f"{rel_dir}/publish-manifest.json",
+        args.gitee_results_branch,
+        gitee_token,
+    ) or ""
+    publish_manifest = parse_publish_manifest(manifest_text, target, run_id)
+    if manifest_text and publish_manifest is None:
+        print(f"Gitee local CI publish manifest is invalid for {target.label}; leaving pending.")
+        return None
+
     summary_path = f"{rel_dir}/delivery-summary.txt"
     summary = gitee_content(
         args.gitee_owner,
@@ -344,6 +414,20 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
     )
     if not summary:
         print(f"Gitee local CI run exists but summary is missing for {target.label}: {summary_path}")
+        return None
+    summary_target_sha = parse_summary_value(summary, "target_sha") or parse_summary_value(summary, "tested_sha")
+    summary_run_id = parse_summary_value(summary, "run_id")
+    if summary_target_sha and summary_target_sha != target.sha:
+        print(
+            f"Gitee local CI summary SHA mismatch for {target.label}: {summary_target_sha} != {target.sha}",
+            file=sys.stderr,
+        )
+        return None
+    if summary_run_id and summary_run_id != run_id:
+        print(
+            f"Gitee local CI summary run_id mismatch for {target.label}: {summary_run_id} != {run_id}",
+            file=sys.stderr,
+        )
         return None
 
     stage_statuses = {
@@ -386,6 +470,13 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
             candidate = json.loads(result_json_text)
             if isinstance(candidate, dict):
                 codex_document = candidate
+                result_target_sha = candidate.get("target_sha") or candidate.get("tested_sha") or candidate.get("sha")
+                if isinstance(result_target_sha, str) and result_target_sha and result_target_sha != target.sha:
+                    print(
+                        f"Gitee local CI result.json SHA mismatch for {target.label}: {result_target_sha} != {target.sha}",
+                        file=sys.stderr,
+                    )
+                    return None
             else:
                 parse_failure = "result.json 的根节点不是 JSON 对象。"
         except json.JSONDecodeError:
@@ -398,6 +489,7 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
     execution_status = document_string("codex_ai_ci_status", "not_reported")
     verdict = document_string("codex_ai_ci_verdict", "UNKNOWN")
     test_status = document_string("codex_ai_test_status", "UNKNOWN")
+    failure_code = document_string("codex_ai_failure_code", "")
     analysis_mode = document_string("codex_ai_ci_mode", "not_run")
     constraint_status = "not_reported"
     constraint_reason = "未找到 Codex AI 约束校验结果。"
@@ -418,6 +510,7 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
             parse_summary_value(codex_summary, "constraint_reason")
             or constraint_reason
         )
+        failure_code = parse_summary_value(codex_summary, "failure_code") or failure_code
         failure_reason = (
             parse_summary_value(codex_summary, "failure_reason") or failure_reason
         )
@@ -451,6 +544,7 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
         codex_comment.strip(),
         report_url,
         finding_locations_from_report(codex_report),
+        failure_code,
     )
     return LocalCIResult(
         parse_summary_status(summary),
@@ -461,6 +555,7 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
         stage_statuses["ir_serialization"],
         stage_statuses,
         codex_ai,
+        publish_manifest,
     )
 
 
@@ -476,6 +571,10 @@ def stage_github_state(status: str) -> str | None:
 def pr_number_from_task_ref(task_ref: str) -> int | None:
     match = re.fullmatch(r"ci/pr-([0-9]+)/.+", task_ref)
     return int(match.group(1)) if match else None
+
+
+def codex_pr_commit_marker(target: Target) -> str:
+    return f"<!-- {CODEX_COMMENT_SHA_MARKER_PREFIX}:{target.sha} -->"
 
 
 def codex_pr_comment_body(target: Target, result: LocalCIResult) -> str:
@@ -494,12 +593,22 @@ def codex_pr_comment_body(target: Target, result: LocalCIResult) -> str:
             )
         else:
             body = f"{body}\n\n{location_links}"
+    metadata_lines = [
+        f"- 测试提交：`{target.sha[:12]}`",
+        f"- Codex 执行状态：`{result.codex_ai.execution_status}`；结论：`{result.codex_ai.verdict}`；测试证据：`{result.codex_ai.test_status}`",
+    ]
+    if result.codex_ai.failure_code:
+        metadata_lines.append(f"- Codex 失败代码：`{result.codex_ai.failure_code}`")
+    if result.publish_manifest and result.publish_manifest.missing_expected_files:
+        missing = ", ".join(result.publish_manifest.missing_expected_files)
+        metadata_lines.append(f"- 结果发布提醒：缺失预期 artifact `{missing}`")
+    metadata_lines.append(f"- [查看完整 Codex AI CI 报告]({report_url})")
     return (
         f"{body}\n\n"
         f"---\n\n"
-        f"- 审查提交：`{target.sha[:12]}`\n"
-        f"- [查看完整 Codex AI CI 报告]({report_url})\n\n"
+        f"{chr(10).join(metadata_lines)}\n\n"
         f"{CODEX_COMMENT_MARKER}\n"
+        f"{codex_pr_commit_marker(target)}\n"
     )
 
 
@@ -514,7 +623,7 @@ def github_finding_location_links(
     lines = [
         "### 可点击代码定位",
         "",
-        "链接固定到本次审查提交，便于提交者修复和审核者核对代码功能。",
+        "链接固定到本次测试提交，便于提交者修复和审核者核对代码功能。",
         "",
     ]
     for location in locations[:5]:
@@ -536,6 +645,7 @@ def post_codex_pr_comment(target: Target, result: LocalCIResult) -> None:
     if pr_number is None or not body:
         return
 
+    commit_marker = codex_pr_commit_marker(target)
     comments_path = f"/repos/{github_repo()}/issues/{pr_number}/comments"
     comments = get_github_json(comments_path, {"per_page": "100"})
     if not isinstance(comments, list):
@@ -550,6 +660,7 @@ def post_codex_pr_comment(target: Target, result: LocalCIResult) -> None:
         if (
             isinstance(comment_body, str)
             and CODEX_COMMENT_MARKER in comment_body
+            and commit_marker in comment_body
             and isinstance(comment_id, int)
             and is_bot
         ):
@@ -609,6 +720,8 @@ def codex_advisory_description(codex_ai: CodexAIResult) -> str:
     if execution_status == "skipped":
         return "Codex AI 未运行（非阻塞）"
     if execution_status != "pass":
+        if codex_ai.failure_code:
+            return f"Codex AI 未完成：{codex_ai.failure_code}（非阻塞）"
         return "Codex AI 未完成（非阻塞）"
     if verdict == "FAIL":
         return "Codex AI 建议性结论：失败（非阻塞）"
@@ -664,6 +777,7 @@ def codex_ai_output_json(result: LocalCIResult | None) -> str:
         "constraint_status": codex_ai.constraint_status,
         "constraint_reason": codex_ai.constraint_reason,
         "failure_reason": codex_ai.failure_reason,
+        "failure_code": codex_ai.failure_code,
         "comment_markdown": codex_ai.comment_markdown,
         "report_url": codex_ai.report_url,
         "finding_locations": [
@@ -757,6 +871,8 @@ def sync_target(args: argparse.Namespace, target: Target, set_pending: bool) -> 
                 ]
                 if warnings:
                     description = "Gitee local CI passed with " + ", ".join(warnings) + " warning"
+                if result.publish_manifest and result.publish_manifest.missing_expected_files:
+                    description = "Gitee local CI passed; artifact manifest has warnings"
                 post_github_status(target.sha, "success", args.context, description, result.target_url)
                 print(f"Gitee local CI passed for {target.label}: {result.target_url}")
             else:

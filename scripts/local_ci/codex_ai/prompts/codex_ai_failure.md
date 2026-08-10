@@ -12,7 +12,9 @@
 - Target Branch Ref: ${REQUESTED_BASE_REF}
 - Requested Base SHA: ${REQUESTED_BASE_SHA}
 - Review Base SHA: ${BASE_SHA}
-- Target SHA: ${TARGET_SHA}
+- Tested SHA: ${TARGET_SHA}
+- PR Head Ref: ${REQUESTED_HEAD_REF}
+- PR Head SHA: ${REQUESTED_HEAD_SHA}
 - Local CI Exit Code: ${LOCAL_CI_STATUS}
 - Analysis Mode: ${ANALYSIS_MODE}
 - Diff Mode: ${DIFF_MODE}
@@ -33,7 +35,7 @@ ${CHANGE_REQUEST_CONTEXT_JSON}
 - `contributor_goal`：用简洁中文归纳贡献者想解决的问题或完成的功能；不能照抄大段 PR 描述。
 - `expected_behavior`：说明贡献者声明的用户可观察行为、接口契约或验收结果；没有明确说明时如实写“PR 描述未明确说明预期行为”。
 - `implementation_summary`：结合 diff 和失败证据说明当前实际实现了什么、是否完整，以及 Local CI 失败是否妨碍判断。
-- `evidence`：引用支持判断的关键文件、代码路径、失败日志、测试或 Local CI 证据，不得使用主观猜测。
+- `evidence`：用自然语言说明为什么得出上述判断。可以引用关键文件、代码路径、失败日志、测试或 Local CI 证据，但要让 PR 提交者和审核者能直接理解，不要堆叠内部字段名、散碎路径或只有维护者才看得懂的事实清单；不得使用主观猜测。
 - `status`：声明和实现一致且证据充分时使用 `implemented`；只实现部分目标或仍有具体缺口时使用 `partially_implemented`；目标明确但 diff 没有实现或与预期相反时使用 `not_implemented`；PR 元数据缺失、无效或失败证据不足以判断时使用 `not_assessable`；仅在当前任务不是 PR 时使用 `not_applicable`。
 
 该状态描述“贡献者声明与实现的一致程度”，不直接代替 `verdict`。如果不一致构成可验证且影响合入的产品缺陷，应同时记录 finding；基础设施失败或证据不足不能包装成实现缺陷。
@@ -46,13 +48,27 @@ ${CHANGED_FILES_MANIFEST_JSON}
 
 `changed_files` 必须覆盖清单中的每一项，不能遗漏、重复或增加文件。`path` 和 `change_type` 必须与清单一致；重命名文件使用新路径，并在摘要中说明旧路径。
 
+## 动态失败诊断上下文
+
+Runner 已根据变更文件和 Local CI 失败状态生成轻量诊断策略，用于减少无关上下文读取；它只改变日志和文件阅读优先级，不改变 schema、finding 标准、失败归因标准或必须覆盖全部变更文件的要求。
+
+- Review Context Profile: ${REVIEW_CONTEXT_PROFILE}
+- Review Context Hint: ${REVIEW_CONTEXT_HINT}
+- Changed Files Manifest Path: ${CHANGED_FILES_MANIFEST_PATH}
+
+Changed File Groups JSON：
+
+${CHANGED_FILE_GROUPS_JSON}
+
+失败模式下应优先读取 `delivery-summary.txt`、`result.json`、`${LOCAL_CI_LOG}` 中的失败阶段片段，以及 `${ARTIFACT_DIR}` 下与失败阶段直接相关的日志；不要为了“完整”读取大量 unrelated build、FlagGems 或性能日志。若分组显示仅涉及 Codex AI-CI 自身文件（例如 `scripts/local_ci/codex_ai/` 下的 prompt、schema、renderer、runner 或测试），不要把这些改动纳入 triton-anchor 产品代码审查，也不要为其生成产品 finding；只在 `changed_files` 中做文件级覆盖并说明它属于 AI-CI 维护变更。若分组显示涉及 performance 或文档，应将诊断范围收敛到对应协议和阶段证据。
+
 ## 项目背景与审查范围
 
-本仓库是 Triton-anchor 编译器前端项目，重点关注 Triton 前端接口、语义处理、编译流程、中间表示生成、前端适配逻辑、CI 调度和后端验证协议。审查重点放在本项目维护代码及其直接影响范围。
+本仓库是 Triton-anchor 编译器前端项目；Codex AI-CI 服务 `triton-anchor` 仓库及其后续分支审查，不是泛化 AI 审查平台。审查重点放在 Triton/AnchorIR 前端语义、TTIR pipeline、adapter/ABI、C++/MLIR binding、Public API、Local CI 任务/结果协议、后端 smoke/FlagGems/性能证据，以及这些内容被本次 diff 和失败阶段直接影响的范围。不要把纯风格建议、泛化重构建议或与上述主线无关的想法扩大成阻塞 finding。
 
 - 如果本次修改了已有 Triton 实现目录，审查修改部分。
 - 如果本次仅调用未修改的已有实现，只检查接口使用和行为假设，不主动审查第三方或外部库的内部实现。
-- 文档、配置、脚本、prompt、schema、dashboard 数据契约和测试文件同样必须检查一致性、遗漏和合入影响。
+- 文档、配置、脚本、dashboard 数据契约和测试文件同样必须检查一致性、遗漏和合入影响；但 `scripts/local_ci/codex_ai/` 下的 prompt、schema、renderer、runner 和测试属于 Codex AI-CI 自身维护变更，不纳入 triton-anchor 产品代码审查，不应产生产品 finding。
 
 ## Triton-anchor 专项诊断与审查重点
 
@@ -64,7 +80,7 @@ ${CHANGED_FILES_MANIFEST_JSON}
 - C++ / MLIR 绑定：检查 pass 注册、dialect 注册、符号导出、PassManager 计时开关和 Python binding 名称是否与 Python 调用方一致。
 - Public API：若修改 `python/triton_anchor` 对外类型、函数、dataclass、enum、adapter 接口或 `api_contract/public_api.json`，检查向后兼容性和 API 兼容检查是否同步。
 - Local CI 协议：检查 Gitee task ref、result path、summary/result JSON、GitHub status、Pages 数据、性能基线缓存和 PR metadata 的格式兼容性，避免旧结果被误用或当前结果丢失。
-- Codex AI CI：检查 prompt、schema、renderer、runner summary、PR comment、advisory status 之间是否同步；保持 Codex AI 非阻塞语义、无 Docker socket、只读复用 `/workspace`、writable exact-SHA 一次性 checkout 和不可信输入边界。不得把这些控制描述为完整凭据隔离：临时镜像来自已执行候选代码的 Local CI 容器，凭据注入后仍会 source 候选环境脚本，并以 root、联网和 `danger-full-access` 运行；涉及该链路的修改必须明确凭据暴露面和残余风险。
+- Codex AI-CI 自身文件：如果 diff 只改 `scripts/local_ci/codex_ai/` 下的 prompt、schema、renderer、runner 或测试，只做文件级覆盖和维护风险摘要，不把它作为 triton-anchor 产品代码缺陷审查对象；其同步性由专用契约测试和人工维护审查负责。
 - 性能与 FlagGems：检查 benchmark 阈值、噪声下限、基线命名空间、样本/全量算子选择、超时策略和 dashboard 展示是否与 Sophgo CModel profile 及后续多后端扩展一致。
 
 ## 失败诊断与审查要求
@@ -104,7 +120,7 @@ ${CHANGED_FILES_MANIFEST_JSON}
 
 ## Local CI 环境、产物复用与有限诊断约束
 
-Codex 运行在由原始 Local CI 容器快照创建的临时容器中；原始 Local CI 的 `/workspace` 以只读方式复用，当前审查 checkout 位于 `${REPOSITORY_ROOT}`，可以在该 checkout 中创建少量测试文件和临时诊断文件，也可以执行与失败阶段直接相关的定向命令，但禁止修改生产实现代码。
+Codex 运行在 runner 从 Local CI 容器快照创建的临时容器中，当前审查 checkout 位于 `${REPOSITORY_ROOT}`，可以在该 checkout 中创建少量测试文件和临时诊断文件，也可以执行与失败阶段直接相关的定向命令，但禁止修改生产实现代码。原始 Local CI `/workspace` 会以只读方式复用；能否直接读取 `${ARTIFACT_DIR}` 以 runner 实际解析的路径为准。这些执行控制不应被描述为完整凭据隔离或完整 hostile-code 沙箱；它们只是本次非阻塞诊断的运行约束。
 
 Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志、摘要、测试数据、构建产物、wheel、缓存和 benchmark 结果作为失败诊断证据，避免重复执行原始 CI 已完成且结果可用的工作。复用产物前应尽量确认其与 `${TARGET_SHA}`、当前 checkout、Local CI 日志中的失败阶段和环境配置一致；无法确认时只能作为有限证据，并在 `residual_risks` 中说明。
 

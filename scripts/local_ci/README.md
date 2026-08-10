@@ -56,7 +56,8 @@ scripts/local_ci/
 ├── poll_gitee_and_run.sh                  # 稳定入口：轮询 Gitee task ref，串起确定性 CI、Codex 和结果发布
 ├── config.example.env                     # 部署配置模板；生产配置放在服务器环境，不提交仓库
 ├── README.md                              # 面向日常维护者的使用说明
-├── AGENTS.md                              # 面向后续维护的长期工程记忆和约束
+├── DEVELOPMENT_GUIDE.md                  # 面向开发者和 agent coding 的长期上下文与规范
+├── DEVELOPMENT_CONTEXT.md                 # 临时协作上下文；完成后沉淀到正式文档
 ├── orchestration/                         # 任务上下文准备和容器内确定性 CI 编排
 │   ├── fetch_task_metadata.sh             # 读取 PR 标题、描述、base/head 等元数据
 │   └── run_deterministic_ci_in_container.sh # 把任务参数传入 Local CI 容器并启动确定性 runner
@@ -114,16 +115,18 @@ runs/ci_full/ci_full_<branch>/<sha>/<run-id>/
 
 `safe_path_part` 是历史结果协议的一部分，会压缩非法字符并可能发生碰撞。`shared/path_utils.sh` 和 `shared/result_paths.py` 必须保持现有归一化语义；修改前要先补历史路径兼容测试和迁移方案。
 
+`DEVELOPMENT_CONTEXT.md` 只用于临时交接开发过程、AI 协作记录和未完成事项。它不会被列为 Local CI runtime 必需文件；长期有效的信息应在完成后沉淀到 `DEVELOPMENT_GUIDE.md`、`README.md`、`docs/ci_guide_zh.md` 或 `codex_ai/prompts/prompt_change_log.md`。
+
 ## 一次任务的生命周期
 
 1. Poller 发现符合规则的 Gitee ref，并用 lock 文件保证同一服务器不会并发处理相同 poller 状态。
-2. PR 任务读取并校验与 head SHA 匹配的 `task-metadata.json`。标题和描述只作为声明证据，不能作为命令执行。
+2. PR 任务读取并校验与 GitHub test merge SHA 匹配的 `task-metadata.json`，同时保留 base/head SHA 供 diff 和身份校验。标题和描述只作为声明证据，不能作为命令执行。
 3. Runner 将 Local CI 控制脚本复制到容器内临时目录，并执行 `deterministic_ci/run_deterministic_ci.sh`。
 4. 确定性 runner 在独立 artifact 目录写入 smoke、FlagGems、benchmark、比较结果和 `delivery-summary.txt`。
 5. 如果分支匹配 `CODEX_AI_CI_BRANCH_REGEX`，Codex 从 Local CI 容器快照创建一次性容器，使用只读 `/workspace` 和目标 SHA 的 writable checkout。
-6. Codex 只输出 schema 约束的 JSON；renderer 校验 changed-files manifest、中文说明、测试状态、命令退出码和预算后生成 Markdown 报告与 PR comment。
-7. Publisher 只复制固定 allowlist 的结果文件，更新 SHA/profile 性能 cache 和 dashboard，然后 push `local-ci-results`。
-8. Bridge 读取 `latest.txt`、summary、`result.json` 和 Codex comment，发布 GitHub statuses，并只对 PR 创建或更新带 marker 的 advisory comment。
+6. Codex 先使用 changed-files manifest 生成轻量上下文分组和审查 profile，再只输出 schema 约束的 JSON；renderer 校验 manifest、中文说明、测试状态、命令退出码和预算后生成 Markdown 报告与 PR comment。
+7. Publisher 只复制固定 allowlist 的结果文件，写入 `publish-manifest.json`，原子更新 `latest.txt`，更新 SHA/profile 性能 cache 和 dashboard，然后带 rebase retry push `local-ci-results`。
+8. Bridge 读取 `latest.txt`、`publish-manifest.json`、summary、`result.json` 和 Codex comment，校验 SHA/run/schema 后发布 GitHub statuses，并只对 PR 创建或更新带 marker 的 advisory comment。
 
 ## 配置
 
@@ -140,12 +143,12 @@ cp scripts/local_ci/config.example.env /opt/local-ci/config.env
 | Gitee relay | `GITEE_REPO_URL`、`GITEE_TOKEN`、`GITEE_BRANCH_INCLUDE_REGEX` | token 只放部署环境；结果分支不能被轮询。 |
 | Local CI 状态 | `LOCAL_CI_STATE_DIR`、`LOCAL_CI_CONTAINER`、`LOCAL_CI_SCRIPT_DIR` | 状态目录可写，脚本目录是当前 checkout 的完整 `scripts/local_ci`。 |
 | 结果发布 | `GITEE_RESULTS_*`、`PUBLISH_GITEE_RESULTS` | 结果仓库、branch 和 Web URL 必须互相对应。 |
-| Codex | `RUN_CODEX_AI_CI`、`CODEX_BIN`、`CODEX_AI_CI_HOME` | 使用独立 `config.toml`/`auth.json`，不要使用个人 `~/.codex`。 |
+| Codex | `RUN_CODEX_AI_CI`、`CODEX_BIN`、`CODEX_AI_CI_HOME` | 使用独立 `config.toml`/`auth.json`；runner 通过 Local CI 容器 snapshot 运行，凭据只复制到临时容器的 `/root/.codex`。 |
 | Codex 预算 | `CODEX_AI_CI_TIMEOUT_SECONDS`、`CODEX_AI_CI_MAX_TEST_COMMANDS`、`CODEX_AI_CI_TEST_BUDGET_SECONDS` | 预算是报告约束；过量会产生 warning，不会改变确定性 CI exit code。 |
 | backend | `BACKEND_PROFILE`、`BACKEND_PATH`、`BACKEND_ENVSETUP` | profile、backend commit 和环境脚本必须与性能 baseline 相匹配。 |
 | benchmark | `RUN_COMPILE_BENCHMARK`、`RUN_PASS_PROFILE`、`RUN_IR_SERIALIZATION_BENCHMARK` | 三类测量有独立 cache namespace，不能混用阈值或结果。 |
 
-自动处理不可信 PR 时，容器内应使用只读 relay token 或不传 token，并将 `LOCAL_CI_ALLOW_WRITE_TOKEN_IN_CONTAINER=0`。Codex 临时容器仍以 root、联网和 `danger-full-access` 运行，并会 source 候选 checkout 的环境脚本；只读 workspace、凭据哈希和 `unset GITEE_TOKEN` 不能被描述为完整凭据隔离。
+自动处理不可信 PR 时，容器内应使用只读 relay token 或不传 token，并将 `LOCAL_CI_ALLOW_WRITE_TOKEN_IN_CONTAINER=0`。Codex 通过 Local CI 容器 snapshot 运行，并只复制 exact-SHA checkout 和必要输入；AI 仍以 root、联网和 `danger-full-access` 运行，不能把它描述为完整 hostile-code 隔离。
 
 部署前只检查依赖、不创建长期 Docker 资源：
 
@@ -167,21 +170,27 @@ codex-ai-report.json
 codex-ai-report.md
 codex-ai-comment.md
 codex-changed-files-manifest.json
+codex-context-summary.json
+publish-manifest.json
 codex-workspace-status.txt
 codex-workspace.patch
 codex-generated-files.tar.gz
 ```
 
-Codex 报告格式为 `triton-anchor-codex-ai-report/v3`。除审查结论、文件变更、行为覆盖、findings、测试证据和剩余风险外，`change_request_assessment` 还必须说明：
+Codex runner 会额外写入 `codex-context-summary.json`，用 `docs_only`、`codex_ai_ci_maintenance`、`local_ci_protocol`、`performance`、`local_ci_failure`、`large_diff` 等轻量 profile 提示模型优先读哪些文件、日志和 artifact。该 profile 只影响阅读和验证优先级，不改变必须覆盖全部 changed-files manifest、finding 证据标准或 schema 输出契约。其中 `scripts/local_ci/codex_ai/` 下的 Codex AI-CI 自身维护变更不纳入 triton-anchor 产品代码审查，不应生成产品 finding；同步性由专用契约测试和人工维护审查负责。
+
+Codex 报告格式为 `triton-anchor-codex-ai-report/v3`。除审查摘要、文件变更、行为覆盖、findings、测试证据和剩余风险外，`change_request_assessment` 还必须说明：
 
 - 贡献者的修改目标；
 - 声明的预期行为；
 - 当前 diff 实际实现情况；
 - 支持该判断的代码、测试或 Local CI 证据。
 
-实现状态 `implemented`、`partially_implemented`、`not_implemented`、`not_assessable` 和 `not_applicable` 只表示声明与实现的一致程度，不替代 `PASS`/`WARNING`/`FAIL`。PR comment 会优先展示结论、目标对照、需要处理的问题和验证情况，文件级明细折叠在评论底部；完整报告保留全部证据。
+实现状态 `implemented`、`partially_implemented`、`not_implemented`、`not_assessable` 和 `not_applicable` 只表示声明与实现的一致程度，不替代 `PASS`/`WARNING`/`FAIL`。PR comment 会优先展示审查摘要、确定性 CI 简述、贡献者目标与实现情况、需要处理的问题和验证情况；判断依据应使用提交者和审核者可理解的自然语言，必要时再引用关键代码、测试或 Local CI 证据。文件级明细折叠在评论底部；完整报告保留全部证据。
 
 每个 finding 必须定位到本次 diff 中未删除的文件，并使用单行或最多 12 行的连续范围。Renderer 会在 exact-SHA checkout 中确认文件存在、范围没有越界且不全是空行；`code_role` 说明该行实际负责的功能。Bridge 从结构化报告生成固定到审查 SHA 的 GitHub 链接，PR 提交者可直接打开修复位置，审核者可核对行号、功能说明和完整证据是否一致。
+
+Codex AI-CI 的审查目标是服务 `triton-anchor` 仓库及其后续分支，而不是做泛化 AI 审查平台。主要关注：Triton/AnchorIR 前端语义、TTIR pipeline、adapter/ABI、C++/MLIR binding、Public API 兼容性、Local CI 任务/结果协议、后端 smoke/FlagGems/性能证据是否支持本次 diff。纯风格、泛化重构或与这些主线无关的建议不应扩大成阻塞 finding。
 
 ## 性能测量边界
 
@@ -235,9 +244,9 @@ Windows Git Bash 不能替代 Linux harness：`python3`、`/tmp`、symlink 权�
 | 任务一直未处理 | `LOCAL_CI_STATE_DIR/poll.lock`、branch include regex、Gitee ref 是否存在、`last_processed` 是否已推进。 |
 | 确定性 CI 未启动 | `local-ci.log`、容器是否运行、`LOCAL_CI_SCRIPT_DIR` 是否包含完整 canonical 模块树。 |
 | 结果已生成但 GitHub pending | `local-ci-results` 是否 push 成功、`latest.txt` 是否指向当前 run、bridge 是否能读取 Gitee API。 |
-| Codex 失败但 Local CI 通过 | 查看 `codex-ai-ci-summary.txt` 的 `failure_reason`、Codex log 和凭据校验；这是非阻塞路径。 |
-| 报告格式失败 | 检查 schema v3、prompt、renderer、changed-files manifest 是否同步，尤其是新增字段和中文说明。 |
+| Codex 失败但 Local CI 通过 | 查看 `codex-ai-ci-summary.txt` 的 `failure_code`、`failure_reason`、Codex log 和凭据校验；这是非阻塞路径。 |
+| 报告格式失败 | 检查 schema v3、prompt、renderer、changed-files manifest、`codex-context-summary.json` 是否同步，尤其是新增字段和中文说明；finding 定位无效会映射为固定 failure code。 |
 | 性能 warning | 先确认 baseline SHA/profile、backend commit 和 artifact 有效性，再判断是否是真回归。 |
 | PR comment 没有更新 | task ref 必须是 `ci/pr-<number>/...`，comment 必须包含稳定 marker 且由 Bot 发布。 |
 
-更完整的协议和已知风险见 [`AGENTS.md`](AGENTS.md)、[`docs/ci_guide_zh.md`](../../docs/ci_guide_zh.md)、[`config.example.env`](config.example.env) 和 [`codex_ai/prompts/prompt_change_log.md`](codex_ai/prompts/prompt_change_log.md)。
+更完整的协议和已知风险见 [`DEVELOPMENT_GUIDE.md`](DEVELOPMENT_GUIDE.md)、[`docs/ci_guide_zh.md`](../../docs/ci_guide_zh.md)、[`config.example.env`](config.example.env) 和 [`codex_ai/prompts/prompt_change_log.md`](codex_ai/prompts/prompt_change_log.md)。

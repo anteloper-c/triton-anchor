@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-usage="run_codex_ai_ci.sh <repo-url> <output-dir> <target-sha> <base-sha> <base-ref> <branch> [local-ci-status] [task-metadata-file]"
+usage="run_codex_ai_ci.sh <repo-url> <output-dir> <target-sha> <base-sha> <base-ref> <branch> [local-ci-status] [task-metadata-file] [head-sha] [head-ref]"
 repo_url="${1:?usage: ${usage}}"
 output_dir="${2:?usage: ${usage}}"
 target_sha="${3:?usage: ${usage}}"
@@ -10,21 +10,23 @@ requested_base_ref="${5:-}"
 branch="${6:?usage: ${usage}}"
 local_ci_status="${7:-0}"
 task_metadata_file="${8:-}"
+requested_head_sha="${9:-}"
+requested_head_ref="${10:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_CI_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CODEX_BIN="${CODEX_BIN:-codex}"
 CODEX_AI_CI_HOME="${CODEX_AI_CI_HOME:-}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-CODEX_AI_CI_TIMEOUT_SECONDS="${CODEX_AI_CI_TIMEOUT_SECONDS:-1800}"
+CODEX_AI_CI_TIMEOUT_SECONDS="${CODEX_AI_CI_TIMEOUT_SECONDS:-2400}"
 CODEX_AI_CI_REASONING_EFFORT="${CODEX_AI_CI_REASONING_EFFORT:-medium}"
 CODEX_AI_CI_WORKSPACE_ROOT="${CODEX_AI_CI_WORKSPACE_ROOT:-${TMPDIR:-/tmp}/triton-anchor-codex-ai}"
 CODEX_AI_CI_MIN_GENERATED_TEST_CASES="${CODEX_AI_CI_MIN_GENERATED_TEST_CASES:-1}"
-CODEX_AI_CI_MAX_GENERATED_TEST_CASES="${CODEX_AI_CI_MAX_GENERATED_TEST_CASES:-3}"
-CODEX_AI_CI_MAX_GENERATED_TEST_FILES="${CODEX_AI_CI_MAX_GENERATED_TEST_FILES:-2}"
-CODEX_AI_CI_MAX_TEST_COMMANDS="${CODEX_AI_CI_MAX_TEST_COMMANDS:-4}"
+CODEX_AI_CI_MAX_GENERATED_TEST_CASES="${CODEX_AI_CI_MAX_GENERATED_TEST_CASES:-5}"
+CODEX_AI_CI_MAX_GENERATED_TEST_FILES="${CODEX_AI_CI_MAX_GENERATED_TEST_FILES:-3}"
+CODEX_AI_CI_MAX_TEST_COMMANDS="${CODEX_AI_CI_MAX_TEST_COMMANDS:-6}"
 CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS="${CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS:-600}"
-CODEX_AI_CI_TEST_BUDGET_SECONDS="${CODEX_AI_CI_TEST_BUDGET_SECONDS:-1200}"
+CODEX_AI_CI_TEST_BUDGET_SECONDS="${CODEX_AI_CI_TEST_BUDGET_SECONDS:-1800}"
 CODEX_AI_CI_REPORT_RESERVE_SECONDS="${CODEX_AI_CI_REPORT_RESERVE_SECONDS:-300}"
 LOCAL_CI_CONTAINER="${LOCAL_CI_CONTAINER:-anchor-sophgo-ci}"
 LOCAL_CI_ARTIFACT_ROOT="${LOCAL_CI_ARTIFACT_ROOT:-/workspace/local-ci-artifacts}"
@@ -43,6 +45,7 @@ container_input_dir="${container_workspace_root}/input"
 container_report_json_path="${container_workspace_root}/codex-ai-report.json"
 container_schema_path="${container_workspace_root}/codex-ai-report.schema.json"
 container_local_ci_log="${container_input_dir}/local-ci.log"
+container_changed_files_manifest="${container_input_dir}/codex-changed-files-manifest.json"
 
 log_path="${output_dir}/codex-ai-ci.log"
 report_json_path="${output_dir}/codex-ai-report.json"
@@ -104,6 +107,10 @@ change_request_context_json=""
 ephemeral_container=""
 ephemeral_image=""
 analysis_mode="full"
+review_context_profile="unclassified"
+review_context_hint="尚未根据变更文件生成审查上下文策略。"
+changed_file_groups_json="{}"
+failure_code=""
 start_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 start_seconds="${SECONDS}"
 if [[ "${local_ci_status}" != "0" ]]; then
@@ -143,9 +150,12 @@ write_summary() {
     echo "status: ${status}"
     echo "exit_code: ${exit_code}"
     echo "target_sha: ${target_sha}"
+    echo "tested_sha: ${target_sha}"
     echo "actual_sha: ${actual_sha}"
     echo "requested_base_sha: ${requested_base_sha}"
     echo "requested_base_ref: ${requested_base_ref}"
+    echo "requested_head_sha: ${requested_head_sha}"
+    echo "requested_head_ref: ${requested_head_ref}"
     echo "base_sha: ${base_sha}"
     echo "base_source: ${base_source}"
     echo "diff_mode: ${diff_mode}"
@@ -157,12 +167,14 @@ write_summary() {
     echo "source_container: ${LOCAL_CI_CONTAINER}"
     echo "ephemeral_container: ${ephemeral_container}"
     echo "snapshot_image: ${ephemeral_image}"
-    echo "workspace_reuse: read_only"
     echo "workspace_dir: ${workspace_dir}"
     echo "container_workspace_dir: ${container_checkout_dir}"
     echo "artifact_dir: ${artifact_dir}"
     echo "output_dir: ${output_dir}"
     echo "changed_file_count: ${changed_file_count}"
+    echo "review_context_profile: ${review_context_profile}"
+    echo "review_context_hint: ${review_context_hint}"
+    echo "changed_file_groups_json: ${changed_file_groups_json}"
     echo "started_at: ${start_time}"
     echo "duration_seconds: ${duration_seconds}"
     echo "timeout_seconds: ${CODEX_AI_CI_TIMEOUT_SECONDS}"
@@ -193,6 +205,7 @@ write_summary() {
     echo "change_request_context_status: ${change_request_context_status}"
     echo "change_request_context_reason: ${change_request_context_reason}"
     echo "change_request_context_pr_number: ${change_request_context_pr_number}"
+    echo "failure_code: ${failure_code}"
     echo "failure_reason: ${failure_reason}"
   } > "${summary_path}"
 }
@@ -273,7 +286,7 @@ for key, label in labels.items():
 
 document = {
     "verdict": "WARNING",
-    "summary": f"Codex AI CI 未完成：{failure_reason}。本次没有生成可信的结构化审查结论。",
+    "summary": f"Codex AI CI 未完成：{failure_reason}。本次没有生成可信的结构化审查摘要。",
     "merge_recommendation": "请先排查 AI 执行问题并重新运行，当前不要仅依据本次 AI 结果决定合入。",
     "change_request_assessment": {
         "status": "not_applicable" if context_status == "not_applicable" else "not_assessable",
@@ -326,6 +339,9 @@ PY
       --requested-base-sha "${requested_base_sha}" \
       --diff-mode "${rendered_diff_mode}" \
       --target-sha "${target_sha}" \
+      --head-sha "${requested_head_sha}" \
+      --tested-sha-kind "$([[ "${branch}" =~ ^ci/pr-[0-9]+/.+ ]] && printf '%s' pr_merge || printf '%s' commit)" \
+      --local-ci-status "${local_ci_status}" \
       --changed-file-count "${changed_file_count}" \
       --changed-files-manifest "${changed_files_manifest_path}" \
       --constraint-status "${constraint_status}" \
@@ -345,9 +361,10 @@ PY
     echo "| 报告格式 | \`triton-anchor-codex-ai-report/v3\` |"
     echo "| 分支 | \`${branch}\` |"
     echo "| 请求的基础提交 | \`${requested_base_sha:-不可用}\` |"
+    echo "| PR Head 提交 | \`${requested_head_sha:-不可用}\` |"
     echo "| 实际审查起点 | \`${base_sha:-不可用}\` |"
     echo "| 差异模式 | \`${diff_mode}\` |"
-    echo "| 目标提交 | \`${target_sha}\` |"
+    echo "| 测试提交 | \`${target_sha}\` |"
     echo "| 变更文件数 | ${changed_file_count} |"
     echo "| 生成时间（UTC） | \`${start_time}\` |"
     echo
@@ -404,19 +421,26 @@ PY
     echo
     echo "> 这是非阻塞的辅助审查；确定性 CI 结果仍是合入门禁。"
     echo
-    echo "### 审查结论"
+    echo "### 审查摘要"
     echo
-    echo "- 结果：**警告**"
+    echo "- AI 审查摘要：**警告**"
+    if [[ "${local_ci_status}" == "0" ]]; then
+      echo "- 确定性 CI：确定性 Local CI 已通过；本次失败只影响 AI 辅助审查，不改变门禁结果。"
+    else
+      echo "- 确定性 CI：确定性 Local CI 未通过；需要先根据确定性 CI 日志和复测结果判断合入风险。"
+    fi
     echo "- 合入建议：请先排查 AI 执行问题并重新运行，再决定是否合入。"
     echo
     echo "Codex AI CI 未完成：${failure_reason:-未知原因}。"
+    echo "失败代码：${failure_code:-codex_execution_failed}。"
     echo
     echo "### 贡献者目标与实现情况"
     echo
     echo "- 判断：**${fallback_assessment_label}**"
-    echo "- 修改目标：${fallback_contributor_goal}"
-    echo "- 预期行为：${fallback_expected_behavior}"
-    echo "- 实现情况：${fallback_implementation_summary}"
+    echo "- 贡献者目标：${fallback_contributor_goal}"
+    echo "- 预期效果：${fallback_expected_behavior}"
+    echo "- 当前实现情况：${fallback_implementation_summary}"
+    echo "- 判断依据：Codex AI CI 执行未完成，当前没有足够证据可靠判断贡献者声明和实际实现是否一致。"
     echo
     echo "### 需要处理的问题"
     echo
@@ -479,15 +503,41 @@ append_change_request_context_warning() {
   echo "PR 功能声明上下文警告：${change_request_context_reason}" >> "${log_path}"
 }
 
-fail_ai_ci() {
+codex_failure_code_for_reason() {
+  local reason="$1"
+  case "${reason}" in
+    *"Codex CLI"* | *"找不到可执行的 Codex"*) echo "codex_cli_unavailable" ;;
+    *"CODEX_AI_CI_HOME"* | *"独立凭据"* | *"config.toml"* | *"auth.json"*) echo "credential_validation_failed" ;;
+    *"提示词"* | *"渲染"*) echo "prompt_render_failed" ;;
+    *"硬超时"*) echo "timeout" ;;
+    *"CODEX_AI_CI_COMPLETE"*) echo "missing_completion_marker" ;;
+    *"turn.completed"*) echo "missing_turn_completed" ;;
+    *"没有执行任何"*) echo "no_command_executed" ;;
+    *"schema"* | *"固定格式"* | *"中文内容"*) echo "schema_validation_failed" ;;
+    *"finding"* | *"行范围"* | *"行号"*) echo "invalid_finding_location" ;;
+    *"容器"* | *"Docker socket"* | *"镜像"*) echo "container_setup_failed" ;;
+    *"checkout"* | *"差异"* | *"变更文件清单"*) echo "checkout_or_diff_failed" ;;
+    *"宿主机缺少"* | *"Python"*) echo "prerequisite_failed" ;;
+    *) echo "codex_execution_failed" ;;
+  esac
+}
+
+set_failure_reason() {
   failure_reason="$1"
+  if [[ -z "${failure_code}" ]]; then
+    failure_code="$(codex_failure_code_for_reason "${failure_reason}")"
+  fi
+}
+
+fail_ai_ci() {
+  set_failure_reason "$1"
   verify_credential_integrity
   write_failure_report
   append_change_request_context_warning
   append_credential_integrity_warning
-  echo "Codex AI CI 失败：${failure_reason}" >> "${log_path}"
+  echo "Codex AI CI 失败：${failure_code} ${failure_reason}" >> "${log_path}"
   write_summary
-  echo "Codex AI CI：失败（${failure_reason}）"
+  echo "Codex AI CI：失败（${failure_code}：${failure_reason}）"
   exit 1
 }
 
@@ -600,7 +650,7 @@ load_change_request_context() {
 
   if [[ -z "${task_metadata_file}" || ! -f "${task_metadata_file}" ]]; then
     change_request_context_status="missing"
-    change_request_context_reason="未取得与当前 PR head SHA 匹配的功能声明元数据；继续依据代码差异和测试证据分析。"
+    change_request_context_reason="未取得与当前 PR 测试提交匹配的功能声明元数据；继续依据代码差异和测试证据分析。"
     change_request_context_json="$(build_unavailable_change_request_context)" || \
       fail_ai_ci "无法生成 PR 元数据缺失上下文"
     echo "${change_request_context_reason}" >> "${log_path}"
@@ -616,7 +666,9 @@ load_change_request_context() {
       --input "${task_metadata_file}" \
       --output "${task_metadata_output_path}" \
       --task-ref "${branch}" \
-      --target-sha "${target_sha}" 2>&1
+      --target-sha "${target_sha}" \
+      --base-sha "${requested_base_sha}" \
+      --head-sha "${requested_head_sha}" 2>&1
   )"; then
     rm -f -- "${task_metadata_output_path}"
     validation_message="${validation_message//$'\n'/ }"
@@ -648,6 +700,19 @@ context = {
     "title_truncated": metadata["title_truncated"],
     "description_truncated": metadata["description_truncated"],
 }
+for key in (
+    "event_kind",
+    "base_branch",
+    "base_sha",
+    "head_branch",
+    "head_sha",
+    "head_repo",
+    "tested_ref",
+    "tested_sha",
+    "tested_sha_kind",
+):
+    if key in metadata:
+        context[key] = metadata[key]
 print(metadata["pr_number"])
 print(json.dumps(context, ensure_ascii=False, separators=(",", ":")))
 PY
@@ -663,7 +728,7 @@ PY
   fi
 
   change_request_context_status="available"
-  change_request_context_reason="已校验并载入与当前 PR head SHA 匹配的功能声明元数据。"
+  change_request_context_reason="已校验并载入与当前 PR 测试提交匹配的功能声明元数据。"
   change_request_context_pr_number="${context_parts[0]}"
   change_request_context_json="${context_parts[1]}"
 }
@@ -779,12 +844,16 @@ discover_artifact_dir() {
   if [[ -z "${candidate}" ]]; then
     return 0
   fi
+  if [[ -z "${ephemeral_container}" ]]; then
+    artifact_dir=""
+    return 0
+  fi
   resolved_root="$(
-    docker exec --user 0 "${LOCAL_CI_CONTAINER}" \
+    docker exec --user 0 "${ephemeral_container}" \
       readlink -e -- "${LOCAL_CI_ARTIFACT_ROOT}" 2>> "${log_path}" || true
   )"
   resolved_candidate="$(
-    docker exec --user 0 "${LOCAL_CI_CONTAINER}" \
+    docker exec --user 0 "${ephemeral_container}" \
       readlink -e -- "${candidate}" 2>> "${log_path}" || true
   )"
   if [[ -z "${resolved_root}" || -z "${resolved_candidate}" \
@@ -899,6 +968,112 @@ print(len(json.load(open(sys.argv[1], encoding="utf-8"))))
   changed_files_manifest_json="$(<"${changed_files_manifest_path}")"
 }
 
+classify_review_context() {
+  local context_lines=()
+  mapfile -t context_lines < <(
+    "${PYTHON_BIN}" - "${changed_files_manifest_path}" "${analysis_mode}" <<'PY'
+import json
+import sys
+from pathlib import PurePosixPath
+
+manifest_path, analysis_mode = sys.argv[1:3]
+try:
+    manifest = json.load(open(manifest_path, encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    manifest = []
+
+def group_for(path: str) -> str:
+    parts = PurePosixPath(path).parts
+    if path in {"README.md", "ROADMAP.md", "SECURITY.md"} or path.startswith("docs/") or path.endswith(('.md', '.markdown', '.rst')):
+        return "docs"
+    if path.startswith("scripts/local_ci/codex_ai/"):
+        return "codex_ai"
+    if path.startswith("scripts/local_ci/deterministic_ci/performance/"):
+        return "performance"
+    if path.startswith("scripts/dashboard/") or path.startswith("dashboard/"):
+        return "dashboard"
+    if path.startswith("scripts/local_ci/results/"):
+        return "results_bridge"
+    if path.startswith("scripts/local_ci/shared/"):
+        return "shared_protocol"
+    if path.startswith("scripts/local_ci/"):
+        return "local_ci_control"
+    if path.startswith(".github/workflows/"):
+        return "github_workflows"
+    if path.startswith("python/triton_anchor/"):
+        return "python_frontend"
+    if path.startswith("csrc/") or path.startswith("triton/"):
+        return "compiler_core"
+    if "/tests/" in path or path.startswith("tests/") or path.endswith("_test.py") or path.startswith("scripts/local_ci/tests/"):
+        return "tests"
+    return "other"
+
+groups: dict[str, list[str]] = {}
+change_types: dict[str, int] = {}
+for item in manifest if isinstance(manifest, list) else []:
+    if not isinstance(item, dict):
+        continue
+    path = item.get("path")
+    change_type = item.get("change_type")
+    if not isinstance(path, str) or not isinstance(change_type, str):
+        continue
+    groups.setdefault(group_for(path), []).append(path)
+    change_types[change_type] = change_types.get(change_type, 0) + 1
+
+count = sum(len(paths) for paths in groups.values())
+keys = set(groups)
+if count == 0:
+    profile = "empty_diff"
+    hint = "未检测到变更文件；只确认任务元数据和结果协议，不生成测试。"
+elif keys <= {"codex_ai", "tests", "docs"} and "codex_ai" in keys:
+    profile = "codex_ai_ci_maintenance"
+    hint = "本次仅涉及 Codex AI-CI 自身文件；不纳入 triton-anchor 产品审查。只做变更清单覆盖和摘要记录，不生成产品 finding，验证应依赖专用 prompt/schema/renderer 契约测试和人工维护审查。"
+elif analysis_mode == "analysis_only":
+    profile = "local_ci_failure"
+    hint = "确定性 Local CI 已失败；优先阅读 delivery-summary、result.json 和失败阶段日志，只在需要归因时展开相关 diff，避免读取无关大日志。"
+elif keys <= {"docs"}:
+    profile = "docs_only"
+    hint = "本次为纯文档改动；跳过测试生成，轻量检查文档是否与当前代码和 Local CI 协议相符。"
+elif keys <= {"results_bridge", "shared_protocol", "tests", "docs"} and {"results_bridge", "shared_protocol"} & keys:
+    profile = "local_ci_protocol"
+    hint = "本次集中在 Local CI 结果协议或桥接逻辑；重点检查 task ref、SHA/run ID、结果目录、manifest、status 回写和发布失败重试。"
+elif keys <= {"performance", "dashboard", "tests", "docs"} and {"performance", "dashboard"} & keys:
+    profile = "performance"
+    hint = "本次集中在性能测量或 dashboard；重点检查 benchmark schema、compare 语义、cache namespace、warning 映射和 dashboard artifact。"
+elif count > 20:
+    profile = "large_diff"
+    hint = "本次 diff 较大；先使用文件分组识别高风险模块，再按风险展开关键文件，避免逐行阅读低风险重复内容。"
+elif keys <= {"local_ci_control", "shared_protocol", "results_bridge", "github_workflows", "tests", "docs"}:
+    profile = "local_ci_control"
+    hint = "本次集中在 Local CI 控制面；重点检查 task ref、SHA、结果目录、状态字段、token 边界和发布失败重试。"
+else:
+    profile = "general"
+    hint = "按标准项目专项审查执行；优先检查直接受 diff 影响的编译前端、CI 协议和测试证据。"
+
+summary = {
+    "schema": "triton-anchor-codex-review-context/v1",
+    "profile": profile,
+    "file_count": count,
+    "groups": {key: sorted(paths) for key, paths in sorted(groups.items())},
+    "change_types": change_types,
+}
+print(profile)
+print(hint)
+print(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
+PY
+  )
+  if [[ "${#context_lines[@]}" -ne 3 ]]; then
+    review_context_profile="unclassified"
+    review_context_hint="无法生成文件分组摘要；按标准项目专项审查执行。"
+    changed_file_groups_json="{}"
+    return 0
+  fi
+  review_context_profile="${context_lines[0]}"
+  review_context_hint="${context_lines[1]}"
+  changed_file_groups_json="${context_lines[2]}"
+  printf '%s\n' "${changed_file_groups_json}" > "${output_dir}/codex-context-summary.json"
+}
+
 create_ephemeral_container() {
   local resource_key
   local workspace_rw
@@ -974,6 +1149,10 @@ create_ephemeral_container() {
     "${ephemeral_container}:${container_schema_path}" >> "${log_path}" 2>&1; then
     fail_ai_ci "无法把报告 schema 复制到临时容器"
   fi
+  if ! docker cp "${changed_files_manifest_path}" \
+    "${ephemeral_container}:${container_changed_files_manifest}" >> "${log_path}" 2>&1; then
+    fail_ai_ci "无法把变更文件清单复制到临时容器"
+  fi
   if [[ -f "${output_dir}/local-ci.log" ]]; then
     if ! docker cp "${output_dir}/local-ci.log" \
       "${ephemeral_container}:${container_local_ci_log}" >> "${log_path}" 2>&1; then
@@ -1043,7 +1222,6 @@ printf '[]\n' > "${changed_files_manifest_path}"
 
 validate_prerequisites
 load_change_request_context
-discover_artifact_dir
 
 if ! workspace_dir="$(
   bash "${checkout_helper}" \
@@ -1053,7 +1231,9 @@ if ! workspace_dir="$(
     "codex-ai" \
     "${target_sha}" \
     "${requested_base_ref}" \
-    "${requested_base_sha}" 2>> "${log_path}"
+    "${requested_base_sha}" \
+    "${requested_head_ref}" \
+    "${requested_head_sha}" 2>> "${log_path}"
 )"; then
   fail_ai_ci "无法创建一次性分析 checkout"
 fi
@@ -1070,18 +1250,24 @@ if [[ "${branch}" =~ ^ci/pr-[0-9]+/.+ ]]; then
   if [[ -z "${requested_base_sha}" ]]; then
     fail_ai_ci "PR Codex 审查缺少目标分支精确 SHA"
   fi
+  if [[ -z "${requested_head_sha}" ]]; then
+    fail_ai_ci "PR Codex 审查缺少贡献分支精确 SHA"
+  fi
   if ! git -C "${workspace_dir}" cat-file -e "${requested_base_sha}^{commit}" 2>/dev/null; then
     fail_ai_ci "PR 目标分支提交在 Codex checkout 中不可用：${requested_base_sha}"
   fi
+  if ! git -C "${workspace_dir}" cat-file -e "${requested_head_sha}^{commit}" 2>/dev/null; then
+    fail_ai_ci "PR head 提交在 Codex checkout 中不可用：${requested_head_sha}"
+  fi
   if ! base_sha="$(
-    git -C "${workspace_dir}" merge-base "${requested_base_sha}" "${target_sha}" 2>/dev/null
+    git -C "${workspace_dir}" merge-base "${requested_base_sha}" "${requested_head_sha}" 2>/dev/null
   )"; then
     fail_ai_ci "PR head 与目标分支提交没有共同祖先"
   fi
   base_source="merge-base"
   diff_mode="merge-base"
-  diff_revisions=("${requested_base_sha}...${target_sha}")
-  diff_command="git diff --find-renames ${requested_base_sha}...${target_sha}"
+  diff_revisions=("${requested_base_sha}...${requested_head_sha}")
+  diff_command="git diff --find-renames ${requested_base_sha}...${requested_head_sha}"
 else
   if [[ -n "${requested_base_sha}" ]] &&
     git -C "${workspace_dir}" cat-file -e "${requested_base_sha}^{commit}" 2>/dev/null; then
@@ -1105,12 +1291,14 @@ fi
 if ! generate_changed_files_manifest; then
   fail_ai_ci "无法生成待审查代码差异的标准文件清单"
 fi
+classify_review_context
 
 if diff_requires_generated_tests; then
   test_generation_expected="true"
 fi
 
 create_ephemeral_container
+discover_artifact_dir
 
 if [[ "${analysis_mode}" == "full" ]]; then
   selected_prompt_template="${success_prompt_template}"
@@ -1124,6 +1312,8 @@ if ! prompt="$(
     BRANCH "${branch}" \
     REQUESTED_BASE_REF "${requested_base_ref:-不适用}" \
     REQUESTED_BASE_SHA "${requested_base_sha:-不适用}" \
+    REQUESTED_HEAD_REF "${requested_head_ref:-不适用}" \
+    REQUESTED_HEAD_SHA "${requested_head_sha:-不适用}" \
     BASE_SHA "${base_sha}" \
     TARGET_SHA "${target_sha}" \
     LOCAL_CI_STATUS "${local_ci_status}" \
@@ -1131,8 +1321,12 @@ if ! prompt="$(
     DIFF_MODE "${diff_mode}" \
     DIFF_COMMAND "${diff_command}" \
     CHANGE_REQUEST_CONTEXT_JSON "${change_request_context_json}" \
+    REVIEW_CONTEXT_PROFILE "${review_context_profile}" \
+    REVIEW_CONTEXT_HINT "${review_context_hint}" \
     CHANGED_FILE_COUNT "${changed_file_count}" \
     CHANGED_FILES_MANIFEST_JSON "${changed_files_manifest_json}" \
+    CHANGED_FILE_GROUPS_JSON "${changed_file_groups_json}" \
+    CHANGED_FILES_MANIFEST_PATH "${container_changed_files_manifest}" \
     LOCAL_CI_LOG "${container_local_ci_log}" \
     ARTIFACT_DIR "${artifact_dir:-未识别到具体目录}" \
     TEST_GENERATION_EXPECTED "${test_generation_expected}" \
@@ -1325,6 +1519,9 @@ print(
     --requested-base-sha "${requested_base_sha}"
     --diff-mode "${diff_mode}"
     --target-sha "${target_sha}"
+    --head-sha "${requested_head_sha}"
+    --tested-sha-kind "$([[ "${branch}" =~ ^ci/pr-[0-9]+/.+ ]] && printf '%s' pr_merge || printf '%s' commit)"
+    --local-ci-status "${local_ci_status}"
     --changed-file-count "${changed_file_count}"
     --changed-files-manifest "${changed_files_manifest_path}"
     --repository-root "${workspace_dir}"
@@ -1345,17 +1542,21 @@ print(
 fi
 
 if [[ ${exit_code} -eq 124 || ${exit_code} -eq 137 ]]; then
-  failure_reason="Codex 执行超过 ${CODEX_AI_CI_TIMEOUT_SECONDS} 秒硬超时"
+  set_failure_reason "Codex 执行超过 ${CODEX_AI_CI_TIMEOUT_SECONDS} 秒硬超时"
 elif [[ ${exit_code} -ne 0 ]]; then
-  failure_reason="Codex exec 异常退出，退出码为 ${exit_code}"
+  set_failure_reason "Codex exec 异常退出，退出码为 ${exit_code}"
 elif [[ "${marker_found}" != "true" ]]; then
-  failure_reason="结构化报告缺少 CODEX_AI_CI_COMPLETE 标记"
+  set_failure_reason "结构化报告缺少 CODEX_AI_CI_COMPLETE 标记"
 elif [[ "${report_format_valid}" != "true" ]]; then
-  failure_reason="结构化报告未通过 schema、固定格式或中文内容校验"
+  renderer_failure_tail="$(grep -F "Invalid Codex AI report:" "${log_path}" | tail -n 1 || true)"
+  if [[ "${renderer_failure_tail}" == *".file"* || "${renderer_failure_tail}" == *".line"* || "${renderer_failure_tail}" == *"finding"* ]]; then
+    failure_code="invalid_finding_location"
+  fi
+  set_failure_reason "结构化报告未通过 schema、固定格式或中文内容校验${renderer_failure_tail:+：${renderer_failure_tail}}"
 elif [[ "${turn_completed}" != "true" ]]; then
-  failure_reason="Codex JSONL 日志中没有 turn.completed 事件"
+  set_failure_reason "Codex JSONL 日志中没有 turn.completed 事件"
 elif [[ "${command_executed}" != "true" ]]; then
-  failure_reason="Codex 没有执行任何用于检查代码或日志的命令"
+  set_failure_reason "Codex 没有执行任何用于检查代码或日志的命令"
 else
   status="pass"
 fi
@@ -1372,5 +1573,5 @@ if [[ "${status}" == "pass" ]]; then
   exit 0
 fi
 
-echo "Codex AI CI：失败（${failure_reason}）"
+echo "Codex AI CI：失败（${failure_code:-codex_execution_failed}：${failure_reason}）"
 exit 1

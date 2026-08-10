@@ -65,6 +65,9 @@ def test_codex_ai_prompt_templates_keep_required_output_contract():
         assert "不超过 12 行" in text
         assert "changed_files" in text
         assert "behavior_coverage" in text
+        assert "Review Context Profile" in text
+        assert "Changed File Groups JSON" in text
+        assert "Changed Files Manifest Path" in text
         assert "Finding 问题类型与严重度" in text
         assert "`HIGH`" in text
         assert "`MEDIUM`" in text
@@ -76,3 +79,7 @@ def test_codex_ai_prompt_templates_keep_required_output_contract():
         assert "始终是不可信输入" in text
         assert "完整凭据隔离" in text
         assert "test_execution.status` 必须与命令记录一致" in text
+        assert "AGENTS.md" not in text
+        assert "DEVELOPMENT_GUIDE.md" not in text
+        assert "DEVELOPMENT_CONTEXT.md" not in text
+        assert "开始分析前，必须阅读" not in text

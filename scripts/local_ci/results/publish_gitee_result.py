@@ -16,6 +16,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 SHARED_SCRIPT_DIR = Path(__file__).resolve().parents[1] / "shared"
@@ -57,6 +58,48 @@ def run_git(args: list[str], cwd: Path, env: dict[str, str], check: bool = True)
         check=check,
         text=True,
     )
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    temporary_path.write_text(content, encoding="utf-8")
+    temporary_path.replace(path)
+
+
+def push_with_rebase_retry(
+    worktree: Path,
+    env: dict[str, str],
+    results_branch: str,
+    *,
+    attempts: int = 3,
+) -> bool:
+    refspec = f"HEAD:refs/heads/{results_branch}"
+    for attempt in range(1, attempts + 1):
+        push = run_git(["push", "origin", refspec], worktree, env, check=False)
+        if push.returncode == 0:
+            if attempt > 1:
+                print(f"Gitee result push succeeded after {attempt} attempts.")
+            return True
+        if attempt == attempts:
+            break
+        print(
+            f"Gitee result push failed on attempt {attempt}; fetching and rebasing before retry.",
+            file=sys.stderr,
+        )
+        fetch = run_git(
+            ["fetch", "--depth=50", "origin", f"refs/heads/{results_branch}:refs/remotes/origin/{results_branch}"],
+            worktree,
+            env,
+            check=False,
+        )
+        if fetch.returncode != 0:
+            continue
+        rebase = run_git(["rebase", f"origin/{results_branch}"], worktree, env, check=False)
+        if rebase.returncode != 0:
+            run_git(["rebase", "--abort"], worktree, env, check=False)
+            print("Gitee result rebase failed; not overwriting remote results branch.", file=sys.stderr)
+            return False
+    return False
 
 
 def make_git_env(tmpdir: Path, token: str, username: str) -> dict[str, str]:
@@ -147,13 +190,74 @@ PUBLISHED_RUN_FILES = (
     "codex-ai-report.md",
     "codex-ai-comment.md",
     "codex-ai-ci-summary.txt",
+    "codex-context-summary.json",
+    "codex-changed-files-manifest.json",
     "codex-workspace-status.txt",
     "codex-workspace.patch",
     "codex-generated-files.tar.gz",
 )
 
+REQUIRED_RESULT_FILES = (
+    "delivery-summary.txt",
+    "result.json",
+)
 
-def copy_results(run_dir: Path, target_dir: Path) -> Path | None:
+
+def parse_summary_value(summary_path: Path, key: str) -> str:
+    if not summary_path.is_file():
+        return ""
+    prefix = f"{key}:"
+    for line in summary_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith(prefix):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def build_publish_manifest(
+    target_dir: Path,
+    *,
+    args: argparse.Namespace,
+    rel_dir: Path,
+    artifact_dir_text: str,
+    artifact_dir: Path | None,
+    copied: list[str],
+    missing_expected: list[str],
+    fallback: bool,
+) -> None:
+    summary_path = target_dir / "delivery-summary.txt"
+    manifest = {
+        "schema": "triton-anchor-local-ci-publish-manifest/v1",
+        "published_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "status": "passed" if args.exit_code == 0 else "failed",
+        "exit_code": args.exit_code,
+        "source_branch": args.source_branch,
+        "target_sha": args.sha,
+        "tested_sha": args.sha,
+        "run_id": args.run_id,
+        "context": args.context,
+        "result_dir": rel_dir.as_posix(),
+        "artifact_dir": artifact_dir_text or "",
+        "artifact_dir_mapped": str(artifact_dir) if artifact_dir is not None else "",
+        "fallback": fallback,
+        "copied_files": sorted(copied),
+        "missing_expected_files": sorted(missing_expected),
+        "delivery_summary": {
+            "schema": parse_summary_value(summary_path, "schema"),
+            "status": parse_summary_value(summary_path, "status"),
+            "target_sha": parse_summary_value(summary_path, "target_sha"),
+            "tested_sha": parse_summary_value(summary_path, "tested_sha"),
+            "tested_sha_kind": parse_summary_value(summary_path, "tested_sha_kind"),
+            "actual_checkout_sha": parse_summary_value(summary_path, "actual_checkout_sha"),
+            "run_id": parse_summary_value(summary_path, "run_id"),
+        },
+    }
+    (target_dir / "publish-manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def copy_results(run_dir: Path, target_dir: Path, args: argparse.Namespace, rel_dir: Path) -> Path | None:
     artifact_dir_text = discover_artifact_dir(run_dir / "local-ci.log")
     artifact_dir = map_container_path(artifact_dir_text)
     if not artifact_dir or not artifact_dir.exists():
@@ -164,6 +268,7 @@ def copy_results(run_dir: Path, target_dir: Path) -> Path | None:
     target_dir.mkdir(parents=True, exist_ok=True)
 
     copied = []
+    missing_expected = []
     for file_name in PUBLISHED_ARTIFACT_FILES:
         source = artifact_dir / file_name
         if source.is_file():
@@ -181,9 +286,23 @@ def copy_results(run_dir: Path, target_dir: Path) -> Path | None:
         shutil.copy2(result_json, target_dir / "result.json")
         copied.append("result.json")
 
+    for required_file in REQUIRED_RESULT_FILES:
+        if required_file not in copied:
+            missing_expected.append(required_file)
+
     if not copied:
         shutil.rmtree(target_dir)
         return None
+    build_publish_manifest(
+        target_dir,
+        args=args,
+        rel_dir=rel_dir,
+        artifact_dir_text=artifact_dir_text,
+        artifact_dir=artifact_dir,
+        copied=copied,
+        missing_expected=missing_expected,
+        fallback=False,
+    )
     return target_dir
 
 
@@ -374,7 +493,7 @@ def write_ir_serialization_dashboard(worktree: Path, limit: int = 100) -> tuple[
     return markdown_path, csv_path
 
 
-def write_fallback_results(run_dir: Path, target_dir: Path, args: argparse.Namespace) -> Path:
+def write_fallback_results(run_dir: Path, target_dir: Path, args: argparse.Namespace, rel_dir: Path) -> Path:
     if target_dir.exists():
         shutil.rmtree(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -387,10 +506,14 @@ def write_fallback_results(run_dir: Path, target_dir: Path, args: argparse.Names
             copied.append(file_name)
 
     artifact_dir_text = discover_artifact_dir(run_dir / "local-ci.log") or "unavailable"
+    tested_sha_kind = "pr_merge" if args.source_branch.startswith("ci/pr-") else "commit"
     summary_lines = [
-        "schema: triton-anchor-local-ci/v2",
+        "schema: triton-anchor-local-ci/v3",
         f"status: {args.exit_code}",
         f"target_sha: {args.sha}",
+        f"tested_sha: {args.sha}",
+        f"tested_sha_kind: {tested_sha_kind}",
+        f"actual_checkout_sha: unavailable",
         f"branch: {args.source_branch}",
         f"run_id: {args.run_id}",
         f"artifact_dir: {artifact_dir_text}",
@@ -398,6 +521,22 @@ def write_fallback_results(run_dir: Path, target_dir: Path, args: argparse.Names
         f"copied_files: {', '.join(copied) if copied else 'none'}",
     ]
     (target_dir / "delivery-summary.txt").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+    copied.append("delivery-summary.txt")
+    missing_expected = [
+        required_file
+        for required_file in REQUIRED_RESULT_FILES
+        if required_file not in copied
+    ]
+    build_publish_manifest(
+        target_dir,
+        args=args,
+        rel_dir=rel_dir,
+        artifact_dir_text=artifact_dir_text,
+        artifact_dir=None,
+        copied=copied,
+        missing_expected=missing_expected,
+        fallback=True,
+    )
     return target_dir
 
 
@@ -480,10 +619,10 @@ def main() -> int:
             run_git(["checkout", "-q", "--orphan", args.results_branch], worktree, git_env)
 
         target_dir = worktree / rel_dir
-        copied_result_dir = copy_results(run_dir, target_dir)
+        copied_result_dir = copy_results(run_dir, target_dir, args, rel_dir)
         if copied_result_dir is None:
             print("Artifact result directory was unavailable; publishing fallback host logs.", file=sys.stderr)
-            copied_result_dir = write_fallback_results(run_dir, target_dir, args)
+            copied_result_dir = write_fallback_results(run_dir, target_dir, args, rel_dir)
 
         compile_cache_dir = publish_compile_time_cache(worktree, copied_result_dir, args.sha)
         if compile_cache_dir is not None:
@@ -508,7 +647,7 @@ def main() -> int:
 
         latest_dir = worktree / commit_dir
         latest_dir.mkdir(parents=True, exist_ok=True)
-        (latest_dir / "latest.txt").write_text(f"{args.run_id}\n")
+        atomic_write_text(latest_dir / "latest.txt", f"{args.run_id}\n")
 
         index = worktree / "index.md"
         index.write_text(
@@ -535,7 +674,9 @@ def main() -> int:
             print("No Gitee result changes to publish.")
         else:
             run_git(["commit", "-q", "-m", f"local-ci: {status_text} {args.sha[:12]} {args.run_id}"], worktree, git_env)
-            run_git(["push", "origin", f"HEAD:refs/heads/{args.results_branch}"], worktree, git_env)
+            if not push_with_rebase_retry(worktree, git_env, args.results_branch):
+                print("Failed to push Gitee local-ci results after retry.", file=sys.stderr)
+                return 1
             print(f"Published Gitee local-ci results to {results_owner}/{results_repo}: {result_url}")
 
     comment_body = (

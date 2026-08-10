@@ -49,6 +49,7 @@ fi
   --codex-home "${codex_ai_ci_home}" \
   --personal-codex-home "${HOME}/.codex" \
   --quiet
+
 if [[ "$(docker inspect --format '{{.State.Running}}' "${source_container}" 2>/dev/null || true)" != "true" ]]; then
   echo "Local CI 容器未运行：${source_container}" >&2
   exit 1
@@ -66,6 +67,7 @@ fi
 cat <<EOF
 Codex AI CI 前置检查通过。
 
+- 执行环境：Local CI 容器快照
 - Local CI 容器：${source_container}
 - 宿主机 Codex CLI：${host_codex_bin}
 - Codex AI CI 独立凭据目录：${codex_ai_ci_home}

@@ -73,6 +73,57 @@
 
 ---
 
+## 2026-08-10：增加轻量审查上下文、发布 manifest 和 Codex 失败代码
+
+### 修改原因
+
+Codex prompt 覆盖范围完整但容易让模型读取过多无关日志和文件；Gitee 结果链路缺少机器可校验的发布清单；Codex 失败原因只有自然语言，不便于 dashboard 和后续统计。目标是在不引入庞大新系统的前提下，降低误判、超时和排障成本。
+
+### 修改内容
+
+- `run_codex_ai_ci.sh` 根据 changed-files manifest 生成 `codex-context-summary.json` 和 review context profile，区分 `docs_only`、`codex_ai_ci_maintenance`、`local_ci_protocol`、`performance`、`local_ci_control`、`local_ci_failure`、`large_diff` 等轻量策略。
+- success/failure prompt 新增动态上下文段落，要求 Codex 按 profile 优先读取相关文件、失败阶段日志和 artifact，但仍必须覆盖全部 changed-files manifest。其中 `codex_ai_ci_maintenance` 表示仅涉及 Codex AI-CI 自身维护文件，不纳入 triton-anchor 产品代码审查，不应生成产品 finding；同步性依赖专用契约测试和人工维护审查。
+- `run_codex_ai_ci.sh` 将失败原因映射为固定 `failure_code`，例如 `codex_cli_unavailable`、`credential_validation_failed`、`container_setup_failed`、`prompt_render_failed`、`timeout`、`schema_validation_failed`、`missing_turn_completed`、`no_command_executed` 和 `invalid_finding_location`。
+- `publish_gitee_result.py` 新增 `publish-manifest.json`，记录 copied files、缺失预期 artifact、target/tested SHA、run ID 和 fallback 状态；`latest.txt` 改为临时文件替换写入，结果分支 push 增加 fetch/rebase retry。
+- `bridge_gitee_to_github_status.py` 读取结果时校验 manifest、summary 和 `result.json` 中的 SHA/run ID，并在 PR comment / advisory status / GitHub output 中暴露 Codex 执行状态、测试证据状态、失败代码和 artifact manifest warning。
+- 同步更新 Local CI README、桌面说明文档和相关契约测试。
+
+### 兼容性与风险
+
+- Codex 报告 schema 仍为 `triton-anchor-codex-ai-report/v3`，没有新增模型输出字段；动态上下文只影响阅读和验证优先级。Codex AI-CI 自身维护变更不再作为 triton-anchor 产品审查对象。
+- `publish-manifest.json` 是新增结果文件；旧结果没有该文件时 bridge 仍可读取，存在该文件但校验失败时会保持 pending，避免回写错误 SHA/run 的结果。
+- Codex advisory 仍保持非阻塞；失败代码只用于展示和统计，不改变确定性 Local CI exit code。
+- push retry 只做有限 fetch/rebase，不做强制 push；遇到无法 rebase 的冲突会失败并等待下一轮重新发布。
+
+### 验证
+
+已运行 `python -m py_compile scripts/local_ci/results/publish_gitee_result.py scripts/local_ci/results/bridge_gitee_to_github_status.py scripts/local_ci/codex_ai/render_codex_ai_report.py`、`bash -n scripts/local_ci/codex_ai/run_codex_ai_ci.sh && bash -n scripts/local_ci/poll_gitee_and_run.sh && bash -n scripts/local_ci/deterministic_ci/run_deterministic_ci.sh`、`python -m pytest scripts/local_ci/codex_ai/tests scripts/local_ci/tests scripts/local_ci/results/tests -q`（46 passed, 10 subtests passed）、`python -m compileall -q scripts/local_ci`、`bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_ai.sh` 和 `git diff --check`。完整 Codex fake Docker harness 在当前 Windows Git Bash 环境因 `/tmp` 路径被解析为 Windows short path 后触发凭据路径组件 symlink 校验而失败，仍需在 Linux CI/服务器环境验证。
+
+---
+
+## 2026-08-10：统一 Local CI 文档与契约测试
+
+### 修改原因
+
+本次调整主要是把 Local CI 的使用说明、维护说明和契约测试口径重新收敛到单一路径，减少根目录与子目录文档之间的差异。
+
+### 修改内容
+
+- 更新根目录 README 的 Local CI 入口说明；
+- 统一 `scripts/local_ci/README.md`、`DEVELOPMENT_GUIDE.md`、`docs/ci_guide_zh.md` 的长期说明；
+- 调整相关契约测试，让文档、脚本和测试保持同一套口径。
+
+### 兼容性与风险
+
+- 现有 Local CI 流程保持不变；
+- 后续如再补充新能力，需要同步更新根目录文档和 Local CI 文档。
+
+### 验证
+
+计划运行 `bash -n scripts/local_ci/codex_ai/run_codex_ai_ci.sh scripts/local_ci/codex_ai/setup_codex_ai_container.sh`、契约测试和文档检查。
+
+---
+
 ## 2026-08-06：补充贡献者目标对照并统一可读 PR comment
 
 ### 修改原因
@@ -84,7 +135,7 @@
 - 将 Codex 报告格式升级为 `triton-anchor-codex-ai-report/v3`。
 - 新增 `change_request_assessment`，包含 `status`、`contributor_goal`、`expected_behavior`、`implementation_summary` 和 `evidence`。
 - success/failure prompt 明确五种实现状态及其与 `verdict`、finding 的关系。
-- renderer 和失败 fallback 同步校验、生成并展示该章节；PR comment 改为“审查结论、贡献者目标与实现情况、需要处理的问题、验证情况、变更文件”的顺序。
+- renderer 和失败 fallback 同步校验、生成并展示该章节；PR comment 改为“审查摘要、贡献者目标与实现情况、需要处理的问题、验证情况、变更文件”的顺序，并在摘要中保留确定性 CI 结论的简短描述。
 - finding 新增 `code_role`，行号只接受单行或最多 12 行的连续范围；renderer 使用 exact-SHA checkout 校验变更文件、行范围和非空内容，bridge 生成固定提交的 GitHub 代码链接。
 - 两个 shell runner 共用 `shared/path_utils.sh`；三个性能比较器共用 JSON 对象读取 helper；保留不同性能判定语义。
 - 补充 renderer、prompt、容器 harness、bridge 和模块布局测试，扩充 Local CI README 与维护文档。
@@ -323,7 +374,7 @@ PYTHONPATH=python python -m pytest scripts/local_ci/codex_ai/tests/test_codex_pr
 
 - 将面向人的 `stable_failure` 表述统一为“可稳定复现的失败”；
 - 将面向人的 `flaky_failure` 表述统一为“非确定性失败”，表示相同用例在可比环境中的复跑结果不一致；
-- 同步更新 success/failure prompt、报告 renderer、GitHub receiver 展示和工程记忆。
+- 同步更新 success/failure prompt、报告 renderer、GitHub receiver 展示和开发指南。
 
 ### 兼容性与风险
 
@@ -456,7 +507,7 @@ Prompt 一方面要求使用 runner 注入的 `${DIFF_COMMAND}` 获取审查范�
 - workflow 除稳定 poller 入口外全部引用分层目录中的 canonical 路径；
 - 布局测试要求根目录只能存在 `poll_gitee_and_run.sh`，并禁止恢复旧 poller 模块；
 - runner 快照前检查完整运行时文件集，并从快照中移除 `__pycache__`、`.pyc` 和 `.pyo`；
-- 同步 README、AGENTS 和 CI 指南中的入口、调用示例和职责说明。
+- 同步 README、DEVELOPMENT_GUIDE 和 CI 指南中的入口、调用示例和职责说明。
 
 ### 兼容性与风险
 
@@ -483,7 +534,7 @@ Local CI bridge 和 Codex harness 原先位于仓库外层 `tests/`，与产品 
 - 将 Codex renderer、容器和 setup harness 移入 `scripts/local_ci/codex_ai/tests/`；
 - 将 bridge 单测移入 `scripts/local_ci/results/tests/`；
 - 保留 Local CI 布局测试在 `scripts/local_ci/tests/`；
-- 更新 workflow、Ruff 范围、README、AGENTS 和测试命令；
+- 更新 workflow、Ruff 范围、README、DEVELOPMENT_GUIDE 和测试命令；
 - workflow 显式执行 Python 契约测试和三个 Shell harness，避免依赖 pytest 自动收集 `.sh`。
 
 ### 兼容性与风险
