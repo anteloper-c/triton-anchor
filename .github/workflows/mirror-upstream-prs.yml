@@ -1,0 +1,74 @@
+name: Mirror RACE-org Pull Requests
+
+on:
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Optional RACE-org/triton-anchor PR number"
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "Inspect refs without writing mirror branches or PRs"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-race-org-pull-requests
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ai-ci
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate automation credential
+        if: ${{ !inputs.dry_run }}
+        env:
+          FORK_AUTOMATION_TOKEN: ${{ secrets.FORK_AUTOMATION_TOKEN }}
+        run: |
+          if [ -z "${FORK_AUTOMATION_TOKEN}" ]; then
+            echo "::error::Missing FORK_AUTOMATION_TOKEN"
+            exit 1
+          fi
+
+      - name: Configure fork authentication
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.FORK_AUTOMATION_TOKEN }}
+        run: gh auth setup-git
+
+      - name: Mirror upstream pull requests
+        env:
+          FORK_AUTOMATION_TOKEN: ${{ secrets.FORK_AUTOMATION_TOKEN }}
+          GH_TOKEN: ${{ secrets.FORK_AUTOMATION_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=(
+            --upstream-repository RACE-org/triton-anchor
+            --mirror-repository "${GITHUB_REPOSITORY}"
+          )
+          if [ -n "${PR_NUMBER}" ]; then
+            args+=(--pr-number "${PR_NUMBER}")
+          fi
+          if [ "${DRY_RUN}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          python scripts/ci/mirror_upstream_prs.py "${args[@]}"

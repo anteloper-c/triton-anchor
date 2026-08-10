@@ -49,14 +49,18 @@ jobs:
             --exclude "$RUFF_EXCLUDE" \
             --ignore "$RUFF_CRITICAL_RULES" \
             --output-format=concise \
-            python/ tests/ scripts/local_ci/; then
+            python/ tests/ scripts/local_ci/ \
+            scripts/ci/mirror_upstream_prs.py \
+            scripts/ci/tests/test_mirror_upstream_prs.py; then
             has_warning=true
           fi
 
           if ! ruff format \
             --check \
             --exclude "$RUFF_EXCLUDE" \
-            python/ tests/ scripts/local_ci/; then
+            python/ tests/ scripts/local_ci/ \
+            scripts/ci/mirror_upstream_prs.py \
+            scripts/ci/tests/test_mirror_upstream_prs.py; then
             has_warning=true
           fi
 
@@ -70,7 +74,9 @@ jobs:
             --exclude "$RUFF_EXCLUDE" \
             --select "$RUFF_CRITICAL_RULES" \
             --output-format=github \
-            python/ tests/ scripts/local_ci/
+            python/ tests/ scripts/local_ci/ \
+            scripts/ci/mirror_upstream_prs.py \
+            scripts/ci/tests/test_mirror_upstream_prs.py
 
   # ───────────── Job 2: Pure-Python unit tests ────────────────
   unit-test:
@@ -96,6 +102,7 @@ jobs:
       - name: Run pure-Python unit tests
         run: |
           pytest python/triton_anchor/tests/ \
+            scripts/ci/tests/test_mirror_upstream_prs.py \
             -v \
             --tb=short \
             --cov=python/triton_anchor \
