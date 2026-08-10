@@ -1,0 +1,126 @@
+name: Sync RACE-org Main
+
+on:
+  schedule:
+    - cron: "23 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-race-org-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ai-ci
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate automation credential
+        env:
+          FORK_AUTOMATION_TOKEN: ${{ secrets.FORK_AUTOMATION_TOKEN }}
+        run: |
+          if [ -z "${FORK_AUTOMATION_TOKEN}" ]; then
+            echo "::error::Missing FORK_AUTOMATION_TOKEN"
+            exit 1
+          fi
+
+      - name: Configure Git authentication
+        env:
+          GH_TOKEN: ${{ secrets.FORK_AUTOMATION_TOKEN }}
+        run: gh auth setup-git
+
+      - name: Merge latest upstream main
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "upstream-sync[bot]"
+          git config user.email "upstream-sync[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/RACE-org/triton-anchor.git
+          git fetch --no-tags upstream main
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "ai-ci already contains upstream/main" >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          git switch -C sync/upstream-main HEAD
+          set +e
+          git merge --no-ff --no-edit upstream/main
+          merge_status=$?
+          set -e
+          if [ "${merge_status}" -ne 0 ]; then
+            {
+              echo "## Upstream sync conflict"
+              echo
+              echo '```text'
+              git diff --name-only --diff-filter=U
+              echo '```'
+            } >> "${GITHUB_STEP_SUMMARY}"
+            git merge --abort
+            exit 1
+          fi
+          echo "changed=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Push synchronization branch
+        if: ${{ steps.merge.outputs.changed == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.FORK_AUTOMATION_TOKEN }}
+        run: |
+          set -euo pipefail
+          remote_sha="$(
+            git ls-remote origin refs/heads/sync/upstream-main | awk '{print $1}'
+          )"
+          git push origin \
+            "--force-with-lease=refs/heads/sync/upstream-main:${remote_sha}" \
+            HEAD:refs/heads/sync/upstream-main
+
+      - name: Create or update synchronization PR
+        if: ${{ steps.merge.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.FORK_AUTOMATION_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          body_file="${RUNNER_TEMP}/upstream-sync-body.md"
+          cat > "${body_file}" <<'EOF'
+          自动同步 `RACE-org/triton-anchor@main` 到 `ai-ci`。
+
+          - 使用普通 merge，保留双方历史。
+          - 本 workflow 不直接更新 `ai-ci`。
+          - 出现冲突时需要在本 PR 中人工解决。
+
+          <!-- upstream-main-sync:RACE-org/triton-anchor -->
+          EOF
+          pr_number="$(
+            gh pr list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --state open \
+              --head sync/upstream-main \
+              --base ai-ci \
+              --json number \
+              --jq '.[0].number // empty'
+          )"
+          if [ -n "${pr_number}" ]; then
+            gh pr edit "${pr_number}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "chore: sync RACE-org main into ai-ci" \
+              --body-file "${body_file}"
+          else
+            gh pr create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --base ai-ci \
+              --head sync/upstream-main \
+              --title "chore: sync RACE-org main into ai-ci" \
+              --body-file "${body_file}"
+          fi

@@ -401,7 +401,7 @@ def write_report(
         }
 
     report = {
-        "verdict": "PASS",
+        "verdict": "WARNING" if scenario == "zero_tests" else "PASS",
         "summary": summary,
         "merge_recommendation": (
             "建议先确认确定性 Local CI 的失败原因并完成复测后再合入。"
@@ -518,6 +518,12 @@ if not command_args:
     raise SystemExit(7)
 
 program = command_args[0]
+if program == "readlink" and command_args[1:3] == ["-e", "--"]:
+    candidate = posixpath.normpath(command_args[3])
+    if mapped(candidate).exists():
+        print(candidate)
+        raise SystemExit(0)
+    raise SystemExit(1)
 if program == "mkdir":
     for value in command_args[1:]:
         if value != "-p":
@@ -873,6 +879,21 @@ grep -Fq "判断：已实现" "${pr_output}/codex-ai-report.md"
 grep -Fq "贡献者希望增强适配器在新边界条件下的稳健性" \
   "${pr_output}/codex-ai-comment.md"
 [[ ! -e /tmp/codex-pr-metadata-must-not-run ]]
+
+run_case pr-metadata-supplies-head-sha success 0 30 0 \
+  "${pr_merge_sha}" "${pr_target_base_sha}" "${pr_branch}" "" \
+  "${pr_metadata_file}" "" ""
+pr_metadata_supplies_head_output="${test_root}/pr-metadata-supplies-head-sha/output"
+grep -Fxq "status: pass" \
+  "${pr_metadata_supplies_head_output}/codex-ai-ci-summary.txt"
+grep -Fxq "requested_base_ref: ${pr_base_branch}" \
+  "${pr_metadata_supplies_head_output}/codex-ai-ci-summary.txt"
+grep -Fxq "requested_head_sha: ${pr_head_sha}" \
+  "${pr_metadata_supplies_head_output}/codex-ai-ci-summary.txt"
+grep -Fxq "requested_head_ref: ${pr_head_branch}" \
+  "${pr_metadata_supplies_head_output}/codex-ai-ci-summary.txt"
+grep -Fxq "change_request_context_status: available" \
+  "${pr_metadata_supplies_head_output}/codex-ai-ci-summary.txt"
 
 run_case pr-missing-metadata success 0 30 0 \
   "${pr_merge_sha}" "${pr_target_base_sha}" "${pr_branch}" "${pr_base_branch}" \

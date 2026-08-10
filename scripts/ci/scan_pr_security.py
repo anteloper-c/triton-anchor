@@ -186,12 +186,44 @@ PROTECTED_PATH_PREFIXES = (
 )
 PROTECTED_FILES = {
     ".gitmodules",
+}
+DEPENDENCY_CONTROL_FILES = {
     "pipfile",
     "pipfile.lock",
     "pyproject.toml",
     "setup.cfg",
     "setup.py",
 }
+DEPENDENCY_SOURCE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "new direct URL or VCS dependency source",
+        re.compile(
+            r"(?:^|\s)@?\s*(?:git\+|https?://|ssh://|git://)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "new custom Python package index or link source",
+        re.compile(
+            r"^\s*(?:-i\b|--index-url\b|--extra-index-url\b|--find-links\b|"
+            r"--trusted-host\b)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "new setuptools dependency_links source",
+        re.compile(r"\bdependency_links\s*=", re.IGNORECASE),
+    ),
+)
+PROTECTED_PATH_MESSAGE = (
+    "ordinary pull requests may not modify trusted CI or runner control files"
+)
+UNSCANNED_PATCH_MESSAGE = (
+    "GitHub did not provide a textual patch; this changed file was not scanned."
+)
+DEPENDENCY_REVIEW_MESSAGE = (
+    "dependency or build control file changed; review before authorization"
+)
 
 
 @dataclass(frozen=True)
@@ -225,7 +257,9 @@ def fetch_pr_files(
     url = f"{api_url}/repos/{repository}/pulls/{pr_number}/files?{query}"
     payload = github_api_get(url, token)
     if not isinstance(payload, list):
-        raise RuntimeError("GitHub API returned an unexpected pull-request file payload")
+        raise RuntimeError(
+            "GitHub API returned an unexpected pull-request file payload"
+        )
     if len(payload) >= 100:
         raise RuntimeError(
             "pull request changes 100 or more files; split it before security review"
@@ -269,15 +303,20 @@ def requires_text_scan(filename: str) -> bool:
         suffix in SECURITY_RELEVANT_SUFFIXES
         or name in SECURITY_RELEVANT_NAMES
         or name.startswith("dockerfile.")
+        or is_dependency_control_path(filename)
     )
 
 
 def is_protected_ci_path(filename: str) -> bool:
     path = filename.replace("\\", "/").lower()
+    return path.startswith(PROTECTED_PATH_PREFIXES) or path in PROTECTED_FILES
+
+
+def is_dependency_control_path(filename: str) -> bool:
+    path = filename.replace("\\", "/").lower()
     name = path.rsplit("/", 1)[-1]
     return (
-        path.startswith(PROTECTED_PATH_PREFIXES)
-        or path in PROTECTED_FILES
+        path in DEPENDENCY_CONTROL_FILES
         or name.startswith("requirements")
         and name.endswith(".txt")
     )
@@ -314,10 +353,12 @@ def scan(files: list[dict[str, object]]) -> tuple[list[Finding], list[Finding]]:
                     "error",
                     filename,
                     1,
-                    "ordinary pull requests may not modify trusted CI or dependency control files",
+                    PROTECTED_PATH_MESSAGE,
                 )
             )
             continue
+
+        dependency_control_path = is_dependency_control_path(filename)
 
         if not isinstance(patch, str):
             if item.get("status") == "removed":
@@ -327,8 +368,7 @@ def scan(files: list[dict[str, object]]) -> tuple[list[Finding], list[Finding]]:
                 "error" if must_scan else "warning",
                 filename,
                 1,
-                "GitHub did not provide a textual patch; "
-                "this changed file was not scanned.",
+                UNSCANNED_PATCH_MESSAGE,
             )
             if must_scan:
                 blocking.append(finding)
@@ -345,6 +385,13 @@ def scan(files: list[dict[str, object]]) -> tuple[list[Finding], list[Finding]]:
                 if pattern.search(line):
                     blocking.append(Finding("error", filename, line_number, message))
 
+            if dependency_control_path:
+                for message, pattern in DEPENDENCY_SOURCE_PATTERNS:
+                    if pattern.search(line):
+                        blocking.append(
+                            Finding("error", filename, line_number, message)
+                        )
+
             for message, pattern in EXECUTION_BLOCKING_PATTERNS:
                 if pattern.search(line):
                     blocking.append(Finding("error", filename, line_number, message))
@@ -352,6 +399,16 @@ def scan(files: list[dict[str, object]]) -> tuple[list[Finding], list[Finding]]:
             for message, pattern in WARNING_PATTERNS:
                 if pattern.search(line):
                     warnings.append(Finding("warning", filename, line_number, message))
+
+        if dependency_control_path:
+            warnings.append(
+                Finding(
+                    "warning",
+                    filename,
+                    1,
+                    DEPENDENCY_REVIEW_MESSAGE,
+                )
+            )
 
     return blocking, warnings
 
@@ -371,7 +428,11 @@ def append_summary(mode: str, findings: list[Finding]) -> None:
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
         return
-    title = "Blocking security findings" if mode == "block" else "Security review warnings"
+    title = (
+        "Blocking security findings"
+        if mode == "block"
+        else "Security review warnings"
+    )
     with open(summary_path, "a", encoding="utf-8") as summary:
         summary.write(f"## {title}\n\n")
         if not findings:
@@ -387,7 +448,10 @@ def main() -> int:
     parser.add_argument("--mode", choices=("block", "warn"), required=True)
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
     parser.add_argument("--pr-number", default=os.environ.get("PR_NUMBER", ""))
-    parser.add_argument("--api-url", default=os.environ.get("GITHUB_API_URL", "https://api.github.com"))
+    parser.add_argument(
+        "--api-url",
+        default=os.environ.get("GITHUB_API_URL", "https://api.github.com"),
+    )
     parser.add_argument("--token", default=os.environ.get("GH_TOKEN", ""))
     parser.add_argument(
         "--expected-head-sha", default=os.environ.get("EXPECTED_HEAD_SHA", "")
