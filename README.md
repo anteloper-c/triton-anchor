@@ -233,6 +233,7 @@ flowchart TD
 ### 4.2 快速安装
 
 ```bash
+# 一、前置步骤
 # 克隆仓库（含 Triton 子模块）
 git clone --recurse-submodules https://github.com/RACE-org/triton-anchor.git
 cd triton-anchor
@@ -242,11 +243,28 @@ export LLVM_SYSPATH=/path/to/llvm-release
 
 # 使用 uv 安装（推荐，极速）
 pip install uv
-uv pip install --no-build-isolation -e .
 
-# 验证安装
+# 创建、激活虚拟环境
+uv venv /opt/venv
+source /opt/venv/bin/activate
+uv pip install setuptools wheel ninja pybind11
+
+
+# 二、安装 triton-anchor
+# 1. 加载环境配置
+source envsetup.sh
+
+# 2. 构建分发包 (wheel)
+uv build --wheel --no-build-isolation
+
+# 3. 安装生成的 wheel 包
+uv pip install dist/triton_anchor-*.whl
+
+
+# 三、验证安装
 python -c "import triton_anchor; print(f'triton-anchor {triton_anchor.__version__} loaded')"
 ```
+
 
 ### 4.3 仅安装纯 Python 模块（无需 LLVM）
 
