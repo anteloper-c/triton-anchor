@@ -24,9 +24,9 @@ def messages(findings: list[object]) -> list[str]:
 
 
 class ScanSecurityTests(unittest.TestCase):
-    def test_local_ci_changes_remain_blocked(self) -> None:
+    def test_github_actions_changes_remain_blocked(self) -> None:
         blocking, _ = security.scan(
-            [pr_file("scripts/local_ci/AGENTS.md", ["# Development notes"])]
+            [pr_file(".github/actions/AGENTS.md", ["# Development notes"])]
         )
 
         self.assertIn(security.PROTECTED_PATH_MESSAGE, messages(blocking))

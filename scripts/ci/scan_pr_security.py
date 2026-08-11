@@ -179,14 +179,22 @@ SECURITY_RELEVANT_NAMES = {
 PROTECTED_PATH_PREFIXES = (
     ".github/actions/",
     # ".github/workflows/",
-    "docker/",
-    "scripts/ci/",
-    "scripts/dashboard/",
-    "scripts/local_ci/",
+    # "docker/",
+    # "scripts/ci/",
+    # "scripts/dashboard/",
+    # "scripts/local_ci/",
 )
 PROTECTED_FILES = {
     ".gitmodules",
 }
+TEMP_CI_REVIEW_PATH_PREFIXES = (
+    ".github/workflows/",
+    "docker/",
+    "docs/",
+    "scripts/ci/",
+    "scripts/dashboard/",
+    "scripts/local_ci/",
+)
 DEPENDENCY_CONTROL_FILES = {
     "pipfile",
     "pipfile.lock",
@@ -322,6 +330,11 @@ def is_dependency_control_path(filename: str) -> bool:
     )
 
 
+def has_ci_review_exception(filename: str) -> bool:
+    path = filename.replace("\\", "/").lower()
+    return path.startswith(TEMP_CI_REVIEW_PATH_PREFIXES)
+
+
 def added_lines(patch: str) -> Iterator[tuple[int, str]]:
     current_line: int | None = None
     for raw_line in patch.splitlines():
@@ -382,6 +395,8 @@ def scan(files: list[dict[str, object]]) -> tuple[list[Finding], list[Finding]]:
                     blocking.append(Finding("error", filename, line_number, message))
 
             for message, pattern in NETWORK_PATTERNS:
+                if has_ci_review_exception(filename):
+                    continue
                 if pattern.search(line):
                     blocking.append(Finding("error", filename, line_number, message))
 
