@@ -239,6 +239,7 @@ def write_report(
             "commands": [
                 {
                     "id": "RUN-001",
+                    "purpose": "失败路径定向诊断",
                     "command": (
                         "python3 -m pytest "
                         "generated_tests/test_failure_diagnostic.py"
@@ -289,6 +290,7 @@ def write_report(
         commands = [
             {
                 "id": f"RUN-{index:03d}",
+                "purpose": "生成测试约束验证",
                 "command": (
                     "python3 -m pytest "
                     f"generated_tests/test_generated_1.py -q"
@@ -321,6 +323,7 @@ def write_report(
             "commands": [
                 {
                     "id": "RUN-001",
+                    "purpose": "生成代码路径定向测试",
                     "command": (
                         "python3 -m pytest "
                         "generated_tests/test_generated.py"
@@ -638,12 +641,12 @@ assert_chinese_failure_report() {
   local manifest_path="${output_dir}/codex-changed-files-manifest.json"
   local manifest_count
   manifest_count="$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))))' "${manifest_path}")"
-  grep -Fq "# Codex AI CI 报告" "${output_dir}/codex-ai-report.md"
+  grep -Fq "# Codex AI 自动审查报告" "${output_dir}/codex-ai-report.md"
   grep -Fq "## 结论" "${output_dir}/codex-ai-report.md"
   grep -Fq "**警告**" "${output_dir}/codex-ai-report.md"
   grep -Fq "## 合入建议" "${output_dir}/codex-ai-report.md"
   grep -Fq "## 贡献者目标与实现情况" "${output_dir}/codex-ai-report.md"
-  grep -Fq "## Codex AI 代码审查" "${output_dir}/codex-ai-comment.md"
+  grep -Fq "## Codex AI 自动审查" "${output_dir}/codex-ai-comment.md"
   grep -Fq "### 审查摘要" "${output_dir}/codex-ai-comment.md"
   grep -Fq "确定性 CI：" "${output_dir}/codex-ai-comment.md"
   grep -Fq "### 贡献者目标与实现情况" "${output_dir}/codex-ai-comment.md"
@@ -810,12 +813,12 @@ grep -Fxq "workspace_dirty: true" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fq -- "--volumes-from anchor-sophgo-ci:ro" "${test_root}/success/docker-state/docker.log"
 grep -Fq "generated_tests/test_generated.py" "${success_output}/codex-workspace-status.txt"
 tar -tzf "${success_output}/codex-generated-files.tar.gz" | grep -Fxq "generated_tests/test_generated.py"
-grep -Fq "# Codex AI CI 报告" "${success_output}/codex-ai-report.md"
+grep -Fq "# Codex AI 自动审查报告" "${success_output}/codex-ai-report.md"
 grep -Fq "**通过**" "${success_output}/codex-ai-report.md"
 grep -Fq 'triton-anchor-codex-ai-report/v3' "${success_output}/codex-ai-report.md"
 grep -Fq "## 具体文件变更" "${success_output}/codex-ai-report.md"
 grep -Fq "## 行为覆盖" "${success_output}/codex-ai-report.md"
-grep -Fq "## Codex AI 代码审查" "${success_output}/codex-ai-comment.md"
+grep -Fq "## Codex AI 自动审查" "${success_output}/codex-ai-comment.md"
 grep -Fq "### 验证情况" "${success_output}/codex-ai-comment.md"
 grep -Fq "<details>" "${success_output}/codex-ai-comment.md"
 python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert len(data) == 1 and data[0]["path"] == "payload.txt"' \

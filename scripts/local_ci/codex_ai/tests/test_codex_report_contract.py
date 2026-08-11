@@ -18,10 +18,12 @@ def command(
     status: str,
     exit_code: int,
     command_text: str | None = None,
+    purpose: str = "相关功能定向测试",
 ) -> dict[str, object]:
     return {
         "id": identifier,
         "command": command_text or f"python -m pytest test_{identifier.lower()}.py",
+        "purpose": purpose,
         "exit_code": exit_code,
         "duration_seconds": 0.1,
         "status": status,
@@ -49,7 +51,10 @@ def report(
             "contributor_goal": "贡献者希望修复当前代码路径中的问题。",
             "expected_behavior": "修改后相关路径应按声明正常工作。",
             "implementation_summary": "代码差异实现了声明目标。",
-            "evidence": "代码差异和定向验证支持该判断。",
+            "evidence": [
+                "代码差异覆盖了贡献者声明的主要路径。",
+                "定向验证结果支持当前实现情况判断。",
+            ],
         },
         "changed_files": [],
         "behavior_coverage": {
@@ -141,23 +146,69 @@ def test_rejects_unknown_change_request_assessment_status():
         RENDERER.validate_report(document, [])
 
 
-def test_comment_explains_goal_implementation_and_non_blocking_role():
-    document = report("passed", [command("RUN-001", "passed", 0)], verdict="PASS")
+def test_legacy_string_change_request_evidence_remains_supported():
+    document = report("not_run", [], verdict="PASS")
+    document["change_request_assessment"]["evidence"] = "旧报告只有一条中文判断依据。"
+
+    assert RENDERER.validate_report(document, []) == document
     comment = RENDERER.render_comment(
         document,
         SimpleNamespace(constraint_status="pass", constraint_reason="约束检查通过。"),
     )
+    assert "- 判断依据：\n  - 旧报告只有一条中文判断依据。" in comment
 
-    assert "## Codex AI 代码审查" in comment
-    assert "AI 评论仅供参考" in comment
+
+@pytest.mark.parametrize(
+    "evidence",
+    [[], ["重复依据。", "重复依据。"], ["English only"]],
+)
+def test_rejects_invalid_change_request_evidence(evidence):
+    document = report("not_run", [], verdict="PASS")
+    document["change_request_assessment"]["evidence"] = evidence
+
+    with pytest.raises(ValueError, match="change_request_assessment.evidence"):
+        RENDERER.validate_report(document, [])
+
+
+def test_comment_explains_goal_implementation_and_non_blocking_role():
+    document = report(
+        "passed",
+        [
+            command(
+                "RUN-001", "passed", 0, purpose="主要代码路径定向测试"
+            )
+        ],
+        verdict="PASS",
+    )
+    document["change_request_assessment"]["evidence"] = [
+        "代码差异覆盖了声明的正常路径。",
+        "RUN-001 支持该判断。",
+    ]
+    document["test_execution"]["summary"] = "RUN-001 已通过，验证了主要路径。"
+    comment = RENDERER.render_comment(
+        document,
+        SimpleNamespace(
+            constraint_status="pass",
+            constraint_reason="约束检查通过。",
+            local_ci_status=0,
+        ),
+    )
+
+    assert "## Codex AI 自动审查" in comment
+    assert "Codex AI 自动审查仅供参考" in comment
     assert "合入门禁" in comment
     assert "### 审查摘要" in comment
-    assert "确定性 CI：" in comment
+    assert "本地确定性 CI 检查：已通过" in comment
     assert "### 贡献者目标与实现情况" in comment
     assert "贡献者目标：贡献者希望修复当前代码路径中的问题" in comment
     assert "预期效果：修改后相关路径应按声明正常工作" in comment
     assert "当前实现情况：代码差异实现了声明目标" in comment
-    assert "判断依据：" in comment
+    assert "- 判断依据：\n  - 代码差异覆盖了声明的正常路径。" in comment
+    assert "  - 主要代码路径定向测试支持该判断。" in comment
+    assert "主要代码路径定向测试已通过" in comment
+    assert "RUN-001" not in comment
+    assert "Local CI" not in comment
+    assert "Codex AI CI" not in comment
     assert "### 验证情况" in comment
 
 

@@ -73,6 +73,32 @@
 
 ---
 
+## 2026-08-11：分点展示判断依据并隐藏 PR comment 内部编号
+
+### 修改原因
+
+“贡献者目标与实现情况”的判断依据原为单字符串，多条证据只能挤在同一行；结构化报告中的 `RUN-001`、`AI-001` 等机器 ID 还可能通过说明字段、代码定位或 bridge 元数据进入公开 PR comment，普通提交者无法理解这些内部约定。
+
+### 修改内容
+
+- `change_request_assessment.evidence` canonical 输出改为 1 至 8 条中文字符串数组，renderer 兼容历史单字符串。
+- 完整报告和 PR comment 都把判断依据渲染为嵌套项目列表。
+- renderer 和 bridge 将公开评论中的 `AI-xxx`、`TEST-xxx` 转为公共中文序号，并将 `RUN-xxx` 替换为执行记录的中文 `purpose`；相关审查主体显示为“Codex AI 自动审查”，Local CI 显示为“本地确定性 CI 检查”。
+- bridge 将执行状态、审查结论、测试状态和固定失败代码映射为公共中文说明；失败 fallback 不再输出原始失败代码。
+- success/failure prompt 明确区分机器 ID 与公开自然语言字段，并补充 renderer、prompt、shell、bridge 契约测试。
+
+### 兼容性与风险
+
+- JSON 字段名和报告版本保持 v3；历史字符串 `evidence` 仍可校验和渲染，新输出应使用数组。
+- 机器 ID 继续保留在 JSON、日志和完整报告中，不影响命令、finding 或建议测试关联。
+- Codex advisory 仍为非阻塞，不改变确定性 Local CI 门禁。
+
+### 验证
+
+运行 Codex renderer/prompt 契约测试、bridge 单元测试、shell fixture、Python 编译、bash 语法和 `git diff --check`。
+
+---
+
 ## 2026-08-10：增加轻量审查上下文、发布 manifest 和 Codex 失败代码
 
 ### 修改原因

@@ -35,7 +35,7 @@ ${CHANGE_REQUEST_CONTEXT_JSON}
 - `contributor_goal`：用简洁中文归纳贡献者想解决的问题或完成的功能；不能照抄大段 PR 描述。
 - `expected_behavior`：说明贡献者声明的用户可观察行为、接口契约或验收结果；没有明确说明时如实写“PR 描述未明确说明预期行为”。
 - `implementation_summary`：说明当前 diff 实际实现了什么，以及与声明相比是否完整、存在偏差或无法确认。
-- `evidence`：用自然语言说明为什么得出上述判断。可以引用关键文件、代码路径、测试或 Local CI 证据，但要让 PR 提交者和审核者能直接理解，不要堆叠内部字段名、散碎路径或只有维护者才看得懂的事实清单；不得使用主观猜测。
+- `evidence`：输出 JSON 字符串数组，每项只表达一条独立判断依据；即使只有一条也使用单元素数组。可以引用关键文件、代码路径、测试或 Local CI 证据，但要让 PR 提交者和审核者能直接理解，不要堆叠内部字段名、`AI-xxx`、`TEST-xxx`、`RUN-xxx` 或只有维护者才看得懂的事实清单；不得使用主观猜测。
 - `status`：声明和实现一致且证据充分时使用 `implemented`；只实现部分目标或仍有具体缺口时使用 `partially_implemented`；目标明确但 diff 没有实现或与预期相反时使用 `not_implemented`；PR 元数据缺失、无效或现有证据不足以判断时使用 `not_assessable`；仅在当前任务不是 PR 时使用 `not_applicable`。
 
 该状态描述“贡献者声明与实现的一致程度”，不直接代替 `verdict`。如果不一致构成可验证且影响合入的产品缺陷，应同时记录 finding；如果只是声明不完整或证据不足，应如实说明，不得编造 finding。
@@ -135,7 +135,7 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 - 只有当已有产物不可用且风险无法通过更小验证覆盖时，才可记录为建议测试或剩余风险，不要在当前预算内强行完整重编译。
 - 文档类改动可以不生成测试，但必须在 `test_execution.summary` 中用中文说明。
 - 无法生成或运行有效测试时，`test_execution.status` 必须使用 `insufficient_evidence`，不能虚报为 `passed`。
-- 所有生成的测试路径写入 `test_execution.generated_test_files`；每条命令的文本、退出码、耗时、状态和中文证据写入 `test_execution.commands`。
+- 所有生成的测试路径写入 `test_execution.generated_test_files`；每条命令都必须在 `test_execution.commands` 中记录 `purpose`、命令文本、退出码、耗时、状态和中文证据。`purpose` 使用不超过 120 字的中文名词短语说明该项工作的功能和类型，例如“缓存失效定向测试”“Python 语法检查”或“扩展模块构建”，不得包含 `RUN-xxx`。
 - `test_execution.status` 必须与命令记录一致：没有执行命令时使用 `not_run` 或 `insufficient_evidence`；全部已执行命令通过时才可使用 `passed`；存在可稳定复现的失败、非确定性失败或基础设施失败时，整体状态使用对应枚举；测试生成过程失败时使用 `test_generation_error`。计划但未执行的命令状态使用 `not_executed`，并在证据中说明原因。
 
 当满足以下任一条件时，Codex 可以在预算允许范围内扩大验证范围，运行相关测试子集、局部构建、lint、类型检查或必要的集成验证：
@@ -169,6 +169,8 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 
 - JSON 键名、固定枚举、ID、命令、代码符号和路径保持原样。
 - `summary`、`merge_recommendation`、`change_request_assessment` 的说明字段、`changed_files` 的说明字段、`behavior_coverage`、`findings`、`suggested_tests`、`residual_risks`、`test_execution.summary` 和命令证据必须使用简体中文。
+- 会进入 PR comment 的自然语言字段不得出现 `AI-xxx`、`TEST-xxx`、`RUN-xxx` 等内部编号；涉及已执行工作时直接写对应命令的 `purpose`，使用“缓存失效定向测试”“Python 语法检查”“扩展模块构建”等功能描述，并将审查主体称为“Codex AI 自动审查”。机器 ID 只保留在对应 `id` 字段和完整报告的关联信息中。
+- `change_request_assessment.evidence` 必须是包含 1 至 8 条中文判断依据的数组。
 - `change_request_assessment` 必须完整包含 `status`、`contributor_goal`、`expected_behavior`、`implementation_summary` 和 `evidence`。
 - `changed_files` 条目数必须等于 ${CHANGED_FILE_COUNT}，并与标准清单完全一致。
 - 每个 finding 的 `file`、`line`、`code_role` 必须能让提交者直接定位到需要理解或修复的代码功能；`line` 使用 `42` 或 `42-47` 格式，不能使用模糊描述或函数名代替行号。

@@ -214,8 +214,8 @@ write_failure_report() {
   local rendered_diff_mode="two-point"
   local repository_root_args=()
   local fallback_assessment_label="无法判断"
-  local fallback_contributor_goal="Codex AI CI 未完成，未能可靠归纳贡献者的修改目标。"
-  local fallback_expected_behavior="Codex AI CI 未完成，未能可靠归纳贡献者声明的预期行为。"
+  local fallback_contributor_goal="Codex AI 自动审查未完成，未能可靠归纳贡献者的修改目标。"
+  local fallback_expected_behavior="Codex AI 自动审查未完成，未能可靠归纳贡献者声明的预期行为。"
   local fallback_implementation_summary="当前没有足够证据判断代码是否实现了声明目标。"
   if [[ "${diff_mode}" == "merge-base" ]]; then
     rendered_diff_mode="merge-base"
@@ -236,7 +236,7 @@ write_failure_report() {
   max_test_command_duration_seconds="0"
   total_test_command_duration_seconds="0"
   constraint_status="warning"
-  constraint_reason="Codex AI CI 未完成，无法确认测试执行是否符合轻量约束。"
+  constraint_reason="Codex AI 自动审查未完成，无法确认测试执行是否符合轻量约束。"
 
   if ! "${PYTHON_BIN}" - "${failure_reason:-未知原因}" \
     "${changed_files_manifest_path}" "${change_request_context_status}" \
@@ -266,7 +266,7 @@ for item in manifest if isinstance(manifest, list) else []:
         "change_type": change_type,
         "summary": "AI 审查未完成，未能可靠归纳该文件的改动。",
         "impact": "该文件的行为影响仍需人工检查。",
-        "validation_strategy": "未执行：Codex AI CI 未完成，没有取得该文件的可信验证结果。",
+        "validation_strategy": "未执行：Codex AI 自动审查未完成，没有取得该文件的可信验证结果。",
     })
 
 behavior_coverage = {}
@@ -286,37 +286,39 @@ for key, label in labels.items():
 
 document = {
     "verdict": "WARNING",
-    "summary": f"Codex AI CI 未完成：{failure_reason}。本次没有生成可信的结构化审查摘要。",
+    "summary": f"Codex AI 自动审查未完成：{failure_reason}。本次没有生成可信的结构化审查摘要。",
     "merge_recommendation": "请先排查 AI 执行问题并重新运行，当前不要仅依据本次 AI 结果决定合入。",
     "change_request_assessment": {
         "status": "not_applicable" if context_status == "not_applicable" else "not_assessable",
         "contributor_goal": (
             "当前任务不是 PR，因此没有需要对照的贡献者功能声明。"
             if context_status == "not_applicable"
-            else "Codex AI CI 未完成，未能可靠归纳贡献者的修改目标。"
+            else "Codex AI 自动审查未完成，未能可靠归纳贡献者的修改目标。"
         ),
         "expected_behavior": (
             "当前任务不是 PR，因此贡献者预期行为不适用。"
             if context_status == "not_applicable"
-            else "Codex AI CI 未完成，未能可靠归纳贡献者声明的预期行为。"
+            else "Codex AI 自动审查未完成，未能可靠归纳贡献者声明的预期行为。"
         ),
         "implementation_summary": (
             "当前任务不是 PR，不进行贡献者声明对照；Codex AI 审查未完成。"
             if context_status == "not_applicable"
-            else "AI 审查未完成，不能判断当前代码是否实现了声明目标。"
+            else "Codex AI 自动审查未完成，不能判断当前代码是否实现了声明目标。"
         ),
-        "evidence": f"Codex AI CI 执行失败：{failure_reason}。当前没有完整的代码审查证据。",
+        "evidence": [
+            f"Codex AI 自动审查执行失败：{failure_reason}。当前没有完整的代码审查证据。"
+        ],
     },
     "changed_files": changed_files,
     "behavior_coverage": behavior_coverage,
     "findings": [],
     "suggested_tests": [],
     "residual_risks": [
-        "当前代码差异仍需人工检查，或在修复执行环境后重新运行 Codex AI CI。"
+        "当前代码差异仍需人工检查，或在修复执行环境后重新运行 Codex AI 自动审查。"
     ],
     "test_execution": {
         "status": "insufficient_evidence",
-        "summary": "Codex AI CI 未完成，因此没有可信的测试执行结论。",
+        "summary": "Codex AI 自动审查未完成，因此没有可信的测试执行结论。",
         "generated_test_files": [],
         "commands": [],
     },
@@ -352,7 +354,7 @@ PY
   fi
 
   {
-    echo "# Codex AI CI 报告"
+    echo "# Codex AI 自动审查报告"
     echo
     echo "## 元数据"
     echo
@@ -374,7 +376,7 @@ PY
     echo
     echo "## 摘要"
     echo
-    echo "Codex AI CI 未完成：${failure_reason}"
+    echo "Codex AI 自动审查未完成：${failure_reason}"
     echo
     echo "## 贡献者目标与实现情况"
     echo
@@ -382,6 +384,8 @@ PY
     echo "- 修改目标：${fallback_contributor_goal}"
     echo "- 预期行为：${fallback_expected_behavior}"
     echo "- 实现情况：${fallback_implementation_summary}"
+    echo "- 判断依据："
+    echo "  - Codex AI 自动审查未完成，当前没有足够证据判断贡献者声明和实际实现是否一致。"
     echo
     echo "## 合入建议"
     echo
@@ -406,33 +410,32 @@ PY
     echo "## 测试执行"
     echo
     echo "- 状态：证据不足"
-    echo "- 摘要：Codex AI CI 未完成，未获得可信的测试结果。"
+    echo "- 摘要：Codex AI 自动审查未完成，未获得可信的测试结果。"
     echo
     echo "## 剩余风险"
     echo
-    echo "- 本次 AI 审查未完成，当前代码差异仍需人工检查。"
+    echo "- 本次 Codex AI 自动审查未完成，当前代码差异仍需人工检查。"
     echo
     echo "## 执行标记"
     echo
     echo "CODEX_AI_CI_FAILED"
   } > "${report_path}"
   {
-    echo "## Codex AI 代码审查"
+    echo "## Codex AI 自动审查"
     echo
-    echo "> 这是非阻塞的辅助审查；确定性 CI 结果仍是合入门禁。"
+    echo "> Codex AI 自动审查仅供参考且不阻塞合入；本地确定性 CI 检查结果才是合入门禁。"
     echo
     echo "### 审查摘要"
     echo
-    echo "- AI 审查摘要：**警告**"
+    echo "- Codex AI 审查结论：**警告**"
     if [[ "${local_ci_status}" == "0" ]]; then
-      echo "- 确定性 CI：确定性 Local CI 已通过；本次失败只影响 AI 辅助审查，不改变门禁结果。"
+      echo "- 本地确定性 CI 检查：已通过；本次失败只影响 Codex AI 自动审查，不改变门禁结果。"
     else
-      echo "- 确定性 CI：确定性 Local CI 未通过；需要先根据确定性 CI 日志和复测结果判断合入风险。"
+      echo "- 本地确定性 CI 检查：未通过；需要先根据检查日志和复测结果判断合入风险。"
     fi
-    echo "- 合入建议：请先排查 AI 执行问题并重新运行，再决定是否合入。"
+    echo "- 合入建议：请先排查 Codex AI 自动审查执行问题并重新运行，再决定是否合入。"
     echo
-    echo "Codex AI CI 未完成：${failure_reason:-未知原因}。"
-    echo "失败代码：${failure_code:-codex_execution_failed}。"
+    echo "$(codex_failure_public_reason "${failure_code:-codex_execution_failed}")。"
     echo
     echo "### 贡献者目标与实现情况"
     echo
@@ -440,11 +443,12 @@ PY
     echo "- 贡献者目标：${fallback_contributor_goal}"
     echo "- 预期效果：${fallback_expected_behavior}"
     echo "- 当前实现情况：${fallback_implementation_summary}"
-    echo "- 判断依据：Codex AI CI 执行未完成，当前没有足够证据可靠判断贡献者声明和实际实现是否一致。"
+    echo "- 判断依据："
+    echo "  - Codex AI 自动审查未完成，当前没有足够证据可靠判断贡献者声明和实际实现是否一致。"
     echo
     echo "### 需要处理的问题"
     echo
-    echo "未生成产品代码问题；Codex AI CI 执行未完成。"
+    echo "未生成产品代码问题；Codex AI 自动审查执行未完成。"
     echo
     echo "### 验证情况"
     echo
@@ -519,6 +523,23 @@ codex_failure_code_for_reason() {
     *"checkout"* | *"差异"* | *"变更文件清单"*) echo "checkout_or_diff_failed" ;;
     *"宿主机缺少"* | *"Python"*) echo "prerequisite_failed" ;;
     *) echo "codex_execution_failed" ;;
+  esac
+}
+
+codex_failure_public_reason() {
+  case "$1" in
+    codex_cli_unavailable) echo "Codex AI 自动审查工具在当前环境中不可用" ;;
+    credential_validation_failed) echo "Codex 审查凭据校验未通过" ;;
+    prompt_render_failed) echo "Codex 审查输入准备失败" ;;
+    timeout) echo "Codex 自动审查执行超时" ;;
+    missing_completion_marker | missing_turn_completed) echo "Codex 自动审查没有完整结束" ;;
+    no_command_executed) echo "Codex 自动审查没有获得可核验的补充验证结果" ;;
+    schema_validation_failed) echo "Codex 审查结果格式校验未通过" ;;
+    invalid_finding_location) echo "Codex 问题定位信息校验未通过" ;;
+    container_setup_failed) echo "Codex 审查运行环境启动失败" ;;
+    checkout_or_diff_failed) echo "Codex 审查代码或差异准备失败" ;;
+    prerequisite_failed) echo "Codex 审查运行环境缺少必要组件" ;;
+    *) echo "Codex 自动审查执行异常" ;;
   esac
 }
 

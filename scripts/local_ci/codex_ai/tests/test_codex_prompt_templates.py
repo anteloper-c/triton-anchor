@@ -61,6 +61,10 @@ def test_codex_ai_prompt_templates_keep_required_output_contract():
         assert "expected_behavior" in text
         assert "implementation_summary" in text
         assert "not_assessable" in text
+        assert "JSON 字符串数组" in text
+        assert "包含 1 至 8 条中文判断依据" in text
+        assert "会进入 PR comment 的自然语言字段不得出现" in text
+        assert "对应命令的 `purpose`" in text
         assert "code_role" in text
         assert "不超过 12 行" in text
         assert "changed_files" in text

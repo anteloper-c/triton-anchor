@@ -42,10 +42,10 @@ class CodexCommentTests(unittest.TestCase):
                 (
                     "## Codex AI 代码审查\n\n"
                     "> 这是非阻塞的辅助审查；确定性 CI 结果仍是合入门禁。\n\n"
-                    "### 审查摘要\n\n发现一个问题。\n\n"
+                    "### 审查摘要\n\n发现一个问题。\n\nCodex AI CI 已完成，Local CI 已通过。\n\n"
                     "### 贡献者目标与实现情况\n\n实现不完整。\n\n"
                     "### 需要处理的问题\n\n#### 1. [中风险] 示例问题\n\n"
-                    "### 验证情况\n\n定向测试稳定复现。\n\n"
+                    "### 验证情况\n\nRUN-001 稳定复现问题。\n\n"
                     "### 变更文件\n\n<details></details>"
                 ),
                 "https://gitee.example/results/run/codex-ai-report.md",
@@ -55,6 +55,7 @@ class CodexCommentTests(unittest.TestCase):
                     ),
                 ),
                 "",
+                (("RUN-001", "缓存版本失配定向测试"),),
             ),
         )
 
@@ -62,16 +63,46 @@ class CodexCommentTests(unittest.TestCase):
         self.assertEqual(bridge.pr_number_from_task_ref(self.target.task_ref), 42)
         self.assertIsNone(bridge.pr_number_from_task_ref("ci/push/feature"))
 
+    def test_validation_purpose_is_read_from_report_and_used_in_comment(self) -> None:
+        report_json = json.dumps(
+            {
+                "test_execution": {
+                    "commands": [
+                        {"id": "RUN-001", "purpose": "Python 语法检查"}
+                    ]
+                }
+            }
+        )
+        purposes = bridge.validation_purposes_from_report(report_json)
+
+        self.assertEqual(purposes, (("RUN-001", "Python 语法检查"),))
+        self.assertEqual(
+            bridge.public_comment_text("RUN-001 已通过", purposes),
+            "Python 语法检查已通过",
+        )
+        self.assertEqual(
+            bridge.public_comment_text("RUN-001 已通过"),
+            "相关验证已通过",
+        )
+
     def test_comment_body_contains_summary_link_and_stable_marker(self) -> None:
         body = bridge.codex_pr_comment_body(self.target, self.result)
         self.assertIn("发现一个问题。", body)
-        self.assertIn("## Codex AI 代码审查", body)
+        self.assertIn("## Codex AI 自动审查", body)
         self.assertIn("### 审查摘要", body)
         self.assertIn("### 贡献者目标与实现情况", body)
         self.assertIn("### 变更文件", body)
         self.assertIn("- 测试提交：", body)
         self.assertIn("`aaaaaaaaaaaa`", body)
-        self.assertIn("Codex 执行状态", body)
+        self.assertIn("Codex 自动审查状态：完成", body)
+        self.assertIn("结论：警告", body)
+        self.assertIn("验证情况：存在可稳定复现的失败", body)
+        self.assertIn("缓存版本失配定向测试稳定复现问题", body)
+        self.assertNotIn("RUN-001", body)
+        self.assertIn("Codex AI 自动审查已完成，本地确定性 CI 检查已通过", body)
+        self.assertNotIn("Codex AI CI", body)
+        self.assertNotIn("Local CI", body)
+        self.assertIn("查看完整 Codex AI 自动审查报告", body)
         self.assertIn(self.result.codex_ai.report_url, body)
         self.assertIn(bridge.CODEX_COMMENT_MARKER, body)
         self.assertIn(bridge.codex_pr_commit_marker(self.target), body)
@@ -82,7 +113,8 @@ class CodexCommentTests(unittest.TestCase):
 
         self.assertIn("### 可点击代码定位", body)
         self.assertIn("提交者修复和审核者核对代码功能", body)
-        self.assertIn("AI-001", body)
+        self.assertIn("问题 1：", body)
+        self.assertNotIn("AI-001", body)
         self.assertLess(
             body.index("### 可点击代码定位"),
             body.index("### 验证情况"),
@@ -257,7 +289,10 @@ class CodexCommentTests(unittest.TestCase):
             return bridge.CodexAIResult(**payload)
 
         cases = (
-            (changed(execution_status="fail", failure_code="timeout"), "timeout"),
+            (
+                changed(execution_status="fail", failure_code="timeout"),
+                "Codex 自动审查执行超时",
+            ),
             (changed(execution_status="skipped"), "未运行"),
             (
                 changed(verdict="PASS", test_status="insufficient_evidence"),

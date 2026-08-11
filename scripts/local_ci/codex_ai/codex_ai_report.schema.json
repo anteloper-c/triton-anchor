@@ -27,7 +27,18 @@
         "contributor_goal": {"type": "string"},
         "expected_behavior": {"type": "string"},
         "implementation_summary": {"type": "string"},
-        "evidence": {"type": "string"}
+        "evidence": {
+          "oneOf": [
+            {"type": "string"},
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "uniqueItems": true,
+              "items": {"type": "string"}
+            }
+          ]
+        }
       },
       "required": [
         "status",
@@ -222,6 +233,7 @@
             "properties": {
               "id": {"type": "string", "pattern": "^RUN-[0-9]{3}$"},
               "command": {"type": "string"},
+              "purpose": {"type": "string", "minLength": 1, "maxLength": 120},
               "exit_code": {"type": "integer"},
               "duration_seconds": {"type": "number", "minimum": 0},
               "status": {
@@ -239,6 +251,7 @@
             "required": [
               "id",
               "command",
+              "purpose",
               "exit_code",
               "duration_seconds",
               "status",

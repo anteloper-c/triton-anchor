@@ -37,6 +37,67 @@ CODEX_COMMENT_MARKER = "<!-- triton-anchor-codex-ai-comment -->"
 CODEX_COMMENT_SHA_MARKER_PREFIX = "triton-anchor-codex-ai-comment-sha"
 FINDING_ID_RE = re.compile(r"^AI-[0-9]{3}$")
 GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+INTERNAL_COMMENT_ID_RE = re.compile(
+    r"\b(AI|TEST|RUN)-0*([1-9][0-9]*)\b[ \t]*",
+    re.IGNORECASE,
+)
+PUBLIC_COMMENT_ID_TEMPLATES = {
+    "AI": "问题 {number}",
+    "TEST": "建议测试 {number}",
+    "RUN": "相关验证",
+}
+INTERNAL_COMMENT_TERM_REPLACEMENTS = (
+    (
+        re.compile(r"\bCodex AI (?:CI|代码审查)\b[ \t]*", re.IGNORECASE),
+        "Codex AI 自动审查",
+    ),
+    (
+        re.compile(r"(?:确定性[ \t]+)?\bLocal CI\b[ \t]*", re.IGNORECASE),
+        "本地确定性 CI 检查",
+    ),
+    (
+        re.compile(r"(?<!本地)确定性 CI(?![ \t]*检查)[ \t]*"),
+        "本地确定性 CI 检查",
+    ),
+)
+CODEX_EXECUTION_STATUS_LABELS = {
+    "pass": "完成",
+    "fail": "未完成",
+    "skipped": "未运行",
+    "not_reported": "未报告",
+}
+CODEX_VERDICT_LABELS = {
+    "pass": "通过",
+    "warning": "警告",
+    "fail": "失败",
+    "not_run": "未运行",
+    "unknown": "未知",
+}
+CODEX_TEST_STATUS_LABELS = {
+    "not_run": "未运行",
+    "passed": "通过",
+    "stable_failure": "存在可稳定复现的失败",
+    "flaky_failure": "存在非确定性失败",
+    "infrastructure_failure": "基础设施失败",
+    "test_generation_error": "测试生成失败",
+    "insufficient_evidence": "证据不足",
+    "not_reported": "未报告",
+}
+CODEX_FAILURE_REASON_LABELS = {
+    "codex_cli_unavailable": "Codex AI 自动审查工具在当前环境中不可用",
+    "credential_validation_failed": "Codex 审查凭据校验未通过",
+    "prompt_render_failed": "Codex 审查输入准备失败",
+    "timeout": "Codex 自动审查执行超时",
+    "missing_completion_marker": "Codex 自动审查没有完整结束",
+    "missing_turn_completed": "Codex 自动审查没有完整结束",
+    "no_command_executed": "Codex 自动审查没有获得可核验的补充验证结果",
+    "schema_validation_failed": "Codex 审查结果格式校验未通过",
+    "invalid_finding_location": "Codex 问题定位信息校验未通过",
+    "container_setup_failed": "Codex 审查运行环境启动失败",
+    "checkout_or_diff_failed": "Codex 审查代码或差异准备失败",
+    "prerequisite_failed": "Codex 审查运行环境缺少必要组件",
+    "codex_execution_failed": "Codex 自动审查执行异常",
+}
 
 REPORTABLE_STAGES = (
     ("frontend_smoke", "frontend_smoke_status", "frontend-smoke", "Frontend smoke"),
@@ -77,6 +138,7 @@ class CodexAIResult:
     report_url: str
     finding_locations: tuple[FindingLocation, ...] = ()
     failure_code: str = ""
+    validation_purposes: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -262,6 +324,34 @@ def finding_locations_from_report(report_json: str) -> tuple[FindingLocation, ..
             continue
         locations.append(FindingLocation(identifier, file_name, line))
     return tuple(locations)
+
+
+def validation_purposes_from_report(report_json: str) -> tuple[tuple[str, str], ...]:
+    try:
+        document = json.loads(report_json)
+    except json.JSONDecodeError:
+        return ()
+    if not isinstance(document, dict):
+        return ()
+    test_execution = document.get("test_execution")
+    if not isinstance(test_execution, dict):
+        return ()
+    commands = test_execution.get("commands")
+    if not isinstance(commands, list):
+        return ()
+
+    purposes: list[tuple[str, str]] = []
+    for command in commands:
+        if not isinstance(command, dict):
+            continue
+        identifier = command.get("id")
+        purpose = command.get("purpose")
+        if not isinstance(identifier, str) or not isinstance(purpose, str):
+            continue
+        purpose = purpose.strip()
+        if re.fullmatch(r"RUN-[0-9]{3}", identifier) and purpose:
+            purposes.append((identifier, purpose))
+    return tuple(purposes)
 
 
 def github_api_url(path: str, params: dict[str, str] | None = None) -> str:
@@ -545,6 +635,7 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
         report_url,
         finding_locations_from_report(codex_report),
         failure_code,
+        validation_purposes_from_report(codex_report),
     )
     return LocalCIResult(
         parse_summary_status(summary),
@@ -568,6 +659,40 @@ def stage_github_state(status: str) -> str | None:
     return None
 
 
+def public_comment_identifier(
+    match: re.Match[str], identifier_descriptions: dict[str, str]
+) -> str:
+    number = int(match.group(2))
+    identifier = f"{match.group(1).upper()}-{number:03d}"
+    if identifier in identifier_descriptions:
+        return identifier_descriptions[identifier]
+    template = PUBLIC_COMMENT_ID_TEMPLATES[match.group(1).upper()]
+    return template.format(number=number)
+
+
+def public_comment_text(
+    text: str, validation_purposes: tuple[tuple[str, str], ...] = ()
+) -> str:
+    identifier_descriptions = dict(validation_purposes)
+    public_text = INTERNAL_COMMENT_ID_RE.sub(
+        lambda match: public_comment_identifier(match, identifier_descriptions),
+        text,
+    )
+    for pattern, replacement in INTERNAL_COMMENT_TERM_REPLACEMENTS:
+        public_text = pattern.sub(replacement, public_text)
+    return public_text
+
+
+def public_status_label(value: str, labels: dict[str, str]) -> str:
+    return labels.get(value.strip().lower(), "未知")
+
+
+def public_failure_reason(failure_code: str) -> str:
+    return CODEX_FAILURE_REASON_LABELS.get(
+        failure_code.strip().lower(), "Codex 自动审查执行异常"
+    )
+
+
 def pr_number_from_task_ref(task_ref: str) -> int | None:
     match = re.fullmatch(r"ci/pr-([0-9]+)/.+", task_ref)
     return int(match.group(1)) if match else None
@@ -578,7 +703,10 @@ def codex_pr_commit_marker(target: Target) -> str:
 
 
 def codex_pr_comment_body(target: Target, result: LocalCIResult) -> str:
-    body = result.codex_ai.comment_markdown.strip()
+    body = public_comment_text(
+        result.codex_ai.comment_markdown.strip(),
+        result.codex_ai.validation_purposes,
+    )
     if not body:
         return ""
     report_url = result.codex_ai.report_url or result.target_url
@@ -593,16 +721,28 @@ def codex_pr_comment_body(target: Target, result: LocalCIResult) -> str:
             )
         else:
             body = f"{body}\n\n{location_links}"
+    execution_label = public_status_label(
+        result.codex_ai.execution_status, CODEX_EXECUTION_STATUS_LABELS
+    )
+    verdict_label = public_status_label(result.codex_ai.verdict, CODEX_VERDICT_LABELS)
+    test_label = public_status_label(
+        result.codex_ai.test_status, CODEX_TEST_STATUS_LABELS
+    )
     metadata_lines = [
         f"- 测试提交：`{target.sha[:12]}`",
-        f"- Codex 执行状态：`{result.codex_ai.execution_status}`；结论：`{result.codex_ai.verdict}`；测试证据：`{result.codex_ai.test_status}`",
+        (
+            f"- Codex 自动审查状态：{execution_label}；结论：{verdict_label}；"
+            f"验证情况：{test_label}"
+        ),
     ]
     if result.codex_ai.failure_code:
-        metadata_lines.append(f"- Codex 失败代码：`{result.codex_ai.failure_code}`")
+        metadata_lines.append(
+            f"- 未完成原因：{public_failure_reason(result.codex_ai.failure_code)}"
+        )
     if result.publish_manifest and result.publish_manifest.missing_expected_files:
         missing = ", ".join(result.publish_manifest.missing_expected_files)
-        metadata_lines.append(f"- 结果发布提醒：缺失预期 artifact `{missing}`")
-    metadata_lines.append(f"- [查看完整 Codex AI CI 报告]({report_url})")
+        metadata_lines.append(f"- 结果发布提醒：缺少预期结果文件 `{missing}`")
+    metadata_lines.append(f"- [查看完整 Codex AI 自动审查报告]({report_url})")
     return (
         f"{body}\n\n"
         f"---\n\n"
@@ -635,7 +775,8 @@ def github_finding_location_links(
         quoted_path = urllib.parse.quote(location.file, safe="/")
         url = f"https://github.com/{repository}/blob/{target.sha}/{quoted_path}{anchor}"
         label = location.file.replace("`", "'").replace("@", "＠")
-        lines.append(f"- `{location.identifier}`: [{label}:L{location.line}]({url})")
+        identifier = public_comment_text(location.identifier)
+        lines.append(f"- {identifier}：[{label}:L{location.line}]({url})")
     return "\n".join(lines) if len(lines) > 4 else ""
 
 
@@ -721,7 +862,7 @@ def codex_advisory_description(codex_ai: CodexAIResult) -> str:
         return "Codex AI 未运行（非阻塞）"
     if execution_status != "pass":
         if codex_ai.failure_code:
-            return f"Codex AI 未完成：{codex_ai.failure_code}（非阻塞）"
+            return f"Codex AI 未完成：{public_failure_reason(codex_ai.failure_code)}（非阻塞）"
         return "Codex AI 未完成（非阻塞）"
     if verdict == "FAIL":
         return "Codex AI 建议性结论：失败（非阻塞）"

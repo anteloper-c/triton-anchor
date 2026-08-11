@@ -84,6 +84,7 @@ COMMAND_KEYS = {
     "duration_seconds",
     "status",
     "evidence",
+    "purpose",
 }
 SEVERITIES = {"HIGH", "MEDIUM", "LOW"}
 TEST_EXECUTION_STATUSES = {
@@ -127,6 +128,16 @@ CATEGORIES = {
     "other",
 }
 CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+MAX_ASSESSMENT_EVIDENCE_ITEMS = 8
+INTERNAL_COMMENT_ID_RE = re.compile(
+    r"\b(AI|TEST|RUN)-0*([1-9][0-9]*)\b[ \t]*",
+    re.IGNORECASE,
+)
+PUBLIC_COMMENT_ID_TEMPLATES = {
+    "AI": "问题 {number}",
+    "TEST": "建议测试 {number}",
+    "RUN": "相关验证",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -180,6 +191,35 @@ def require_chinese_string(value: Any, location: str) -> str:
     if not CHINESE_TEXT_RE.search(text):
         raise ValueError(f"{location} must contain Chinese explanatory text")
     return text
+
+
+def assessment_evidence_items(value: Any, location: str) -> list[str]:
+    if isinstance(value, str):
+        return [require_chinese_string(value, location)]
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{location} must be a non-empty string or array")
+    if len(value) > MAX_ASSESSMENT_EVIDENCE_ITEMS:
+        raise ValueError(
+            f"{location} must contain at most {MAX_ASSESSMENT_EVIDENCE_ITEMS} items"
+        )
+    items = [
+        require_chinese_string(item, f"{location}[{index}]")
+        for index, item in enumerate(value)
+    ]
+    if len(set(items)) != len(items):
+        raise ValueError(f"{location} must not contain duplicate items")
+    return items
+
+
+def public_comment_identifier(
+    match: re.Match[str], identifier_descriptions: dict[str, str]
+) -> str:
+    number = int(match.group(2))
+    identifier = f"{match.group(1).upper()}-{number:03d}"
+    if identifier in identifier_descriptions:
+        return identifier_descriptions[identifier]
+    template = PUBLIC_COMMENT_ID_TEMPLATES[match.group(1).upper()]
+    return template.format(number=number)
 
 
 def validate_changed_files_manifest(document: Any) -> list[dict[str, str]]:
@@ -310,9 +350,11 @@ def validate_report(
         "contributor_goal",
         "expected_behavior",
         "implementation_summary",
-        "evidence",
     }:
         require_chinese_string(assessment[key], f"change_request_assessment.{key}")
+    assessment_evidence_items(
+        assessment["evidence"], "change_request_assessment.evidence"
+    )
     if document["completion_marker"] != "CODEX_AI_CI_COMPLETE":
         raise ValueError("completion_marker is invalid")
 
@@ -464,6 +506,13 @@ def validate_report(
             raise ValueError(f"duplicate command id: {command_id}")
         command_ids.add(command_id)
         command_text = require_string(command["command"], f"{location}.command")
+        purpose = require_chinese_string(command["purpose"], f"{location}.purpose")
+        if len(purpose) > 120:
+            raise ValueError(
+                f"{location}.purpose must contain at most 120 characters"
+            )
+        if INTERNAL_COMMENT_ID_RE.search(purpose):
+            raise ValueError(f"{location}.purpose must not contain an internal ID")
         if not isinstance(command["exit_code"], int):
             raise ValueError(f"{location}.exit_code must be an integer")
         duration = command["duration_seconds"]
@@ -642,8 +691,19 @@ def comment_inline(value: Any, limit: int = 2_000) -> str:
     return f"{text[: max(limit - 1, 0)]}…"
 
 
+def public_comment_text(text: str, identifier_descriptions: dict[str, str]) -> str:
+    return INTERNAL_COMMENT_ID_RE.sub(
+        lambda match: public_comment_identifier(match, identifier_descriptions),
+        text,
+    )
+
+
 def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assessment = document["change_request_assessment"]
+    assessment_evidence = assessment_evidence_items(
+        assessment["evidence"], "change_request_assessment.evidence"
+    )
     if args.diff_mode == "merge-base":
         base_rows = [
             f"| 目标分支提交 | `{inline(args.requested_base_sha)}` |",
@@ -654,7 +714,7 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
             f"| 基础提交 | `{inline(args.base_sha)}` |",
         ]
     lines = [
-        "# Codex AI CI 报告",
+        "# Codex AI 自动审查报告",
         "",
         "## 元数据",
         "",
@@ -679,11 +739,12 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
         "",
         "## 贡献者目标与实现情况",
         "",
-        f"- 判断：{CHANGE_REQUEST_ASSESSMENT_LABELS[document['change_request_assessment']['status']]}",
-        f"- 修改目标：{inline(document['change_request_assessment']['contributor_goal'])}",
-        f"- 预期行为：{inline(document['change_request_assessment']['expected_behavior'])}",
-        f"- 实现情况：{inline(document['change_request_assessment']['implementation_summary'])}",
-        f"- 判断依据：{inline(document['change_request_assessment']['evidence'])}",
+        f"- 判断：{CHANGE_REQUEST_ASSESSMENT_LABELS[assessment['status']]}",
+        f"- 修改目标：{inline(assessment['contributor_goal'])}",
+        f"- 预期行为：{inline(assessment['expected_behavior'])}",
+        f"- 实现情况：{inline(assessment['implementation_summary'])}",
+        "- 判断依据：",
+        *[f"  - {inline(item)}" for item in assessment_evidence],
         "",
         "## 合入建议",
         "",
@@ -779,12 +840,13 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
     commands = test_execution["commands"]
     if commands:
         lines.extend([
-            "| 编号 | 状态 | 退出码 | 耗时（秒） | 命令 | 证据 |",
-            "| --- | --- | ---: | ---: | --- | --- |",
+            "| 编号 | 功能 | 状态 | 退出码 | 耗时（秒） | 命令 | 证据 |",
+            "| --- | --- | --- | ---: | ---: | --- | --- |",
         ])
         for command in commands:
             lines.append(
-                f"| {command['id']} | {COMMAND_STATUS_LABELS[command['status']]} | "
+                f"| {command['id']} | {inline(command['purpose'])} | "
+                f"{COMMAND_STATUS_LABELS[command['status']]} | "
                 f"{command['exit_code']} | {command['duration_seconds']} | "
                 f"`{inline(command['command'])}` | {inline(command['evidence'])} |"
             )
@@ -812,10 +874,10 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
 def deterministic_ci_comment_line(args: argparse.Namespace) -> str:
     status = getattr(args, "local_ci_status", "")
     if status in {0, "0"}:
-        return "确定性 Local CI 已通过；这条 AI 评论只提供补充审查意见，不改变门禁结果。"
+        return "已通过；Codex AI 自动审查只提供补充意见，不改变门禁结果。"
     if status:
-        return "确定性 Local CI 未通过；这条 AI 评论用于辅助定位原因，最终仍以确定性 CI 结果和复测为准。"
-    return "确定性 Local CI 结果仍是合入门禁；这条 AI 评论只提供补充审查意见。"
+        return "未通过；Codex AI 自动审查用于辅助定位原因，最终仍以检查结果和复测为准。"
+    return "结果尚未提供；Codex AI 自动审查只提供补充意见。"
 
 
 def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
@@ -826,16 +888,23 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
         ],
     )
     test_execution = document["test_execution"]
+    identifier_descriptions = {
+        command["id"]: command["purpose"]
+        for command in test_execution["commands"]
+    }
     assessment = document["change_request_assessment"]
+    assessment_evidence = assessment_evidence_items(
+        assessment["evidence"], "change_request_assessment.evidence"
+    )
     lines = [
-        "## Codex AI 代码审查",
+        "## Codex AI 自动审查",
         "",
-        "> 这条 AI 评论仅供参考，是非阻塞的辅助审查；确定性 CI 结果才是合入门禁。",
+        "> Codex AI 自动审查仅供参考且不阻塞合入；本地确定性 CI 检查结果才是合入门禁。",
         "",
         "### 审查摘要",
         "",
-        f"- AI 审查摘要：**{VERDICT_LABELS[document['verdict']]}**",
-        f"- 确定性 CI：{deterministic_ci_comment_line(args)}",
+        f"- Codex AI 审查结论：**{VERDICT_LABELS[document['verdict']]}**",
+        f"- 本地确定性 CI 检查：{deterministic_ci_comment_line(args)}",
         f"- 合入建议：{comment_inline(document['merge_recommendation'], 1_000)}",
         "",
         comment_inline(document["summary"]),
@@ -846,7 +915,8 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
         f"- 贡献者目标：{comment_inline(assessment['contributor_goal'], 1_500)}",
         f"- 预期效果：{comment_inline(assessment['expected_behavior'], 1_500)}",
         f"- 当前实现情况：{comment_inline(assessment['implementation_summary'], 2_000)}",
-        f"- 判断依据：{comment_inline(assessment['evidence'], 2_000)}",
+        "- 判断依据：",
+        *[f"  - {comment_inline(item, 1_500)}" for item in assessment_evidence],
         "",
         "### 需要处理的问题",
         "",
@@ -926,7 +996,7 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
                 break
             lines.append(row)
     lines.extend(table_suffix)
-    return "\n".join(lines)
+    return public_comment_text("\n".join(lines), identifier_descriptions)
 
 
 def main() -> int:

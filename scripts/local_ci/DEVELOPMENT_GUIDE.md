@@ -421,7 +421,7 @@ Codex checkout 的行为：
 
 - `verdict`：`PASS`/`WARNING`/`FAIL`；
 - `summary`、`merge_recommendation`；
-- `change_request_assessment`：贡献者目标、预期行为、实际实现情况、证据和一致性状态；
+- `change_request_assessment`：贡献者目标、预期行为、实际实现情况、判断依据数组和一致性状态；`evidence` canonical 输出 1 至 8 条，renderer 兼容旧单字符串；
 - 完整且不重复的 `changed_files`；
 - `normal`、`boundary`、`error`、`compatibility`、`integration` 五类 `behavior_coverage`；
 - 可验证的 `findings`，ID 为 `AI-001` 形式；每项包含未删除变更文件、单行或最多 12 行的连续范围、`code_role`、证据、影响和修复方向；
@@ -437,6 +437,8 @@ Codex checkout 的行为：
 - 没有 finding，但测试状态为可稳定复现的失败、非确定性失败、基础设施失败、测试生成失败或证据不足 -> `WARNING`；
 - 没有 finding，且测试状态为通过或合理的未执行 -> `PASS`；
 - 说明性字段必须包含中文文本；
+- “贡献者目标与实现情况”中的判断依据始终按子项目展示，多条依据不得挤在同一行；
+- PR comment 不展示 `AI-xxx`、`TEST-xxx`、`RUN-xxx` 或固定失败代码；renderer 和 bridge 将问题、建议测试转换为公共中文描述，将 `RUN-xxx` 替换为命令记录的中文 `purpose`，并将审查主体显示为“Codex AI 自动审查”、Local CI 显示为“本地确定性 CI 检查”；机器 ID 仍保留在 JSON、日志和完整报告中用于关联；
 - renderer 会拒绝 verdict 与 findings/测试状态不一致、命令状态与退出码不一致、manifest 不一致、字段缺失、中文缺失或额外字段；
 - renderer 使用 exact-SHA checkout 校验 finding 文件和行范围；finding 必须锚定本次 diff 中保留的文件，不能指向空行、越界行、已删除文件或未变更的历史代码；
 - bridge 读取 `codex-ai-report.json` 中通过基本安全校验的 finding 定位，生成固定到审查 SHA 的 GitHub 代码链接；fork PR 优先使用 head repository；

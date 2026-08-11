@@ -26,7 +26,10 @@ cat > "${valid_json}" <<'JSON'
     "contributor_goal": "贡献者希望修复缓存命中后的状态读取逻辑。",
     "expected_behavior": "版本变化后旧缓存应失效，调用方应读取当前状态。",
     "implementation_summary": "正常缓存命中已调整，但版本失配路径仍未完整处理。",
-    "evidence": "代码差异缺少版本校验，定向测试复现了过期状态。"
+    "evidence": [
+      "代码差异缺少版本校验。",
+      "RUN-001 复现了过期状态。"
+    ]
   },
   "changed_files": [
     {
@@ -91,7 +94,7 @@ cat > "${valid_json}" <<'JSON'
   ],
   "test_execution": {
     "status": "passed",
-    "summary": "生成的缓存失效测试已经通过。",
+    "summary": "RUN-001 执行的缓存失效测试已经通过。",
     "generated_test_files": [
       "python/tests/test_generated_cache.py"
     ],
@@ -99,6 +102,7 @@ cat > "${valid_json}" <<'JSON'
       {
         "id": "RUN-001",
         "command": "python3 -m pytest python/tests/test_generated_cache.py",
+        "purpose": "缓存版本失配定向测试",
         "exit_code": 0,
         "duration_seconds": 0.2,
         "status": "passed",
@@ -123,7 +127,7 @@ verdict="$(python3 "${renderer}" \
   --constraint-reason "测试命令数量超过轻量约束。")"
 [[ "${verdict}" == "WARNING" ]]
 
-grep -Fq "# Codex AI CI 报告" "${report_md}"
+grep -Fq "# Codex AI 自动审查报告" "${report_md}"
 grep -Fq "## 元数据" "${report_md}"
 grep -Fq "## 结论" "${report_md}"
 grep -Fq "**警告**" "${report_md}"
@@ -142,13 +146,15 @@ grep -Fq "## 测试执行约束" "${report_md}"
 grep -Fq "状态：警告" "${report_md}"
 grep -Fq "测试命令数量超过轻量约束" "${report_md}"
 grep -Fq "## 剩余风险" "${report_md}"
-grep -Fq "## Codex AI 代码审查" "${comment_md}"
-grep -Fq "非阻塞的辅助审查" "${comment_md}"
+grep -Fq "## Codex AI 自动审查" "${comment_md}"
+grep -Fq "仅供参考且不阻塞合入" "${comment_md}"
 grep -Fq "### 审查摘要" "${comment_md}"
-grep -Fq "确定性 CI：" "${comment_md}"
+grep -Fq "本地确定性 CI 检查：" "${comment_md}"
 grep -Fq "### 贡献者目标与实现情况" "${comment_md}"
 grep -Fq "贡献者目标：贡献者希望修复缓存命中后的状态读取逻辑" "${comment_md}"
-grep -Fq "判断依据：" "${comment_md}"
+grep -Fq -- "- 判断依据：" "${comment_md}"
+grep -Fq -- "  - 代码差异缺少版本校验。" "${comment_md}"
+grep -Fq -- "  - 缓存版本失配定向测试复现了过期状态。" "${comment_md}"
 grep -Fq "### 验证情况" "${comment_md}"
 grep -Fq "### 需要处理的问题" "${comment_md}"
 grep -Fq "### 变更文件" "${comment_md}"
@@ -158,6 +164,10 @@ grep -Fq "验证范围提醒：" "${comment_md}"
 grep -Fq "测试命令数量超过轻量约束" "${comment_md}"
 if grep -Fq "新分支直接复用缓存值" "${comment_md}"; then
   echo "PR 评论不应包含 finding 的完整证据" >&2
+  exit 1
+fi
+if grep -Eq '(^|[^A-Za-z0-9_])(AI|TEST|RUN)-[0-9]{3}([^A-Za-z0-9_]|$)' "${comment_md}"; then
+  echo "PR 评论不应包含内部结构化编号" >&2
   exit 1
 fi
 if grep -Eq '^## (Metadata|Verdict|Summary|Findings|Suggested Tests|Test Execution|Residual Risks|Execution)$' "${report_md}"; then
