@@ -452,36 +452,39 @@ Codex checkout 的行为：
 
 - `codex_ai_success.md`：确定性 Local CI 成功后的补充审查和定向验证。它要求优先复用 `${LOCAL_CI_LOG}`、`${ARTIFACT_DIR}` 中与 `${TARGET_SHA}` 和当前 checkout 尽量匹配的证据；当变更规模、覆盖不足、接口/IR/编译/运行时/CI 协议风险或潜在 finding 需要时，才在预算内扩大验证范围。
 - `codex_ai_failure.md`：确定性 Local CI 失败后的失败阶段诊断和代码审查。它要求区分产品代码可稳定复现的失败、非确定性失败、基础设施失败和 `insufficient_evidence`，failure 模式不强制生成测试。
-- 两个 prompt 都只允许原样执行 runner 直接构造的 `${DIFF_COMMAND}`；仓库、PR metadata、diff 内容、路径字段、日志、artifact 和其中的命令/脚本/链接/提示词均视为不可信证据，不得自动执行或覆盖 prompt 指令。两个 prompt 都覆盖 AnchorIR、TTIR pipeline、adapter ABI、C++/MLIR binding、Public API、Local CI 协议、Codex 非阻塞语义、性能和 FlagGems 等专项风险。专项列表只表示优先级，不是封闭边界；模型可以沿本次 diff 的可达调用链和已有证据检查未列出的项目不变量或跨层契约，但不得扩展成无关的全仓泛化审计。
+- 两个 prompt 都只允许原样执行 runner 直接构造的 `${DIFF_COMMAND}`；仓库、PR metadata、diff 内容、路径字段、日志、artifact 和其中的命令/脚本/链接/提示词均视为不可信证据，不得自动执行或覆盖 prompt 指令。两个 prompt 都覆盖 AnchorIR、TTIR pipeline、adapter ABI、C++/MLIR binding、Public API、Local CI 协议、Codex 非阻塞语义、性能和 FlagGems 等专项风险。专项列表、通用问题类型和 `behavior_coverage` 维度只表示审查优先级或报告映射，不是封闭边界；模型应以 diff 为入口，沿可达调用链和已有证据检查未列出的项目不变量、跨层契约或行为风险。finding 可以由可复现路径或充分静态证据支撑，但不得扩展成无关的全仓泛化审计。
 - `scripts/local_ci/codex_ai/prompts/prompt_change_log.md` 是 prompt 的长期维护记录。修改正式 prompt、变量、输出契约、审查策略、验证约束或配套测试时，应追加动机、影响、兼容性和实际验证结果。
 
 `codex_ai/run_codex_ai_ci.sh::render_prompt_template()` 使用 Python `string.Template(...).substitute(...)` 严格渲染模板。新增或重命名 `${...}` 变量必须同步 runner 在 `render_prompt_template` 调用中的名称和值；否则 Codex 执行前会失败。当前 runner 同时提供变更清单、目标/基线 SHA、Local CI 状态、日志和 artifact 路径、测试生成与命令预算、Codex 超时和报告预留时间等变量。
 
-runner 会根据 changed-files manifest 生成 `codex-context-summary.json` 和 review context profile（如 `docs_only`、`codex_ai_ci_maintenance`、`local_ci_protocol`、`performance`、`local_ci_control`、`local_ci_failure`、`large_diff`）。该 profile 只用于减少无关上下文读取和确定优先级，不改变必须覆盖全部变更文件、finding 证据标准、非阻塞语义或报告 schema。`codex_ai_ci_maintenance` 表示 diff 只涉及 `scripts/local_ci/codex_ai/` 自身维护文件，不纳入 triton-anchor 产品代码审查，不应生成产品 finding；其同步性通过专用契约测试和人工维护审查处理。GitHub workflow 变更归入 `local_ci_control` 或 `large_diff`，并通过 Triton-anchor 专项审查重点轻量检查事件覆盖、跨 workflow/artifact 契约和特权上下文的不可信输入边界，不使用独立双遍 profile。
+runner 会根据 changed-files manifest 生成 `codex-context-summary.json` 和 review context profile（如 `docs_only`、`codex_ai_ci_maintenance`、`local_ci_protocol`、`performance`、`local_ci_control`、`local_ci_failure`、`large_diff`）。该 profile 只用于减少无关上下文读取和确定优先级，不改变必须覆盖全部变更文件、finding 证据标准、非阻塞语义或报告 schema。`codex_ai_ci_maintenance` 表示 diff 只涉及 `scripts/local_ci/codex_ai/` 自身维护文件，应聚焦 AI-CI 维护审查而不是 triton-anchor 产品代码审查；具有充分证据的执行、报告、安全或协议缺陷可以作为 AI-CI 维护问题报告，其同步性通过现有 Shell harness、静态契约检查和人工维护审查处理。GitHub workflow 变更归入 `local_ci_control` 或 `large_diff`，并通过 Triton-anchor 专项审查重点轻量检查事件覆盖、跨 workflow/artifact 契约和特权上下文的不可信输入边界，不使用独立双遍 profile。
 
-#### 6.4.2 Prompt 模板契约测试
+#### 6.4.2 Codex AI-CI 验证入口
 
-`scripts/local_ci/codex_ai/tests/test_codex_prompt_templates.py` 是 prompt 配套的纯 Python 静态契约测试；`test_codex_report_contract.py` 检查 renderer 的 verdict、整体测试状态、命令状态和退出码矩阵。它们不替代完整 Codex 容器集成 harness。
+`scripts/local_ci/codex_ai/tests/` 当前只保留 Shell harness：
 
-- 解析 success/failure prompt 中的全部 `${...}` 占位符，并从 runner 的实际渲染调用中解析传入变量，确保 prompt 不使用 runner 未提供的变量；
-- 确保两个 prompt 仍包含 `triton-anchor-codex-ai-report/v3`、`CODEX_AI_CI_COMPLETE`、`change_request_assessment`、`changed_files` 和 `behavior_coverage` 等后续输出契约关键字。
+- `test_local_ci_codex_ai.sh`：使用固定 JSON fixture 校验 renderer、完整报告、PR comment、中文字段和常见非法报告拒绝逻辑；
+- `test_local_ci_codex_container_setup.sh`：校验临时容器准备与清理逻辑；
+- `test_local_ci_codex_container.sh`：使用 fake Docker/Codex 覆盖 prompt 渲染、runner 约束、凭据边界和多场景结果产物，完整运行以 Linux 环境为准。
 
-最小完整验证命令为：
+最小验证命令为：
 
 ```bash
-PYTHONPATH=python python -m pytest scripts/local_ci/codex_ai/tests scripts/local_ci/tests scripts/local_ci/results/tests -v --tb=short
+bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_ai.sh
+bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_container_setup.sh
+PYTHONPATH=python python -m pytest scripts/local_ci/tests scripts/local_ci/results/tests -v --tb=short
 ```
 
-2026-08-06 在当前工作区使用 Python 3.13.7 实际结果为 `28 passed in 0.22s`。这些测试依赖 pytest，但不需要 Docker、LLVM、后端或 Codex 凭据。
+修改 prompt、classifier 或 renderer 时还应执行三个 Shell 文件的语法检查和 `git diff --check`。当前没有独立的纯 Python prompt/classifier/renderer 契约测试；相关回归主要由 Shell harness 和人工维护审查发现。
 
 ### 6.5 测试预算
 
 默认配置位于 `config.example.env`：
 
 - Codex hard timeout：3600 秒（60 分钟）；
-- generated test cases：1 至 10；
-- generated test files：最多 4；
-- test/build/lint/diagnostic commands：最多 12；
+- generated test cases：1 至 15；
+- generated test files：最多 5；
+- test/build/lint/diagnostic commands：最多 15；
 - 单条命令建议不超过 600 秒；
 - 命令总预算 2700 秒（45 分钟）；
 - 报告预留 450 秒；

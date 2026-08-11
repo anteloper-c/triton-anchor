@@ -15,7 +15,6 @@
 - `scripts/local_ci/codex_ai/codex_ai_report.schema.json`：Codex 最终 JSON 输出 schema。
 - `scripts/local_ci/codex_ai/render_codex_ai_report.py`：校验结构化输出并渲染 Markdown 报告和 PR 评论。
 - `scripts/local_ci/results/bridge_gitee_to_github_status.py`：读取 Codex AI 结果并回写 GitHub advisory status / PR comment。
-- `scripts/local_ci/codex_ai/tests/test_codex_prompt_templates.py`：prompt 模板变量和关键输出契约测试。
 
 ## 维护原则
 
@@ -73,6 +72,80 @@
 
 ---
 
+## 2026-08-11：扩大证据驱动审查的通用边界
+
+### 修改原因
+
+完整通读 success/failure prompt 后发现，通用问题类型、行为覆盖维度、“只检查”措辞、finding 的强制可复现要求和固定验证触发条件仍可能被模型理解为封闭边界，削弱清单外问题和静态可证明缺陷的发现能力。AI-CI 自身改动段落还保留了对已删除专用 Python 契约测试的引用，并把维护审查限制为文件级摘要。
+
+### 修改内容
+
+- 将项目主线、通用问题类型和 `behavior_coverage` 明确为优先级提示或报告映射，而不是封闭清单。
+- 允许从 diff 沿可达调用链读取必要的未修改仓库代码、配置和跨层契约，同时继续禁止无关全仓审计和第三方内部实现审计。
+- finding 证据标准改为“可复现路径或充分静态证据”，当前环境无法执行不再自动排除静态可确认问题，但必须说明未执行范围和证据边界。
+- 扩大验证的触发条件改为非穷举示例；failure 模式删除“少量”措辞，实际执行仍受文件、命令和时间预算约束。
+- AI-CI 自身改动改为维护审查：允许报告具有充分证据的执行、报告、安全或协议缺陷，但不得包装成 triton-anchor 产品缺陷；验证入口改为现有 Shell harness、静态契约检查和人工审查。
+- finding 仍必须定位到未删除的变更文件；删除文件的独立定位支持涉及 renderer 校验，本次不修改。
+
+### 兼容性与风险
+
+- 不修改模板变量、报告 schema、classifier、预算、finding 严重度、结论规则或 Codex AI 非阻塞语义。
+- 自主发现空间仍受 diff 可达性、现有预算、充分证据和禁止无关扩张共同约束。
+- AI-CI 维护问题现在可以形成 finding，减少删除独立 Python 契约测试后的盲区，但不会改变 triton-anchor 产品缺陷的定义。
+
+### 验证
+
+已通过一次性静态契约检查：success/failure prompt 分别严格渲染 30/28 个 runner 变量，并确认受控自主约束、禁止无关扩张和 15/5/15 预算注入；同时通过 3 个剩余 Codex AI-CI Python 文件的 AST 解析、runner/轮询器/3 个 Shell harness 的语法检查、`test_local_ci_codex_ai.sh` 轻量报告集成测试和 `git diff --check`。容器 setup/full fake-container harness 在 Windows 上因 `validate_codex_ai_credentials.py` 使用 `os.geteuid()` 无法执行，Docker daemon 也未运行；周边 pytest 测试因现有 Python 未安装 pytest 而未执行，未为测试安装依赖。
+
+---
+
+## 2026-08-11：放宽测试数量和命令数量上限
+
+### 修改原因
+
+为 Codex 的定向验证保留更多自主空间，使跨层或多语言变更可以生成更完整的测试组合并执行更多必要的测试、构建、lint 或诊断命令。
+
+### 修改内容
+
+- 定向测试用例上限从 10 增加到 15，测试文件上限从 4 增加到 5，测试/构建/lint/诊断命令上限从 12 增加到 15。
+- 同步更新 runner、轮询器和示例配置的默认值，以及开发指南中的预算说明。
+- 更新 fake-container prompt 断言，并将超限 fixture 调整为 6 个测试文件、16 条命令，继续覆盖数量 warning。
+- 45 分钟累计测试预算、600 秒单命令建议、450 秒报告预留和 3600 秒 hard timeout 保持不变。
+
+### 兼容性与风险
+
+- 不新增模板变量，不修改报告 schema、renderer、finding 严重度或 Codex AI 非阻塞语义；现有环境变量仍可覆盖默认值。
+- 数量上限提高可能增加复杂变更的资源占用，但命令仍受累计时间、单命令建议和 hard timeout 约束。
+
+### 验证
+
+已通过 runner、轮询器、示例配置的 15/5/15 默认值检查，以及 success/failure prompt 的严格变量渲染和预算注入检查；fake-container 超限 fixture 已通过静态断言与 Shell 语法检查，轻量报告集成测试和 `git diff --check` 通过。完整 fake-container 执行受 Windows `os.geteuid()` 缺失和 Docker daemon 未运行限制，未在当前环境完成。
+
+---
+
+## 2026-08-11：删除三个 Python 契约测试文件
+
+### 修改原因
+
+维护决策是不再保留独立的 prompt 模板、renderer 报告矩阵和 review context classifier Python 测试文件，收敛 Codex AI-CI 测试入口。
+
+### 修改内容
+
+- 删除 `test_codex_prompt_templates.py`、`test_codex_report_contract.py` 和 `test_codex_review_context.py`。
+- 开发指南只列出现存的 `test_local_ci_codex_ai.sh`、`test_local_ci_codex_container_setup.sh` 和 `test_local_ci_codex_container.sh` 三个 Shell harness。
+- 删除维护范围中对已删除 prompt 模板测试的活跃引用；历史记录中的旧文件名和旧验证命令继续保留，作为当时变更事实。
+
+### 兼容性与风险
+
+- 生产 runner、classifier、prompt、schema、renderer、预算和非阻塞语义均不改变。
+- 删除后不再直接覆盖模板变量/预算默认值同步、classifier profile 路由和 renderer 状态矩阵；这些回归主要依赖 Shell harness、其他 Local CI 测试和人工维护审查发现。
+- 三个文件仍可从 Git 历史恢复。
+
+### 验证
+
+已确认三个文件从工作树删除，并通过 3 个剩余 Codex AI-CI Python 文件的 AST 解析、runner/轮询器/3 个剩余 Shell harness 的语法检查、`test_local_ci_codex_ai.sh` 轻量报告集成测试和 `git diff --check`。容器 setup harness 受 Windows `os.geteuid()` 缺失限制；周边 pytest 测试因现有 Python 未安装 pytest 而未执行，未安装额外依赖。
+
+---
 ## 2026-08-11：允许基于证据的清单外审查
 
 ### 修改原因

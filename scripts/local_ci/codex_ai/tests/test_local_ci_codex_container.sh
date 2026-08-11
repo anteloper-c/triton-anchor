@@ -277,7 +277,7 @@ def write_report(
         checkout = mapped("/codex-workspace/checkout")
         generated_files = [
             f"generated_tests/test_generated_{index}.py"
-            for index in range(1, 6)
+            for index in range(1, 7)
         ]
         for relative_path in generated_files:
             generated = checkout / relative_path
@@ -286,7 +286,10 @@ def write_report(
                 "def test_generated():\n    assert True\n",
                 encoding="utf-8",
             )
-        durations = [601, 400, 300, 300, 200, 100, 100, 50, 50, 200, 200, 200, 200]
+        durations = [
+            601, 400, 300, 300, 200, 100, 100, 50,
+            50, 200, 200, 200, 200, 100, 100, 100,
+        ]
         commands = [
             {
                 "id": f"RUN-{index:03d}",
@@ -603,16 +606,28 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
     assert "以上专项重点是审查优先级提示，不是封闭清单" in prompt
     assert "未列出的 Triton-anchor 项目不变量、跨层契约或行为风险" in prompt
     assert "不得扩展到与本次变更没有可达关系的全仓或泛化审计" in prompt
+    assert "以下问题类型仅为高优先级提示，不是封闭清单" in prompt
+    assert "以上五类只是 schema 要求的报告维度，不是行为路径的封闭分类" in prompt
+    assert "具有可复现路径或充分静态证据" in prompt
+    assert "AI-CI 维护问题" in prompt
+    assert "现有 Shell harness" in prompt
+    assert "只做文件级覆盖" not in prompt
+    assert "专用契约测试" not in prompt
+    assert "可验证、可复现且" not in prompt
+    assert "只检查接口使用和行为假设" not in prompt
     if mode == "analysis_only":
         assert "失败诊断与审查要求" in prompt
+        assert "必要时执行定向诊断" in prompt
+        assert "必要时执行少量定向诊断" not in prompt
         assert "有限诊断约束" in prompt
         assert "本模式不强制生成测试" in prompt
         assert "禁止重新运行完整 Local CI、全量测试、完整重编译" in prompt
     else:
         assert "Local CI 环境、产物复用与验证约束" in prompt
-        assert "且存在可测试代码路径时，应生成 1 至 10 个定向测试用例" in prompt
-        assert "最多创建或修改 4 个测试文件" in prompt
-        assert "最多执行 12 条测试、构建、lint 或诊断命令" in prompt
+        assert "触发条件包括但不限于" in prompt
+        assert "且存在可测试代码路径时，应生成 1 至 15 个定向测试用例" in prompt
+        assert "最多创建或修改 5 个测试文件" in prompt
+        assert "最多执行 15 条测试、构建、lint 或诊断命令" in prompt
         assert "单条命令预计不超过 600 秒" in prompt
         assert "累计测试预算不超过 2700 秒" in prompt
         assert "至少预留 450 秒" in prompt
@@ -1009,15 +1024,15 @@ fi
 run_case over-limit over_limit 0 30 0
 over_limit_output="${test_root}/over-limit/output"
 grep -Fxq "status: pass" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fxq "generated_test_file_count: 5" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_command_count: 13" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fxq "generated_test_file_count: 6" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_command_count: 16" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fxq "max_test_command_duration_seconds: 601" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fxq "total_test_command_duration_seconds: 2901" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fxq "total_test_command_duration_seconds: 3201" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: warning" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fq "生成测试文件数量 5 超过限制 4" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fq "命令数量 13 超过限制 12" "${over_limit_output}/codex-ai-comment.md"
+grep -Fq "生成测试文件数量 6 超过限制 5" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fq "命令数量 16 超过限制 15" "${over_limit_output}/codex-ai-comment.md"
 grep -Fq "单条命令最长耗时 601 秒" "${over_limit_output}/codex-ai-report.md"
-grep -Fq "测试和诊断命令累计耗时 2901 秒" "${over_limit_output}/codex-ai-report.md"
+grep -Fq "测试和诊断命令累计耗时 3201 秒" "${over_limit_output}/codex-ai-report.md"
 grep -Fq "运行约束提醒：" "${over_limit_output}/codex-ai-comment.md"
 
 run_case zero-tests zero_tests 0 30 0
