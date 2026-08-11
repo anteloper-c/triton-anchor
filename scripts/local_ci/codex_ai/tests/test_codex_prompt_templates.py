@@ -94,6 +94,11 @@ def test_codex_ai_prompt_templates_keep_required_output_contract():
         assert "触发事件和关键 activity" in text
         assert "跨 workflow 的名称、artifact、inputs 与目标 ref 契约" in text
         assert "特权上下文是否隔离不可信 head、artifact 和文本输入" in text
+        assert "以上专项重点是审查优先级提示，不是封闭清单" in text
+        assert "diff、可达调用链、日志、artifact 或测试" in text
+        assert "未列出的 Triton-anchor 项目不变量、跨层契约或行为风险" in text
+        assert "只有满足下方 finding 证据标准时才能记录为 finding" in text
+        assert "不得扩展到与本次变更没有可达关系的全仓或泛化审计" in text
         assert "Finding 问题类型与严重度" in text
         assert "`HIGH`" in text
         assert "`MEDIUM`" in text

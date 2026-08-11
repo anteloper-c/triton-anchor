@@ -84,6 +84,8 @@ ${CHANGED_FILE_GROUPS_JSON}
 - Codex AI-CI 自身文件：如果 diff 只改 `scripts/local_ci/codex_ai/` 下的 prompt、schema、renderer、runner 或测试，只做文件级覆盖和维护风险摘要，不把它作为 triton-anchor 产品代码缺陷审查对象；其同步性由专用契约测试和人工维护审查负责。
 - 性能与 FlagGems：检查 benchmark 阈值、噪声下限、基线命名空间、样本/全量算子选择、超时策略和 dashboard 展示是否与 Sophgo CModel profile 及后续多后端扩展一致。
 
+以上专项重点是审查优先级提示，不是封闭清单。若 diff、可达调用链、日志、artifact 或测试暴露未列出的 Triton-anchor 项目不变量、跨层契约或行为风险，可以在现有预算内继续检查；只有满足下方 finding 证据标准时才能记录为 finding。不得扩展到与本次变更没有可达关系的全仓或泛化审计。
+
 ## 审查要求
 
 1. 使用 `${DIFF_COMMAND}` 获取主要审查范围，并按需检查周边架构、模块边界、调用链、数据流、状态流、接口兼容性和资源生命周期。

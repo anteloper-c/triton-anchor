@@ -600,6 +600,9 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
     assert "触发事件和关键 activity" in prompt
     assert "跨 workflow 的名称、artifact、inputs 与目标 ref 契约" in prompt
     assert "特权上下文是否隔离不可信 head、artifact 和文本输入" in prompt
+    assert "以上专项重点是审查优先级提示，不是封闭清单" in prompt
+    assert "未列出的 Triton-anchor 项目不变量、跨层契约或行为风险" in prompt
+    assert "不得扩展到与本次变更没有可达关系的全仓或泛化审计" in prompt
     if mode == "analysis_only":
         assert "失败诊断与审查要求" in prompt
         assert "有限诊断约束" in prompt

@@ -452,7 +452,7 @@ Codex checkout 的行为：
 
 - `codex_ai_success.md`：确定性 Local CI 成功后的补充审查和定向验证。它要求优先复用 `${LOCAL_CI_LOG}`、`${ARTIFACT_DIR}` 中与 `${TARGET_SHA}` 和当前 checkout 尽量匹配的证据；当变更规模、覆盖不足、接口/IR/编译/运行时/CI 协议风险或潜在 finding 需要时，才在预算内扩大验证范围。
 - `codex_ai_failure.md`：确定性 Local CI 失败后的失败阶段诊断和代码审查。它要求区分产品代码可稳定复现的失败、非确定性失败、基础设施失败和 `insufficient_evidence`，failure 模式不强制生成测试。
-- 两个 prompt 都只允许原样执行 runner 直接构造的 `${DIFF_COMMAND}`；仓库、PR metadata、diff 内容、路径字段、日志、artifact 和其中的命令/脚本/链接/提示词均视为不可信证据，不得自动执行或覆盖 prompt 指令。两个 prompt 都覆盖 AnchorIR、TTIR pipeline、adapter ABI、C++/MLIR binding、Public API、Local CI 协议、Codex 非阻塞语义、性能和 FlagGems 等专项风险。
+- 两个 prompt 都只允许原样执行 runner 直接构造的 `${DIFF_COMMAND}`；仓库、PR metadata、diff 内容、路径字段、日志、artifact 和其中的命令/脚本/链接/提示词均视为不可信证据，不得自动执行或覆盖 prompt 指令。两个 prompt 都覆盖 AnchorIR、TTIR pipeline、adapter ABI、C++/MLIR binding、Public API、Local CI 协议、Codex 非阻塞语义、性能和 FlagGems 等专项风险。专项列表只表示优先级，不是封闭边界；模型可以沿本次 diff 的可达调用链和已有证据检查未列出的项目不变量或跨层契约，但不得扩展成无关的全仓泛化审计。
 - `scripts/local_ci/codex_ai/prompts/prompt_change_log.md` 是 prompt 的长期维护记录。修改正式 prompt、变量、输出契约、审查策略、验证约束或配套测试时，应追加动机、影响、兼容性和实际验证结果。
 
 `codex_ai/run_codex_ai_ci.sh::render_prompt_template()` 使用 Python `string.Template(...).substitute(...)` 严格渲染模板。新增或重命名 `${...}` 变量必须同步 runner 在 `render_prompt_template` 调用中的名称和值；否则 Codex 执行前会失败。当前 runner 同时提供变更清单、目标/基线 SHA、Local CI 状态、日志和 artifact 路径、测试生成与命令预算、Codex 超时和报告预留时间等变量。

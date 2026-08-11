@@ -73,6 +73,30 @@
 
 ---
 
+## 2026-08-11：允许基于证据的清单外审查
+
+### 修改原因
+
+当前 Triton-anchor 专项重点覆盖面已经充分，但固定列表可能让模型把清单误当成审查边界，降低对新项目不变量和跨层契约问题的发现能力。
+
+### 修改内容
+
+- success/failure prompt 都明确专项重点只是优先级提示，不是封闭清单。
+- 当 diff、可达调用链、日志、artifact 或测试暴露未列出的项目不变量、跨层契约或行为风险时，允许 Codex 在现有预算内继续检查。
+- 清单外问题仍必须满足既有 finding 证据门槛；禁止扩展到与本次变更没有可达关系的全仓或泛化审计。
+- 同步更新开发说明、prompt 契约和 fake-container prompt 断言。
+
+### 兼容性与风险
+
+- 不新增固定审查项，不恢复独立 GitHub Actions profile、双遍审查或强制开放式扫描。
+- classifier、报告 schema、renderer、预算、严重度和 Codex AI 非阻塞语义均不改变。
+- 自主空间受 diff 可达性、现有预算和 finding 证据标准共同约束，避免增加无证据噪声。
+
+### 验证
+
+已通过 9 个 prompt/classifier 直接契约测试、6 个 Codex AI-CI Python 文件的 AST 解析、3 个 Shell 文件的语法检查、`test_local_ci_codex_ai.sh` 轻量集成测试、正式 prompt/classifier 的独立 Actions profile 清零检查和 `git diff --check`。
+
+---
 ## 2026-08-11：收敛 GitHub Actions 审查策略
 
 ### 修改原因
