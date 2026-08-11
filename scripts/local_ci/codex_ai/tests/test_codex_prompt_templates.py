@@ -11,14 +11,14 @@ POLLER = REPO_ROOT / "scripts" / "local_ci" / "poll_gitee_and_run.sh"
 CONFIG_EXAMPLE = REPO_ROOT / "scripts" / "local_ci" / "config.example.env"
 
 EXPECTED_BUDGET_DEFAULTS = {
-    "CODEX_AI_CI_TIMEOUT_SECONDS": "1800",
+    "CODEX_AI_CI_TIMEOUT_SECONDS": "3600",
     "CODEX_AI_CI_MIN_GENERATED_TEST_CASES": "1",
-    "CODEX_AI_CI_MAX_GENERATED_TEST_CASES": "5",
-    "CODEX_AI_CI_MAX_GENERATED_TEST_FILES": "3",
-    "CODEX_AI_CI_MAX_TEST_COMMANDS": "8",
+    "CODEX_AI_CI_MAX_GENERATED_TEST_CASES": "10",
+    "CODEX_AI_CI_MAX_GENERATED_TEST_FILES": "4",
+    "CODEX_AI_CI_MAX_TEST_COMMANDS": "12",
     "CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS": "600",
-    "CODEX_AI_CI_TEST_BUDGET_SECONDS": "1200",
-    "CODEX_AI_CI_REPORT_RESERVE_SECONDS": "300",
+    "CODEX_AI_CI_TEST_BUDGET_SECONDS": "2700",
+    "CODEX_AI_CI_REPORT_RESERVE_SECONDS": "450",
 }
 
 
@@ -133,3 +133,37 @@ def test_codex_ai_budget_defaults_stay_in_sync():
         assert runner_defaults[name] == expected_value
         assert poller_defaults[name] == expected_value
         assert config_defaults[name] == expected_value
+
+
+def test_codex_ai_prompt_templates_render_expanded_budget_defaults():
+    values = {name: "placeholder" for name in runner_prompt_variables()}
+    values.update(
+        {
+            "MIN_GENERATED_TEST_CASES": "1",
+            "MAX_GENERATED_TEST_CASES": "10",
+            "MAX_GENERATED_TEST_FILES": "4",
+            "MAX_TEST_COMMANDS": "12",
+            "RECOMMENDED_COMMAND_TIMEOUT_SECONDS": "600",
+            "TEST_BUDGET_SECONDS": "2700",
+            "CODEX_TIMEOUT_SECONDS": "3600",
+            "REPORT_RESERVE_SECONDS": "450",
+            "TEST_GENERATION_EXPECTED": "true",
+        }
+    )
+
+    success = Template(
+        (PROMPT_DIR / "codex_ai_success.md").read_text(encoding="utf-8")
+    ).substitute(values)
+    failure = Template(
+        (PROMPT_DIR / "codex_ai_failure.md").read_text(encoding="utf-8")
+    ).substitute(values)
+
+    assert "应生成 1 至 10 个定向测试用例" in success
+    assert "累计测试预算不超过 2700 秒" in success
+    assert "累计命令预算不超过 2700 秒" in failure
+    for rendered in (success, failure):
+        assert "最多创建或修改 4 个测试文件" in rendered
+        assert "最多执行 12 条测试、构建、lint 或诊断命令" in rendered
+        assert "单条命令预计不超过 600 秒" in rendered
+        assert "Codex 总时限为 3600 秒" in rendered
+        assert "至少预留 450 秒" in rendered

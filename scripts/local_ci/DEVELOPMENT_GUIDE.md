@@ -477,13 +477,13 @@ PYTHONPATH=python python -m pytest scripts/local_ci/codex_ai/tests scripts/local
 
 默认配置位于 `config.example.env`：
 
-- Codex hard timeout：1800 秒；
-- generated test cases：1 至 5；
-- generated test files：最多 3；
-- test/build/lint/diagnostic commands：最多 8；
+- Codex hard timeout：3600 秒（60 分钟）；
+- generated test cases：1 至 10；
+- generated test files：最多 4；
+- test/build/lint/diagnostic commands：最多 12；
 - 单条命令建议不超过 600 秒；
-- 命令总预算 1200 秒；
-- 报告预留 300 秒；
+- 命令总预算 2700 秒（45 分钟）；
+- 报告预留 450 秒；
 - 成功模式的可测试代码改动若没有生成测试或没有记录命令，会产生 constraint warning；
 - 纯文档改动不要求生成测试；
 - failure diagnosis 模式不强制生成测试，允许 `not_run` 或 `insufficient_evidence`。
