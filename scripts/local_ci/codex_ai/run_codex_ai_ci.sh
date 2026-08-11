@@ -318,7 +318,10 @@ document = {
     ],
     "test_execution": {
         "status": "insufficient_evidence",
-        "summary": "Codex AI 自动审查未完成，因此没有可信的测试执行结论。",
+        "summary": [
+            "Codex AI 自动审查未完成。",
+            "本次没有获得可信的测试执行结论。",
+        ],
         "generated_test_files": [],
         "commands": [],
     },
@@ -453,7 +456,9 @@ PY
     echo "### 验证情况"
     echo
     echo "- 状态：**证据不足**"
-    echo "- 说明：本次没有获得可信的补充验证结果。"
+    echo "- 说明："
+    echo "  - Codex AI 自动审查未完成。"
+    echo "  - 本次没有获得可信的补充验证结果。"
     echo
     echo "### 变更文件"
     echo

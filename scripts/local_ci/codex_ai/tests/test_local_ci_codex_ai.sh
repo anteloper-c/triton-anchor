@@ -94,7 +94,10 @@ cat > "${valid_json}" <<'JSON'
   ],
   "test_execution": {
     "status": "passed",
-    "summary": "RUN-001 执行的缓存失效测试已经通过。",
+    "summary": [
+      "RUN-001 执行的缓存失效测试已经通过。",
+      "验证覆盖了版本变化后的缓存失效路径。"
+    ],
     "generated_test_files": [
       "python/tests/test_generated_cache.py"
     ],
@@ -156,6 +159,9 @@ grep -Fq -- "- 判断依据：" "${comment_md}"
 grep -Fq -- "  - 代码差异缺少版本校验。" "${comment_md}"
 grep -Fq -- "  - 缓存版本失配定向测试复现了过期状态。" "${comment_md}"
 grep -Fq "### 验证情况" "${comment_md}"
+grep -Fq -- "- 说明：" "${comment_md}"
+grep -Fq -- "  - 缓存版本失配定向测试执行的缓存失效测试已经通过。" "${comment_md}"
+grep -Fq -- "  - 验证覆盖了版本变化后的缓存失效路径。" "${comment_md}"
 grep -Fq "### 需要处理的问题" "${comment_md}"
 grep -Fq "### 变更文件" "${comment_md}"
 grep -Fq "这段代码负责：该条件决定缓存命中后是否继续复用旧状态" "${comment_md}"

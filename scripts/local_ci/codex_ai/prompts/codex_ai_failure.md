@@ -155,6 +155,7 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 - 没有必要或无法安全执行定向诊断时，允许 `test_execution.status` 为 `not_run` 或 `insufficient_evidence`，并在中文摘要中说明原因。
 - 如果 artifact 缺失、路径不可读、产物与当前 checkout 不匹配，或需要全量测试/完整重编译才能完成归因但当前预算不允许执行，不得虚报为已归因或已验证通过，应写入 `residual_risks` 和 `suggested_tests`。
 - 所有生成的测试路径写入 `test_execution.generated_test_files`；每条命令都必须在 `test_execution.commands` 中记录 `purpose`、命令文本、退出码、耗时、状态和中文证据。`purpose` 使用不超过 120 字的中文名词短语说明该项工作的功能和类型，例如“失败阶段定向诊断”“Python 语法检查”或“扩展模块构建”，不得包含 `RUN-xxx`。
+- `test_execution.summary`：输出包含 1 至 8 条中文验证说明的 JSON 字符串数组，每项只表达一项验证工作、结果、未执行原因或证据边界；即使只有一条也使用单元素数组，不得把多项说明挤在同一字符串中。
 - `test_execution.status` 必须与命令记录一致：没有执行命令时使用 `not_run` 或 `insufficient_evidence`；全部已执行命令通过时才可使用 `passed`；存在可稳定复现的失败、非确定性失败或基础设施失败时，整体状态使用对应枚举；测试生成过程失败时使用 `test_generation_error`。计划但未执行的命令状态使用 `not_executed`，并在证据中说明原因。
 
 ## 结论规则
@@ -175,6 +176,7 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 - `summary`、`merge_recommendation`、`change_request_assessment` 的说明字段、`changed_files` 的说明字段、`behavior_coverage`、`findings`、`suggested_tests`、`residual_risks`、`test_execution.summary` 和命令证据必须使用简体中文。
 - 会进入 PR comment 的自然语言字段不得出现 `AI-xxx`、`TEST-xxx`、`RUN-xxx` 等内部编号；涉及已执行工作时直接写对应命令的 `purpose`，使用“失败阶段定向诊断”“Python 语法检查”“扩展模块构建”等功能描述，并将审查主体称为“Codex AI 自动审查”。机器 ID 只保留在对应 `id` 字段和完整报告的关联信息中。
 - `change_request_assessment.evidence` 必须是包含 1 至 8 条中文判断依据的数组。
+- `test_execution.summary` 必须是包含 1 至 8 条中文验证说明的数组。
 - `change_request_assessment` 必须完整包含 `status`、`contributor_goal`、`expected_behavior`、`implementation_summary` 和 `evidence`。
 - `changed_files` 条目数必须等于 ${CHANGED_FILE_COUNT}，并与标准清单完全一致。
 - 每个 finding 的 `file`、`line`、`code_role` 必须能让提交者直接定位到需要理解或修复的代码功能；`line` 使用 `42` 或 `42-47` 格式，不能使用模糊描述或函数名代替行号。

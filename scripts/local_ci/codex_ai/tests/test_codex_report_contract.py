@@ -170,6 +170,18 @@ def test_rejects_invalid_change_request_evidence(evidence):
         RENDERER.validate_report(document, [])
 
 
+@pytest.mark.parametrize(
+    "summary",
+    [[], ["重复说明。", "重复说明。"], ["English only"]],
+)
+def test_rejects_invalid_test_execution_summary(summary):
+    document = report("not_run", [], verdict="PASS")
+    document["test_execution"]["summary"] = summary
+
+    with pytest.raises(ValueError, match="test_execution.summary"):
+        RENDERER.validate_report(document, [])
+
+
 def test_comment_explains_goal_implementation_and_non_blocking_role():
     document = report(
         "passed",
@@ -184,7 +196,10 @@ def test_comment_explains_goal_implementation_and_non_blocking_role():
         "代码差异覆盖了声明的正常路径。",
         "RUN-001 支持该判断。",
     ]
-    document["test_execution"]["summary"] = "RUN-001 已通过，验证了主要路径。"
+    document["test_execution"]["summary"] = [
+        "RUN-001 已通过。",
+        "验证覆盖了主要代码路径。",
+    ]
     comment = RENDERER.render_comment(
         document,
         SimpleNamespace(
@@ -205,7 +220,8 @@ def test_comment_explains_goal_implementation_and_non_blocking_role():
     assert "当前实现情况：代码差异实现了声明目标" in comment
     assert "- 判断依据：\n  - 代码差异覆盖了声明的正常路径。" in comment
     assert "  - 主要代码路径定向测试支持该判断。" in comment
-    assert "主要代码路径定向测试已通过" in comment
+    assert "- 说明：\n  - 主要代码路径定向测试已通过。" in comment
+    assert "  - 验证覆盖了主要代码路径。" in comment
     assert "RUN-001" not in comment
     assert "Local CI" not in comment
     assert "Codex AI CI" not in comment

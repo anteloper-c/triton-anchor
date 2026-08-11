@@ -129,6 +129,7 @@ CATEGORIES = {
 }
 CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 MAX_ASSESSMENT_EVIDENCE_ITEMS = 8
+MAX_TEST_EXECUTION_SUMMARY_ITEMS = 8
 INTERNAL_COMMENT_ID_RE = re.compile(
     r"\b(AI|TEST|RUN)-0*([1-9][0-9]*)\b[ \t]*",
     re.IGNORECASE,
@@ -201,6 +202,25 @@ def assessment_evidence_items(value: Any, location: str) -> list[str]:
     if len(value) > MAX_ASSESSMENT_EVIDENCE_ITEMS:
         raise ValueError(
             f"{location} must contain at most {MAX_ASSESSMENT_EVIDENCE_ITEMS} items"
+        )
+    items = [
+        require_chinese_string(item, f"{location}[{index}]")
+        for index, item in enumerate(value)
+    ]
+    if len(set(items)) != len(items):
+        raise ValueError(f"{location} must not contain duplicate items")
+    return items
+
+
+def test_execution_summary_items(value: Any, location: str) -> list[str]:
+    if isinstance(value, str):
+        return [require_chinese_string(value, location)]
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{location} must be a non-empty string or array")
+    if len(value) > MAX_TEST_EXECUTION_SUMMARY_ITEMS:
+        raise ValueError(
+            f"{location} must contain at most "
+            f"{MAX_TEST_EXECUTION_SUMMARY_ITEMS} items"
         )
     items = [
         require_chinese_string(item, f"{location}[{index}]")
@@ -480,7 +500,9 @@ def validate_report(
     )
     if execution_status not in TEST_EXECUTION_STATUSES:
         raise ValueError(f"unsupported test execution status: {execution_status}")
-    require_chinese_string(test_execution["summary"], "test_execution.summary")
+    test_execution_summary_items(
+        test_execution["summary"], "test_execution.summary"
+    )
 
     generated_test_files = test_execution["generated_test_files"]
     if not isinstance(generated_test_files, list):
@@ -822,11 +844,15 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
         lines.append("")
 
     test_execution = document["test_execution"]
+    test_execution_summary = test_execution_summary_items(
+        test_execution["summary"], "test_execution.summary"
+    )
     lines.extend([
         "## 测试执行",
         "",
         f"- 状态：{TEST_EXECUTION_STATUS_LABELS[test_execution['status']]}",
-        f"- 摘要：{inline(test_execution['summary'])}",
+        "- 说明：",
+        *[f"  - {inline(item)}" for item in test_execution_summary],
         "",
         "### 生成的测试文件",
         "",
@@ -888,6 +914,9 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
         ],
     )
     test_execution = document["test_execution"]
+    test_execution_summary = test_execution_summary_items(
+        test_execution["summary"], "test_execution.summary"
+    )
     identifier_descriptions = {
         command["id"]: command["purpose"]
         for command in test_execution["commands"]
@@ -955,7 +984,8 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
         "### 验证情况",
         "",
         f"- 状态：**{TEST_EXECUTION_STATUS_LABELS[test_execution['status']]}**",
-        f"- 说明：{comment_inline(test_execution['summary'], 1_500)}",
+        "- 说明：",
+        *[f"  - {comment_inline(item, 1_500)}" for item in test_execution_summary],
         "",
     ])
     if args.constraint_status == "warning":
