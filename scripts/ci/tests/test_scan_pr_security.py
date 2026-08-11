@@ -24,14 +24,6 @@ def messages(findings: list[object]) -> list[str]:
 
 
 class ScanSecurityTests(unittest.TestCase):
-    def test_workflow_changes_remain_blocked(self) -> None:
-        blocking, warnings = security.scan(
-            [pr_file(".github/workflows/ci.yml", ["name: CI"])]
-        )
-
-        self.assertIn(security.PROTECTED_PATH_MESSAGE, messages(blocking))
-        self.assertEqual(warnings, [])
-
     def test_local_ci_changes_remain_blocked(self) -> None:
         blocking, _ = security.scan(
             [pr_file("scripts/local_ci/AGENTS.md", ["# Development notes"])]

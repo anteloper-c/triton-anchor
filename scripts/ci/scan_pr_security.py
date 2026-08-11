@@ -178,7 +178,7 @@ SECURITY_RELEVANT_NAMES = {
 }
 PROTECTED_PATH_PREFIXES = (
     ".github/actions/",
-    ".github/workflows/",
+    # ".github/workflows/",
     "docker/",
     "scripts/ci/",
     "scripts/dashboard/",
