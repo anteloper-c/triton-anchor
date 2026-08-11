@@ -122,7 +122,7 @@ class PayloadTests(unittest.TestCase):
     def test_allowed_base_refs_default_to_active_review_branches(self) -> None:
         self.assertEqual(
             mirror.parse_allowed_base_refs(""),
-            ("main", "triton_v3.0", "anchorbase_dev"),
+            ("main", "triton_v3.0", "anchorbase_dev", "CI_dev"),
         )
 
     def test_allowed_base_refs_accept_all_marker(self) -> None:
@@ -152,8 +152,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(git.push_calls, 1)
         self.assertEqual(github.created, 1)
 
-    def test_default_allows_triton_30_and_anchorbase_dev(self) -> None:
-        for base_ref in ("triton_v3.0", "anchorbase_dev"):
+    def test_default_allows_active_review_branches(self) -> None:
+        for base_ref in mirror.DEFAULT_ALLOWED_BASE_REFS:
             with self.subTest(base_ref=base_ref):
                 github = FakeGitHub()
                 git = FakeGit()
@@ -252,6 +252,13 @@ class WorkflowContractTests(unittest.TestCase):
             workflow,
         )
         self.assertNotIn("scripts/ci/mirror_upstream_prs.py", workflow)
+
+    def test_workflow_allowed_base_ref_defaults_match_script_default(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        expected = ",".join(mirror.DEFAULT_ALLOWED_BASE_REFS)
+
+        self.assertIn(f'default: "{expected}"', workflow)
+        self.assertIn(f"|| '{expected}'", workflow)
 
 
 if __name__ == "__main__":

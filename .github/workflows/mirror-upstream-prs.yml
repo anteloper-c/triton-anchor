@@ -18,7 +18,7 @@ on:
       allowed_base_refs:
         description: "Comma-separated upstream base refs to mirror; use * for all"
         required: false
-        default: "main,triton_v3.0,anchorbase_dev"
+        default: "main,triton_v3.0,anchorbase_dev,CI_dev"
         type: string
 
 permissions:

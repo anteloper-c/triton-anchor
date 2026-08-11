@@ -18,7 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 API_ROOT = "https://api.github.com"
 DEFAULT_UPSTREAM_REPOSITORY = "RACE-org/triton-anchor"
-DEFAULT_ALLOWED_BASE_REFS = ("main", "triton_v3.0", "anchorbase_dev")
+DEFAULT_ALLOWED_BASE_REFS = ("main", "triton_v3.0", "anchorbase_dev", "CI_dev")
 MIRROR_BRANCH_PREFIX = "review/race-pr-"
 MARKER_RE = re.compile(r"<!-- upstream-pr-mirror:RACE-org/triton-anchor#([0-9]+) -->")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
