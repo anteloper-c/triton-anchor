@@ -12,6 +12,8 @@ assert SPEC and SPEC.loader
 mirror = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = mirror
 SPEC.loader.exec_module(mirror)
+REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
+WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "mirror-upstream-prs.yml"
 
 
 def pr_payload(number: int = 42, base_ref: str = "main") -> dict:
@@ -237,6 +239,19 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(result, "would_sync")
         self.assertEqual(git.push_calls, 0)
         self.assertEqual(github.created, 0)
+
+
+class WorkflowContractTests(unittest.TestCase):
+    def test_workflow_uses_canonical_entrypoint_and_node24_actions(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("actions/checkout@v6", workflow)
+        self.assertIn("actions/setup-python@v6", workflow)
+        self.assertIn(
+            "python scripts/local_ci/upstream_pr_mirror/mirror_upstream_prs.py",
+            workflow,
+        )
+        self.assertNotIn("scripts/ci/mirror_upstream_prs.py", workflow)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,7 @@ CANONICAL_PATHS = (
     "shared/path_utils.sh",
     "shared/validate_task_metadata.py",
     "deterministic_ci/performance/common.py",
+    "upstream_pr_mirror/mirror_upstream_prs.py",
 )
 
 

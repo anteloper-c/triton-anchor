@@ -637,7 +637,7 @@ GitHub commit status 没有 warning 状态，因此性能 warning 会映射为 s
 手动运行 `Mirror RACE-org Pull Requests` 时，可以填写单个上游 PR 编号，调整 `allowed_base_refs`，或启用 `dry_run` 只校验远端 refs 和可合并性。命令行等价检查示例：
 
 ```bash
-python scripts/ci/mirror_upstream_prs.py \
+python scripts/local_ci/upstream_pr_mirror/mirror_upstream_prs.py \
   --mirror-repository likehupochuan/triton-anchor \
   --allowed-base-refs main,triton_v3.0,anchorbase_dev \
   --pr-number 66 \

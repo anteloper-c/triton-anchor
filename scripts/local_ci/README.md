@@ -46,6 +46,7 @@ bash scripts/local_ci/poll_gitee_and_run.sh
 | `codex_ai/` | exact-SHA checkout、临时容器、prompt、schema、报告和测试预算。 |
 | `results/` | 固定 allowlist 复制产物、发布 Gitee 结果、回写 GitHub。 |
 | `shared/` | task metadata、结果路径和 shell 路径归一化等跨模块协议。 |
+| `upstream_pr_mirror/` | GitHub 托管 runner 上的上游 PR 镜像控制逻辑及其测试。 |
 
 依赖方向应保持单向：poller 调用 orchestration、deterministic、Codex 和 results；Codex 与 results 只通过 `shared/` 使用共享协议。不要重新增加根目录兼容 wrapper。
 
@@ -55,6 +56,9 @@ bash scripts/local_ci/poll_gitee_and_run.sh
 scripts/local_ci/
 ├── poll_gitee_and_run.sh                  # 稳定入口：轮询 Gitee task ref，串起确定性 CI、Codex 和结果发布
 ├── config.example.env                     # 部署配置模板；生产配置放在服务器环境，不提交仓库
+├── upstream_pr_mirror/                    # GitHub Actions 上运行的 RACE-org PR 镜像控制逻辑
+│   ├── mirror_upstream_prs.py             # 拉取精确 refs，推送镜像分支并创建或更新 fork PR
+│   └── tests/                             # 镜像 payload、分支白名单和同步服务测试
 ├── README.md                              # 面向日常维护者的使用说明
 ├── DEVELOPMENT_GUIDE.md                  # 面向开发者和 agent coding 的长期上下文与规范
 ├── DEVELOPMENT_CONTEXT.md                 # 临时协作上下文；完成后沉淀到正式文档
@@ -89,6 +93,7 @@ scripts/local_ci/
 3. AI 报告、prompt、schema 或 PR comment 异常，先看 `codex_ai/`。
 4. Gitee 结果、GitHub status 或 PR 评论发布异常，先看 `results/`。
 5. 涉及路径、task metadata、结果目录命名的兼容问题，先看 `shared/`。
+6. 上游 PR 没有正确镜像到 fork，检查 `upstream_pr_mirror/` 和对应 GitHub workflow。
 
 `__pycache__/`、`.pyc`、临时 run 目录和服务器上的生产配置都不是源码结构的一部分，不应作为稳定接口引用。
 
