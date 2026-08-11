@@ -286,7 +286,7 @@ def write_report(
                 "def test_generated():\n    assert True\n",
                 encoding="utf-8",
             )
-        durations = [601, 400, 300, 300, 200, 100, 100]
+        durations = [601, 400, 300, 300, 200, 100, 100, 50, 50]
         commands = [
             {
                 "id": f"RUN-{index:03d}",
@@ -594,6 +594,10 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
     mode = environment.get("AI_ANALYSIS_MODE", "full")
     assert "不是泛化 AI 审查平台" in prompt
     assert "不要把纯风格建议、泛化重构建议" in prompt
+    assert "GitHub Actions 专项双遍审查" in prompt
+    assert "event × action × state 矩阵" in prompt
+    assert "负向或对抗性断言" in prompt
+    assert "不能在确认第一个 finding 后停止" in prompt
     if mode == "analysis_only":
         assert "失败诊断与审查要求" in prompt
         assert "有限诊断约束" in prompt
@@ -603,9 +607,9 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
         assert "Local CI 环境、产物复用与验证约束" in prompt
         assert "且存在可测试代码路径时，应生成 1 至 5 个定向测试用例" in prompt
         assert "最多创建或修改 3 个测试文件" in prompt
-        assert "最多执行 6 条测试、构建、lint 或诊断命令" in prompt
+        assert "最多执行 8 条测试、构建、lint 或诊断命令" in prompt
         assert "单条命令预计不超过 600 秒" in prompt
-        assert "累计测试预算不超过 1800 秒" in prompt
+        assert "累计测试预算不超过 1200 秒" in prompt
         assert "至少预留 300 秒" in prompt
         assert "失败用例最多额外复跑一次" in prompt
         assert "默认避免运行全量测试或完整重编译" in prompt
@@ -825,6 +829,15 @@ python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")
   "${success_output}/codex-changed-files-manifest.json"
 grep -Fxq "test_generation_expected: true" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: pass" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "timeout_seconds: 30" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "min_generated_test_cases: 1" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "max_generated_test_cases: 5" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "max_generated_test_files: 3" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "max_test_commands: 8" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "recommended_command_timeout_seconds: 600" \
+  "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_budget_seconds: 1200" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "report_reserve_seconds: 300" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "credential_integrity_status: pass" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "max_test_command_duration_seconds: 0.2" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "total_test_command_duration_seconds: 0.2" "${success_output}/codex-ai-ci-summary.txt"
@@ -992,14 +1005,14 @@ run_case over-limit over_limit 0 30 0
 over_limit_output="${test_root}/over-limit/output"
 grep -Fxq "status: pass" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fxq "generated_test_file_count: 4" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_command_count: 7" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_command_count: 9" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fxq "max_test_command_duration_seconds: 601" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fxq "total_test_command_duration_seconds: 2001" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fxq "total_test_command_duration_seconds: 2101" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: warning" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fq "生成测试文件数量 4 超过限制 3" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fq "命令数量 7 超过限制 6" "${over_limit_output}/codex-ai-comment.md"
+grep -Fq "命令数量 9 超过限制 8" "${over_limit_output}/codex-ai-comment.md"
 grep -Fq "单条命令最长耗时 601 秒" "${over_limit_output}/codex-ai-report.md"
-grep -Fq "测试和诊断命令累计耗时 2001 秒" "${over_limit_output}/codex-ai-report.md"
+grep -Fq "测试和诊断命令累计耗时 2101 秒" "${over_limit_output}/codex-ai-report.md"
 grep -Fq "运行约束提醒：" "${over_limit_output}/codex-ai-comment.md"
 
 run_case zero-tests zero_tests 0 30 0

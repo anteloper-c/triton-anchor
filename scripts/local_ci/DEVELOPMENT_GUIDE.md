@@ -455,7 +455,7 @@ Codex checkout 的行为：
 
 `codex_ai/run_codex_ai_ci.sh::render_prompt_template()` 使用 Python `string.Template(...).substitute(...)` 严格渲染模板。新增或重命名 `${...}` 变量必须同步 runner 在 `render_prompt_template` 调用中的名称和值；否则 Codex 执行前会失败。当前 runner 同时提供变更清单、目标/基线 SHA、Local CI 状态、日志和 artifact 路径、测试生成与命令预算、Codex 超时和报告预留时间等变量。
 
-runner 会根据 changed-files manifest 生成 `codex-context-summary.json` 和 review context profile（如 `docs_only`、`codex_ai_ci_maintenance`、`local_ci_protocol`、`performance`、`local_ci_control`、`local_ci_failure`、`large_diff`）。该 profile 只用于减少无关上下文读取和确定优先级，不改变必须覆盖全部变更文件、finding 证据标准、非阻塞语义或报告 schema。`codex_ai_ci_maintenance` 表示 diff 只涉及 `scripts/local_ci/codex_ai/` 自身维护文件，不纳入 triton-anchor 产品代码审查，不应生成产品 finding；其同步性通过专用契约测试和人工维护审查处理。
+runner 会根据 changed-files manifest 生成 `codex-context-summary.json` 和 review context profile（如 `docs_only`、`codex_ai_ci_maintenance`、`local_ci_protocol`、`performance`、`github_actions_control`、`local_ci_control`、`local_ci_failure`、`large_diff`）。该 profile 只用于减少无关上下文读取和确定优先级，不改变必须覆盖全部变更文件、finding 证据标准、非阻塞语义或报告 schema。`codex_ai_ci_maintenance` 表示 diff 只涉及 `scripts/local_ci/codex_ai/` 自身维护文件，不纳入 triton-anchor 产品代码审查，不应生成产品 finding；其同步性通过专用契约测试和人工维护审查处理。 `github_actions_control` 会强制使用事件/状态/跨 workflow 契约与权限/不可信输入两遍独立审查，并要求负向或对抗性验证，避免只凭正向字段存在检查或首个 finding 提前结束。
 
 #### 6.4.2 Prompt 模板契约测试
 
@@ -476,12 +476,12 @@ PYTHONPATH=python python -m pytest scripts/local_ci/codex_ai/tests scripts/local
 
 默认配置位于 `config.example.env`：
 
-- Codex hard timeout：2400 秒；
+- Codex hard timeout：1800 秒；
 - generated test cases：1 至 5；
 - generated test files：最多 3；
-- test/build/lint/diagnostic commands：最多 6；
+- test/build/lint/diagnostic commands：最多 8；
 - 单条命令建议不超过 600 秒；
-- 命令总预算 1800 秒；
+- 命令总预算 1200 秒；
 - 报告预留 300 秒；
 - 成功模式的可测试代码改动若没有生成测试或没有记录命令，会产生 constraint warning；
 - 纯文档改动不要求生成测试；

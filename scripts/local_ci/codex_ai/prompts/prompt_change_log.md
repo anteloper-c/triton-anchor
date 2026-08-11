@@ -98,6 +98,53 @@
 运行 Codex renderer/prompt 契约测试、bridge 单元测试、shell fixture、Python 编译、bash 语法和 `git diff --check`。
 
 ---
+## 2026-08-11：选择性调整 Codex AI 执行预算
+
+### 修改原因
+
+历史结果中，26 次适合完整审查且预期生成测试的运行有 11 次达到旧的 4 条命令上限，说明命令数量需要更充足的余量；测试文件历史上未超过 1 个，但为多语言或跨层定向验证保留最多 3 个文件。历史运行未显示需要继续维持 2400 秒 hard timeout 或 1800 秒命令总预算，因此本次采用选择性调整，而不是统一放大所有时长。
+
+### 修改内容
+
+- Codex hard timeout 调整为 1800 秒，累计测试/诊断命令预算调整为 1200 秒，继续保留单条命令建议 600 秒和报告预留 300 秒。
+- 定向测试用例范围保持 1 至 5 个，测试文件上限保持 3 个。
+- 测试、构建、lint 或诊断命令上限从 6 条调整为 8 条，并扩展 fake-container 超限场景为 9 条命令。
+- 同步更新 runner、轮询器、示例配置、开发文档和回归断言；新增默认值同步契约测试，校验三处配置中的 8 个预算字段。
+
+### 兼容性与风险
+
+- 环境变量名称、prompt 模板变量、`triton-anchor-codex-ai-report/v3` schema 和 renderer 均未改变。
+- 预算约束仍基于 Codex 结构化报告进行 advisory 检查，constraint warning 保持非阻塞，不改变确定性 Local CI 结果。
+- 轮询器仍串行处理任务；1800 秒 hard timeout 与 1200 秒命令预算可避免单任务时间继续扩张，并为分析、容器操作和报告生成保留余量。
+- 测试文件上限 3 高于当前历史观测值，需要继续通过生产结果观察收益与耗时，再决定是否进一步放宽。
+
+### 验证
+
+已通过 3 个 Shell 文件的 `bash -n` 语法检查、3 个 prompt/default 同步契约测试、2 份 prompt 的实际预算渲染检查、9 个 Python 文件的 AST 解析，以及 `test_local_ci_codex_ai.sh`。fake-container harness 在当前 Windows 环境进入凭据校验后因 Python 不提供 `os.geteuid()` 而停止，需在 Linux CI/服务器环境完成最终全流程复验。
+
+## 2026-08-11：增加 GitHub Actions 双遍专项审查
+
+### 修改原因
+
+复核 RACE-org/triton-anchor #68（镜像 PR #28）的历史产物后，确认报告只包含一个 finding 不是展示层截断：该运行被归入宽泛的 `local_ci_control`，prompt 没有强制展开事件/状态矩阵、跨 workflow 契约和独立 trust-boundary 审查，也没有要求在确认首个 finding 后继续验证候选问题。因此主要缺口是审查策略的广度和反例要求，而不是单纯的时间或命令预算不足。
+
+### 修改内容
+
+- 将 changed-files 分类逻辑提取到 `classify_codex_review_context.py`，为 GitHub workflow 控制面增加 `github_actions_control` profile；即使 workflow diff 超过 20 个文件，也优先保留该 profile。
+- success/failure prompt 都增加两遍独立审查：第一遍覆盖 event × action × state、生产者—消费者契约、并发与幂等；第二遍覆盖权限、token/secrets 和不可信输入数据流。
+- full 模式要求生成覆盖至少两个高风险状态的负向或对抗性断言；不可执行时必须把未验证矩阵项写入 `residual_risks` 和 `suggested_tests`。
+- 要求先维护候选问题清单，再逐项尝试推翻；不能在确认第一个 finding 后停止。
+- 新增 PR #28 双 workflow fixture、大 workflow diff、混合 Local CI/workflow diff、失败模式和 Codex prompt Markdown 分类回归，并在模板与 fake-container harness 中增加关键策略断言。
+
+### 兼容性与风险
+
+- 没有新增 prompt 模板变量，也没有修改 `triton-anchor-codex-ai-report/v3` schema、renderer、PR comment 上限或非阻塞语义。
+- `analysis_only` 仍使用 `local_ci_failure` profile，但 `github_workflows` 分组会继续触发双遍专项审查；不能执行的反例会被明确记录为剩余风险。
+- 更完整的状态矩阵可能增加分析成本，因此仍受 1800 秒 hard timeout、8 条命令和 1200 秒命令总预算约束。
+
+### 验证
+
+已通过 8 个纯 Python prompt/classifier 契约与回归测试、6 个 Codex AI-CI Python 文件的 AST 解析、3 个 Shell 文件的语法检查、`test_local_ci_codex_ai.sh` 轻量集成测试和 `git diff --check`。完整 fake-container harness 仍受当前 Windows Python 缺少 `os.geteuid()` 的已知环境限制，需在 Linux CI/服务器环境完成最终全流程复验。
 
 ## 2026-08-10：增加轻量审查上下文、发布 manifest 和 Codex 失败代码
 
