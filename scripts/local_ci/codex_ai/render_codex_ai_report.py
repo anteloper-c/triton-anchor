@@ -663,7 +663,7 @@ VERDICT_LABELS = {
 }
 TEST_EXECUTION_STATUS_LABELS = {
     "not_run": "未执行",
-    "passed": "通过",
+    "passed": "所执行的验证命令均通过",
     "stable_failure": "可稳定复现的失败",
     "flaky_failure": "非确定性失败",
     "infrastructure_failure": "基础设施失败",
@@ -983,7 +983,7 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
     lines.extend([
         "### 验证情况",
         "",
-        f"- 状态：**{TEST_EXECUTION_STATUS_LABELS[test_execution['status']]}**",
+        f"- 补充验证结果：**{TEST_EXECUTION_STATUS_LABELS[test_execution['status']]}**",
         "- 说明：",
         *[f"  - {comment_inline(item, 1_500)}" for item in test_execution_summary],
         "",

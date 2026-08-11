@@ -222,6 +222,7 @@ def test_comment_explains_goal_implementation_and_non_blocking_role():
     assert "  - 主要代码路径定向测试支持该判断。" in comment
     assert "- 说明：\n  - 主要代码路径定向测试已通过。" in comment
     assert "  - 验证覆盖了主要代码路径。" in comment
+    assert "补充验证结果：**所执行的验证命令均通过**" in comment
     assert "RUN-001" not in comment
     assert "Local CI" not in comment
     assert "Codex AI CI" not in comment

@@ -96,7 +96,7 @@ class CodexCommentTests(unittest.TestCase):
         self.assertIn("`aaaaaaaaaaaa`", body)
         self.assertIn("Codex 自动审查状态：完成", body)
         self.assertIn("结论：警告", body)
-        self.assertIn("验证情况：存在可稳定复现的失败", body)
+        self.assertIn("补充验证结果：存在可稳定复现的失败", body)
         self.assertIn("缓存版本失配定向测试稳定复现问题", body)
         self.assertNotIn("RUN-001", body)
         self.assertIn("Codex AI 自动审查已完成，本地确定性 CI 检查已通过", body)

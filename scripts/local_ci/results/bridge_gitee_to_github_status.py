@@ -75,7 +75,7 @@ CODEX_VERDICT_LABELS = {
 }
 CODEX_TEST_STATUS_LABELS = {
     "not_run": "未运行",
-    "passed": "通过",
+    "passed": "所执行的验证命令均通过",
     "stable_failure": "存在可稳定复现的失败",
     "flaky_failure": "存在非确定性失败",
     "infrastructure_failure": "基础设施失败",
@@ -732,7 +732,7 @@ def codex_pr_comment_body(target: Target, result: LocalCIResult) -> str:
         f"- 测试提交：`{target.sha[:12]}`",
         (
             f"- Codex 自动审查状态：{execution_label}；结论：{verdict_label}；"
-            f"验证情况：{test_label}"
+            f"补充验证结果：{test_label}"
         ),
     ]
     if result.codex_ai.failure_code:
