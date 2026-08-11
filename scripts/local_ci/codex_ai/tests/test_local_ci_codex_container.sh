@@ -594,10 +594,12 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
     mode = environment.get("AI_ANALYSIS_MODE", "full")
     assert "不是泛化 AI 审查平台" in prompt
     assert "不要把纯风格建议、泛化重构建议" in prompt
-    assert "GitHub Actions 专项双遍审查" in prompt
-    assert "event × action × state 矩阵" in prompt
-    assert "负向或对抗性断言" in prompt
-    assert "不能在确认第一个 finding 后停止" in prompt
+    assert "GitHub Actions 专项双遍审查" not in prompt
+    assert "github_actions_control" not in prompt
+    assert "GitHub Actions：" in prompt
+    assert "触发事件和关键 activity" in prompt
+    assert "跨 workflow 的名称、artifact、inputs 与目标 ref 契约" in prompt
+    assert "特权上下文是否隔离不可信 head、artifact 和文本输入" in prompt
     if mode == "analysis_only":
         assert "失败诊断与审查要求" in prompt
         assert "有限诊断约束" in prompt

@@ -73,6 +73,31 @@
 
 ---
 
+## 2026-08-11：收敛 GitHub Actions 审查策略
+
+### 修改原因
+
+独立 `github_actions_control` profile 和强制双遍矩阵对普通 workflow 改动过重；GitHub Actions 属于 Triton-anchor 控制面的一部分，应按实际 diff 与风险适度检查，而不是固定执行完整专项流程。
+
+### 修改内容
+
+- 删除 success/failure prompt 中的 GitHub Actions 专项双遍审查章节，不再强制状态矩阵、两遍独立审查或额外对抗性断言。
+- 删除 `github_actions_control` profile；workflow 变更沿用 `local_ci_control`，超过 20 个文件时沿用 `large_diff`，`github_workflows` 分组继续保留。
+- 在两份 Triton-anchor 专项审查重点中增加一条 GitHub Actions 检查，轻量覆盖触发事件与关键 activity、跨 workflow/artifact/inputs/ref 契约，以及特权上下文对不可信输入的隔离。
+- 同步更新 classifier、prompt 契约、fake-container 断言、开发文档和 PR #28 风格分类回归测试。
+- 删除 `scripts/local_ci/DEVELOPMENT_CONTEXT.md` 及其活跃引用；一次性协作记录不再存入仓库，长期结论直接维护到正式文档。
+
+### 兼容性与风险
+
+- prompt 模板变量、报告 schema、renderer、预算和非阻塞语义均不改变。
+- `DEVELOPMENT_CONTEXT.md` 不是 runtime 依赖，删除它不影响 Local CI、Codex runner 或结果协议。
+- 收敛后不再强制穷举所有 Actions 状态；审查深度由实际 diff 和证据决定，相关风险仍在项目专项重点中保留。
+
+### 验证
+
+已通过 9 个 prompt/classifier 直接契约测试、6 个 Codex AI-CI Python 文件的 AST 解析、3 个 Shell 文件的语法检查、`test_local_ci_codex_ai.sh` 轻量集成测试、活跃 `DEVELOPMENT_CONTEXT.md` 引用清零检查和 `git diff --check`。
+
+---
 ## 2026-08-11：扩大定向测试容量与时间预算
 
 ### 修改原因

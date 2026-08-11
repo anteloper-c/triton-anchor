@@ -88,16 +88,12 @@ def test_codex_ai_prompt_templates_keep_required_output_contract():
         assert "Review Context Profile" in text
         assert "Changed File Groups JSON" in text
         assert "Changed Files Manifest Path" in text
-        assert "GitHub Actions 专项双遍审查" in text
-        assert "event × action × state 矩阵" in text
-        assert "pull_request_target" in text
-        assert "workflow_run" in text
-        assert "workflow_dispatch" in text
-        assert "edited/retarget" in text
-        assert "draft/ready" in text
-        assert "生产者—消费者链" in text
-        assert "负向或对抗性断言" in text
-        assert "不能在确认第一个 finding 后停止" in text
+        assert "GitHub Actions 专项双遍审查" not in text
+        assert "github_actions_control" not in text
+        assert "GitHub Actions：" in text
+        assert "触发事件和关键 activity" in text
+        assert "跨 workflow 的名称、artifact、inputs 与目标 ref 契约" in text
+        assert "特权上下文是否隔离不可信 head、artifact 和文本输入" in text
         assert "Finding 问题类型与严重度" in text
         assert "`HIGH`" in text
         assert "`MEDIUM`" in text
@@ -111,7 +107,6 @@ def test_codex_ai_prompt_templates_keep_required_output_contract():
         assert "test_execution.status` 必须与命令记录一致" in text
         assert "AGENTS.md" not in text
         assert "DEVELOPMENT_GUIDE.md" not in text
-        assert "DEVELOPMENT_CONTEXT.md" not in text
         assert "开始分析前，必须阅读" not in text
 
 

@@ -4,7 +4,7 @@
 >
 > **使用对象**：凡开发或维护 Local CI、Codex AI CI、Gitee/GitHub 结果协议、prompt/schema/renderer、性能基线、dashboard 或相关 workflow，应先阅读本开发指南，理解已有架构、协议边界、风险和验证要求，再修改代码。若使用 AI coding 工具协作开发，也应把本开发指南作为开发上下文提供给工具。
 >
-> **维护边界**：本开发指南记录长期有效的工程事实、开发约束、风险和验证要求，不记录一次性对话流水。以当前代码和 workflow 的实际行为为准；文档中的架构目标不能替代代码证据。发现重要实现变化、部署约束、故障经验或安全事件后，应同步更新本开发指南。一次性协作过程和临时未决事项应先写入 `scripts/local_ci/DEVELOPMENT_CONTEXT.md`，完成后再把长期事实沉淀回本开发指南。
+> **维护边界**：本开发指南记录长期有效的工程事实、开发约束、风险和验证要求，不记录一次性对话流水。以当前代码和 workflow 的实际行为为准；文档中的架构目标不能替代代码证据。发现重要实现变化、部署约束、故障经验或安全事件后，应同步更新本开发指南；一次性协作过程和临时未决事项不写入仓库文档，只有长期有效的结论才沉淀到本指南、README、CI 指南或正式 prompt 维护记录。
 
 `scripts/local_ci/poll_gitee_and_run.sh` 是 systemd/cron 和人工运行 poller 的稳定根目录入口，并包含 poller 完整实现。其余 canonical 实现按职责分为 `orchestration/`、`deterministic_ci/`、`codex_ai/`、`results/` 和 `shared/`，不提供根目录兼容 wrapper。`LOCAL_CI_SCRIPT_DIR` 必须指向完整的 `scripts/local_ci` 根目录，以便 trusted runner snapshot 包含入口和全部模块。
 
@@ -457,7 +457,7 @@ Codex checkout 的行为：
 
 `codex_ai/run_codex_ai_ci.sh::render_prompt_template()` 使用 Python `string.Template(...).substitute(...)` 严格渲染模板。新增或重命名 `${...}` 变量必须同步 runner 在 `render_prompt_template` 调用中的名称和值；否则 Codex 执行前会失败。当前 runner 同时提供变更清单、目标/基线 SHA、Local CI 状态、日志和 artifact 路径、测试生成与命令预算、Codex 超时和报告预留时间等变量。
 
-runner 会根据 changed-files manifest 生成 `codex-context-summary.json` 和 review context profile（如 `docs_only`、`codex_ai_ci_maintenance`、`local_ci_protocol`、`performance`、`github_actions_control`、`local_ci_control`、`local_ci_failure`、`large_diff`）。该 profile 只用于减少无关上下文读取和确定优先级，不改变必须覆盖全部变更文件、finding 证据标准、非阻塞语义或报告 schema。`codex_ai_ci_maintenance` 表示 diff 只涉及 `scripts/local_ci/codex_ai/` 自身维护文件，不纳入 triton-anchor 产品代码审查，不应生成产品 finding；其同步性通过专用契约测试和人工维护审查处理。 `github_actions_control` 会强制使用事件/状态/跨 workflow 契约与权限/不可信输入两遍独立审查，并要求负向或对抗性验证，避免只凭正向字段存在检查或首个 finding 提前结束。
+runner 会根据 changed-files manifest 生成 `codex-context-summary.json` 和 review context profile（如 `docs_only`、`codex_ai_ci_maintenance`、`local_ci_protocol`、`performance`、`local_ci_control`、`local_ci_failure`、`large_diff`）。该 profile 只用于减少无关上下文读取和确定优先级，不改变必须覆盖全部变更文件、finding 证据标准、非阻塞语义或报告 schema。`codex_ai_ci_maintenance` 表示 diff 只涉及 `scripts/local_ci/codex_ai/` 自身维护文件，不纳入 triton-anchor 产品代码审查，不应生成产品 finding；其同步性通过专用契约测试和人工维护审查处理。GitHub workflow 变更归入 `local_ci_control` 或 `large_diff`，并通过 Triton-anchor 专项审查重点轻量检查事件覆盖、跨 workflow/artifact 契约和特权上下文的不可信输入边界，不使用独立双遍 profile。
 
 #### 6.4.2 Prompt 模板契约测试
 
@@ -958,12 +958,11 @@ CODEX_AI_CI_HOME=/path/to/codex-ai \
 ### 13.1 修改前
 
 1. 先识别变更属于 poller、container delivery、Codex、benchmark、publisher/bridge、workflow 还是编译器核心。
-2. 如果 `scripts/local_ci/DEVELOPMENT_CONTEXT.md` 存在且非空，先读取其中的临时协作记录；它只能补充上下文，不能覆盖代码、workflow、测试和本开发指南的长期约束。
-3. 阅读目标文件的调用方、调用的 shell/Python helper、对应 schema/config 和至少一个测试。
-4. 如果涉及 task ref、SHA、结果路径、status 或 artifact，必须同时查 `poll_gitee_and_run.sh`、`shared/result_paths.py`、publisher、bridge、receiver workflow 和 dashboard sync。
-5. 如果涉及 Codex，必须同时查 `codex_ai/run_codex_ai_ci.sh`、两个 prompt、`prompt_change_log.md`、schema、renderer、credential validator、prompt 模板契约测试和三组 Codex harness。
-6. 如果涉及 backend/compile/runtime，必须追踪 `setup.py` -> CMake -> `libtriton` binding -> Triton compiler stage -> Driver/launcher，并确认 out-of-tree 依赖。
-7. 先记录当前工作区状态；不要回滚或重置不属于本次任务的修改，尤其是当前已知的 CRLF 变化。
+2. 阅读目标文件的调用方、调用的 shell/Python helper、对应 schema/config 和至少一个测试。
+3. 如果涉及 task ref、SHA、结果路径、status 或 artifact，必须同时查 `poll_gitee_and_run.sh`、`shared/result_paths.py`、publisher、bridge、receiver workflow 和 dashboard sync。
+4. 如果涉及 Codex，必须同时查 `codex_ai/run_codex_ai_ci.sh`、两个 prompt、`prompt_change_log.md`、schema、renderer、credential validator、prompt 模板契约测试和三组 Codex harness。
+5. 如果涉及 backend/compile/runtime，必须追踪 `setup.py` -> CMake -> `libtriton` binding -> Triton compiler stage -> Driver/launcher，并确认 out-of-tree 依赖。
+6. 先记录当前工作区状态；不要回滚或重置不属于本次任务的修改，尤其是当前已知的 CRLF 变化。
 
 ### 13.2 实施中
 

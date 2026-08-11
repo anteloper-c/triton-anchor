@@ -62,23 +62,6 @@ ${CHANGED_FILE_GROUPS_JSON}
 
 执行时应先依据 `Review Context Hint` 和分组摘要选择重点文件、相关测试和 artifact；纯文档改动应跳过测试生成；performance 变更应集中检查 benchmark/compare/dashboard 产物。若分组显示仅涉及 Codex AI-CI 自身文件（例如 `scripts/local_ci/codex_ai/` 下的 prompt、schema、renderer、runner 或测试），不要把这些改动纳入 triton-anchor 产品代码审查，也不要为其生成产品 finding；只在 `changed_files` 中做文件级覆盖、说明它属于 AI-CI 维护变更，并把验证建议收敛到专用 prompt/schema/renderer 契约测试或人工维护审查。大 diff 应先按分组和风险展开，不要因为上下文完整就读取大量无关文件或日志。
 
-## GitHub Actions 专项双遍审查
-
-当上方 `Review Context Profile` 为 `github_actions_control`，或 `Changed File Groups JSON` 含 `github_workflows` 时，必须执行下面两遍相互独立的审查；不能用一遍宽泛静态检查同时宣称全部覆盖。
-
-1. 第一遍只审查功能、状态和跨 workflow 契约：
-   - 建立 event × action × state 矩阵，至少检查 `pull_request_target`、`workflow_run`、`workflow_dispatch` 的已订阅与遗漏 activity，以及 opened、synchronize、edited/retarget、draft/ready、reopen、rerun、base/head/ref 变化和上游 conclusion。
-   - 沿生产者—消费者链核对 workflow name、默认分支存在性、artifact 名称与 schema、inputs、mode、required jobs、目标 ref 和版本契约；仅检查文件存在或 marker 子串不算完成契约验证。
-   - 检查 stale event、并发、重复投递、重试、取消、状态覆盖、评论 create-or-update 和跨目标分支状态复用。
-2. 第二遍不复用第一遍结论，只审查权限和不可信输入：
-   - 对 `pull_request_target`、`workflow_run`、`GITHUB_TOKEN`、secrets 和 write permissions 建立 trust-boundary 数据流，确认特权步骤不会 checkout 或执行不可信 head，也不会把不可信 artifact、标题、分支名、日志或 API 字段当成代码或指令。
-   - 检查 shell/expression/Markdown/链接/mention 注入、路径穿越、artifact 混淆、评论归属校验和权限最小化；“做过字符替换”不能直接等同于安全。
-   - 检查幂等与竞态：同一 SHA 重跑、快速连续 synchronize、旧 run 晚到和多个机器人评论不得造成重复 dispatch、重复评论或覆盖新结果。
-3. 验证必须包含反例：
-   - full 模式且允许生成测试时，至少生成一组负向或对抗性断言，覆盖两个以上高风险状态；优先复现缺失 activity、draft/retarget、注释 marker 误通过、stale SHA、恶意 artifact 文本或并发重复中的相关场景。
-   - failure 模式或当前环境无法执行时，把未验证矩阵项写入 `residual_risks` 和 `suggested_tests`，不得把正向字段存在检查描述为完整行为覆盖。
-4. 第一遍先形成候选问题清单，第二遍逐项尝试推翻并补充新的安全候选；所有仍有代码或可执行反例支持的候选都必须写入 `findings`，不能在确认第一个 finding 后停止。未达到 finding 证据标准的候选应说明未确认原因并进入 `residual_risks` 或 `suggested_tests`。
-
 ## 项目背景与审查范围
 
 本仓库是 Triton-anchor 编译器前端项目；Codex AI-CI 服务 `triton-anchor` 仓库及其后续分支审查，不是泛化 AI 审查平台。审查重点放在 Triton/AnchorIR 前端语义、TTIR pipeline、adapter/ABI、C++/MLIR binding、Public API、Local CI 任务/结果协议、后端 smoke/FlagGems/性能证据，以及这些内容被本次 diff 直接影响的范围。不要把纯风格建议、泛化重构建议或与上述主线无关的想法扩大成阻塞 finding。
@@ -97,6 +80,7 @@ ${CHANGED_FILE_GROUPS_JSON}
 - C++ / MLIR 绑定：检查 pass 注册、dialect 注册、符号导出、PassManager 计时开关和 Python binding 名称是否与 Python 调用方一致。
 - Public API：若修改 `python/triton_anchor` 对外类型、函数、dataclass、enum、adapter 接口或 `api_contract/public_api.json`，检查向后兼容性和 API 兼容检查是否同步。
 - Local CI 协议：检查 Gitee task ref、result path、summary/result JSON、GitHub status、Pages 数据、性能基线缓存和 PR metadata 的格式兼容性，避免旧结果被误用或当前结果丢失。
+- GitHub Actions：若 diff 涉及 `.github/workflows/`，检查触发事件和关键 activity 是否覆盖目标 PR 状态，跨 workflow 的名称、artifact、inputs 与目标 ref 契约是否一致，以及 `pull_request_target` / `workflow_run` 等特权上下文是否隔离不可信 head、artifact 和文本输入。
 - Codex AI-CI 自身文件：如果 diff 只改 `scripts/local_ci/codex_ai/` 下的 prompt、schema、renderer、runner 或测试，只做文件级覆盖和维护风险摘要，不把它作为 triton-anchor 产品代码缺陷审查对象；其同步性由专用契约测试和人工维护审查负责。
 - 性能与 FlagGems：检查 benchmark 阈值、噪声下限、基线命名空间、样本/全量算子选择、超时策略和 dashboard 展示是否与 Sophgo CModel profile 及后续多后端扩展一致。
 

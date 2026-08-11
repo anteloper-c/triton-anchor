@@ -21,7 +21,7 @@ def changed(path: str, change_type: str = "added") -> dict[str, str]:
     return {"path": path, "change_type": change_type}
 
 
-def test_pr28_style_workflows_use_github_actions_control_profile():
+def test_pr28_style_workflows_use_local_ci_control_profile():
     manifest = [
         changed(".github/workflows/api-breaking-notify.yml"),
         changed(".github/workflows/ci-gateway.yml"),
@@ -29,8 +29,8 @@ def test_pr28_style_workflows_use_github_actions_control_profile():
 
     profile, hint, summary = CLASSIFIER.classify_review_context(manifest, "full")
 
-    assert profile == "github_actions_control"
-    assert summary["profile"] == "github_actions_control"
+    assert profile == "local_ci_control"
+    assert summary["profile"] == "local_ci_control"
     assert summary["file_count"] == 2
     assert summary["groups"] == {
         "github_workflows": [
@@ -40,18 +40,15 @@ def test_pr28_style_workflows_use_github_actions_control_profile():
     }
     assert summary["change_types"] == {"added": 2}
     for required_term in [
-        "pull_request_target",
-        "workflow_run",
-        "workflow_dispatch",
-        "edited/draft/base/head",
-        "artifact",
-        "concurrency/idempotency",
-        "生产者—消费者契约",
+        "事件覆盖",
+        "workflow/artifact 契约",
+        "特权事件",
+        "不可信输入边界",
     ]:
         assert required_term in hint
 
 
-def test_workflow_and_local_ci_changes_keep_github_actions_priority():
+def test_workflow_and_local_ci_changes_use_local_ci_control_profile():
     manifest = [
         changed(".github/workflows/ci-gateway.yml", "modified"),
         changed("scripts/local_ci/poll_gitee_and_run.sh", "modified"),
@@ -60,7 +57,7 @@ def test_workflow_and_local_ci_changes_keep_github_actions_priority():
 
     profile, _, summary = CLASSIFIER.classify_review_context(manifest, "full")
 
-    assert profile == "github_actions_control"
+    assert profile == "local_ci_control"
     assert set(summary["groups"]) == {
         "github_workflows",
         "local_ci_control",
@@ -81,14 +78,14 @@ def test_failure_analysis_keeps_failure_profile_and_workflow_group():
     }
 
 
-def test_large_workflow_only_diff_keeps_github_actions_profile():
+def test_large_workflow_only_diff_uses_large_diff_profile():
     manifest = [
         changed(f".github/workflows/gateway-{index}.yml") for index in range(21)
     ]
 
     profile, _, summary = CLASSIFIER.classify_review_context(manifest, "full")
 
-    assert profile == "github_actions_control"
+    assert profile == "large_diff"
     assert summary["file_count"] == 21
 
 

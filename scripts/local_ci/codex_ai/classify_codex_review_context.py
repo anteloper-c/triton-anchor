@@ -107,14 +107,6 @@ def classify_review_context(
             "本次集中在性能测量或 dashboard；重点检查 benchmark schema、compare 语义、"
             "cache namespace、warning 映射和 dashboard artifact。"
         )
-    elif "github_workflows" in keys and keys <= control_groups:
-        profile = "github_actions_control"
-        hint = (
-            "本次集中在 GitHub Actions 控制面；必须先做事件、状态和跨分支契约的功能"
-            "审查，再独立做权限与不可信输入审查，重点覆盖 pull_request_target、"
-            "workflow_run、workflow_dispatch、edited/draft/base/head 变化、artifact、"
-            "token scope、concurrency/idempotency 和生产者—消费者契约。"
-        )
     elif count > 20:
         profile = "large_diff"
         hint = (
@@ -125,7 +117,8 @@ def classify_review_context(
         profile = "local_ci_control"
         hint = (
             "本次集中在 Local CI 控制面；重点检查 task ref、SHA、结果目录、状态字段、"
-            "token 边界和发布失败重试。"
+            "token 边界和发布失败重试；若涉及 GitHub workflows，顺带检查事件覆盖、"
+            "workflow/artifact 契约和特权事件的不可信输入边界。"
         )
     else:
         profile = "general"

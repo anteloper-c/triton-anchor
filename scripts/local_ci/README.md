@@ -61,7 +61,6 @@ scripts/local_ci/
 │   └── tests/                             # 镜像 payload、分支白名单和同步服务测试
 ├── README.md                              # 面向日常维护者的使用说明
 ├── DEVELOPMENT_GUIDE.md                  # 面向开发者和 agent coding 的长期上下文与规范
-├── DEVELOPMENT_CONTEXT.md                 # 临时协作上下文；完成后沉淀到正式文档
 ├── orchestration/                         # 任务上下文准备和容器内确定性 CI 编排
 │   ├── fetch_task_metadata.sh             # 读取 PR 标题、描述、base/head 等元数据
 │   └── run_deterministic_ci_in_container.sh # 把任务参数传入 Local CI 容器并启动确定性 runner
@@ -119,8 +118,6 @@ runs/ci_full/ci_full_<branch>/<sha>/<run-id>/
 ```
 
 `safe_path_part` 是历史结果协议的一部分，会压缩非法字符并可能发生碰撞。`shared/path_utils.sh` 和 `shared/result_paths.py` 必须保持现有归一化语义；修改前要先补历史路径兼容测试和迁移方案。
-
-`DEVELOPMENT_CONTEXT.md` 只用于临时交接开发过程、AI 协作记录和未完成事项。它不会被列为 Local CI runtime 必需文件；长期有效的信息应在完成后沉淀到 `DEVELOPMENT_GUIDE.md`、`README.md`、`docs/ci_guide_zh.md` 或 `codex_ai/prompts/prompt_change_log.md`。
 
 ## 一次任务的生命周期
 
