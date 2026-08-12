@@ -8,7 +8,7 @@
 
 `scripts/local_ci/poll_gitee_and_run.sh` 是 systemd/cron 和人工运行 poller 的稳定根目录入口，并包含 poller 完整实现。其余 canonical 实现按职责分为 `orchestration/`、`deterministic_ci/`、`codex_ai/`、`results/` 和 `shared/`，不提供根目录兼容 wrapper。`LOCAL_CI_SCRIPT_DIR` 必须指向完整的 `scripts/local_ci` 根目录，以便 trusted runner snapshot 包含入口和全部模块。
 
-## 1. 作用域与仓库快照
+## 1. 文件作用域与仓库快照
 
 ### 1.1 文件作用域
 
