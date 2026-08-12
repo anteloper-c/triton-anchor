@@ -33,6 +33,13 @@ from result_paths import (  # noqa: E402
 
 RESULT_NOT_READY_EXIT_CODE = 3
 RESULT_FAILED_EXIT_CODE = 10
+STALE_RESULT_EXIT_CODE = 11
+
+
+class StaleResultError(RuntimeError):
+    pass
+
+
 CODEX_COMMENT_MARKER = "<!-- triton-anchor-codex-ai-comment -->"
 CODEX_COMMENT_SHA_MARKER_PREFIX = "triton-anchor-codex-ai-comment-sha"
 FINDING_ID_RE = re.compile(r"^AI-[0-9]{3}$")
@@ -100,12 +107,20 @@ CODEX_FAILURE_REASON_LABELS = {
 }
 
 REPORTABLE_STAGES = (
+    ("frontend_build", "frontend_build_status", "frontend-build", "Frontend build"),
     ("frontend_smoke", "frontend_smoke_status", "frontend-smoke", "Frontend smoke"),
+    ("backend_rebuild", "backend_rebuild_status", "backend-rebuild", "Backend rebuild"),
     ("backend_smoke_jit", "backend_smoke_jit_status", "backend-smoke-jit", "Backend smoke and JIT"),
     ("flaggems", "flaggems_status", "flaggems", "FlagGems"),
     ("compile_time", "compile_time_status", "compile-time", "Compile-time performance"),
     ("pass_profile", "pass_profile_status", "pass-profile", "Pass profiling"),
     ("ir_serialization", "ir_serialization_status", "ir-serialization", "IR serialization"),
+)
+REQUIRED_STAGE_IDS = (
+    "frontend_build",
+    "frontend_smoke",
+    "backend_rebuild",
+    "backend_smoke_jit",
 )
 
 
@@ -174,6 +189,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reconcile-source-branches", default="")
     parser.add_argument("--task-ref", default="")
     parser.add_argument("--sha", default="")
+    parser.add_argument("--status-sha", default="")
+    parser.add_argument("--pr-number", default="")
+    parser.add_argument("--expected-head-sha", default="")
+    parser.add_argument("--comparison-base-sha", default="")
+    parser.add_argument("--target-branch", default="")
     parser.add_argument("--context", default="local-ci/sophgo-cmodel")
     parser.add_argument("--mode", choices=("single", "reconcile"), default="single")
     parser.add_argument("--set-pending", action="store_true")
@@ -408,6 +428,28 @@ def github_branch_head(branch: str) -> str | None:
     return sha if isinstance(sha, str) else None
 
 
+def current_pr_matches(args: argparse.Namespace, tested_sha: str) -> bool:
+    if not args.pr_number:
+        return True
+    if not args.pr_number.isdigit():
+        return False
+    payload = get_github_json(f"/repos/{github_repo()}/pulls/{args.pr_number}")
+    if not isinstance(payload, dict):
+        return False
+    head = payload.get("head")
+    base = payload.get("base")
+    return bool(
+        payload.get("state") == "open"
+        and not payload.get("draft", False)
+        and isinstance(head, dict)
+        and isinstance(base, dict)
+        and head.get("sha") == args.expected_head_sha
+        and base.get("sha") == args.comparison_base_sha
+        and base.get("ref") == args.target_branch
+        and payload.get("merge_commit_sha") == tested_sha
+    )
+
+
 def list_open_pr_targets(limit: int) -> list[Target]:
     targets: list[Target] = []
     page = 1
@@ -637,8 +679,22 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
         failure_code,
         validation_purposes_from_report(codex_report),
     )
+    exit_code = parse_summary_status(summary)
+    missing_required = [
+        stage_id
+        for stage_id in REQUIRED_STAGE_IDS
+        if stage_statuses.get(stage_id, "").strip().lower() not in {"pass", "success"}
+    ]
+    if exit_code == 0 and missing_required:
+        print(
+            "Local CI summary claimed success but required stages did not pass: "
+            + ", ".join(missing_required),
+            file=sys.stderr,
+        )
+        exit_code = 1
+
     return LocalCIResult(
-        parse_summary_status(summary),
+        exit_code,
         gitee_result_url(args.gitee_web_url, args.gitee_results_branch, rel_dir),
         run_id,
         stage_statuses["compile_time"],
@@ -987,16 +1043,30 @@ def sync_target(args: argparse.Namespace, target: Target, set_pending: bool) -> 
             )
             result = None
         if result is not None:
-            post_stage_statuses(args, target, result)
+            if not current_pr_matches(args, target.sha):
+                print(
+                    "PR head, base, target, or merge result changed; ignoring stale Local CI result.",
+                    file=sys.stderr,
+                )
+                raise StaleResultError
+            status_sha = args.status_sha or target.sha
+            status_target = Target(
+                target.source_branch,
+                target.task_ref,
+                status_sha,
+                target.label,
+                target.source_repository,
+            )
+            post_stage_statuses(args, status_target, result)
             try:
-                post_codex_advisory_status(args, target, result)
+                post_codex_advisory_status(args, status_target, result)
             except Exception as exc:
                 print(
                     f"Warning: failed to publish Codex AI advisory status: {exc}",
                     file=sys.stderr,
                 )
             try:
-                post_codex_pr_comment(target, result)
+                post_codex_pr_comment(status_target, result)
             except Exception as exc:
                 print(
                     f"Warning: failed to publish Codex AI PR comment: {exc}",
@@ -1014,11 +1084,11 @@ def sync_target(args: argparse.Namespace, target: Target, set_pending: bool) -> 
                     description = "Gitee local CI passed with " + ", ".join(warnings) + " warning"
                 if result.publish_manifest and result.publish_manifest.missing_expected_files:
                     description = "Gitee local CI passed; artifact manifest has warnings"
-                post_github_status(target.sha, "success", args.context, description, result.target_url)
+                post_github_status(status_sha, "success", args.context, description, result.target_url)
                 print(f"Gitee local CI passed for {target.label}: {result.target_url}")
             else:
                 post_github_status(
-                    target.sha,
+                    status_sha,
                     "failure",
                     args.context,
                     f"Gitee local CI failed: status {result.exit_code}",
@@ -1082,7 +1152,11 @@ def main() -> int:
             args.source_branch,
             github_repo(),
         )
-        result = sync_target(args, target, args.set_pending)
+        try:
+            result = sync_target(args, target, args.set_pending)
+        except StaleResultError:
+            write_github_outputs(None)
+            return STALE_RESULT_EXIT_CODE
         if result is None:
             return RESULT_NOT_READY_EXIT_CODE if args.require_result else 0
         if args.exit_with_result and result.exit_code != 0:

@@ -244,6 +244,50 @@ stage_runner_scripts() {
   printf '%s' "${staged_dir}"
 }
 
+prepare_trusted_envsetup() {
+  local runner_dir="$1"
+  local task_branch="$2"
+  local base_branch="$3"
+  local base_sha="$4"
+  local checkout_dir=""
+  local trusted_file="${runner_dir}/trusted/envsetup.sh"
+
+  rm -f -- "${trusted_file}"
+  if [[ ! "${task_branch}" =~ ^ci/pr-[0-9]+/.+$ ]]; then
+    return 0
+  fi
+  if [[ -z "${base_branch}" || ! "${base_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "PR task has no verified base revision for trusted envsetup.sh." >&2
+    return 1
+  fi
+
+  checkout_dir="$(mktemp -d "${LOCAL_CI_STATE_DIR}/trusted-base.XXXXXX")"
+  git -C "${checkout_dir}" init -q
+  git -C "${checkout_dir}" remote add origin "${GITEE_REPO_URL}"
+  if ! git -C "${checkout_dir}" fetch -q --depth=1 origin \
+    "+refs/heads/${base_branch}:refs/local-ci/trusted-base"; then
+    rm -rf -- "${checkout_dir}"
+    echo "Unable to fetch trusted PR base ref ${base_branch}." >&2
+    return 1
+  fi
+  if [[ "$(git -C "${checkout_dir}" rev-parse refs/local-ci/trusted-base)" != "${base_sha}" ]]; then
+    rm -rf -- "${checkout_dir}"
+    echo "Trusted PR base ref moved while preparing envsetup.sh." >&2
+    return 1
+  fi
+  if ! git -C "${checkout_dir}" cat-file -e "${base_sha}:envsetup.sh" 2>/dev/null; then
+    rm -rf -- "${checkout_dir}"
+    echo "Trusted base commit has no envsetup.sh." >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "${trusted_file}")"
+  git -C "${checkout_dir}" show "${base_sha}:envsetup.sh" > "${trusted_file}"
+  rm -rf -- "${checkout_dir}"
+  chmod 600 "${trusted_file}"
+  bash -n "${trusted_file}"
+  echo "Prepared trusted envsetup.sh from base ${base_sha}."
+}
+
 cached_benchmark_exists() {
   local kind="$1"
   local sha="$2"
@@ -414,6 +458,9 @@ run_once() {
       fi
     fi
   fi
+
+  prepare_trusted_envsetup "${LOCAL_CI_RUNNER_DIR}" "${branch}" \
+    "${base_branch}" "${base_sha}"
 
   local status=0
   set +e

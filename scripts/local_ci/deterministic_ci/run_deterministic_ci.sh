@@ -34,6 +34,7 @@ GITEE_RESULTS_REPO_URL="${GITEE_RESULTS_REPO_URL:-${GITEE_REPO_URL}}"
 GITEE_RESULTS_BRANCH="${GITEE_RESULTS_BRANCH:-local-ci-results}"
 LOCAL_CI_BASE_SHA="${LOCAL_CI_BASE_SHA:-}"
 LOCAL_CI_BASE_REF="${LOCAL_CI_BASE_REF:-}"
+TRUSTED_ANCHOR_ENVSETUP="${TRUSTED_ANCHOR_ENVSETUP:-${RUNNER_ROOT}/trusted/envsetup.sh}"
 LOCAL_CI_GIT_ASKPASS=""
 BACKEND_PROFILE="${BACKEND_PROFILE:-sophgo-cmodel}"
 EXPECTED_TRITON_BACKEND="${EXPECTED_TRITON_BACKEND:-sophgo}"
@@ -491,11 +492,38 @@ source_python_venv() {
 }
 
 source_anchor_env() {
-  if [[ "${SOURCE_ENVSETUP}" == "1" && -f "${ANCHOR_DIR}/envsetup.sh" ]]; then
-    echo "Sourcing anchor envsetup.sh."
+  if [[ "${SOURCE_ENVSETUP}" != "1" ]]; then
+    if [[ -n "${LOCAL_CI_BASE_SHA}" ]]; then
+      echo "PR Local CI requires SOURCE_ENVSETUP=1 and a trusted base envsetup.sh." >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  local envsetup_file="${ANCHOR_DIR}/envsetup.sh"
+  if [[ -n "${LOCAL_CI_BASE_SHA}" ]]; then
+    if [[ -f "${ANCHOR_DIR}/envsetup.sh" ]]; then
+      echo "Syntax-checking candidate envsetup.sh without sourcing it."
+      bash -n "${ANCHOR_DIR}/envsetup.sh"
+    fi
+    if [[ ! -f "${TRUSTED_ANCHOR_ENVSETUP}" ]]; then
+      echo "Trusted base envsetup.sh is required for PR Local CI." >&2
+      return 1
+    fi
+    envsetup_file="${TRUSTED_ANCHOR_ENVSETUP}"
+    echo "Sourcing trusted base envsetup.sh: ${envsetup_file}"
+  elif [[ ! -f "${envsetup_file}" ]]; then
+    echo "Push commit has no envsetup.sh to source."
+    return 0
+  else
+    echo "Sourcing push commit envsetup.sh."
+  fi
+
+  if [[ -f "${envsetup_file}" ]]; then
+    bash -n "${envsetup_file}"
     set +u
-    # shellcheck disable=SC1091
-    source "${ANCHOR_DIR}/envsetup.sh"
+    # shellcheck disable=SC1090
+    source "${envsetup_file}"
     set -u
   fi
 }
@@ -883,6 +911,20 @@ finalize_running_statuses() {
   done
 }
 
+required_stages_passed() {
+  local status
+  for status in \
+    "${FRONTEND_BUILD_STATUS}" \
+    "${FRONTEND_SMOKE_STATUS}" \
+    "${BACKEND_REBUILD_STATUS}" \
+    "${BACKEND_SMOKE_JIT_STATUS}"; do
+    case "${status}" in
+      pass|success) ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
 on_exit() {
   local status="$?"
   local dump_cleanup_status=0
@@ -892,6 +934,10 @@ on_exit() {
     status="${LOCAL_CI_RESULT_STATUS}"
   fi
   finalize_running_statuses
+  if [[ ${status} -eq 0 ]] && ! required_stages_passed; then
+    echo "One or more required Local CI stages did not pass; forcing overall failure." >&2
+    status=1
+  fi
   cleanup_gitee_git_auth
   if [[ ${status} -ne 0 ]]; then
     collect_failure_ir "unhandled-exit" "${LOCAL_CI_TASK_DUMP_ROOT}" || true

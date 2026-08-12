@@ -176,6 +176,43 @@ class CodexCommentTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}):
             self.assertEqual(bridge.list_open_pr_targets(10), [])
 
+    @mock.patch.object(bridge, "get_github_json")
+    def test_current_pr_matches_frozen_merge_result(self, get_json: mock.Mock) -> None:
+        get_json.return_value = {
+            "state": "open",
+            "draft": False,
+            "head": {"sha": "a" * 40},
+            "base": {"sha": "b" * 40, "ref": "CI_dev"},
+            "merge_commit_sha": "c" * 40,
+        }
+        args = SimpleNamespace(
+            pr_number="42",
+            expected_head_sha="a" * 40,
+            comparison_base_sha="b" * 40,
+            target_branch="CI_dev",
+        )
+        with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}):
+            self.assertTrue(bridge.current_pr_matches(args, "c" * 40))
+            self.assertFalse(bridge.current_pr_matches(args, "d" * 40))
+
+    @mock.patch.object(bridge, "get_github_json")
+    def test_current_pr_rejects_force_push_and_retarget(self, get_json: mock.Mock) -> None:
+        get_json.return_value = {
+            "state": "open",
+            "draft": False,
+            "head": {"sha": "d" * 40},
+            "base": {"sha": "b" * 40, "ref": "main"},
+            "merge_commit_sha": "c" * 40,
+        }
+        args = SimpleNamespace(
+            pr_number="42",
+            expected_head_sha="a" * 40,
+            comparison_base_sha="b" * 40,
+            target_branch="CI_dev",
+        )
+        with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}):
+            self.assertFalse(bridge.current_pr_matches(args, "c" * 40))
+
     @mock.patch.object(bridge, "request_json")
     @mock.patch.object(bridge, "get_github_json", return_value=[])
     def test_new_pr_comment_is_created(
@@ -401,7 +438,9 @@ class CodexCommentTests(unittest.TestCase):
             if path.endswith("/delivery-summary.txt"):
                 return (
                     "status: 0\n"
+                    "frontend_build_status: pass\n"
                     "frontend_smoke_status: pass\n"
+                    "backend_rebuild_status: pass\n"
                     "backend_smoke_jit_status: pass\n"
                     "flaggems_status: disabled\n"
                     "compile_time_status: disabled\n"
@@ -476,6 +515,39 @@ class CodexCommentTests(unittest.TestCase):
         self.assertIsNotNone(result.publish_manifest)
         assert result.publish_manifest is not None
         self.assertEqual(result.publish_manifest.target_sha, self.target.sha)
+
+    @mock.patch.object(bridge, "gitee_content")
+    def test_success_is_forced_to_fail_when_required_stage_is_missing(
+        self,
+        gitee_content: mock.Mock,
+    ) -> None:
+        def content(*_args: object) -> str | None:
+            path = str(_args[2])
+            if path.endswith("latest.txt"):
+                return "run-2\n"
+            if path.endswith("delivery-summary.txt"):
+                return (
+                    "status: 0\n"
+                    f"target_sha: {self.target.sha}\n"
+                    "run_id: run-2\n"
+                    "frontend_build_status: pass\n"
+                    "frontend_smoke_status: pass\n"
+                    "backend_rebuild_status: pass\n"
+                    "backend_smoke_jit_status: not_run\n"
+                )
+            return None
+
+        gitee_content.side_effect = content
+        args = SimpleNamespace(
+            gitee_owner="owner",
+            gitee_repo="results",
+            gitee_results_branch="local-ci-results",
+            gitee_web_url="https://gitee.example/results",
+        )
+        result = bridge.read_local_ci_result(args, self.target, "token")
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.exit_code, 1)
 
 
 if __name__ == "__main__":
