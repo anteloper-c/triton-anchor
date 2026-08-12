@@ -124,8 +124,8 @@ runs/ci_full/ci_full_<branch>/<sha>/<run-id>/
 1. Poller 发现符合规则的 Gitee ref，并用 lock 文件保证同一服务器不会并发处理相同 poller 状态。
 2. PR 任务读取并校验与 GitHub test merge SHA 匹配的 `task-metadata.json`，同时保留 base/head SHA 供 diff 和身份校验。标题和描述只作为声明证据，不能作为命令执行。
 3. Runner 将 Local CI 控制脚本复制到容器内临时目录，并执行 `deterministic_ci/run_deterministic_ci.sh`。
-4. 确定性 runner 在独立 artifact 目录写入 smoke、FlagGems、benchmark、比较结果和 `delivery-summary.txt`。
-5. 如果分支匹配 `CODEX_AI_CI_BRANCH_REGEX`，Codex 从 Local CI 容器快照创建一次性容器，使用只读 `/workspace` 和目标 SHA 的 writable checkout。
+4. 确定性 runner 在独立 artifact 目录写入 smoke、FlagGems、benchmark、比较结果和 `delivery-summary.txt`；每条受控命令使用独立 Triton dump 目录，失败时只归档本命令的 `.ttir`、`.linalg`、`.pplir`，然后清空 `/workspace/triton-dump-dir`、root fallback 和任务 dump。
+5. 如果分支匹配 `CODEX_AI_CI_BRANCH_REGEX`，Codex 直接从 Local CI 容器快照创建一次性容器，使用只读 `/workspace` 和目标 SHA 的 writable checkout；snapshot 前不再清理或审计 source container，临时容器 source backend envsetup 后把 `TRITON_DUMP_DIR` 改到自身 `/tmp`，避免定向复跑写只读 volume。
 6. Codex 先使用 changed-files manifest 生成轻量上下文分组和审查 profile，再只输出 schema 约束的 JSON；renderer 校验 manifest、中文说明、测试状态、命令退出码和预算后生成 Markdown 报告与 PR comment。
 7. Publisher 只复制固定 allowlist 的结果文件，写入 `publish-manifest.json`，原子更新 `latest.txt`，更新 SHA/profile 性能 cache 和 dashboard，然后带 rebase retry push `local-ci-results`。
 8. Bridge 读取 `latest.txt`、`publish-manifest.json`、summary、`result.json` 和 Codex comment，校验 SHA/run/schema 后发布 GitHub statuses，并只对 PR 创建或更新带 marker 的 advisory comment。
@@ -178,6 +178,10 @@ codex-workspace-status.txt
 codex-workspace.patch
 codex-generated-files.tar.gz
 ```
+
+容器本地 artifact 目录可能额外包含 `failure-ir/<stage>/{manifest.json,task/,sophgo/,root/}` 和 `failure-ir-collection.log`。`failure-ir/` 只在失败命令实际产生 `.ttir`、`.linalg` 或 `.pplir` 时创建；不会复制 `.so`、成功命令 dump 或旧任务 dump。它供紧随确定性 CI 的 Codex 失败诊断读取，当前 publisher allowlist 不把原始 IR 推送到 Gitee 结果分支。确定性 runner 在任务开始、各命令边界和退出时清理 Sophgo envsetup 使用的 `/workspace/triton-dump-dir`、`/root/.triton/dump` fallback 及本任务专属 dump 目录。Triton/FlagGems cache 与 benchmark 临时目录不属于这次清理范围，Codex 临时容器仍可复用热缓存。
+
+本次不把 `TRITON_CACHE_DIR` 改为任务级临时目录。它保存以源码、Triton/backend 和编译配置为 key 的可复用编译产物，命中时会跳过编译 pipeline；与只用于诊断的 dump 不同。compile benchmark 已使用并清理独立 session cache。应先上线 dump 清理并观察 snapshot 计时与 cache 体积，再决定是否需要独立的 cache 生命周期方案。
 
 Codex runner 会额外写入 `codex-context-summary.json`，用 `docs_only`、`codex_ai_ci_maintenance`、`local_ci_protocol`、`performance`、`local_ci_failure`、`large_diff` 等轻量 profile 提示模型优先读哪些文件、日志和 artifact。该 profile 只影响阅读和验证优先级，不改变必须覆盖全部 changed-files manifest、finding 证据标准或 schema 输出契约。其中 `scripts/local_ci/codex_ai/` 下的 Codex AI-CI 自身维护变更不纳入 triton-anchor 产品代码审查，不应生成产品 finding；同步性由专用契约测试和人工维护审查负责。
 

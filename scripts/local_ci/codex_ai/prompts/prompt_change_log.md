@@ -1,3 +1,54 @@
+## 2026-08-12：只向失败诊断暴露当前失败命令的文本 IR
+
+### 修改原因
+
+Codex 通过 `docker commit` 取得长期容器的 writable layer，并通过 `--volumes-from` 只读复用 `/workspace`。长期容器可写层中的 `/root/.triton/dump` 会被原样纳入 snapshot，目录内积累的旧任务、成功阶段、无关 kernel 和 `.so` 已确认会放大镜像并拖慢 commit；当前 Sophgo envsetup 使用的 `/workspace/triton-dump-dir` 不进入 commit image，但会经 volume 暴露给 Codex 并引入同类诊断噪声。普通代码审查不需要 dump，失败诊断只需要当前失败命令生成的文本 IR。
+
+### 修改内容
+
+- 确定性 runner 为每条受控命令设置独立 `TRITON_DUMP_DIR`，失败时只归档 `.ttir`、`.linalg`、`.pplir` 并写 manifest；
+- 每条命令完成后清理任务 dump、Sophgo envsetup 使用的 `/workspace/triton-dump-dir` 和兼容的 `/root/.triton/dump`，不复制 `.so`、成功命令或旧任务 dump；
+- failure prompt 优先读取 `artifact-dir/failure-ir`，并明确不再搜索全局 dump；
+- Codex runner 在 snapshot 前不执行第二次清理或只读审计；Triton/FlagGems cache 和 benchmark 临时目录保持不变。
+- Codex 临时容器在 source backend envsetup 后将 `TRITON_DUMP_DIR` 改到自身 `/tmp`，避免定向复跑写入只读 `/workspace` volume。
+
+### 兼容性与风险
+
+- 不修改报告 schema、状态枚举、结果路径或 Codex 非阻塞语义；
+- 没有生成白名单 IR 时不创建 `failure-ir`，收集异常单独写入 `failure-ir-collection.log`；
+- 清理失败会使确定性 CI 失败，避免带着已知未清理 dump 继续 snapshot。
+- `TRITON_CACHE_DIR` 保持长期复用：它按 Triton、源码、backend、options 和相关环境生成内容哈希 key，保存中间 IR、metadata 和最终 binary，命中时跳过编译 pipeline；任务级临时化会让后续 Local CI 与 Codex 定向诊断冷编译，不属于本次 dump 根因修复。
+
+### 验证
+
+运行 dump 工具 Python 契约测试、Local CI 模块布局测试、相关 Shell 语法检查、prompt/报告契约测试和 `git diff --check`。
+
+---
+
+## 2026-08-12：前移中文报告约束并补齐行为覆盖自检
+
+### 修改原因
+
+Codex 输出 schema 只约束部分说明字段为字符串，而 renderer 会进一步要求这些字段包含中文。模型生成 English-only 的 `behavior_coverage.integration.scope` 时能够通过结构化输出约束，却在最终渲染阶段导致整份报告失效。
+
+### 修改内容
+
+- 为 renderer 要求中文的自然语言字段补充统一的中文字符 `pattern`，使生成约束与最终校验一致；
+- success/failure prompt 同步增加五类 `behavior_coverage` 的逐字段中文自检，并强化 `integration.scope` 的集成范围说明；
+- 报告契约测试逐项检查中文 pattern，确认中文说明可匹配且纯英文说明不可匹配。
+
+### 兼容性与风险
+
+- 不新增或重命名报告字段，不修改状态枚举、报告版本、结果路径或非阻塞语义；
+- `pattern` 属于当前 Structured Outputs 支持的字符串约束，renderer 保留最终防御性校验；
+- 旧的合法中文报告继续通过，English-only 自然语言字段会在生成阶段被拒绝。
+
+### 验证
+
+运行 Codex 报告契约测试、Shell 语法检查、JSON 解析和 `git diff --check`。
+
+---
+
 ## 2026-08-12：增加 Codex 首个有效进展超时
 
 ### 修改原因

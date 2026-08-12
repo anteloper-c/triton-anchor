@@ -343,6 +343,10 @@ setup Gitee auth
 
 功能阶段失败会设置 `LOCAL_CI_RESULT_STATUS=1`，最终退出非零。性能比较超过阈值或缺少 baseline 通常写 `warning`，不会把 GitHub overall status 置为 failure；必须查看详细报告而不能只看 overall status。
 
+当前 Sophgo backend 的 `envsetup.sh` 将 `TRITON_DUMP_DIR` 设为 `/workspace/triton-dump-dir`。每个通过 `run_logged` 执行的命令（包括 backend rebuild）改用 `/tmp/triton-anchor-local-ci-dump.<sha>.<pid>/<stage>` 作为独立 `TRITON_DUMP_DIR`；若命令内部再次 source backend envsetup，`source_backend_env` 会恢复该命令目录。命令失败时，runner 在清理前只把本命令目录、Sophgo 共享目录和 root fallback 中的 `.ttir`、`.linalg`、`.pplir` 复制到 `artifact-dir/failure-ir/<stage>/` 并写 manifest；`.so`、其他扩展名、成功命令 dump 和旧任务 dump 不保留。`/workspace/triton-dump-dir` 与 `/root/.triton/dump` 会在每个命令边界清空。清理范围不包含 `/root/.triton/cache`、`/root/.flaggems/code_cache` 或 benchmark 临时目录，避免让 Codex 诊断无条件冷启动。
+
+`TRITON_CACHE_DIR` 与 dump 的职责不同，不随本清理任务改成任务级目录。Triton cache key 包含 Triton 实现、kernel source、backend、编译 options 和会影响缓存的环境变量，目录保存编译阶段产物、metadata 与最终 binary；命中时会跳过编译 pipeline。长期复用可加速不受当前 diff 影响的 kernel 和 Codex 定向复跑。compile benchmark 已使用自身 session cache 并在 `finally` 清理；FlagGems 的可选清 cache 服务测试隔离。只有在 dump 清理上线后，实际体积和 snapshot 计时仍证明 cache 是主要瓶颈时，才应另行设计 cache 生命周期，不能把调试 dump 的清理规则直接套到编译 cache。
+
 当前实现中的 backend rebuild 逻辑仍直接使用 `triton_sophgo_backend` 包名和 wheel glob。`BACKEND_PROFILE` 虽然是参数化的，但这部分并未完全泛化；新后端必须检查并可能需要专用 profile/脚本。
 
 ### 5.5 FlagGems 路径
@@ -463,11 +467,12 @@ runner 会根据 changed-files manifest 生成 `codex-context-summary.json` 和 
 
 #### 6.4.2 Codex AI-CI 验证入口
 
-`scripts/local_ci/codex_ai/tests/` 当前只保留 Shell harness：
+`scripts/local_ci/codex_ai/tests/` 同时包含 Python 契约测试和 Shell harness：
 
 - `test_local_ci_codex_ai.sh`：使用固定 JSON fixture 校验 renderer、完整报告、PR comment、中文字段和常见非法报告拒绝逻辑；
 - `test_local_ci_codex_container_setup.sh`：校验临时容器准备与清理逻辑；
 - `test_local_ci_codex_container.sh`：使用 fake Docker/Codex 覆盖 prompt 渲染、runner 约束、凭据边界和多场景结果产物，完整运行以 Linux 环境为准。
+- `test_dump_artifacts.py`：校验失败 IR 扩展名白名单、manifest、受控 dump 清理边界以及 Codex snapshot 前无二次清理/审计契约。
 
 最小验证命令为：
 
@@ -507,6 +512,8 @@ PYTHONPATH=python python -m pytest scripts/local_ci/tests scripts/local_ci/resul
 4. 以 root 执行 Codex，使用 `--ephemeral --json --sandbox danger-full-access --ignore-rules`；
 5. 收集 workspace status、`git diff HEAD` 和 untracked tar；
 6. 删除临时 container；同时删除 snapshot image。
+
+Codex 临时容器 source Sophgo backend envsetup 后，会把 `TRITON_DUMP_DIR` 从只读 volume 中的 `/workspace/triton-dump-dir` 改到 `/tmp/triton-anchor-codex-dump`。这只服务本次临时诊断，不会写回长期 Local CI 容器，也不会在 snapshot 前增加清理或审计步骤。
 
 部署要求：
 
@@ -557,6 +564,8 @@ pass-profile.{json,csv}
 pass-profile-comparison.{json,csv,md}
 ir-serialization.{json,csv}
 ir-serialization-comparison.{json,csv,md}
+failure-ir/<failed-stage>/{manifest.json,task/,global/}
+failure-ir-collection.log
 ```
 
 ### 7.2 `shared/result_paths.py`

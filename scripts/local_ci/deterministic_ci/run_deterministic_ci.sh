@@ -19,6 +19,7 @@ fi
 RUNNER_ROOT="${LOCAL_CI_RUNNER_DIR:-${LOCAL_CI_ROOT}}"
 PERFORMANCE_SCRIPT_DIR="${RUNNER_ROOT}/deterministic_ci/performance"
 FLAGGEMS_SCRIPT_DIR="${RUNNER_ROOT}/deterministic_ci/flaggems"
+DUMP_ARTIFACT_TOOL="${RUNNER_ROOT}/shared/dump_artifacts.py"
 # shellcheck disable=SC1091
 source "${RUNNER_ROOT}/shared/path_utils.sh"
 target_sha="${1:?usage: run_deterministic_ci.sh <commit-sha>}"
@@ -104,6 +105,7 @@ if [[ "${RUN_FLAGGEMS_TESTS}" == "true" ]]; then
   FLAGGEMS_STATUS="not_run"
 fi
 LOCAL_CI_RESULT_STATUS=0
+TRITON_DUMP_CLEANUP_STATUS="not_run"
 MAX_JOBS="${MAX_JOBS:-1}"
 CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-1}"
 NINJAFLAGS="${NINJAFLAGS:--j1}"
@@ -111,6 +113,10 @@ UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 DELIVERY_ARTIFACT_DIR="${DELIVERY_ARTIFACT_DIR:-${LOCAL_CI_ARTIFACT_ROOT}/${run_stamp}-${target_sha:0:12}}"
 FLAGGEMS_SELECTED_FILE="${FLAGGEMS_SELECTED_FILE:-${DELIVERY_ARTIFACT_DIR}/flaggems-selected.txt}"
+SOPHGO_TRITON_DUMP_DIR="/workspace/triton-dump-dir"
+ROOT_TRITON_DUMP_DIR="/root/.triton/dump"
+LOCAL_CI_TASK_DUMP_ROOT="/tmp/triton-anchor-local-ci-dump.${target_sha:0:12}.$$"
+FAILURE_IR_ARTIFACT_DIR="${DELIVERY_ARTIFACT_DIR}/failure-ir"
 
 export WORKSPACE ANCHOR_DIR BACKEND_PROFILE EXPECTED_TRITON_BACKEND BACKEND_PATH
 export BACKEND_ENVSETUP BACKEND_ENVSETUP_ARGS BACKEND_TEST_COMMAND
@@ -276,12 +282,92 @@ prepare_anchor_checkout() {
   esac
 }
 
+prune_task_dumps() {
+  "${PYTHON_BIN}" "${DUMP_ARTIFACT_TOOL}" prune \
+    --profile task-dumps --root / >/dev/null
+}
+
+prepare_dump_stage() {
+  local stage_name="$1"
+  local safe_stage
+  safe_stage="$(safe_path_part "${stage_name}")"
+  prune_task_dumps || return $?
+  mkdir -p "${LOCAL_CI_TASK_DUMP_ROOT}/${safe_stage}" || return $?
+  printf '%s' "${LOCAL_CI_TASK_DUMP_ROOT}/${safe_stage}"
+}
+
+collect_failure_ir() {
+  local stage_name="$1"
+  local task_dump_dir="$2"
+  local collection_log="${DELIVERY_ARTIFACT_DIR}/failure-ir-collection.log"
+  "${PYTHON_BIN}" "${DUMP_ARTIFACT_TOOL}" collect \
+    --output-dir "${FAILURE_IR_ARTIFACT_DIR}" \
+    --stage "${stage_name}" \
+    --target-sha "${target_sha}" \
+    --source "task=${task_dump_dir}" \
+    --source "sophgo=${SOPHGO_TRITON_DUMP_DIR}" \
+    --source "root=${ROOT_TRITON_DUMP_DIR}" \
+    >> "${collection_log}" 2>&1
+}
+
+finish_dump_stage() {
+  local stage_name="$1"
+  local task_dump_dir="$2"
+  local stage_status="$3"
+  local collection_status=0
+  local cleanup_status=0
+  if [[ ${stage_status} -ne 0 ]]; then
+    collect_failure_ir "${stage_name}" "${task_dump_dir}" || collection_status=$?
+    if [[ ${collection_status} -ne 0 ]]; then
+      echo "Failed to collect useful IR for ${stage_name}; see ${DELIVERY_ARTIFACT_DIR}/failure-ir-collection.log" >&2
+    fi
+  fi
+  prune_task_dumps || cleanup_status=$?
+  if [[ ${cleanup_status} -ne 0 ]]; then
+    echo "Failed to clean managed Triton dump directories after ${stage_name}." >&2
+  fi
+  return "${cleanup_status}"
+}
+
 run_logged() {
   local name="$1"
   shift
   local log_file="${DELIVERY_ARTIFACT_DIR}/${name}.log"
+  local task_dump_dir=""
+  local stage_status=0
+  local cleanup_status=0
+  local had_errexit=0
+  local pipeline_statuses=()
+  local pipeline_status
+  if [[ $- == *e* ]]; then
+    had_errexit=1
+  fi
+  if ! task_dump_dir="$(prepare_dump_stage "${name}")"; then
+    echo "Cannot prepare managed Triton dump directory for ${name}." >&2
+    return 1
+  fi
   echo "Running ${name}; log: ${log_file}"
-  "$@" 2>&1 | tee "${log_file}"
+  set +e
+  (
+    export TRITON_DUMP_DIR="${task_dump_dir}"
+    "$@"
+  ) 2>&1 | tee "${log_file}"
+  pipeline_statuses=("${PIPESTATUS[@]}")
+  for pipeline_status in "${pipeline_statuses[@]}"; do
+    if [[ ${pipeline_status} -ne 0 ]]; then
+      stage_status="${pipeline_status}"
+    fi
+  done
+  finish_dump_stage "${name}" "${task_dump_dir}" "${stage_status}" || cleanup_status=$?
+  if [[ ${stage_status} -eq 0 && ${cleanup_status} -ne 0 ]]; then
+    stage_status="${cleanup_status}"
+  fi
+  if [[ ${had_errexit} -eq 1 ]]; then
+    set -e
+  else
+    set +e
+  fi
+  return "${stage_status}"
 }
 
 frontend_package_installed() {
@@ -363,36 +449,30 @@ rebuild_backend() {
     echo "Backend path does not exist: ${BACKEND_PATH}" >&2
     return 1
   fi
+  run_logged_in_dir "${BACKEND_PATH}" backend-rebuild rebuild_backend_command
+}
 
-  local log_file="${DELIVERY_ARTIFACT_DIR}/backend-rebuild.log"
-  echo "Running backend-rebuild; log: ${log_file}"
-  set +e
-  (
-    set -euo pipefail
-    cd "${BACKEND_PATH}"
-    if use_uv; then
-      uv pip install scikit-build-core pybind11
-      uv pip uninstall triton-sophgo-backend triton_sophgo_backend || true
-      rm -rf build dist *.egg-info
-      uv build --wheel --no-build-isolation
-      uv pip install --force-reinstall dist/triton_sophgo_backend-*.whl
-    else
-      "${PYTHON_BIN}" -m pip install scikit-build-core pybind11 build
-      "${PYTHON_BIN}" -m pip uninstall -y triton-sophgo-backend triton_sophgo_backend || true
-      rm -rf build dist *.egg-info
-      "${PYTHON_BIN}" -m build --wheel --no-isolation
-      "${PYTHON_BIN}" -m pip install --force-reinstall dist/triton_sophgo_backend-*.whl
-    fi
+rebuild_backend_command() {
+  set -euo pipefail
+  if use_uv; then
+    uv pip install scikit-build-core pybind11
+    uv pip uninstall triton-sophgo-backend triton_sophgo_backend || true
+    rm -rf build dist *.egg-info
+    uv build --wheel --no-build-isolation
+    uv pip install --force-reinstall dist/triton_sophgo_backend-*.whl
+  else
+    "${PYTHON_BIN}" -m pip install scikit-build-core pybind11 build
+    "${PYTHON_BIN}" -m pip uninstall -y triton-sophgo-backend triton_sophgo_backend || true
+    rm -rf build dist *.egg-info
+    "${PYTHON_BIN}" -m build --wheel --no-isolation
+    "${PYTHON_BIN}" -m pip install --force-reinstall dist/triton_sophgo_backend-*.whl
+  fi
 
-    backend_wheel="$(find dist -maxdepth 1 -name 'triton_sophgo_backend-*.whl' -printf '%T@ %p\n' | sort -nr | awk 'NR==1 {print $2}')"
-    if [[ -n "${backend_wheel}" ]]; then
-      cp "${backend_wheel}" "${DELIVERY_ARTIFACT_DIR}/"
-      ls -lh "${backend_wheel}" "${DELIVERY_ARTIFACT_DIR}/$(basename "${backend_wheel}")"
-    fi
-  ) 2>&1 | tee "${log_file}"
-  local status=${PIPESTATUS[0]}
-  set -e
-  return "${status}"
+  backend_wheel="$(find dist -maxdepth 1 -name 'triton_sophgo_backend-*.whl' -printf '%T@ %p\n' | sort -nr | awk 'NR==1 {print $2}')"
+  if [[ -n "${backend_wheel}" ]]; then
+    cp "${backend_wheel}" "${DELIVERY_ARTIFACT_DIR}/"
+    ls -lh "${backend_wheel}" "${DELIVERY_ARTIFACT_DIR}/$(basename "${backend_wheel}")"
+  fi
 }
 
 source_python_venv() {
@@ -422,6 +502,8 @@ source_anchor_env() {
 
 source_backend_env() {
   local setup_script="${BACKEND_ENVSETUP}"
+  local command_dump_dir="${TRITON_DUMP_DIR:-}"
+  local setup_status=0
   if [[ -z "${setup_script}" ]]; then
     return 0
   fi
@@ -435,8 +517,12 @@ source_backend_env() {
   echo "Sourcing backend envsetup: ${setup_script} ${BACKEND_ENVSETUP_ARGS}"
   set +u
   # shellcheck disable=SC1090,SC2086
-  source "${setup_script}" ${BACKEND_ENVSETUP_ARGS}
+  source "${setup_script}" ${BACKEND_ENVSETUP_ARGS} || setup_status=$?
+  if [[ -n "${command_dump_dir}" ]]; then
+    export TRITON_DUMP_DIR="${command_dump_dir}"
+  fi
   set -u
+  return "${setup_status}"
 }
 
 fetch_performance_baseline() {
@@ -714,6 +800,14 @@ git_commit() {
 
 write_summary() {
   local status="$1"
+  local failure_ir_file_count=0
+  if [[ -d "${FAILURE_IR_ARTIFACT_DIR}" ]]; then
+    failure_ir_file_count="$(
+      find "${FAILURE_IR_ARTIFACT_DIR}" -type f \
+        \( -name '*.ttir' -o -name '*.linalg' -o -name '*.pplir' \) \
+        | wc -l
+    )"
+  fi
   set +e
   {
     actual_anchor_commit="$(git_commit "${ANCHOR_DIR}")"
@@ -759,6 +853,9 @@ write_summary() {
     echo "llvm_build_dir: ${LLVM_BUILD_DIR}"
     echo "ppl_root: ${PPL_ROOT}"
     echo "artifact_dir: ${DELIVERY_ARTIFACT_DIR}"
+    echo "failure_ir_artifact_dir: $([[ -d "${FAILURE_IR_ARTIFACT_DIR}" ]] && printf '%s' "${FAILURE_IR_ARTIFACT_DIR}")"
+    echo "failure_ir_file_count: ${failure_ir_file_count}"
+    echo "triton_dump_cleanup_status: ${TRITON_DUMP_CLEANUP_STATUS}"
     echo "frontend_build_status: ${FRONTEND_BUILD_STATUS}"
     echo "frontend_smoke_status: ${FRONTEND_SMOKE_STATUS}"
     echo "backend_rebuild_status: ${BACKEND_REBUILD_STATUS}"
@@ -788,15 +885,37 @@ finalize_running_statuses() {
 
 on_exit() {
   local status="$?"
+  local dump_cleanup_status=0
+  trap - EXIT
+  set +e
   if [[ ${status} -eq 0 && ${LOCAL_CI_RESULT_STATUS} -ne 0 ]]; then
     status="${LOCAL_CI_RESULT_STATUS}"
   fi
   finalize_running_statuses
   cleanup_gitee_git_auth
+  if [[ ${status} -ne 0 ]]; then
+    collect_failure_ir "unhandled-exit" "${LOCAL_CI_TASK_DUMP_ROOT}" || true
+  fi
+  prune_task_dumps || dump_cleanup_status=$?
+  if [[ ${dump_cleanup_status} -eq 0 ]]; then
+    TRITON_DUMP_CLEANUP_STATUS="pass"
+  else
+    TRITON_DUMP_CLEANUP_STATUS="fail"
+    echo "Failed to clean managed Triton dump directories during Local CI exit." >&2
+    if [[ ${status} -eq 0 ]]; then
+      status="${dump_cleanup_status}"
+    fi
+  fi
   write_summary "${status}"
   exit "${status}"
 }
 trap on_exit EXIT
+
+if [[ ! -r "${DUMP_ARTIFACT_TOOL}" ]]; then
+  echo "Dump artifact tool is missing from the trusted runner snapshot: ${DUMP_ARTIFACT_TOOL}" >&2
+  exit 2
+fi
+prune_task_dumps
 
 FRONTEND_BUILD_STATUS="running"
 case "${FRONTEND_BUILD_MODE}" in

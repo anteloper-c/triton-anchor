@@ -6,10 +6,12 @@
       "enum": ["PASS", "WARNING", "FAIL"]
     },
     "summary": {
-      "type": "string"
+      "type": "string",
+      "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"
     },
     "merge_recommendation": {
-      "type": "string"
+      "type": "string",
+      "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"
     },
     "change_request_assessment": {
       "type": "object",
@@ -24,18 +26,18 @@
             "not_applicable"
           ]
         },
-        "contributor_goal": {"type": "string"},
-        "expected_behavior": {"type": "string"},
-        "implementation_summary": {"type": "string"},
+        "contributor_goal": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+        "expected_behavior": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+        "implementation_summary": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
         "evidence": {
           "anyOf": [
-            {"type": "string"},
+            {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
             {
               "type": "array",
               "minItems": 1,
               "maxItems": 8,
               "description": "Duplicate items are rejected during report validation.",
-              "items": {"type": "string"}
+              "items": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
             }
           ]
         }
@@ -59,9 +61,9 @@
             "type": "string",
             "enum": ["modified", "added", "deleted", "renamed"]
           },
-          "summary": {"type": "string"},
-          "impact": {"type": "string"},
-          "validation_strategy": {"type": "string"}
+          "summary": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+          "impact": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+          "validation_strategy": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
         },
         "required": [
           "path",
@@ -79,9 +81,9 @@
         "normal": {
           "type": "object",
           "properties": {
-            "scope": {"type": "string"},
-            "strategy": {"type": "string"},
-            "result": {"type": "string"}
+            "scope": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+            "strategy": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+            "result": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
           },
           "required": ["scope", "strategy", "result"],
           "additionalProperties": false
@@ -89,9 +91,9 @@
         "boundary": {
           "type": "object",
           "properties": {
-            "scope": {"type": "string"},
-            "strategy": {"type": "string"},
-            "result": {"type": "string"}
+            "scope": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+            "strategy": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+            "result": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
           },
           "required": ["scope", "strategy", "result"],
           "additionalProperties": false
@@ -99,9 +101,9 @@
         "error": {
           "type": "object",
           "properties": {
-            "scope": {"type": "string"},
-            "strategy": {"type": "string"},
-            "result": {"type": "string"}
+            "scope": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+            "strategy": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+            "result": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
           },
           "required": ["scope", "strategy", "result"],
           "additionalProperties": false
@@ -109,9 +111,9 @@
         "compatibility": {
           "type": "object",
           "properties": {
-            "scope": {"type": "string"},
-            "strategy": {"type": "string"},
-            "result": {"type": "string"}
+            "scope": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+            "strategy": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+            "result": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
           },
           "required": ["scope", "strategy", "result"],
           "additionalProperties": false
@@ -119,9 +121,9 @@
         "integration": {
           "type": "object",
           "properties": {
-            "scope": {"type": "string"},
-            "strategy": {"type": "string"},
-            "result": {"type": "string"}
+            "scope": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+            "strategy": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+            "result": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
           },
           "required": ["scope", "strategy", "result"],
           "additionalProperties": false
@@ -167,11 +169,11 @@
             "type": "string",
             "pattern": "^[1-9][0-9]*(?:-[1-9][0-9]*)?$"
           },
-          "code_role": {"type": "string"},
-          "title": {"type": "string"},
-          "evidence": {"type": "string"},
-          "impact": {"type": "string"},
-          "fix_direction": {"type": "string"}
+          "code_role": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+          "title": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+          "evidence": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+          "impact": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+          "fix_direction": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
         },
         "required": [
           "id",
@@ -196,7 +198,7 @@
           "id": {"type": "string", "pattern": "^TEST-[0-9]{3}$"},
           "priority": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
           "target": {"type": "string"},
-          "description": {"type": "string"}
+          "description": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
         },
         "required": ["id", "priority", "target", "description"],
         "additionalProperties": false
@@ -204,7 +206,7 @@
     },
     "residual_risks": {
       "type": "array",
-      "items": {"type": "string"}
+      "items": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
     },
     "test_execution": {
       "type": "object",
@@ -223,13 +225,13 @@
         },
         "summary": {
           "anyOf": [
-            {"type": "string"},
+            {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
             {
               "type": "array",
               "minItems": 1,
               "maxItems": 8,
               "description": "Duplicate items are rejected during report validation.",
-              "items": {"type": "string"}
+              "items": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
             }
           ]
         },
@@ -244,7 +246,12 @@
             "properties": {
               "id": {"type": "string", "pattern": "^RUN-[0-9]{3}$"},
               "command": {"type": "string"},
-              "purpose": {"type": "string", "minLength": 1, "maxLength": 120},
+              "purpose": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120,
+                "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"
+              },
               "exit_code": {"type": "integer"},
               "duration_seconds": {"type": "number", "minimum": 0},
               "status": {
@@ -257,7 +264,7 @@
                   "not_executed"
                 ]
               },
-              "evidence": {"type": "string"}
+              "evidence": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
             },
             "required": [
               "id",

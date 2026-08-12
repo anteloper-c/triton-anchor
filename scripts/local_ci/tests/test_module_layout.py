@@ -28,6 +28,7 @@ CANONICAL_PATHS = (
     "results/bridge_gitee_to_github_status.py",
     "shared/result_paths.py",
     "shared/finding_locations.py",
+    "shared/dump_artifacts.py",
     "shared/path_utils.sh",
     "shared/validate_task_metadata.py",
     "deterministic_ci/performance/common.py",

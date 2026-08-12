@@ -10,6 +10,7 @@ trap 'rm -rf -- "${test_root}"' EXIT
 
 python3 - "${schema}" <<'PY'
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -43,7 +44,104 @@ def validate(node, location="$"):
 
 
 
+def resolve(node, path):
+    for part in path:
+        node = node[part]
+    return node
+
+
+def require_chinese_pattern(path):
+    node = resolve(schema, path)
+    location = ".".join(str(part) for part in path)
+    pattern = node.get("pattern")
+    assert pattern, f"{location}: missing Chinese text pattern"
+    compiled = re.compile(pattern)
+    assert compiled.search("包含中文说明。"), f"{location}: pattern rejects Chinese text"
+    assert not compiled.search("English-only text."), (
+        f"{location}: pattern accepts English-only text"
+    )
+
+
+chinese_paths = [
+    ("properties", "summary"),
+    ("properties", "merge_recommendation"),
+]
+for field in ("contributor_goal", "expected_behavior", "implementation_summary"):
+    chinese_paths.append(
+        ("properties", "change_request_assessment", "properties", field)
+    )
+for branch in (0, 1):
+    suffix = () if branch == 0 else ("items",)
+    chinese_paths.append(
+        (
+            "properties",
+            "change_request_assessment",
+            "properties",
+            "evidence",
+            "anyOf",
+            branch,
+            *suffix,
+        )
+    )
+for field in ("summary", "impact", "validation_strategy"):
+    chinese_paths.append(
+        ("properties", "changed_files", "items", "properties", field)
+    )
+for behavior in ("normal", "boundary", "error", "compatibility", "integration"):
+    for field in ("scope", "strategy", "result"):
+        chinese_paths.append(
+            (
+                "properties",
+                "behavior_coverage",
+                "properties",
+                behavior,
+                "properties",
+                field,
+            )
+        )
+for field in ("code_role", "title", "evidence", "impact", "fix_direction"):
+    chinese_paths.append(
+        ("properties", "findings", "items", "properties", field)
+    )
+chinese_paths.extend(
+    [
+        ("properties", "suggested_tests", "items", "properties", "description"),
+        ("properties", "residual_risks", "items"),
+        ("properties", "test_execution", "properties", "summary", "anyOf", 0),
+        (
+            "properties",
+            "test_execution",
+            "properties",
+            "summary",
+            "anyOf",
+            1,
+            "items",
+        ),
+        (
+            "properties",
+            "test_execution",
+            "properties",
+            "commands",
+            "items",
+            "properties",
+            "purpose",
+        ),
+        (
+            "properties",
+            "test_execution",
+            "properties",
+            "commands",
+            "items",
+            "properties",
+            "evidence",
+        ),
+    ]
+)
+
+
 validate(schema)
+for path in chinese_paths:
+    require_chinese_pattern(path)
 PY
 
 valid_json="${test_root}/valid.json"

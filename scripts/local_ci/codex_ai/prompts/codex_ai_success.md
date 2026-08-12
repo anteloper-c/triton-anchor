@@ -181,5 +181,8 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 - `changed_files` 条目数必须等于 ${CHANGED_FILE_COUNT}，并与标准清单完全一致。
 - 每个 finding 的 `file`、`line`、`code_role` 必须能让提交者直接定位到需要理解或修复的代码功能；`line` 使用 `42` 或 `42-47` 格式，不能使用模糊描述或函数名代替行号。
 - `behavior_coverage` 必须完整包含 `normal`、`boundary`、`error`、`compatibility`、`integration`，每项包含 `scope`、`strategy`、`result`。
+- 提交 JSON 前逐项自检：`behavior_coverage.normal`、`boundary`、`error`、`compatibility`、`integration` 的 `scope`、`strategy`、`result` 都必须包含中文解释；任何 English-only 字段都必须改写后再输出。
+- `integration.scope` 必须明确写出本次改动与调用链、组件或结果协议之间的集成检查范围，不能只输出 `integration`、`scope` 等键名或英文短语。
+- 中文要求适用于字段值而不是 JSON 键名、固定枚举、命令文本、代码符号和路径；不要以这些固定内容代替中文解释。
 - 没有具体缺陷时 `findings` 必须为空数组，不得为了填充报告而编造问题。
 - `completion_marker` 必须是 `CODEX_AI_CI_COMPLETE`。

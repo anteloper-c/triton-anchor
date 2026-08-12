@@ -1478,6 +1478,8 @@ printf '%s\n' "${prompt}" | timeout --signal=TERM --kill-after=30s \
         echo "Codex AI CI 环境提示：后端环境脚本不存在。" >&2
         bootstrap_status=1
       fi
+      export TRITON_DUMP_DIR=/tmp/triton-anchor-codex-dump
+      mkdir -p "${TRITON_DUMP_DIR}" || bootstrap_status=1
       set -u
       if [[ ${bootstrap_status} -eq 0 ]]; then
         export CODEX_AI_ENVIRONMENT_STATUS="ready"
