@@ -213,6 +213,7 @@
       "properties": {
         "status": {
           "type": "string",
+          "description": "not_run 仅允许在 commands 为空或所有 command.status 均为 not_executed 时使用；只要存在已执行命令但证据仍不足，应使用 insufficient_evidence。",
           "enum": [
             "not_run",
             "passed",

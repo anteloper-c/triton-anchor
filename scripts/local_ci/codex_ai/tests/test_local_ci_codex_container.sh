@@ -340,6 +340,9 @@ def write_report(
             ],
         }
 
+    if scenario == "inconsistent_not_run":
+        execution["status"] = "not_run"
+
     validation_strategy = (
         "执行 RUN-001 并记录该文件相关验证结果。"
         if execution["commands"]
@@ -1114,6 +1117,13 @@ grep -Fxq "workspace_dirty: true" \
 grep -Fq "test_failure_diagnostic.py" \
   "${analysis_diagnostic_output}/codex-workspace-status.txt"
 
+run_case normalized-report inconsistent_not_run 0 30 0
+normalized_output="${test_root}/normalized-report/output"
+grep -Fxq "status: pass" "${normalized_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_execution_status: insufficient_evidence" "${normalized_output}/codex-ai-ci-summary.txt"
+grep -Fxq "report_verdict: WARNING" "${normalized_output}/codex-ai-ci-summary.txt"
+grep -Fq "Normalized Codex AI report:" "${normalized_output}/codex-ai-ci.log"
+grep -Fq "整体状态已从未执行保守归一化为证据不足" "${normalized_output}/codex-ai-report.json"
 run_case format-error format_error 0 30 1
 format_output="${test_root}/format-error/output"
 grep -Fxq "report_format_valid: false" "${format_output}/codex-ai-ci-summary.txt"
