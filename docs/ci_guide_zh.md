@@ -68,6 +68,8 @@ flowchart TB
 
 | 工作流 | 文件 | 作用 |
 | --- | --- | --- |
+| CI Gateway | `.github/workflows/ci-gateway.yml` | 统一授权、契约校验、跨分支路由及 Worker 模式分流 |
+| Worker manifest | `.github/ci-gateway-manifest.json` | 机器可解析地声明 Contract 版本、角色、Merge-Result 和能力 |
 | CI | `.github/workflows/ci.yml` | Ruff、格式检查、多 Python 版本单元测试和覆盖率 |
 | Delivery CI | `.github/workflows/delivery-ci.yml` | CI 脚本预检、前端测试、性能契约测试、手动容器化 full smoke |
 | Public API Compatibility | `.github/workflows/api-compat.yml` | 比较基准提交与候选提交的稳定 Python API |
@@ -75,6 +77,26 @@ flowchart TB
 | Dispatch Local CI via Gitee | `.github/workflows/dispatch-local-ci.yml` | 将 PR、push 或手动任务的精确 SHA 投递到 Gitee |
 | Receive Local CI Result | `.github/workflows/receive-local-ci-result.yml` | 等待本地结果、回写 GitHub 状态并刷新 Pages |
 | Backend Status Pages | `.github/workflows/backend-status-pages.yml` | 同步 Gitee 结果、校验数据并部署 GitHub Pages |
+
+### 2.4 多分支 Gateway v3
+
+默认分支只保留控制面：监听全仓库 PR、执行人工授权、校验目标 Worker 和路由精确版本。普通目标分支持有完整 Worker，实现 Security Gate、任务投递、结果接收、取消和 Pages。目标分支没有 manifest 时，可以由 `LOCAL_CI_FALLBACK_WORKER_BRANCH` 指定的 Worker 临时代管；manifest 已存在但损坏或版本不兼容时直接失败，不会静默回退。
+
+`ci-gateway.yml` 是统一入口和契约实现，不直接执行本地测试。Contract v3 固定 `dispatch`、`push`、`receive`、`pages`、`cancel` 五种 mode，以及 head、base、Merge-Result、手动请求和 Worker 精确版本等 SHA 字段。PR 的实际被测对象始终是 GitHub `refs/pull/<PR号>/merge`，其两个 parent 必须分别等于冻结的 base 和 head。
+
+```mermaid
+flowchart LR
+  R["默认分支 Gateway Router<br/>授权 / 状态 / Worker 选择"]
+  C["Gateway Contract v3<br/>固定 inputs / mode / ref / 权限边界"]
+  W["普通目标分支 Gateway Worker<br/>validate / security / dispatch / receive / pages / cancel"]
+  S["Security Gate<br/>可信 scanner + CodeQL"]
+  G["Gitee 中转仓库"]
+  L["本地服务器<br/>poller + Docker"]
+  P["GitHub status / Pages"]
+  R --> C --> W --> S --> G --> L --> G --> W --> P
+```
+
+外部 fork 的自动事件只写入 pending。具有 `write`、`maintain` 或 `admin` 权限的维护者需要在默认分支手动运行 Gateway 并输入 PR 编号；Gateway 会现场读取 head/base/merge SHA，因此后续 force-push、retarget、关闭或转 draft 都会让旧授权和旧结果失效。
 
 ## 3. GitHub 侧 CI
 
@@ -181,7 +203,7 @@ scripts/api_contract/tests/test_check_public_api.py
 `api-compat.yml` 在以下场景执行：
 
 - 所有 PR；
-- push 到 `main`、`develop`、``；
+- 持有该 workflow 的分支发生 push；
 - 手动触发。
 
 PR 场景比较 base SHA 和 PR head SHA；push 场景比较 push 前后的 SHA。输出包括：
@@ -199,18 +221,20 @@ PR 场景比较 base SHA 和 PR head SHA；push 场景比较 push 前后的 SHA�
 - push 发生 Breaking Change 时，在对应 commit 下创建或更新评论并提及提交者。
 - 评论包含变化摘要和兼容性 workflow 链接。
 - 同一 PR 或 commit 使用固定标记更新既有评论，避免重复刷屏。
+- 后续检查恢复 compatible 时，既有 breaking 评论会更新为 resolved。
 
 ## 4. Local CI
 
 ### 4.1 任务投递与触发方式
 
-`.github/workflows/dispatch-local-ci.yml` 支持：
+Local CI 由 `.github/workflows/ci-gateway.yml` 统一接收，并调用 `.github/workflows/dispatch-local-ci.yml`：
 
-- push 到 `main`、``；
-- PR 的 `opened`、`synchronize`、`reopened`、`ready_for_review`；
-- 手动指定 source branch、commit SHA 和 FlagGems 模式。
+- 持有完整 Worker 的普通分支 push 自动运行自身任务；
+- 同仓 PR 自动路由到目标分支 Worker；目标分支无 manifest 时回退到配置的 fallback Worker；
+- 外部 fork PR 由维护者在默认分支手动授权；
+- 无 Worker 分支的 push 可由维护者在默认分支使用 `mode=push` 手动代跑。
 
-PR 使用 `pull_request_target`，目的是让可信的基准分支 workflow 可以读取 Gitee 凭据。该 workflow 只获取并转发 GitHub 为 PR 生成的 test merge commit、PR head 和 base 的精确提交，不在 GitHub runner 上执行 PR 代码。
+默认分支 Router 使用 `pull_request_target` 读取 PR 元数据，但不读取 Gitee secret、不 checkout 或执行 PR 代码。只有普通目标分支 Worker 在完成精确 SHA 和 Security Gate 校验后调用 dispatcher，并在该 Worker 的受信任 workflow 上读取 Gitee 凭据。
 
 ### 4.2 精确 SHA 和任务引用
 
@@ -231,9 +255,9 @@ PR 使用 `pull_request_target`，目的是让可信的基准分支 workflow 可
 
 任务推送到 Gitee 后，dispatch workflow 会：
 
-1. 给原始 GitHub SHA 写入 `pending` 状态；
+1. 给原始 PR head 或 push SHA 写入 `pending` 状态；
 2. 将 Gitee task ref 作为状态链接；
-3. 启动 `receive-local-ci-result.yml`，传入 SHA、source branch、task ref、状态 context 和等待参数；
+3. 通过 `ci-gateway.yml` 的 `mode=receive` 调用 `receive-local-ci-result.yml`，传入冻结的 head/base/tested/worker SHA、source/target branch、task ref 和等待参数；
 4. 调度阶段失败时将状态更新为 `error`。
 
 ### 4.4 本地轮询与执行
@@ -273,13 +297,19 @@ LOCAL_CI_STATE_DIR/runner/<run-id>/
 
 1. 激活配置的 Python venv；
 2. 卸载旧的 `triton-anchor` distribution；
-3. source 新 checkout 中的 `envsetup.sh`；
+3. PR 任务只对候选 `envsetup.sh` 做语法检查，并 source 从精确 base commit 提取到可信 runner 快照中的版本；push 任务 source 当前 push commit 的版本；
 4. 清理旧 build、dist 和 wheel；
 5. 从源码构建 wheel；
 6. 强制安装新 wheel；
 7. 校验实际导入版本。
 
 这一流程用于防止构建失败时误用旧安装包，也避免历史 CMake 或 wheel 产物污染当前结果。
+
+前端 build、前端 smoke、后端 rebuild、后端 smoke/JIT 是必选阶段。任何阶段缺失、处于 `not_run`/`running` 或失败时，即使候选脚本尝试 `exit 0`，最终退出码和 bridge 结果仍会被强制判为失败。
+
+### 4.4.7 凭据残余风险
+
+当前配置按部署选择保留 `LOCAL_CI_ALLOW_WRITE_TOKEN_IN_CONTAINER="1"`：如果未提供独立只读 token，候选代码运行容器可能获得 Gitee 写 token。Gateway、可信脚本快照和 base `envsetup.sh` 降低了控制脚本被替换的风险，但这不是 hostile-code 隔离。生产环境应优先提供 `LOCAL_CI_CONTAINER_GITEE_TOKEN` 或只读 token，并在条件允许时把该开关改为 `0`。
 
 #### 4.4.4 容器内执行顺序
 

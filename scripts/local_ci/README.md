@@ -150,7 +150,9 @@ cp scripts/local_ci/config.example.env /opt/local-ci/config.env
 | backend | `BACKEND_PROFILE`、`BACKEND_PATH`、`BACKEND_ENVSETUP` | profile、backend commit 和环境脚本必须与性能 baseline 相匹配。 |
 | benchmark | `RUN_COMPILE_BENCHMARK`、`RUN_PASS_PROFILE`、`RUN_IR_SERIALIZATION_BENCHMARK` | 三类测量有独立 cache namespace，不能混用阈值或结果。 |
 
-自动处理不可信 PR 时，容器内应使用只读 relay token 或不传 token，并将 `LOCAL_CI_ALLOW_WRITE_TOKEN_IN_CONTAINER=0`。Codex 通过 Local CI 容器 snapshot 运行，并只复制 exact-SHA checkout 和必要输入；AI 仍以 root、联网和 `danger-full-access` 运行，不能把它描述为完整 hostile-code 隔离。
+自动处理不可信 PR 时，容器内优先使用只读 relay token 或不传 token。当前部署选择保留示例默认值 `LOCAL_CI_ALLOW_WRITE_TOKEN_IN_CONTAINER=1`，因此缺少独立只读 token 时，候选代码容器可能获得 Gitee 写 token；这是明确保留的残余风险。Codex 通过 Local CI 容器 snapshot 运行，并只复制 exact-SHA checkout 和必要输入；AI 仍以 root、联网和 `danger-full-access` 运行，不能把它描述为完整 hostile-code 隔离。
+
+PR 的 deterministic supervisor 不 source Merge-Result 中的 `envsetup.sh`。poller 从已验证的精确 base ref 提取该文件放入本次 runner 快照，候选版本仅执行 `bash -n`。前端 build/smoke 和后端 rebuild/smoke-JIT 都是 fail-closed 必选阶段。
 
 部署前只检查依赖、不创建长期 Docker 资源：
 
