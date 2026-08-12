@@ -1065,7 +1065,9 @@ grep -Fxq "generated_test_file_count: 0" "${zero_output}/codex-ai-ci-summary.txt
 grep -Fxq "test_command_count: 0" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_generation_expected: true" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: warning" "${zero_output}/codex-ai-ci-summary.txt"
-grep -Fq "未生成测试文件，测试证据不足" "${zero_output}/codex-ai-comment.md"
+grep -Fq "### 剩余风险" "${zero_output}/codex-ai-comment.md"
+grep -Fq "本次仅覆盖了与代码差异直接相关的路径。" \
+  "${zero_output}/codex-ai-comment.md"
 grep -Fq "未记录测试、构建或 lint 命令" "${zero_output}/codex-ai-report.md"
 
 run_case docs-only docs_only 0 30 0 "${docs_target_sha}" "${base_sha}" "${docs_branch}"
