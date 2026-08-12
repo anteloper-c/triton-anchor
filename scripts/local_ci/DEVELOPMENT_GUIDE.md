@@ -457,6 +457,8 @@ Codex checkout 的行为：
 
 `codex_ai/run_codex_ai_ci.sh::render_prompt_template()` 使用 Python `string.Template(...).substitute(...)` 严格渲染模板。新增或重命名 `${...}` 变量必须同步 runner 在 `render_prompt_template` 调用中的名称和值；否则 Codex 执行前会失败。当前 runner 同时提供变更清单、目标/基线 SHA、Local CI 状态、日志和 artifact 路径、测试生成与命令预算、Codex 超时和报告预留时间等变量。
 
+runner 另设 `CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS`（默认 600 秒）作为首个有效进展 watchdog。临时容器开始执行 Codex 后，若 JSONL 日志在限时内没有出现 `item.started`、`item.completed` 或 `turn.completed`，runner 会提前终止本次 Codex 执行并报告 `startup_timeout`；一旦出现首个进展，后续仍由 `CODEX_AI_CI_TIMEOUT_SECONDS` 总时限控制。
+
 runner 会根据 changed-files manifest 生成 `codex-context-summary.json` 和 review context profile（如 `docs_only`、`codex_ai_ci_maintenance`、`local_ci_protocol`、`performance`、`local_ci_control`、`local_ci_failure`、`large_diff`）。该 profile 只用于减少无关上下文读取和确定优先级，不改变必须覆盖全部变更文件、finding 证据标准、非阻塞语义或报告 schema。`codex_ai_ci_maintenance` 表示 diff 只涉及 `scripts/local_ci/codex_ai/` 自身维护文件，应聚焦 AI-CI 维护审查而不是 triton-anchor 产品代码审查；具有充分证据的执行、报告、安全或协议缺陷可以作为 AI-CI 维护问题报告，其同步性通过现有 Shell harness、静态契约检查和人工维护审查处理。GitHub workflow 变更归入 `local_ci_control` 或 `large_diff`，并通过 Triton-anchor 专项审查重点轻量检查事件覆盖、跨 workflow/artifact 契约和特权上下文的不可信输入边界，不使用独立双遍 profile。
 
 #### 6.4.2 Codex AI-CI 验证入口

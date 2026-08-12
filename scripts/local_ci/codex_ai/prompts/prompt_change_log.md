@@ -1,3 +1,28 @@
+## 2026-08-12：增加 Codex 首个有效进展超时
+
+### 修改原因
+
+Codex CLI、上游 Responses 服务或运行环境若在启动阶段卡住，原 runner 只能等待 3600 秒 hard timeout，导致失败反馈和临时资源清理过慢。
+
+### 修改内容
+
+- 新增 `CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS`，默认 600 秒，由轮询器传入 runner，并可在部署配置中覆盖。
+- Codex 执行改为后台受控进程；runner 轮询 JSONL 日志，首个 `item.started`、`item.completed` 或 `turn.completed` 视为有效进展。
+- 限时内无有效进展时向 GNU `timeout` 发送超时信号，沿用其 TERM/30 秒后 KILL 机制，并以 `startup_timeout` 生成失败报告和摘要。
+- 3600 秒总时限、报告 schema、测试预算、finding 规则和非阻塞语义保持不变。
+
+### 兼容性与风险
+
+- `thread.started` 和 `turn.started` 只证明会话已建立，不足以取消 watchdog；这可以覆盖会话建立后上游长期无响应的场景。
+- 600 秒比此前讨论的 300 秒更保守，降低大型 diff、服务端排队或首次推理较慢时的误杀风险。
+- 启动超时只约束首个有效进展；之后的长任务仍由 3600 秒总时限和现有测试预算控制。
+
+### 验证
+
+已通过 runner、轮询器和 fake-container harness 的 Shell 语法检查，`test_local_ci_codex_ai.sh` 轻量报告契约测试，GNU `timeout` 的 ALRM 提前终止行为验证，启动超时配置/失败分类/摘要字段静态契约检查，以及 `git diff --check`。完整 fake-container harness 在 Windows 上仍因 `validate_codex_ai_credentials.py` 使用 `os.geteuid()` 无法进入 fake Codex 阶段；新增的 1 秒 `startup_timeout` 场景需在 Linux CI 或服务器环境完成全流程复验。
+
+---
+
 ## 2026-08-12：提高测试命令数量上限
 
 ### 修改原因

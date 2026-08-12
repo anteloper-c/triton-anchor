@@ -19,6 +19,7 @@ CODEX_BIN="${CODEX_BIN:-codex}"
 CODEX_AI_CI_HOME="${CODEX_AI_CI_HOME:-}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 CODEX_AI_CI_TIMEOUT_SECONDS="${CODEX_AI_CI_TIMEOUT_SECONDS:-3600}"
+CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS="${CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS:-600}"
 CODEX_AI_CI_REASONING_EFFORT="${CODEX_AI_CI_REASONING_EFFORT:-medium}"
 CODEX_AI_CI_WORKSPACE_ROOT="${CODEX_AI_CI_WORKSPACE_ROOT:-${TMPDIR:-/tmp}/triton-anchor-codex-ai}"
 CODEX_AI_CI_MIN_GENERATED_TEST_CASES="${CODEX_AI_CI_MIN_GENERATED_TEST_CASES:-1}"
@@ -89,6 +90,8 @@ test_generation_expected="false"
 constraint_status="warning"
 constraint_reason="尚未获得可校验的测试执行信息。"
 turn_completed="false"
+startup_progress="false"
+startup_timed_out="false"
 command_executed="false"
 workspace_dirty="false"
 workspace_dir=""
@@ -179,6 +182,9 @@ write_summary() {
     echo "duration_seconds: ${duration_seconds}"
     echo "timeout_seconds: ${CODEX_AI_CI_TIMEOUT_SECONDS}"
     echo "reasoning_effort: ${CODEX_AI_CI_REASONING_EFFORT}"
+    echo "startup_timeout_seconds: ${CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS}"
+    echo "startup_progress: ${startup_progress}"
+    echo "startup_timed_out: ${startup_timed_out}"
     echo "min_generated_test_cases: ${CODEX_AI_CI_MIN_GENERATED_TEST_CASES}"
     echo "max_generated_test_cases: ${CODEX_AI_CI_MAX_GENERATED_TEST_CASES}"
     echo "max_generated_test_files: ${CODEX_AI_CI_MAX_GENERATED_TEST_FILES}"
@@ -519,6 +525,7 @@ codex_failure_code_for_reason() {
     *"CODEX_AI_CI_HOME"* | *"独立凭据"* | *"config.toml"* | *"auth.json"*) echo "credential_validation_failed" ;;
     *"提示词"* | *"渲染"*) echo "prompt_render_failed" ;;
     *"硬超时"*) echo "timeout" ;;
+    *"启动阶段"* | *"首个有效进展"*) echo "startup_timeout" ;;
     *"CODEX_AI_CI_COMPLETE"*) echo "missing_completion_marker" ;;
     *"turn.completed"*) echo "missing_turn_completed" ;;
     *"没有执行任何"*) echo "no_command_executed" ;;
@@ -537,6 +544,7 @@ codex_failure_public_reason() {
     credential_validation_failed) echo "Codex 审查凭据校验未通过" ;;
     prompt_render_failed) echo "Codex 审查输入准备失败" ;;
     timeout) echo "Codex 自动审查执行超时" ;;
+    startup_timeout) echo "Codex 自动审查启动阶段超时" ;;
     missing_completion_marker | missing_turn_completed) echo "Codex 自动审查没有完整结束" ;;
     no_command_executed) echo "Codex 自动审查没有获得可核验的补充验证结果" ;;
     schema_validation_failed) echo "Codex 审查结果格式校验未通过" ;;
@@ -786,6 +794,7 @@ validate_prerequisites() {
   local integer_names=(
     CODEX_AI_CI_TIMEOUT_SECONDS
     CODEX_AI_CI_MIN_GENERATED_TEST_CASES
+    CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS
     CODEX_AI_CI_MAX_GENERATED_TEST_CASES
     CODEX_AI_CI_MAX_GENERATED_TEST_FILES
     CODEX_AI_CI_MAX_TEST_COMMANDS
@@ -1361,8 +1370,31 @@ printf '%s\n' "${prompt}" | timeout --signal=TERM --kill-after=30s \
         --output-schema "${AI_SCHEMA_PATH}" \
         --output-last-message "${AI_REPORT_PATH}" \
         -
-    ' >> "${log_path}" 2>&1
+    ' >> "${log_path}" 2>&1 &
+codex_exec_pid=$!
+startup_deadline=$((SECONDS + 10#${CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS}))
+while kill -0 "${codex_exec_pid}" 2>/dev/null; do
+  if grep -Eq '"type"[[:space:]]*:[[:space:]]*"(item\.(started|completed)|turn\.completed)"' \
+    "${log_path}"; then
+    startup_progress="true"
+    break
+  fi
+  if ((SECONDS >= startup_deadline)); then
+    startup_timed_out="true"
+    echo "Codex AI CI 启动 watchdog：${CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS} 秒内未出现首个有效进展事件。" \
+      >> "${log_path}"
+    kill -ALRM "${codex_exec_pid}" 2>/dev/null || \
+      kill -TERM "${codex_exec_pid}" 2>/dev/null || true
+    break
+  fi
+  sleep 2
+done
+wait "${codex_exec_pid}"
 exit_code=$?
+if grep -Eq '"type"[[:space:]]*:[[:space:]]*"(item\.(started|completed)|turn\.completed)"' \
+  "${log_path}"; then
+  startup_progress="true"
+fi
 set -e
 
 docker exec --user 0 "${ephemeral_container}" cat "${container_report_json_path}" \
@@ -1500,7 +1532,9 @@ print(
   fi
 fi
 
-if [[ ${exit_code} -eq 124 || ${exit_code} -eq 137 ]]; then
+if [[ "${startup_timed_out}" == "true" ]]; then
+  set_failure_reason "Codex 启动阶段超过 ${CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS} 秒仍未出现首个有效进展"
+elif [[ ${exit_code} -eq 124 || ${exit_code} -eq 137 ]]; then
   set_failure_reason "Codex 执行超过 ${CODEX_AI_CI_TIMEOUT_SECONDS} 秒硬超时"
 elif [[ ${exit_code} -ne 0 ]]; then
   set_failure_reason "Codex exec 异常退出，退出码为 ${exit_code}"

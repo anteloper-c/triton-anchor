@@ -635,7 +635,7 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
         assert f"- Test Generation Expected: {expected}" in prompt
     assert environment.get("CODEX_HOME") == "/root/.codex"
     assert environment.get("AI_SCHEMA_PATH") == "/codex-workspace/codex-ai-report.schema.json"
-    if scenario == "timeout":
+    if scenario in {"timeout", "startup_timeout"}:
         time.sleep(5)
         raise SystemExit(0)
     context_match = re.search(
@@ -689,6 +689,10 @@ run_case() {
   local local_ci_status="$3"
   local timeout_seconds="$4"
   local expected_exit="$5"
+  local startup_timeout_seconds=600
+  if [[ "${scenario}" == "startup_timeout" ]]; then
+    startup_timeout_seconds=1
+  fi
   local case_target_sha="${6:-${target_sha}}"
   local case_base_sha="${7:-${base_sha}}"
   local case_branch="${8:-${task_branch}}"
@@ -749,6 +753,7 @@ run_case() {
   LOCAL_CI_CONTAINER="anchor-sophgo-ci" \
   CODEX_AI_CI_WORKSPACE_ROOT="${workspace_root}" \
   CODEX_AI_CI_TIMEOUT_SECONDS="${timeout_seconds}" \
+  CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS="${startup_timeout_seconds}" \
   CODEX_AI_CI_REASONING_EFFORT="low" \
     "${runner}" "${repo_url}" "${output_dir}" "${case_target_sha}" \
     "${case_base_sha}" "${case_base_ref}" "${case_branch}" "${local_ci_status}" \
@@ -847,6 +852,9 @@ python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")
 grep -Fxq "test_generation_expected: true" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: pass" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "timeout_seconds: 30" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "startup_timeout_seconds: 600" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "startup_progress: true" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "startup_timed_out: false" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "min_generated_test_cases: 1" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "max_generated_test_cases: 10" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "max_generated_test_files: 4" "${success_output}/codex-ai-ci-summary.txt"
@@ -1097,6 +1105,15 @@ run_case timeout timeout 0 1 1
 timeout_output="${test_root}/timeout/output"
 grep -Fq "硬超时" "${timeout_output}/codex-ai-ci-summary.txt"
 assert_chinese_failure_report "${timeout_output}"
+
+run_case startup-timeout startup_timeout 0 30 1
+startup_timeout_output="${test_root}/startup-timeout/output"
+grep -Fxq "failure_code: startup_timeout" \
+  "${startup_timeout_output}/codex-ai-ci-summary.txt"
+grep -Fxq "startup_timed_out: true" \
+  "${startup_timeout_output}/codex-ai-ci-summary.txt"
+grep -Fq "启动阶段超过 1 秒" "${startup_timeout_output}/codex-ai-ci-summary.txt"
+assert_chinese_failure_report "${startup_timeout_output}"
 
 run_case start-error start_error 0 30 1
 start_output="${test_root}/start-error/output"

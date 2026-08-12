@@ -146,7 +146,7 @@ cp scripts/local_ci/config.example.env /opt/local-ci/config.env
 | Local CI 状态 | `LOCAL_CI_STATE_DIR`、`LOCAL_CI_CONTAINER`、`LOCAL_CI_SCRIPT_DIR` | 状态目录可写，脚本目录是当前 checkout 的完整 `scripts/local_ci`。 |
 | 结果发布 | `GITEE_RESULTS_*`、`PUBLISH_GITEE_RESULTS` | 结果仓库、branch 和 Web URL 必须互相对应。 |
 | Codex | `RUN_CODEX_AI_CI`、`CODEX_BIN`、`CODEX_AI_CI_HOME` | 使用独立 `config.toml`/`auth.json`；runner 通过 Local CI 容器 snapshot 运行，凭据只复制到临时容器的 `/root/.codex`。 |
-| Codex 预算 | `CODEX_AI_CI_TIMEOUT_SECONDS`、`CODEX_AI_CI_MAX_TEST_COMMANDS`、`CODEX_AI_CI_TEST_BUDGET_SECONDS` | 预算是报告约束；过量会产生 warning，不会改变确定性 CI exit code。 |
+| Codex 预算 | `CODEX_AI_CI_TIMEOUT_SECONDS`、`CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS`、`CODEX_AI_CI_MAX_TEST_COMMANDS`、`CODEX_AI_CI_TEST_BUDGET_SECONDS` | 600 秒内没有首个有效进展会提前终止；其余预算过量会产生 warning，不会改变确定性 CI exit code。 |
 | backend | `BACKEND_PROFILE`、`BACKEND_PATH`、`BACKEND_ENVSETUP` | profile、backend commit 和环境脚本必须与性能 baseline 相匹配。 |
 | benchmark | `RUN_COMPILE_BENCHMARK`、`RUN_PASS_PROFILE`、`RUN_IR_SERIALIZATION_BENCHMARK` | 三类测量有独立 cache namespace，不能混用阈值或结果。 |
 
