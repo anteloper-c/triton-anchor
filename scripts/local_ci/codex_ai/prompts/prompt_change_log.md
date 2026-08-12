@@ -1,3 +1,27 @@
+## 2026-08-12：提高测试命令数量上限
+
+### 修改原因
+
+复杂的跨层或多语言变更可能需要分别执行生成测试、构建、lint 和定向诊断；15 条命令仍可能过早截断有证据驱动的补充验证。
+
+### 修改内容
+
+- 测试、构建、lint 或诊断命令上限从 15 条提高到 30 条。
+- 同步更新 runner、轮询器和示例配置默认值，以及 fake-container prompt 和超限断言。
+- 超限 fixture 从 16 条命令调整为 31 条，继续覆盖命令数量、单命令耗时和累计耗时 warning。
+- 15 个测试用例、5 个测试文件、2700 秒累计测试预算、600 秒单命令建议、450 秒报告预留和 3600 秒 hard timeout 保持不变。
+
+### 兼容性与风险
+
+- 不新增模板变量，不修改报告 schema、renderer、finding 严重度或 Codex AI 非阻塞语义；现有环境变量仍可覆盖默认值。
+- 数量上限增加不扩大累计时间预算；Codex 仍需优先选择与 diff 和可达证据直接相关的命令。
+
+### 验证
+
+已通过 runner、轮询器和示例配置的 30 条默认值静态契约检查，runner、轮询器和 fake-container harness 的 Shell 语法检查，`test_local_ci_codex_ai.sh` 轻量报告契约测试，以及 `git diff --check`。完整 fake-container harness 在 Windows 上仍因 `validate_codex_ai_credentials.py` 使用 `os.geteuid()` 无法进入 fake Codex 阶段；31 条超限 fixture 和对应断言已完成静态检查，需在 Linux CI 或服务器环境完成全流程复验。
+
+---
+
 # Codex AI Prompt 维护记录
 
 本文是 `scripts/local_ci/codex_ai/prompts/` 下 Codex AI CI prompt 的长期维护记录，不只记录某一次修改。后续凡是调整正式 prompt、prompt 变量、输出契约、审查策略、验证约束或相关模板测试，都应在本文追加一条记录，说明修改动机、影响范围和验证方式。

@@ -286,10 +286,7 @@ def write_report(
                 "def test_generated():\n    assert True\n",
                 encoding="utf-8",
             )
-        durations = [
-            601, 400, 300, 300, 200, 100, 100, 50,
-            50, 200, 200, 200, 200, 100, 100, 100,
-        ]
+        durations = [601, *([100] * 30)]
         commands = [
             {
                 "id": f"RUN-{index:03d}",
@@ -627,7 +624,7 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
         assert "触发条件包括但不限于" in prompt
         assert "且存在可测试代码路径时，应生成 1 至 15 个定向测试用例" in prompt
         assert "最多创建或修改 5 个测试文件" in prompt
-        assert "最多执行 15 条测试、构建、lint 或诊断命令" in prompt
+        assert "最多执行 30 条测试、构建、lint 或诊断命令" in prompt
         assert "单条命令预计不超过 600 秒" in prompt
         assert "累计测试预算不超过 2700 秒" in prompt
         assert "至少预留 450 秒" in prompt
@@ -1025,14 +1022,14 @@ run_case over-limit over_limit 0 30 0
 over_limit_output="${test_root}/over-limit/output"
 grep -Fxq "status: pass" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fxq "generated_test_file_count: 6" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_command_count: 16" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_command_count: 31" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fxq "max_test_command_duration_seconds: 601" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fxq "total_test_command_duration_seconds: 3201" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fxq "total_test_command_duration_seconds: 3601" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: warning" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fq "生成测试文件数量 6 超过限制 5" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fq "命令数量 16 超过限制 15" "${over_limit_output}/codex-ai-comment.md"
+grep -Fq "命令数量 31 超过限制 30" "${over_limit_output}/codex-ai-comment.md"
 grep -Fq "单条命令最长耗时 601 秒" "${over_limit_output}/codex-ai-report.md"
-grep -Fq "测试和诊断命令累计耗时 3201 秒" "${over_limit_output}/codex-ai-report.md"
+grep -Fq "测试和诊断命令累计耗时 3601 秒" "${over_limit_output}/codex-ai-report.md"
 grep -Fq "运行约束提醒：" "${over_limit_output}/codex-ai-comment.md"
 
 run_case zero-tests zero_tests 0 30 0
