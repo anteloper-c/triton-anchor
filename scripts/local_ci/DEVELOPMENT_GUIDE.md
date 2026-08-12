@@ -288,7 +288,7 @@ Gitee relay 的 task ref 约定：
 调用方式：
 
 ```bash
-bash scripts/local_ci/orchestration/run_deterministic_ci_in_container.sh <sha> [source-branch]
+bash scripts/local_ci/orchestration/run_deterministic_ci_in_container.sh <sha> <source-branch>
 ```
 
 脚本：

@@ -112,6 +112,25 @@ class GatewayV3ContractTests(unittest.TestCase):
         self.assertIn("--status-sha", self.receiver)
         self.assertIn("--comparison-base-sha", self.receiver)
 
+    def test_required_statuses_target_the_tested_revision(self) -> None:
+        self.assertIn("`${process.env.STATUS_CONTEXT}/routing`", self.gateway)
+        self.assertIn("sha: process.env.TESTED_SHA", self.gateway)
+        self.assertNotIn(
+            "sha: process.env.EXPECTED_HEAD_SHA || process.env.TESTED_SHA",
+            self.gateway,
+        )
+        self.assertGreaterEqual(
+            self.dispatcher.count(
+                "STATUS_SHA: ${{ steps.meta.outputs.tested_sha }}"
+            ),
+            2,
+        )
+        self.assertNotIn(
+            "STATUS_SHA: ${{ steps.meta.outputs.head_sha }}", self.dispatcher
+        )
+        self.assertIn('--status-sha "${TESTED_SHA}"', self.receiver)
+        self.assertNotIn("EXPECTED_HEAD_SHA:-${TESTED_SHA}", self.receiver)
+
     def test_pages_are_branch_isolated(self) -> None:
         guard = "github.ref_name == (vars.LOCAL_CI_PAGES_BRANCH || 'CI_dev')"
         self.assertIn(guard, self.pages)

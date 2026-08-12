@@ -1,4 +1,5 @@
 name: Receive Local CI Result
+run-name: ${{ inputs.run_title || format('{0} @ {1}', inputs.source_branch, inputs.tested_sha) }}
 
 on:
   workflow_call:
@@ -121,7 +122,7 @@ jobs:
             --gitee-results-branch "${GITEE_RESULTS_BRANCH}" \
             --gitee-web-url "${GITEE_RESULTS_WEB_URL}" \
             --source-branch "${SOURCE_BRANCH}" --task-ref "${TASK_REF}" \
-            --sha "${TESTED_SHA}" --status-sha "${EXPECTED_HEAD_SHA:-${TESTED_SHA}}" \
+            --sha "${TESTED_SHA}" --status-sha "${TESTED_SHA}" \
             --pr-number "${PR_NUMBER}" --expected-head-sha "${EXPECTED_HEAD_SHA}" \
             --comparison-base-sha "${COMPARISON_BASE_SHA}" \
             --target-branch "${TARGET_BRANCH}" \
@@ -158,7 +159,7 @@ jobs:
                   -f attempt="${next_attempt}" -f started_at="${STARTED_AT}" \
                   -f wait_seconds="${WAIT_SECONDS}" \
                   -f run_title="${receiver_title}"
-                gh api --method POST "repos/${REPO}/statuses/${EXPECTED_HEAD_SHA:-${TESTED_SHA}}" \
+                gh api --method POST "repos/${REPO}/statuses/${TESTED_SHA}" \
                   -f state=pending -f context="${CONTEXT}" \
                   -f description="local CI still running; receiver ${next_attempt}/${MAX_ATTEMPTS}"
                 exit 0
@@ -167,7 +168,7 @@ jobs:
               ;;
             *) description="local CI result receiver failed" ;;
           esac
-          gh api --method POST "repos/${REPO}/statuses/${EXPECTED_HEAD_SHA:-${TESTED_SHA}}" \
+          gh api --method POST "repos/${REPO}/statuses/${TESTED_SHA}" \
             -f state=error -f context="${CONTEXT}" -f description="${description}"
           exit 1
 

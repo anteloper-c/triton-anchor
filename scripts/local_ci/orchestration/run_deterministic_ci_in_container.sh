@@ -17,11 +17,8 @@ if [[ -n "${TASK_FRONTEND_BUILD_MODE}" ]]; then
   FRONTEND_BUILD_MODE="${TASK_FRONTEND_BUILD_MODE}"
 fi
 
-sha="${1:?usage: run_deterministic_ci_in_container.sh <commit-sha> [source-branch]}"
-branch_override="${2:-}"
-if [[ -n "${branch_override}" ]]; then
-  GITEE_BRANCH="${branch_override}"
-fi
+sha="${1:?usage: run_deterministic_ci_in_container.sh <commit-sha> <source-branch>}"
+GITEE_BRANCH="${2:?usage: run_deterministic_ci_in_container.sh <commit-sha> <source-branch>}"
 LOCAL_CI_CONTAINER="${LOCAL_CI_CONTAINER:-triton-anchor-dev}"
 CONTAINER_CI_RUNNER_DIR="${CONTAINER_CI_RUNNER_DIR:-/tmp/triton-anchor-local-ci-runner-${sha:0:12}-$$}"
 LOCAL_CI_CONTAINER_GITEE_USERNAME="${LOCAL_CI_CONTAINER_GITEE_USERNAME:-${GITEE_READ_USERNAME:-${GITEE_USERNAME:-}}}"

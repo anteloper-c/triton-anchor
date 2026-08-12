@@ -271,7 +271,7 @@ jobs:
       - name: Mark Local CI pending
         env:
           GH_TOKEN: ${{ github.token }}
-          STATUS_SHA: ${{ steps.meta.outputs.head_sha }}
+          STATUS_SHA: ${{ steps.meta.outputs.tested_sha }}
           TASK_REF: ${{ steps.meta.outputs.task_ref }}
           STATUS_CONTEXT: ${{ steps.meta.outputs.context }}
         run: |
@@ -311,10 +311,10 @@ jobs:
             -f run_title="${receiver_title}"
 
       - name: Mark dispatch failure
-        if: ${{ failure() && steps.meta.outputs.head_sha != '' }}
+        if: ${{ failure() && steps.meta.outputs.tested_sha != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          STATUS_SHA: ${{ steps.meta.outputs.head_sha }}
+          STATUS_SHA: ${{ steps.meta.outputs.tested_sha }}
           STATUS_CONTEXT: ${{ steps.meta.outputs.context || env.CONTEXT }}
         run: |
           gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${STATUS_SHA}" \

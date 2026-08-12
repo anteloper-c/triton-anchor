@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import subprocess
 import tempfile
 
@@ -45,3 +46,41 @@ def test_exit_zero_envsetup_is_never_sourced_from_candidate() -> None:
     assert 'bash -n "${ANCHOR_DIR}/envsetup.sh"' in pr_block
     assert 'source "${ANCHOR_DIR}/envsetup.sh"' not in pr_block
     assert 'envsetup_file="${TRUSTED_ANCHOR_ENVSETUP}"' in pr_block
+
+
+def test_runner_requires_the_actual_task_ref() -> None:
+    env = os.environ.copy()
+    env.pop("GITEE_BRANCH", None)
+    env["LOCAL_CI_SCRIPT_STAGED"] = "1"
+    result = subprocess.run(
+        ["bash", str(ROOT / "deterministic_ci/run_deterministic_ci.sh"), "a" * 40],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "GITEE_BRANCH must be provided by the Local CI poller" in result.stderr
+
+
+def test_single_branch_poller_requires_an_explicit_branch_list() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        env = os.environ.copy()
+        env.update(
+            {
+                "LOCAL_CI_STATE_DIR": directory,
+                "LOCAL_CI_ONCE": "1",
+                "GITEE_POLL_ALL_BRANCHES": "0",
+                "GITEE_BRANCHES": "",
+                "LOCAL_CI_CONFIG": str(Path(directory) / "missing.env"),
+            }
+        )
+        result = subprocess.run(
+            ["bash", str(ROOT / "poll_gitee_and_run.sh")],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    assert result.returncode != 0
+    assert "GITEE_BRANCHES is required" in result.stderr

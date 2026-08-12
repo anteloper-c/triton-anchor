@@ -185,7 +185,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gitee-repo", required=True)
     parser.add_argument("--gitee-results-branch", default="local-ci-results")
     parser.add_argument("--gitee-web-url", required=True)
-    parser.add_argument("--source-branch", default="jiwang-delivery-ci")
+    parser.add_argument("--source-branch", required=True)
     parser.add_argument("--reconcile-source-branches", default="")
     parser.add_argument("--task-ref", default="")
     parser.add_argument("--sha", default="")
@@ -202,7 +202,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--poll-interval-seconds", type=int, default=0)
     parser.add_argument("--require-result", action="store_true")
     parser.add_argument("--exit-with-result", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.status_sha and (
+        not args.sha or args.status_sha.lower() != args.sha.lower()
+    ):
+        parser.error("--status-sha must be empty or equal to --sha")
+    return args
 
 
 def request_json(url: str, method: str = "GET", token: str = "", data: dict | None = None) -> tuple[int, object | None, str]:

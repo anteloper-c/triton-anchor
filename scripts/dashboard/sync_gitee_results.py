@@ -19,8 +19,6 @@ sys.path.insert(0, str(LOCAL_CI_SHARED_DIR))
 from result_paths import gitee_tree_url, result_run_dir, result_task_dir  # noqa: E402
 
 
-DEFAULT_SOURCE_BRANCH = "ci/push/jiwang-delivery-ci"
-DEFAULT_FULL_TEST_SOURCE_BRANCH = "ci/full/main"
 DEFAULT_PROFILE = "sophgo-cmodel"
 DEFAULT_RESULTS_WEB_URL = (
     "https://gitee.com/likehupochuan/triton-anchor-local-ci-results"
@@ -49,10 +47,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results-dir", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--source-branch", default=DEFAULT_SOURCE_BRANCH)
-    parser.add_argument(
-        "--full-test-source-branch", default=DEFAULT_FULL_TEST_SOURCE_BRANCH
-    )
+    parser.add_argument("--source-branch", required=True)
+    parser.add_argument("--full-test-source-branch", required=True)
     parser.add_argument("--profile", default=DEFAULT_PROFILE)
     parser.add_argument("--backend-name", default="Sophgo")
     parser.add_argument("--results-branch", default="local-ci-results")
@@ -566,8 +562,8 @@ def write_full_test_csv(path: Path, document: dict[str, Any]) -> None:
 def sync_dashboard(
     results_dir: Path,
     output_dir: Path,
-    source_branch: str = DEFAULT_SOURCE_BRANCH,
-    full_test_source_branch: str = DEFAULT_FULL_TEST_SOURCE_BRANCH,
+    source_branch: str,
+    full_test_source_branch: str,
     profile: str = DEFAULT_PROFILE,
     backend_name: str = "Sophgo",
     results_branch: str = "local-ci-results",

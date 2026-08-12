@@ -5,12 +5,16 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "dashboard" / "sync_gitee_results.py"
 sys.path.insert(0, str(SCRIPT.parent))
 import sync_gitee_results as SYNC  # noqa: E402
+
+PUSH_SOURCE = "ci/push/release-v3"
+FULL_SOURCE = "ci/full/release-v3"
 
 
 def write_json(path: Path, value: object) -> None:
@@ -19,7 +23,7 @@ def write_json(path: Path, value: object) -> None:
 
 
 def write_run(root: Path, sha: str, run_id: str, status: int) -> Path:
-    run = root / "runs" / "ci_push" / "ci_push_jiwang-delivery-ci" / sha / run_id
+    run = root / SYNC.result_task_dir(PUSH_SOURCE) / sha / run_id
     run.mkdir(parents=True)
     (run / "delivery-summary.txt").write_text(
         "\n".join(
@@ -27,7 +31,7 @@ def write_run(root: Path, sha: str, run_id: str, status: int) -> Path:
                 "schema: triton-anchor-local-ci/v2",
                 f"status: {status}",
                 f"target_sha: {sha}",
-                "branch: ci/push/jiwang-delivery-ci",
+                f"branch: {PUSH_SOURCE}",
                 "backend_profile: sophgo-cmodel",
                 "compile_time_status: pass",
                 "pass_profile_status: pass",
@@ -44,7 +48,7 @@ def write_full_run(
     root: Path,
     sha: str,
     run_id: str,
-    branch: str = "ci/full/main",
+    branch: str = FULL_SOURCE,
 ) -> Path:
     run = root / SYNC.result_task_dir(branch) / sha / run_id
     run.mkdir(parents=True)
@@ -112,18 +116,33 @@ def write_full_run(
 
 
 class DashboardSyncTest(unittest.TestCase):
+    def test_cli_requires_explicit_push_and_full_sources(self):
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                "sync_gitee_results.py",
+                "--results-dir",
+                "/tmp/results",
+                "--output-dir",
+                "/tmp/output",
+            ],
+        ):
+            with self.assertRaises(SystemExit):
+                SYNC.parse_args()
+
     def test_result_paths_use_canonical_task_groups(self):
         self.assertEqual(
-            SYNC.result_task_dir("ci/full/main").as_posix(),
-            "runs/ci_full/ci_full_main",
+            SYNC.result_task_dir(FULL_SOURCE).as_posix(),
+            "runs/ci_full/ci_full_release-v3",
         )
         self.assertEqual(
             SYNC.result_task_dir("ci/full/release-candidate").as_posix(),
             "runs/ci_full/ci_full_release-candidate",
         )
         self.assertEqual(
-            SYNC.result_task_dir("ci/push/jiwang-delivery-ci").as_posix(),
-            "runs/ci_push/ci_push_jiwang-delivery-ci",
+            SYNC.result_task_dir(PUSH_SOURCE).as_posix(),
+            "runs/ci_push/ci_push_release-v3",
         )
         self.assertEqual(
             SYNC.result_task_dir("ci/pr-9/feat/backend-status-pages").as_posix(),
@@ -145,7 +164,7 @@ class DashboardSyncTest(unittest.TestCase):
                 branch="ci/full/release-candidate",
             )
 
-            self.assertEqual(SYNC.discover_runs(root, "ci/full/main"), [])
+            self.assertEqual(SYNC.discover_runs(root, FULL_SOURCE), [])
             runs = SYNC.discover_runs(root, "ci/full/release-candidate")
 
             self.assertEqual(len(runs), 1)
@@ -213,7 +232,7 @@ class DashboardSyncTest(unittest.TestCase):
             failed_sha = "2" * 40
             write_run(root, failed_sha, "20260721T020000Z-222222222222", 1)
 
-            SYNC.sync_dashboard(root, output)
+            SYNC.sync_dashboard(root, output, PUSH_SOURCE, FULL_SOURCE)
 
             manifest = json.loads(
                 (output / "manifest.json").read_text(encoding="utf-8")
@@ -230,7 +249,7 @@ class DashboardSyncTest(unittest.TestCase):
             self.assertEqual(backend["backends"][0]["state"], "failure")
             self.assertEqual(backend["backends"][0]["sha"], failed_sha)
             self.assertIn(
-                "/runs/ci_push/ci_push_jiwang-delivery-ci/",
+                "/runs/ci_push/ci_push_release-v3/",
                 backend["backends"][0]["result_url"],
             )
             self.assertEqual(performance["sha"], metric_sha)
@@ -303,7 +322,7 @@ class DashboardSyncTest(unittest.TestCase):
             full_sha = "4" * 40
             write_full_run(root, full_sha, "20260723T020000Z-444444444444")
 
-            SYNC.sync_dashboard(root, output)
+            SYNC.sync_dashboard(root, output, PUSH_SOURCE, FULL_SOURCE)
 
             manifest = json.loads(
                 (output / "manifest.json").read_text(encoding="utf-8")
@@ -324,7 +343,7 @@ class DashboardSyncTest(unittest.TestCase):
             self.assertEqual(backend["backends"][0]["sha"], main_sha)
             self.assertEqual(performance["sha"], main_sha)
             self.assertEqual(full_test["run"]["sha"], full_sha)
-            self.assertEqual(full_test["run"]["branch"], "ci/full/main")
+            self.assertEqual(full_test["run"]["branch"], FULL_SOURCE)
             self.assertEqual(
                 [row["status"] for row in full_test["operators"]],
                 ["passed", "failed", "timeout"],

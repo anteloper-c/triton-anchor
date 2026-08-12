@@ -478,7 +478,6 @@ runs/ci_push/ci_push_<branch>/<sha>/<run-id>/
 | Secret | 作用 |
 | --- | --- |
 | `GITEE_TOKEN` | GitHub 向 Gitee 推送 task ref，以及 receiver/Pages 读取结果 |
-| `GITEE_USERNAME` | Gitee Git 用户名；未设置时通常使用 owner |
 | `PREBUILT_DOWNLOAD_TOKEN` | 手动 full smoke 下载私有预构建依赖 |
 
 Secret 不应写入仓库、task ref 或普通日志。
@@ -487,12 +486,12 @@ Secret 不应写入仓库、task ref 或普通日志。
 
 常用变量包括：
 
-- Gitee 结果仓库：`GITEE_RESULTS_OWNER`、`GITEE_RESULTS_REPO`、`GITEE_RESULTS_REPO_URL`、`GITEE_RESULTS_BRANCH`、`GITEE_RESULTS_WEB_URL`；
-- Local CI 状态：`LOCAL_CI_CONTEXT`、`LOCAL_CI_RECEIVER_REF`、`LOCAL_CI_RECEIVER_WAIT_SECONDS`、`LOCAL_CI_RECEIVER_MAX_ATTEMPTS`；
+- Gitee 结果仓库：`GITEE_RESULTS_OWNER`、`GITEE_RESULTS_REPO`、`GITEE_RESULTS_REPO_URL`、`GITEE_RESULTS_BRANCH`、`GITEE_RESULTS_WEB_URL`、`GITEE_USERNAME`；
+- Local CI 状态与路由：`LOCAL_CI_CONTEXT`、`LOCAL_CI_FALLBACK_WORKER_BRANCH`、`LOCAL_CI_RECEIVER_WAIT_SECONDS`、`LOCAL_CI_RECEIVER_MAX_ATTEMPTS`；
 - Pages 数据源：`DASHBOARD_SOURCE_BRANCH`、`DASHBOARD_FULL_TEST_SOURCE_BRANCH`、`LOCAL_CI_BACKEND_PROFILE`；
 - 构建依赖和后端：LLVM、PPL、Sophgo backend、torch_tpu 和 FlagGems 相关变量。
 
-未配置变量时，workflow 会使用文件中定义的默认值。修改默认分支上的 receiver 或 Pages workflow 后，应确认 `LOCAL_CI_RECEIVER_REF` 指向包含这些 workflow 的分支。
+`GITEE_RESULTS_OWNER` 表示仓库所有者，`GITEE_USERNAME` 表示 token 对应的认证用户名，两者可以不同。例如结果仓库属于组织、token 属于个人账号时，owner 使用组织名，username 使用个人账号。Receiver、Pages 和 dispatcher 始终继续运行精确的 Worker revision，不再通过可配置 ref 跳回默认分支。
 
 ### 5.3 本地 `config.env`
 
@@ -510,6 +509,9 @@ LOCAL_CI_STATE_DIR=/path/to/local-ci-state
 LOCAL_CI_CONTAINER=anchor-sophgo-ci
 LOCAL_CI_WORKSPACE_HOST=/path/to/workspace
 
+GITEE_POLL_ALL_BRANCHES=1
+GITEE_BRANCHES=""
+
 WORKSPACE=/workspace
 ANCHOR_DIR=/workspace/triton-anchor
 BACKEND_PATH=/workspace/triton-sophgo-backend
@@ -523,6 +525,8 @@ BACKEND_TEST_COMMAND="python3 tests/test_smoke.py && python3 tests/test_jit.py"
 
 `config.example.env` 的更新不会覆盖服务器已有 `config.env`。配置变化后需要重启 poller；可信脚本目录中的代码变化会在下一次任务生成新快照时生效。
 
+生产环境推荐保持 `GITEE_POLL_ALL_BRANCHES=1`，由 poller 发现所有符合 `GITEE_BRANCH_INCLUDE_REGEX` 的 `ci/*` 任务。若关闭全分支发现，必须显式设置 `GITEE_BRANCHES`；不存在固定任务分支兜底。`GITEE_BRANCH` 表示某次实际 task ref，只能由 poller 注入给 runner。手工调用 runner、Bridge 或 Dashboard 同步脚本时，也必须显式提供 source/task 分支参数。
+
 ## 6. 使用方式
 
 ### 6.1 开发者提交 PR
@@ -532,10 +536,12 @@ BACKEND_TEST_COMMAND="python3 tests/test_smoke.py && python3 tests/test_jit.py"
 1. 基础 CI、构建预检和公共 API 兼容性自动运行。
 2. Local CI dispatch 将 PR test merge、head 和 base 的精确 SHA 推送到 Gitee。
 3. 本地 poller 在 test merge checkout 上执行前端、后端、FlagGems 和性能检查。
-4. GitHub commit status 保持 pending，直到 receiver 取得本地结果。
+4. Required commit status 写在 PR Merge-Result SHA 上并保持 pending，直到 receiver 取得本地结果；`expected_head_sha` 只用于授权和过期校验。
 5. 如检测到 Breaking Change，兼容性检查失败，并在 PR 下通知作者。
 
 PR 有新提交或 base 更新时触发新的 test merge ref，同一个 PR task ref 更新为新的 tested SHA，旧结果不会被当作当前合并结果。
+
+如果冲突、draft 或早期路由错误导致尚无可用 Merge-Result，Gateway 只在 PR head 写 `${LOCAL_CI_CONTEXT}/routing` 诊断状态，不把 Required Local CI context 回退到 head。
 
 ### 6.2 分支 push
 

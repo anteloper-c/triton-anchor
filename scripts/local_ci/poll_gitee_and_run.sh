@@ -18,8 +18,7 @@ LOCAL_CI_SCRIPT_DIR="${LOCAL_CI_SCRIPT_DIR:-${LOCAL_CI_ROOT}}"
 GITEE_REPO_URL="${GITEE_REPO_URL:-https://gitee.com/likehupochuan/triton-anchor-local-ci-results.git}"
 GITEE_OWNER="${GITEE_OWNER:-likehupochuan}"
 GITEE_REPO="${GITEE_REPO:-triton-anchor-local-ci-results}"
-GITEE_BRANCH="${GITEE_BRANCH:-ci/push/jiwang-delivery-ci}"
-GITEE_BRANCHES="${GITEE_BRANCHES:-${GITEE_BRANCH}}"
+GITEE_BRANCHES="${GITEE_BRANCHES:-}"
 GITEE_POLL_ALL_BRANCHES="${GITEE_POLL_ALL_BRANCHES:-1}"
 GITEE_BRANCH_INCLUDE_REGEX="${GITEE_BRANCH_INCLUDE_REGEX:-^ci/(pr-[0-9]+/.+|push/.+|full/.+)$}"
 GITEE_TOKEN="${GITEE_TOKEN:-}"
@@ -68,6 +67,18 @@ fi
 
 lock_file="${LOCAL_CI_STATE_DIR}/poll.lock"
 
+case "${GITEE_POLL_ALL_BRANCHES}" in
+  0|1) ;;
+  *)
+    echo "GITEE_POLL_ALL_BRANCHES must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
+if [[ "${GITEE_POLL_ALL_BRANCHES}" == "0" && -z "${GITEE_BRANCHES//[[:space:],]/}" ]]; then
+  echo "GITEE_BRANCHES is required when GITEE_POLL_ALL_BRANCHES=0" >&2
+  exit 1
+fi
+
 exec 9>"${lock_file}"
 if ! flock -n 9; then
   echo "Another local-ci poller is already running: ${lock_file}" >&2
@@ -86,7 +97,7 @@ list_branches() {
     return 0
   fi
 
-  printf '%s\n' ${GITEE_BRANCHES}
+  printf '%s' "${GITEE_BRANCHES}" | tr -s ',[:space:]' '\n' | awk 'NF'
 }
 
 branch_is_enabled() {

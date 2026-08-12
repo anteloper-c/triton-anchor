@@ -82,9 +82,10 @@ git -C "${source_repo}" push -q gitee "HEAD:refs/heads/${pr_branch}"
 git -C "${source_repo}" checkout -q --detach "${target_sha}"
 
 pr_metadata_file="${test_root}/pr-task-metadata.json"
+worker_revision_sha="$(git -C "${repo_root}" rev-parse HEAD)"
 python3 - "${pr_metadata_file}" "${pr_branch}" "${pr_base_branch}" \
   "${pr_head_branch}" "${pr_target_base_sha}" "${pr_head_sha}" \
-  "${pr_merge_sha}" <<'PY'
+  "${pr_merge_sha}" "${worker_revision_sha}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -97,6 +98,7 @@ from pathlib import Path
     base_sha,
     head_sha,
     tested_sha,
+    worker_revision_sha,
 ) = sys.argv[1:]
 
 document = {
@@ -114,6 +116,8 @@ document = {
     "head_branch": "feature",
     "head_sha": head_sha,
     "head_repo": "owner/repo",
+    "target_branch": "main",
+    "worker_revision_sha": worker_revision_sha,
     "pr_number": 42,
     "title": "增强 adapter 稳健性",
     "description": (
@@ -672,7 +676,7 @@ assert_chinese_failure_report() {
   grep -Fq "## 贡献者目标与实现情况" "${output_dir}/codex-ai-report.md"
   grep -Fq "## Codex AI 自动审查" "${output_dir}/codex-ai-comment.md"
   grep -Fq "### 审查摘要" "${output_dir}/codex-ai-comment.md"
-  grep -Fq "确定性 CI：" "${output_dir}/codex-ai-comment.md"
+  grep -Fq "本地确定性 CI 检查：" "${output_dir}/codex-ai-comment.md"
   grep -Fq "### 贡献者目标与实现情况" "${output_dir}/codex-ai-comment.md"
   grep -Fq "### 变更文件" "${output_dir}/codex-ai-comment.md"
   python3 "${renderer}" \
@@ -871,9 +875,9 @@ grep -Fxq "startup_timeout_seconds: 600" "${success_output}/codex-ai-ci-summary.
 grep -Fxq "startup_progress: true" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "startup_timed_out: false" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "min_generated_test_cases: 1" "${success_output}/codex-ai-ci-summary.txt"
-grep -Fxq "max_generated_test_cases: 10" "${success_output}/codex-ai-ci-summary.txt"
-grep -Fxq "max_generated_test_files: 4" "${success_output}/codex-ai-ci-summary.txt"
-grep -Fxq "max_test_commands: 12" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "max_generated_test_cases: 15" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "max_generated_test_files: 5" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "max_test_commands: 30" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "recommended_command_timeout_seconds: 600" \
   "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_budget_seconds: 2700" "${success_output}/codex-ai-ci-summary.txt"
@@ -1053,7 +1057,7 @@ grep -Fq "生成测试文件数量 6 超过限制 5" "${over_limit_output}/codex
 grep -Fq "命令数量 31 超过限制 30" "${over_limit_output}/codex-ai-comment.md"
 grep -Fq "单条命令最长耗时 601 秒" "${over_limit_output}/codex-ai-report.md"
 grep -Fq "测试和诊断命令累计耗时 3601 秒" "${over_limit_output}/codex-ai-report.md"
-grep -Fq "运行约束提醒：" "${over_limit_output}/codex-ai-comment.md"
+grep -Fq "验证范围提醒：" "${over_limit_output}/codex-ai-comment.md"
 
 run_case zero-tests zero_tests 0 30 0
 zero_output="${test_root}/zero-tests/output"
@@ -1075,7 +1079,7 @@ grep -Fxq "test_command_count: 0" "${docs_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_generation_expected: false" "${docs_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: pass" "${docs_output}/codex-ai-ci-summary.txt"
 grep -Fq "只包含文档改动" "${docs_output}/codex-ai-report.md"
-if grep -Fq "运行约束提醒：" "${docs_output}/codex-ai-comment.md"; then
+if grep -Fq "验证范围提醒：" "${docs_output}/codex-ai-comment.md"; then
   echo "纯文档改动不应产生测试执行约束警告" >&2
   exit 1
 fi

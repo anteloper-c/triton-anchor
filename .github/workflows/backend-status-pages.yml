@@ -1,4 +1,5 @@
 name: Backend Status Pages
+run-name: ${{ inputs.run_title || github.event.pull_request.title || github.event.head_commit.message || format('Dashboard on {0}', github.ref_name) }}
 
 on:
   push:
@@ -16,6 +17,12 @@ on:
       - "python/triton_anchor/tests/test_dashboard_*.py"
       - ".github/workflows/backend-status-pages.yml"
   workflow_dispatch:
+    inputs:
+      run_title:
+        description: "Optional title for a manual Dashboard run"
+        required: false
+        default: ""
+        type: string
   workflow_call:
     inputs:
       source_branch:

@@ -293,7 +293,7 @@ jobs:
                 repo,
                 sha: pull.head.sha,
                 state: 'error',
-                context: process.env.STATUS_CONTEXT,
+                context: `${process.env.STATUS_CONTEXT}/routing`,
                 description: `local CI cancelled: ${reason}`.slice(0, 140),
               });
             }
@@ -345,10 +345,13 @@ jobs:
               throw new Error('pr_number must be a positive integer');
             }
 
-            let statusSha = automatic ? eventPull?.head?.sha || '' : '';
+            let headSha = automatic ? eventPull?.head?.sha || '' : '';
+            let testedSha = '';
             const publishStatus = async (state, description) => {
+              const hasMergeResult = shaPattern.test(testedSha);
+              const statusSha = hasMergeResult ? testedSha : headSha;
               if (!shaPattern.test(statusSha)) {
-                core.warning('Cannot publish a route status because the head SHA is invalid.');
+                core.warning('Cannot publish a route status because no valid SHA is available.');
                 return;
               }
               await github.rest.repos.createCommitStatus({
@@ -356,7 +359,9 @@ jobs:
                 repo,
                 sha: statusSha,
                 state,
-                context: process.env.STATUS_CONTEXT,
+                context: hasMergeResult
+                  ? process.env.STATUS_CONTEXT
+                  : `${process.env.STATUS_CONTEXT}/routing`,
                 description: description.slice(0, 140),
                 target_url: statusTarget,
               });
@@ -390,7 +395,7 @@ jobs:
                 repo,
                 pull_number: prNumber,
               });
-              statusSha = pull.head.sha;
+              headSha = pull.head.sha;
 
               if (automatic) {
                 if (
@@ -431,18 +436,6 @@ jobs:
                 throw new Error('Pull request repository or branch metadata is incomplete');
               }
 
-              const sameRepository = pull.head.repo.full_name === `${owner}/${repo}`;
-              if (automatic && !sameRepository) {
-                await publishStatus(
-                  'pending',
-                  'external fork requires maintainer authorization from the default-branch Gateway'
-                );
-                core.notice(
-                  `PR #${prNumber} is from an external fork; a maintainer must run CI Gateway manually.`
-                );
-                return;
-              }
-
               let mergeable = pull.mergeable;
               let currentPull = pull;
               for (let attempt = 0; mergeable === null && attempt < 4; attempt += 1) {
@@ -470,7 +463,7 @@ jobs:
                   `GitHub merge result refs/pull/${prNumber}/merge is unavailable: ${error.message}`
                 );
               }
-              const testedSha = mergeRef.object?.sha || '';
+              testedSha = mergeRef.object?.sha || '';
               if (!shaPattern.test(testedSha)) {
                 throw new Error('GitHub returned an invalid merge-result SHA');
               }
@@ -486,6 +479,18 @@ jobs:
                 parents[1].toLowerCase() !== pull.head.sha.toLowerCase()
               ) {
                 throw new Error('GitHub merge-result parents do not match the frozen base and head');
+              }
+
+              const sameRepository = pull.head.repo.full_name === `${owner}/${repo}`;
+              if (automatic && !sameRepository) {
+                await publishStatus(
+                  'pending',
+                  'external fork requires maintainer authorization from the default-branch Gateway'
+                );
+                core.notice(
+                  `PR #${prNumber} is from an external fork; a maintainer must run CI Gateway manually.`
+                );
+                return;
               }
 
               const cleanTitle = String(pull.title || '')
@@ -569,7 +574,7 @@ jobs:
               await github.rest.repos.createCommitStatus({
                 owner,
                 repo,
-                sha: process.env.EXPECTED_HEAD_SHA,
+                sha: process.env.TESTED_SHA,
                 state: 'error',
                 context: process.env.STATUS_CONTEXT,
                 description: description.slice(0, 140),
@@ -962,7 +967,7 @@ jobs:
       - name: Mark routing failure
         uses: actions/github-script@v7
         env:
-          SHA: ${{ needs.prepare-route.outputs.head_sha }}
+          SHA: ${{ needs.prepare-route.outputs.tested_sha }}
           STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
         with:
           script: |
@@ -1019,7 +1024,7 @@ jobs:
             const { owner, repo } = context.repo;
             const shaPattern = /^[0-9a-f]{40}$/i;
             const prText = process.env.PR_NUMBER;
-            const statusSha = process.env.EXPECTED_HEAD_SHA;
+            const statusSha = process.env.TESTED_SHA;
             const markError = async (description) => {
               if (!shaPattern.test(statusSha)) {
                 return;
@@ -1047,7 +1052,7 @@ jobs:
                 throw new Error('pr_number must be a positive integer');
               }
               for (const [name, value] of Object.entries({
-                expected_head_sha: statusSha,
+                expected_head_sha: process.env.EXPECTED_HEAD_SHA,
                 comparison_base_sha: process.env.COMPARISON_BASE_SHA,
                 tested_sha: process.env.TESTED_SHA,
                 worker_revision_sha: process.env.WORKER_REVISION_SHA,
@@ -1098,7 +1103,10 @@ jobs:
               if (pull.base.sha.toLowerCase() !== process.env.COMPARISON_BASE_SHA.toLowerCase()) {
                 throw new Error('PR comparison base changed after routing');
               }
-              if (pull.head.sha.toLowerCase() !== statusSha.toLowerCase()) {
+              if (
+                pull.head.sha.toLowerCase() !==
+                process.env.EXPECTED_HEAD_SHA.toLowerCase()
+              ) {
                 throw new Error('PR head changed after authorization');
               }
               if (!pull.head.repo?.full_name || !pull.head.ref) {
@@ -1241,13 +1249,13 @@ jobs:
       - name: Mark worker validation, security, or dispatch failure
         uses: actions/github-script@v7
         env:
-          SHA: ${{ inputs.expected_head_sha }}
+          SHA: ${{ inputs.tested_sha }}
           STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
         with:
           script: |
             const shaPattern = /^[0-9a-f]{40}$/i;
             if (!shaPattern.test(process.env.SHA)) {
-              core.warning('Cannot publish a worker failure status because the head SHA is invalid.');
+              core.warning('Cannot publish a worker failure status because tested_sha is invalid.');
               return;
             }
             await github.rest.repos.createCommitStatus({
@@ -1494,7 +1502,7 @@ jobs:
               await github.rest.repos.createCommitStatus({
                 owner,
                 repo,
-                sha: process.env.EXPECTED_HEAD_SHA || process.env.TESTED_SHA,
+                sha: process.env.TESTED_SHA,
                 state: 'error',
                 context: process.env.STATUS_CONTEXT,
                 description: description.slice(0, 140),

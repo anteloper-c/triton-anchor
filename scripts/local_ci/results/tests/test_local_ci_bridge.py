@@ -15,6 +15,57 @@ sys.path.insert(0, str(REPO_ROOT / "scripts" / "local_ci" / "results"))
 import bridge_gitee_to_github_status as bridge
 
 
+class BridgeArgumentTests(unittest.TestCase):
+    def parse(self, *extra: str):
+        argv = [
+            "bridge",
+            "--gitee-owner",
+            "owner",
+            "--gitee-repo",
+            "results",
+            "--gitee-web-url",
+            "https://gitee.example/results",
+            *extra,
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            return bridge.parse_args()
+
+    def test_source_branch_is_required(self) -> None:
+        with self.assertRaises(SystemExit):
+            self.parse()
+
+    def test_status_sha_cannot_differ_from_tested_sha(self) -> None:
+        with self.assertRaises(SystemExit):
+            self.parse(
+                "--source-branch",
+                "feature/demo",
+                "--sha",
+                "a" * 40,
+                "--status-sha",
+                "b" * 40,
+            )
+
+    def test_status_sha_requires_tested_sha(self) -> None:
+        with self.assertRaises(SystemExit):
+            self.parse(
+                "--source-branch",
+                "feature/demo",
+                "--status-sha",
+                "a" * 40,
+            )
+
+    def test_status_sha_may_equal_tested_sha(self) -> None:
+        args = self.parse(
+            "--source-branch",
+            "feature/demo",
+            "--sha",
+            "a" * 40,
+            "--status-sha",
+            "a" * 40,
+        )
+        self.assertEqual(args.source_branch, "feature/demo")
+
+
 class CodexCommentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.target = bridge.Target(

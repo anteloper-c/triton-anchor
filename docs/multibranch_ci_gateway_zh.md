@@ -14,6 +14,22 @@
 | Gitee 中转仓库 | 保存 task/base/head/metadata refs 和本地运行结果 | 不负责 GitHub 授权和代码评审 |
 | 本地服务器 | 可信 runner 快照、Docker 执行、结果发布 | 不决定 PR 是否获得授权 |
 
+## 文件与职责
+
+| 文件或目录 | 默认分支职责 | 普通目标分支职责 |
+| --- | --- | --- |
+| `.github/workflows/ci-gateway.yml` | router-only Gateway：授权、Worker 发现、生命周期处理、状态初始化与跨分支调度 | worker-capable Gateway：保留同一公共 Router，并实现 `dispatch`、`push`、`receive`、`pages`、`cancel` |
+| `.github/workflows/api-breaking-notify.yml` | 消费 Public API Compatibility 结果并通知或恢复已有评论 | 可以保留副本，但系统只依赖默认分支监听器 |
+| `.github/ci-gateway-manifest.json` | 不持有，只读取普通分支 manifest | 声明 Contract v3、Worker 角色、Merge-Result 和实际 capabilities |
+| `.github/workflows/security-gate.yml` | 不持有、不执行候选代码扫描 | 使用精确 Worker revision 的 scanner 与 CodeQL 阻止不可信 dispatch |
+| `.github/workflows/dispatch-local-ci.yml` | 不持有 | 创建 Gitee task/base/head/metadata refs，写 pending 并启动 receiver |
+| `.github/workflows/receive-local-ci-result.yml` | 不持有 | 等待结果、校验 PR 新鲜度、写回 Merge-Result status，并按策略请求 Pages |
+| `.github/workflows/backend-status-pages.yml` | 不持有 | 同步结果、验证 Dashboard；只有配置分支可以部署 |
+| `.github/workflows/ci.yml`、`delivery-ci.yml`、`api-compat.yml` | router-only 形态不依赖 | 分支自有 GitHub CI，可随目标分支独立调整 |
+| `scripts/ci/`、`scripts/local_ci/`、`scripts/dashboard/` | 不持有 scanner、runner 或页面实现 | 提供可信扫描、本地执行、结果发布和页面数据转换 |
+
+普通目标分支启用自身 Worker 时，manifest、Gateway、Security Gate、dispatcher、receiver、Pages workflow 及其必要脚本必须成套存在。缺少 manifest 才允许 fallback；manifest 已存在但损坏或能力不足时明确失败。
+
 ## Gateway Contract v3
 
 Contract 嵌入两侧的 `.github/workflows/ci-gateway.yml`。Router 与 Worker 必须保持相同事件、`workflow_dispatch.inputs`、公共路由 jobs 和版本号；Worker 是 Router 公共逻辑的严格超集。
@@ -30,9 +46,9 @@ Contract 嵌入两侧的 `.github/workflows/ci-gateway.yml`。Router 与 Worker 
 
 | 字段 | 含义 |
 | --- | --- |
-| `expected_head_sha` | 获得授权的 PR head；GitHub 状态写回此 SHA |
+| `expected_head_sha` | 获得授权的 PR head；只用于权限绑定、force-push 和新鲜度校验 |
 | `comparison_base_sha` | 冻结的 PR base；性能比较和可信 envsetup 来源 |
-| `tested_sha` | 实际执行提交；PR 为 GitHub Merge-Result，push 为分支 head |
+| `tested_sha` | 实际执行提交和 Required status 目标；PR 为 GitHub Merge-Result，push 为分支 head |
 | `requested_sha` | 手动 push 的可选防漂移值 |
 | `worker_revision_sha` | 执行 Gateway、scanner、dispatcher 和 receiver 的精确 Worker 版本 |
 
@@ -65,6 +81,8 @@ sequenceDiagram
 ```
 
 目标分支 manifest 不存在时可回退；manifest 已存在但 JSON 损坏、Contract 不兼容、能力或必要文件缺失时明确失败。外部 fork 自动事件只写 pending，维护者在默认分支输入 PR 编号手动授权；授权始终绑定现场读取的 SHA。
+
+PR 的 pending、success、failure 和 error Required status 均写入 `tested_sha`。只有尚未得到可用 Merge-Result 的早期路由失败，才在 PR head 写独立的 `${LOCAL_CI_CONTEXT}/routing` 诊断状态。
 
 ## 生命周期与结果隔离
 
