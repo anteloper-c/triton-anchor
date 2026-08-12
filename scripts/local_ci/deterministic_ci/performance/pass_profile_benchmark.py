@@ -60,8 +60,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kernels", default=",".join(DEFAULT_KERNELS))
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=1)
-    parser.add_argument("--cache-root", default="/tmp/triton_anchor_pass_profile/cache")
-    parser.add_argument("--dump-root", default="/tmp/triton_anchor_pass_profile/dump")
+    temporary_root = Path(os.environ.get("TMPDIR", "/tmp"))
+    parser.add_argument(
+        "--cache-root",
+        default=str(temporary_root / "triton_anchor_pass_profile/cache"),
+    )
+    parser.add_argument(
+        "--dump-root",
+        default=str(temporary_root / "triton_anchor_pass_profile/dump"),
+    )
     parser.add_argument("--output-json", default="pass_profile_results.json")
     parser.add_argument("--output-events-csv", default="pass_profile_events.csv")
     parser.add_argument("--output-summary-csv", default="pass_profile_summary.csv")

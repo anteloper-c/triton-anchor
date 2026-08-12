@@ -19,8 +19,15 @@ fi
 
 sha="${1:?usage: run_deterministic_ci_in_container.sh <commit-sha> <source-branch>}"
 GITEE_BRANCH="${2:?usage: run_deterministic_ci_in_container.sh <commit-sha> <source-branch>}"
+if [[ ! "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "Local CI target SHA must be a lowercase 40-character hexadecimal commit." >&2
+  exit 2
+fi
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 LOCAL_CI_CONTAINER="${LOCAL_CI_CONTAINER:-triton-anchor-dev}"
-CONTAINER_CI_RUNNER_DIR="${CONTAINER_CI_RUNNER_DIR:-/tmp/triton-anchor-local-ci-runner-${sha:0:12}-$$}"
+CONTAINER_CI_TASK_TMP_ROOT=""
+CONTAINER_CI_RUNNER_DIR=""
+CONTAINER_TASK_TMP_TOOL=""
 LOCAL_CI_CONTAINER_GITEE_USERNAME="${LOCAL_CI_CONTAINER_GITEE_USERNAME:-${GITEE_READ_USERNAME:-${GITEE_USERNAME:-}}}"
 LOCAL_CI_CONTAINER_GITEE_TOKEN="${LOCAL_CI_CONTAINER_GITEE_TOKEN:-${GITEE_READ_TOKEN:-}}"
 if [[ -z "${LOCAL_CI_CONTAINER_GITEE_TOKEN}" && "${LOCAL_CI_ALLOW_WRITE_TOKEN_IN_CONTAINER:-0}" == "1" ]]; then
@@ -55,16 +62,57 @@ if [[ -n "${LOCAL_CI_CONTAINER_GITEE_TOKEN}" ]]; then
   docker_args+=(-e "GITEE_TOKEN=${LOCAL_CI_CONTAINER_GITEE_TOKEN}")
 fi
 
-docker exec "${LOCAL_CI_CONTAINER}" mkdir -p "${CONTAINER_CI_RUNNER_DIR}"
+cleanup_container_task_tmp() {
+  local status="$?"
+  local cleanup_status=0
+  trap - EXIT INT TERM
+  set +e
+  if [[ -n "${CONTAINER_CI_TASK_TMP_ROOT}" && -n "${CONTAINER_TASK_TMP_TOOL}" ]]; then
+    docker exec "${LOCAL_CI_CONTAINER}" \
+      "${PYTHON_BIN}" "${CONTAINER_TASK_TMP_TOOL}" cleanup \
+        --path "${CONTAINER_CI_TASK_TMP_ROOT}" \
+        --target-sha "${sha}" || cleanup_status=$?
+    if [[ ${cleanup_status} -ne 0 ]]; then
+      echo "Failed to clean Local CI task temporary root: ${CONTAINER_CI_TASK_TMP_ROOT}" >&2
+      if [[ ${status} -eq 0 ]]; then
+        status="${cleanup_status}"
+      fi
+    fi
+  fi
+  exit "${status}"
+}
+
+trap cleanup_container_task_tmp EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+CONTAINER_CI_TASK_TMP_ROOT="$(
+  docker exec "${LOCAL_CI_CONTAINER}" \
+    mktemp -d "/tmp/triton-anchor-local-ci-task.${sha:0:12}.XXXXXX"
+)"
+if [[ ! "${CONTAINER_CI_TASK_TMP_ROOT}" =~ ^/tmp/triton-anchor-local-ci-task\.${sha:0:12}\.[A-Za-z0-9]{6}$ ]]; then
+  echo "Container returned an invalid Local CI task temporary root: ${CONTAINER_CI_TASK_TMP_ROOT@Q}" >&2
+  exit 1
+fi
+CONTAINER_CI_RUNNER_DIR="${CONTAINER_CI_TASK_TMP_ROOT}/runner"
+CONTAINER_TASK_TMP_TOOL="${CONTAINER_CI_TASK_TMP_ROOT}/task_tmp.py"
+
+docker cp "${LOCAL_CI_ROOT}/shared/task_tmp.py" \
+  "${LOCAL_CI_CONTAINER}:${CONTAINER_TASK_TMP_TOOL}"
+docker exec "${LOCAL_CI_CONTAINER}" \
+  "${PYTHON_BIN}" "${CONTAINER_TASK_TMP_TOOL}" prepare \
+    --path "${CONTAINER_CI_TASK_TMP_ROOT}" \
+    --target-sha "${sha}"
 docker cp "${LOCAL_CI_ROOT}/." "${LOCAL_CI_CONTAINER}:${CONTAINER_CI_RUNNER_DIR}/"
 
 docker exec \
   "${docker_args[@]}" \
   -e LOCAL_CI_COMMIT="${sha}" \
+  -e LOCAL_CI_SCRIPT_STAGED="1" \
+  -e LOCAL_CI_TASK_TMP_ROOT="${CONTAINER_CI_TASK_TMP_ROOT}" \
   -e LOCAL_CI_RUNNER_DIR="${CONTAINER_CI_RUNNER_DIR}" \
+  -e TMPDIR="${CONTAINER_CI_TASK_TMP_ROOT}/tmp" \
   "${LOCAL_CI_CONTAINER}" \
   bash -lc '
-    cleanup() { rm -rf -- "${LOCAL_CI_RUNNER_DIR}"; }
-    trap cleanup EXIT
     bash "${LOCAL_CI_RUNNER_DIR}/deterministic_ci/run_deterministic_ci.sh" "${LOCAL_CI_COMMIT}"
   '

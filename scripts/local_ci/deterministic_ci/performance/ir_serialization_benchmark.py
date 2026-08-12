@@ -63,7 +63,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeat", type=int, default=20)
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument(
-        "--work-root", default="/tmp/triton_anchor_ir_serialization"
+        "--work-root",
+        default=str(
+            Path(os.environ.get("TMPDIR", "/tmp")) / "triton_anchor_ir_serialization"
+        ),
     )
     parser.add_argument("--output-json", default="ir_serialization_results.json")
     parser.add_argument("--output-csv", default="ir_serialization_results.csv")

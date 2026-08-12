@@ -29,6 +29,7 @@ CANONICAL_PATHS = (
     "shared/result_paths.py",
     "shared/finding_locations.py",
     "shared/dump_artifacts.py",
+    "shared/task_tmp.py",
     "shared/path_utils.sh",
     "shared/validate_task_metadata.py",
     "deterministic_ci/performance/common.py",

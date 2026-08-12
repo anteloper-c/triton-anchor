@@ -237,6 +237,7 @@ stage_runner_scripts() {
     results/bridge_gitee_to_github_status.py \
     shared/finding_locations.py \
     shared/dump_artifacts.py \
+    shared/task_tmp.py \
     shared/result_paths.py \
     shared/path_utils.sh \
     shared/validate_task_metadata.py; do
