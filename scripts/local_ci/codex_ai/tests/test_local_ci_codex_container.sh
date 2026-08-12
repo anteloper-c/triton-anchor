@@ -451,6 +451,9 @@ if command == "inspect":
     raise SystemExit(0)
 
 if command == "commit":
+    if scenario == "prepare_timeout":
+        time.sleep(5)
+        raise SystemExit(0)
     if scenario == "commit_error":
         raise SystemExit(21)
     (state / "active-image").write_text(args[-1], encoding="utf-8")
@@ -690,8 +693,12 @@ run_case() {
   local timeout_seconds="$4"
   local expected_exit="$5"
   local startup_timeout_seconds=600
+  local prepare_timeout_seconds=1500
   if [[ "${scenario}" == "startup_timeout" ]]; then
     startup_timeout_seconds=1
+  fi
+  if [[ "${scenario}" == "prepare_timeout" ]]; then
+    prepare_timeout_seconds=1
   fi
   local case_target_sha="${6:-${target_sha}}"
   local case_base_sha="${7:-${base_sha}}"
@@ -753,6 +760,7 @@ run_case() {
   LOCAL_CI_CONTAINER="anchor-sophgo-ci" \
   CODEX_AI_CI_WORKSPACE_ROOT="${workspace_root}" \
   CODEX_AI_CI_TIMEOUT_SECONDS="${timeout_seconds}" \
+  CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS="${prepare_timeout_seconds}" \
   CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS="${startup_timeout_seconds}" \
   CODEX_AI_CI_REASONING_EFFORT="low" \
     "${runner}" "${repo_url}" "${output_dir}" "${case_target_sha}" \
@@ -791,7 +799,8 @@ run_case() {
     "${docker_state}/docker.log"
   grep -Fq "image rm -f triton-anchor-codex-ai-snapshot:" \
     "${docker_state}/docker.log"
-  if [[ "${scenario}" != "start_error" && "${scenario}" != "commit_error" ]]; then
+  if [[ "${scenario}" != "start_error" && "${scenario}" != "commit_error" && \
+    "${scenario}" != "prepare_timeout" ]]; then
     grep -Fq "cp ${case_codex_home}/config.toml" "${docker_state}/docker.log"
     grep -Fq "cp ${case_codex_home}/auth.json" "${docker_state}/docker.log"
   fi
@@ -852,6 +861,12 @@ python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")
 grep -Fxq "test_generation_expected: true" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: pass" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "timeout_seconds: 30" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "prepare_timeout_seconds: 1500" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "prepare_timed_out: false" "${success_output}/codex-ai-ci-summary.txt"
+grep -Eq '^prepare_duration_seconds: [0-9]+$' "${success_output}/codex-ai-ci-summary.txt"
+grep -Eq '^snapshot_duration_seconds: [0-9]+$' "${success_output}/codex-ai-ci-summary.txt"
+grep -Eq '^container_start_duration_seconds: [0-9]+$' "${success_output}/codex-ai-ci-summary.txt"
+grep -Eq '^input_setup_duration_seconds: [0-9]+$' "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "startup_timeout_seconds: 600" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "startup_progress: true" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "startup_timed_out: false" "${success_output}/codex-ai-ci-summary.txt"
@@ -1114,6 +1129,24 @@ grep -Fxq "startup_timed_out: true" \
   "${startup_timeout_output}/codex-ai-ci-summary.txt"
 grep -Fq "启动阶段超过 1 秒" "${startup_timeout_output}/codex-ai-ci-summary.txt"
 assert_chinese_failure_report "${startup_timeout_output}"
+
+run_case prepare-timeout prepare_timeout 0 30 1
+prepare_timeout_output="${test_root}/prepare-timeout/output"
+grep -Fxq "failure_code: container_prepare_timeout" \
+  "${prepare_timeout_output}/codex-ai-ci-summary.txt"
+grep -Fxq "prepare_timeout_seconds: 1" \
+  "${prepare_timeout_output}/codex-ai-ci-summary.txt"
+grep -Fxq "prepare_timed_out: true" \
+  "${prepare_timeout_output}/codex-ai-ci-summary.txt"
+grep -Fxq "prepare_timeout_phase: environment_snapshot" \
+  "${prepare_timeout_output}/codex-ai-ci-summary.txt"
+grep -Eq '^prepare_duration_seconds: [0-9]+$' \
+  "${prepare_timeout_output}/codex-ai-ci-summary.txt"
+grep -Eq '^snapshot_duration_seconds: [0-9]+$' \
+  "${prepare_timeout_output}/codex-ai-ci-summary.txt"
+grep -Fq "容器准备阶段超过 1 秒" \
+  "${prepare_timeout_output}/codex-ai-ci-summary.txt"
+assert_chinese_failure_report "${prepare_timeout_output}"
 
 run_case start-error start_error 0 30 1
 start_output="${test_root}/start-error/output"

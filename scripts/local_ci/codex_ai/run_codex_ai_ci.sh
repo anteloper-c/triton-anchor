@@ -19,6 +19,7 @@ CODEX_BIN="${CODEX_BIN:-codex}"
 CODEX_AI_CI_HOME="${CODEX_AI_CI_HOME:-}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 CODEX_AI_CI_TIMEOUT_SECONDS="${CODEX_AI_CI_TIMEOUT_SECONDS:-3600}"
+CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS="${CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS:-1500}"
 CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS="${CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS:-600}"
 CODEX_AI_CI_REASONING_EFFORT="${CODEX_AI_CI_REASONING_EFFORT:-medium}"
 CODEX_AI_CI_WORKSPACE_ROOT="${CODEX_AI_CI_WORKSPACE_ROOT:-${TMPDIR:-/tmp}/triton-anchor-codex-ai}"
@@ -92,6 +93,14 @@ constraint_reason="尚未获得可校验的测试执行信息。"
 turn_completed="false"
 startup_progress="false"
 startup_timed_out="false"
+prepare_timed_out="false"
+prepare_timeout_phase=""
+prepare_started_seconds=0
+prepare_deadline_seconds=0
+prepare_duration_seconds="UNKNOWN"
+snapshot_duration_seconds="UNKNOWN"
+container_start_duration_seconds="UNKNOWN"
+input_setup_duration_seconds="UNKNOWN"
 command_executed="false"
 workspace_dirty="false"
 workspace_dir=""
@@ -181,6 +190,13 @@ write_summary() {
     echo "started_at: ${start_time}"
     echo "duration_seconds: ${duration_seconds}"
     echo "timeout_seconds: ${CODEX_AI_CI_TIMEOUT_SECONDS}"
+    echo "prepare_timeout_seconds: ${CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS}"
+    echo "prepare_timed_out: ${prepare_timed_out}"
+    echo "prepare_timeout_phase: ${prepare_timeout_phase}"
+    echo "prepare_duration_seconds: ${prepare_duration_seconds}"
+    echo "snapshot_duration_seconds: ${snapshot_duration_seconds}"
+    echo "container_start_duration_seconds: ${container_start_duration_seconds}"
+    echo "input_setup_duration_seconds: ${input_setup_duration_seconds}"
     echo "reasoning_effort: ${CODEX_AI_CI_REASONING_EFFORT}"
     echo "startup_timeout_seconds: ${CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS}"
     echo "startup_progress: ${startup_progress}"
@@ -524,6 +540,7 @@ codex_failure_code_for_reason() {
     *"Codex CLI"* | *"找不到可执行的 Codex"*) echo "codex_cli_unavailable" ;;
     *"CODEX_AI_CI_HOME"* | *"独立凭据"* | *"config.toml"* | *"auth.json"*) echo "credential_validation_failed" ;;
     *"提示词"* | *"渲染"*) echo "prompt_render_failed" ;;
+    *"容器准备阶段"* | *"环境快照超时"*) echo "container_prepare_timeout" ;;
     *"硬超时"*) echo "timeout" ;;
     *"启动阶段"* | *"首个有效进展"*) echo "startup_timeout" ;;
     *"CODEX_AI_CI_COMPLETE"*) echo "missing_completion_marker" ;;
@@ -543,6 +560,7 @@ codex_failure_public_reason() {
     codex_cli_unavailable) echo "Codex AI 自动审查工具在当前环境中不可用" ;;
     credential_validation_failed) echo "Codex 审查凭据校验未通过" ;;
     prompt_render_failed) echo "Codex 审查输入准备失败" ;;
+    container_prepare_timeout) echo "Codex 审查运行环境准备超时" ;;
     timeout) echo "Codex 自动审查执行超时" ;;
     startup_timeout) echo "Codex 自动审查启动阶段超时" ;;
     missing_completion_marker | missing_turn_completed) echo "Codex 自动审查没有完整结束" ;;
@@ -793,6 +811,7 @@ validate_prerequisites() {
   local prompt_template
   local integer_names=(
     CODEX_AI_CI_TIMEOUT_SECONDS
+    CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS
     CODEX_AI_CI_MIN_GENERATED_TEST_CASES
     CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS
     CODEX_AI_CI_MAX_GENERATED_TEST_CASES
@@ -1042,20 +1061,107 @@ classify_review_context() {
   printf '%s\n' "${changed_file_groups_json}" > "${output_dir}/codex-context-summary.json"
 }
 
+run_prepare_command() {
+  local phase="$1"
+  shift
+  local remaining_seconds="$((prepare_deadline_seconds - SECONDS))"
+  local command_started_seconds="${SECONDS}"
+  local command_exit=0
+
+  if ((remaining_seconds <= 0)); then
+    prepare_timed_out="true"
+    prepare_timeout_phase="${phase}"
+    return 124
+  fi
+
+  echo "Codex 容器准备开始：${phase}（剩余预算 ${remaining_seconds} 秒）。" >> "${log_path}"
+  timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
+    "$@" >> "${log_path}" 2>&1
+  command_exit=$?
+  echo "Codex 容器准备结束：${phase}（耗时 $((SECONDS - command_started_seconds)) 秒，退出码 ${command_exit}）。" \
+    >> "${log_path}"
+  if [[ ${command_exit} -eq 124 || ${command_exit} -eq 137 ]]; then
+    prepare_timed_out="true"
+    prepare_timeout_phase="${phase}"
+  fi
+  return "${command_exit}"
+}
+
+run_prepare_capture() {
+  local output_variable="$1"
+  local phase="$2"
+  shift 2
+  local remaining_seconds="$((prepare_deadline_seconds - SECONDS))"
+  local command_started_seconds="${SECONDS}"
+  local command_exit=0
+  local captured_output=""
+
+  if ((remaining_seconds <= 0)); then
+    prepare_timed_out="true"
+    prepare_timeout_phase="${phase}"
+    return 124
+  fi
+
+  echo "Codex 容器准备开始：${phase}（剩余预算 ${remaining_seconds} 秒）。" >> "${log_path}"
+  captured_output="$(
+    timeout --signal=TERM --kill-after=30s "${remaining_seconds}s" \
+      "$@" 2>> "${log_path}"
+  )"
+  command_exit=$?
+  echo "Codex 容器准备结束：${phase}（耗时 $((SECONDS - command_started_seconds)) 秒，退出码 ${command_exit}）。" \
+    >> "${log_path}"
+  if [[ ${command_exit} -eq 124 || ${command_exit} -eq 137 ]]; then
+    prepare_timed_out="true"
+    prepare_timeout_phase="${phase}"
+  fi
+  if [[ ${command_exit} -eq 0 ]]; then
+    printf -v "${output_variable}" '%s' "${captured_output}"
+  fi
+  return "${command_exit}"
+}
+
+fail_prepare_step() {
+  local reason="$1"
+  prepare_duration_seconds="$((SECONDS - prepare_started_seconds))"
+  if [[ "${snapshot_duration_seconds}" == "UNKNOWN" ]]; then
+    snapshot_duration_seconds="$((SECONDS - phase_started_seconds))"
+  elif [[ "${container_start_duration_seconds}" == "UNKNOWN" ]]; then
+    container_start_duration_seconds="$((SECONDS - phase_started_seconds))"
+  elif [[ "${input_setup_duration_seconds}" == "UNKNOWN" ]]; then
+    input_setup_duration_seconds="$((SECONDS - phase_started_seconds))"
+  fi
+  if [[ "${prepare_timed_out}" == "true" ]]; then
+    failure_code="container_prepare_timeout"
+    fail_ai_ci "Codex 容器准备阶段超过 ${CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS} 秒（阶段：${prepare_timeout_phase}）"
+  fi
+  fail_ai_ci "${reason}"
+}
+
 create_ephemeral_container() {
   local resource_key
   local workspace_rw
+  local container_running
+  local mount_destinations
+  local copied_sha
+  local phase_started_seconds
   resource_key="$(date -u +%Y%m%dT%H%M%SZ)-${target_sha:0:12}-$$"
   resource_key="${resource_key,,}"
   ephemeral_container="anchor-codex-ai-${resource_key}"
   ephemeral_image="triton-anchor-codex-ai-snapshot:${resource_key}"
+  prepare_started_seconds="${SECONDS}"
+  prepare_deadline_seconds="$((SECONDS + 10#${CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS}))"
 
   echo "正在从 ${LOCAL_CI_CONTAINER} 创建本次任务的临时镜像 ${ephemeral_image}。" >> "${log_path}"
-  if ! docker commit "${LOCAL_CI_CONTAINER}" "${ephemeral_image}" >> "${log_path}" 2>&1; then
-    fail_ai_ci "无法从本次 Local CI 容器创建环境快照"
+  phase_started_seconds="${SECONDS}"
+  if ! run_prepare_command "environment_snapshot" \
+    docker commit "${LOCAL_CI_CONTAINER}" "${ephemeral_image}"; then
+    snapshot_duration_seconds="$((SECONDS - phase_started_seconds))"
+    fail_prepare_step "无法从本次 Local CI 容器创建环境快照"
   fi
+  snapshot_duration_seconds="$((SECONDS - phase_started_seconds))"
 
-  if ! docker run -dit \
+  phase_started_seconds="${SECONDS}"
+  if ! run_prepare_command "container_start" docker run -dit \
     --name "${ephemeral_container}" \
     --hostname "${ephemeral_container}" \
     --label "triton-anchor.role=codex-ai" \
@@ -1063,99 +1169,117 @@ create_ephemeral_container() {
     --volumes-from "${LOCAL_CI_CONTAINER}:ro" \
     --entrypoint /bin/bash \
     "${ephemeral_image}" \
-    -lc 'trap : TERM INT; while :; do sleep 3600; done' \
-    >> "${log_path}" 2>&1; then
-    fail_ai_ci "无法启动本次任务的临时 Codex 容器"
+    -lc 'trap : TERM INT; while :; do sleep 3600; done'; then
+    container_start_duration_seconds="$((SECONDS - phase_started_seconds))"
+    fail_prepare_step "无法启动本次任务的临时 Codex 容器"
   fi
 
-  if [[ "$(docker inspect --format '{{.State.Running}}' "${ephemeral_container}" 2>> "${log_path}" || true)" != "true" ]]; then
-    fail_ai_ci "临时 Codex 容器启动后未保持运行"
+  if ! run_prepare_capture container_running "inspect_container_running" \
+    docker inspect --format '{{.State.Running}}' "${ephemeral_container}"; then
+    fail_prepare_step "无法检查临时 Codex 容器状态"
   fi
-  if docker inspect --format '{{range .Mounts}}{{println .Destination}}{{end}}' \
-    "${ephemeral_container}" 2>> "${log_path}" | grep -Fxq '/var/run/docker.sock'; then
-    fail_ai_ci "临时 Codex 容器意外挂载了 Docker socket"
+  if [[ "${container_running}" != "true" ]]; then
+    fail_prepare_step "临时 Codex 容器启动后未保持运行"
   fi
-  workspace_rw="$(
+  if ! run_prepare_capture mount_destinations "inspect_container_mounts" \
+    docker inspect --format '{{range .Mounts}}{{println .Destination}}{{end}}' \
+      "${ephemeral_container}"; then
+    fail_prepare_step "无法检查临时 Codex 容器挂载"
+  fi
+  if grep -Fxq '/var/run/docker.sock' <<< "${mount_destinations}"; then
+    fail_prepare_step "临时 Codex 容器意外挂载了 Docker socket"
+  fi
+  if ! run_prepare_capture workspace_rw "inspect_workspace_mode" \
     docker inspect \
       --format '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{println .RW}}{{end}}{{end}}' \
-      "${ephemeral_container}" 2>> "${log_path}" || true
-  )"
-  if [[ "${workspace_rw}" != "false" ]]; then
-    fail_ai_ci "临时 Codex 容器没有以只读方式复用 /workspace"
+      "${ephemeral_container}"; then
+    fail_prepare_step "无法检查临时 Codex 容器的 /workspace 挂载模式"
   fi
+  if [[ "${workspace_rw}" != "false" ]]; then
+    fail_prepare_step "临时 Codex 容器没有以只读方式复用 /workspace"
+  fi
+  container_start_duration_seconds="$((SECONDS - phase_started_seconds))"
 
-  if ! docker exec --user 0 "${ephemeral_container}" \
+  phase_started_seconds="${SECONDS}"
+  if ! run_prepare_command "workspace_setup" docker exec --user 0 "${ephemeral_container}" \
     mkdir -p \
       "${container_codex_home}" \
       "$(dirname "${container_codex_bin}")" \
       "${container_checkout_dir}" \
-      "${container_input_dir}" >> "${log_path}" 2>&1; then
-    fail_ai_ci "无法在临时容器中创建 Codex 工作目录"
+      "${container_input_dir}"; then
+    fail_prepare_step "无法在临时容器中创建 Codex 工作目录"
   fi
 
-  if ! docker cp "${host_codex_bin}" \
-    "${ephemeral_container}:${container_codex_bin}" >> "${log_path}" 2>&1; then
-    fail_ai_ci "无法把 Codex CLI 复制到临时容器"
+  if ! run_prepare_command "copy_codex_cli" docker cp "${host_codex_bin}" \
+    "${ephemeral_container}:${container_codex_bin}"; then
+    fail_prepare_step "无法把 Codex CLI 复制到临时容器"
   fi
-  if ! docker exec --user 0 "${ephemeral_container}" \
-    chmod +x "${container_codex_bin}" >> "${log_path}" 2>&1; then
-    fail_ai_ci "无法设置容器内 Codex CLI 的执行权限"
+  if ! run_prepare_command "configure_codex_cli" \
+    docker exec --user 0 "${ephemeral_container}" \
+      chmod +x "${container_codex_bin}"; then
+    fail_prepare_step "无法设置容器内 Codex CLI 的执行权限"
   fi
   for config_file in config.toml auth.json; do
-    if ! docker cp "${CODEX_AI_CI_HOME}/${config_file}" \
-      "${ephemeral_container}:${container_codex_home}/${config_file}" \
-      >> "${log_path}" 2>&1; then
-      fail_ai_ci "无法把 ${config_file} 复制到临时容器"
+    if ! run_prepare_command "copy_${config_file}" docker cp \
+      "${CODEX_AI_CI_HOME}/${config_file}" \
+      "${ephemeral_container}:${container_codex_home}/${config_file}"; then
+      fail_prepare_step "无法把 ${config_file} 复制到临时容器"
     fi
   done
 
-  if ! docker cp "${workspace_dir}/." \
-    "${ephemeral_container}:${container_checkout_dir}" >> "${log_path}" 2>&1; then
-    fail_ai_ci "无法把经过验证的 checkout 复制到临时容器"
+  if ! run_prepare_command "copy_checkout" docker cp "${workspace_dir}/." \
+    "${ephemeral_container}:${container_checkout_dir}"; then
+    fail_prepare_step "无法把经过验证的 checkout 复制到临时容器"
   fi
-  if ! docker cp "${schema_path}" \
-    "${ephemeral_container}:${container_schema_path}" >> "${log_path}" 2>&1; then
-    fail_ai_ci "无法把报告 schema 复制到临时容器"
+  if ! run_prepare_command "copy_report_schema" docker cp "${schema_path}" \
+    "${ephemeral_container}:${container_schema_path}"; then
+    fail_prepare_step "无法把报告 schema 复制到临时容器"
   fi
-  if ! docker cp "${changed_files_manifest_path}" \
-    "${ephemeral_container}:${container_changed_files_manifest}" >> "${log_path}" 2>&1; then
-    fail_ai_ci "无法把变更文件清单复制到临时容器"
+  if ! run_prepare_command "copy_changed_files_manifest" docker cp \
+    "${changed_files_manifest_path}" \
+    "${ephemeral_container}:${container_changed_files_manifest}"; then
+    fail_prepare_step "无法把变更文件清单复制到临时容器"
   fi
   if [[ -f "${output_dir}/local-ci.log" ]]; then
-    if ! docker cp "${output_dir}/local-ci.log" \
-      "${ephemeral_container}:${container_local_ci_log}" >> "${log_path}" 2>&1; then
-      fail_ai_ci "无法把 Local CI 日志复制到临时容器"
+    if ! run_prepare_command "copy_local_ci_log" docker cp \
+      "${output_dir}/local-ci.log" \
+      "${ephemeral_container}:${container_local_ci_log}"; then
+      fail_prepare_step "无法把 Local CI 日志复制到临时容器"
     fi
   fi
 
-  if ! docker exec --user 0 "${ephemeral_container}" \
-    chown -R 0:0 \
-      "${container_codex_home}" \
-      "${container_workspace_root}" \
-      "${container_codex_bin}" >> "${log_path}" 2>&1; then
-    fail_ai_ci "无法修正临时容器内 Codex 文件的所有权"
+  if ! run_prepare_command "configure_workspace_ownership" \
+    docker exec --user 0 "${ephemeral_container}" \
+      chown -R 0:0 \
+        "${container_codex_home}" \
+        "${container_workspace_root}" \
+        "${container_codex_bin}"; then
+    fail_prepare_step "无法修正临时容器内 Codex 文件的所有权"
   fi
-  if ! docker exec --user 0 "${ephemeral_container}" \
-    chmod 600 \
-      "${container_codex_home}/config.toml" \
-      "${container_codex_home}/auth.json" >> "${log_path}" 2>&1; then
-    fail_ai_ci "无法收紧临时容器内 Codex 配置文件权限"
+  if ! run_prepare_command "configure_credential_permissions" \
+    docker exec --user 0 "${ephemeral_container}" \
+      chmod 600 \
+        "${container_codex_home}/config.toml" \
+        "${container_codex_home}/auth.json"; then
+    fail_prepare_step "无法收紧临时容器内 Codex 配置文件权限"
   fi
 
-  local copied_sha
   copied_sha="$(
     docker exec --user 0 "${ephemeral_container}" \
       git -C "${container_checkout_dir}" rev-parse HEAD 2>> "${log_path}" || true
   )"
+  copied_sha="${copied_sha//$'\r'/}"
   if [[ "${copied_sha}" != "${target_sha}" ]]; then
-    fail_ai_ci "容器内 checkout 的 SHA 与目标 SHA 不一致"
+    fail_prepare_step "容器内 checkout 的 SHA 与目标 SHA 不一致"
   fi
-  if ! docker exec --user 0 "${ephemeral_container}" \
-    "${container_codex_bin}" --version >> "${log_path}" 2>&1; then
-    fail_ai_ci "Codex CLI 无法在临时容器中启动"
+  if ! run_prepare_command "verify_codex_cli" \
+    docker exec --user 0 "${ephemeral_container}" \
+      "${container_codex_bin}" --version; then
+    fail_prepare_step "Codex CLI 无法在临时容器中启动"
   fi
+  input_setup_duration_seconds="$((SECONDS - phase_started_seconds))"
+  prepare_duration_seconds="$((SECONDS - prepare_started_seconds))"
 }
-
 
 collect_container_workspace() {
   local container_untracked_list="${container_workspace_root}/untracked-files.list"
