@@ -1,39 +1,55 @@
 name: Receive Local CI Result
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      sha:
-        description: Commit SHA being tested
+      pr_number:
+        required: false
+        default: ""
+        type: string
+      expected_head_sha:
+        required: false
+        default: ""
+        type: string
+      comparison_base_sha:
+        required: false
+        default: ""
+        type: string
+      tested_sha:
+        required: true
+        type: string
+      worker_revision_sha:
         required: true
         type: string
       source_branch:
-        description: Original GitHub source branch
+        required: true
+        type: string
+      target_branch:
         required: true
         type: string
       task_ref:
-        description: Gitee task branch containing the exact commit
         required: true
         type: string
       context:
-        description: GitHub commit status context to update
         required: false
         default: ""
         type: string
       attempt:
-        description: Receiver continuation attempt
         required: true
-        default: "1"
         type: string
       started_at:
-        description: Initial dispatch time in UTC
         required: true
         type: string
       wait_seconds:
-        description: Polling window for this receiver attempt
         required: true
-        default: "20400"
         type: string
+      run_title:
+        required: false
+        default: ""
+        type: string
+    secrets:
+      GITEE_TOKEN:
+        required: true
 
 permissions:
   actions: write
@@ -59,15 +75,19 @@ jobs:
       codex_ai_result: ${{ steps.bridge.outputs.codex_ai_result }}
     env:
       CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
-      SHA: ${{ inputs.sha }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+      COMPARISON_BASE_SHA: ${{ inputs.comparison_base_sha }}
+      TESTED_SHA: ${{ inputs.tested_sha }}
+      WORKER_REVISION_SHA: ${{ inputs.worker_revision_sha }}
       SOURCE_BRANCH: ${{ inputs.source_branch }}
+      TARGET_BRANCH: ${{ inputs.target_branch }}
       TASK_REF: ${{ inputs.task_ref }}
       ATTEMPT: ${{ inputs.attempt }}
       STARTED_AT: ${{ inputs.started_at }}
       WAIT_SECONDS: ${{ inputs.wait_seconds }}
       MAX_ATTEMPTS: ${{ vars.LOCAL_CI_RECEIVER_MAX_ATTEMPTS || '6' }}
       POLL_INTERVAL_SECONDS: ${{ vars.LOCAL_CI_BRIDGE_POLL_INTERVAL_SECONDS || '60' }}
-      RECEIVER_REF: ${{ vars.LOCAL_CI_RECEIVER_REF || github.event.repository.default_branch }}
       GITEE_RESULTS_OWNER: ${{ vars.GITEE_RESULTS_OWNER || vars.GITEE_OWNER || 'likehupochuan' }}
       GITEE_RESULTS_REPO: ${{ vars.GITEE_RESULTS_REPO || 'triton-anchor-local-ci-results' }}
       GITEE_RESULTS_BRANCH: ${{ vars.GITEE_RESULTS_BRANCH || 'local-ci-results' }}
@@ -75,18 +95,17 @@ jobs:
       GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.worker_revision_sha }}
           submodules: false
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
-      - name: Check bridge script
-        run: python -m py_compile scripts/local_ci/results/bridge_gitee_to_github_status.py
-
-      - name: Wait for Gitee local CI result
+      - name: Wait for Gitee Local CI result
         id: bridge
         env:
           GH_TOKEN: ${{ github.token }}
@@ -101,78 +120,78 @@ jobs:
             --gitee-repo "${GITEE_RESULTS_REPO}" \
             --gitee-results-branch "${GITEE_RESULTS_BRANCH}" \
             --gitee-web-url "${GITEE_RESULTS_WEB_URL}" \
-            --source-branch "${SOURCE_BRANCH}" \
-            --task-ref "${TASK_REF}" \
-            --sha "${SHA}" \
-            --context "${CONTEXT}" \
-            --timeout-seconds "${WAIT_SECONDS}" \
+            --source-branch "${SOURCE_BRANCH}" --task-ref "${TASK_REF}" \
+            --sha "${TESTED_SHA}" --status-sha "${EXPECTED_HEAD_SHA:-${TESTED_SHA}}" \
+            --pr-number "${PR_NUMBER}" --expected-head-sha "${EXPECTED_HEAD_SHA}" \
+            --comparison-base-sha "${COMPARISON_BASE_SHA}" \
+            --target-branch "${TARGET_BRANCH}" \
+            --context "${CONTEXT}" --timeout-seconds "${WAIT_SECONDS}" \
             --poll-interval-seconds "${POLL_INTERVAL_SECONDS}" \
-            --require-result \
-            --exit-with-result
+            --require-result --exit-with-result
           bridge_status=$?
           set -e
 
           case "${bridge_status}" in
-            0)
+            0|10)
               echo "result_ready=true" >> "${GITHUB_OUTPUT}"
               exit 0
               ;;
-            10)
-              # The bridge published the failure details; stage jobs report them below.
-              echo "result_ready=true" >> "${GITHUB_OUTPUT}"
+            11)
+              echo "Stale PR result was ignored."
               exit 0
               ;;
             3)
               if [ "${ATTEMPT}" -lt "${MAX_ATTEMPTS}" ]; then
                 next_attempt=$((ATTEMPT + 1))
-                if gh workflow run receive-local-ci-result.yml \
-                  --repo "${REPO}" \
-                  --ref "${RECEIVER_REF}" \
-                  -f sha="${SHA}" \
-                  -f source_branch="${SOURCE_BRANCH}" \
-                  -f task_ref="${TASK_REF}" \
-                  -f context="${CONTEXT}" \
-                  -f attempt="${next_attempt}" \
-                  -f started_at="${STARTED_AT}" \
-                  -f wait_seconds="${WAIT_SECONDS}"; then
-                  gh api --method POST "repos/${REPO}/statuses/${SHA}" \
-                    -f state=pending \
-                    -f context="${CONTEXT}" \
-                    -f description="local CI still running; receiver ${next_attempt}/${MAX_ATTEMPTS}"
-                  exit 0
+                if [ -n "${PR_NUMBER}" ]; then
+                  receiver_title="Receive PR #${PR_NUMBER}: ${SOURCE_BRANCH}"
+                else
+                  receiver_title="Receive ${SOURCE_BRANCH}: ${TESTED_SHA:0:12}"
                 fi
-                description="failed to continue local CI result receiver"
-              else
-                description="local CI result not received after ${MAX_ATTEMPTS} receiver attempts"
+                gh workflow run ci-gateway.yml --repo "${REPO}" --ref "${GITHUB_REF_NAME}" \
+                  -f gateway_contract_version=3 -f mode=receive \
+                  -f pr_number="${PR_NUMBER}" -f expected_head_sha="${EXPECTED_HEAD_SHA}" \
+                  -f comparison_base_sha="${COMPARISON_BASE_SHA}" -f tested_sha="${TESTED_SHA}" \
+                  -f worker_revision_sha="${WORKER_REVISION_SHA}" \
+                  -f source_branch="${SOURCE_BRANCH}" -f target_branch="${TARGET_BRANCH}" \
+                  -f task_ref="${TASK_REF}" -f context="${CONTEXT}" \
+                  -f attempt="${next_attempt}" -f started_at="${STARTED_AT}" \
+                  -f wait_seconds="${WAIT_SECONDS}" \
+                  -f run_title="${receiver_title}"
+                gh api --method POST "repos/${REPO}/statuses/${EXPECTED_HEAD_SHA:-${TESTED_SHA}}" \
+                  -f state=pending -f context="${CONTEXT}" \
+                  -f description="local CI still running; receiver ${next_attempt}/${MAX_ATTEMPTS}"
+                exit 0
               fi
+              description="local CI result not received after ${MAX_ATTEMPTS} receiver attempts"
               ;;
-            *)
-              description="local CI result receiver failed"
-              ;;
+            *) description="local CI result receiver failed" ;;
           esac
-
-          gh api --method POST "repos/${REPO}/statuses/${SHA}" \
-            -f state=error \
-            -f context="${CONTEXT}" \
-            -f description="${description}"
+          gh api --method POST "repos/${REPO}/statuses/${EXPECTED_HEAD_SHA:-${TESTED_SHA}}" \
+            -f state=error -f context="${CONTEXT}" -f description="${description}"
           exit 1
 
-      - name: Refresh backend status Pages
+      - name: Request Dashboard refresh through Gateway
         if: ${{ always() && steps.bridge.outputs.result_ready == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          DASHBOARD_MAIN_TASK_REF: ${{ vars.DASHBOARD_SOURCE_BRANCH || 'ci/push/jiwang-delivery-ci' }}
-          DASHBOARD_FULL_TEST_TASK_REF: ${{ vars.DASHBOARD_FULL_TEST_SOURCE_BRANCH || 'ci/full/main' }}
+          DASHBOARD_MAIN_TASK_REF: ${{ vars.DASHBOARD_SOURCE_BRANCH || format('ci/push/{0}', vars.LOCAL_CI_PAGES_BRANCH || 'CI_dev') }}
+          DASHBOARD_FULL_TEST_TASK_REF: ${{ vars.DASHBOARD_FULL_TEST_SOURCE_BRANCH || format('ci/full/{0}', vars.LOCAL_CI_PAGES_BRANCH || 'CI_dev') }}
         run: |
-          if [[ "${TASK_REF}" != "${DASHBOARD_MAIN_TASK_REF}" \
-            && "${TASK_REF}" != "${DASHBOARD_FULL_TEST_TASK_REF}" ]]; then
-            echo "Skip Pages refresh for non-dashboard task: ${TASK_REF}"
+          if [ "${SOURCE_BRANCH}" != "${GITHUB_REF_NAME}" ]; then
+            echo "Cross-branch result only updates commit status."
             exit 0
           fi
-          gh workflow run backend-status-pages.yml \
-            --repo "${REPO}" \
-            --ref "${RECEIVER_REF}"
+          if [ "${TASK_REF}" != "${DASHBOARD_MAIN_TASK_REF}" ] && \
+             [ "${TASK_REF}" != "${DASHBOARD_FULL_TEST_TASK_REF}" ]; then
+            exit 0
+          fi
+          gh workflow run ci-gateway.yml --repo "${REPO}" --ref "${GITHUB_REF_NAME}" \
+            -f gateway_contract_version=3 -f mode=pages \
+            -f tested_sha="${TESTED_SHA}" -f worker_revision_sha="${WORKER_REVISION_SHA}" \
+            -f source_branch="${SOURCE_BRANCH}" -f target_branch="${TARGET_BRANCH}" \
+            -f task_ref="${TASK_REF}" -f run_title="Refresh Dashboard: ${SOURCE_BRANCH}"
 
   stage-results:
     name: Local CI / ${{ matrix.name }}
@@ -182,52 +201,33 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - key: overall
-            name: Overall
-          - key: frontend_smoke
-            name: Frontend smoke
-          - key: backend_smoke_jit
-            name: Backend smoke and JIT
-          - key: flaggems
-            name: FlagGems
-          - key: compile_time
-            name: Compile-time performance
-          - key: pass_profile
-            name: Pass profiling
-          - key: ir_serialization
-            name: IR serialization
+          - {key: overall, name: Overall, required: true}
+          - {key: frontend_build, name: Frontend build, required: true}
+          - {key: frontend_smoke, name: Frontend smoke, required: true}
+          - {key: backend_rebuild, name: Backend rebuild, required: true}
+          - {key: backend_smoke_jit, name: Backend smoke and JIT, required: true}
+          - {key: flaggems, name: FlagGems, required: false}
+          - {key: compile_time, name: Compile-time performance, required: false}
+          - {key: pass_profile, name: Pass profiling, required: false}
+          - {key: ir_serialization, name: IR serialization, required: false}
     runs-on: ubuntu-latest
     steps:
       - name: Report ${{ matrix.name }}
         env:
           STAGE_KEY: ${{ matrix.key }}
           STAGE_NAME: ${{ matrix.name }}
+          REQUIRED_STAGE: ${{ matrix.required }}
           STAGE_RESULTS: ${{ needs.receive.outputs.stage_results }}
           TARGET_URL: ${{ needs.receive.outputs.target_url }}
         run: |
-          status="$(python3 -c 'import json, os; print(json.loads(os.environ["STAGE_RESULTS"]).get(os.environ["STAGE_KEY"], "not_reported"))')"
-          {
-            echo "### ${STAGE_NAME}"
-            echo
-            echo "- Status: \`${status}\`"
-            if [ -n "${TARGET_URL}" ]; then
-              echo "- [Gitee artifacts](${TARGET_URL})"
-            fi
-          } >> "${GITHUB_STEP_SUMMARY}"
-
-          case "${status}" in
-            pass|success|warning)
-              exit 0
-              ;;
-            disabled|not_run|skipped|not_reported|"")
-              echo "${STAGE_NAME} was not run."
-              exit 0
-              ;;
-            *)
-              echo "${STAGE_NAME} failed with status: ${status}" >&2
-              exit 1
-              ;;
-          esac
+          status="$(python3 -c 'import json,os; print(json.loads(os.environ["STAGE_RESULTS"]).get(os.environ["STAGE_KEY"], "not_reported"))')"
+          printf '### %s\n\n- Status: `%s`\n' "${STAGE_NAME}" "${status}" >> "${GITHUB_STEP_SUMMARY}"
+          [ -z "${TARGET_URL}" ] || echo "- [Gitee artifacts](${TARGET_URL})" >> "${GITHUB_STEP_SUMMARY}"
+          case "${status}" in pass|success|warning) exit 0 ;; esac
+          if [ "${REQUIRED_STAGE}" = true ]; then
+            echo "Required stage ${STAGE_NAME} is ${status}" >&2
+            exit 1
+          fi
 
   codex-ai-result:
     name: Codex AI / Review
@@ -238,124 +238,59 @@ jobs:
       - name: Publish non-blocking Codex AI summary
         env:
           CODEX_AI_RESULT: ${{ needs.receive.outputs.codex_ai_result }}
-        shell: bash
         run: |
           set +e
           python3 <<'PY'
           import json
           import os
 
-          execution_labels = {
-              "pass": "完成",
-              "fail": "执行失败",
-              "skipped": "已跳过",
-              "not_reported": "未报告",
+          labels = {
+              "execution_status": {"pass": "完成", "fail": "执行失败", "skipped": "已跳过", "not_reported": "未报告"},
+              "verdict": {"PASS": "通过", "WARNING": "警告", "FAIL": "失败", "UNKNOWN": "未知", "NOT_RUN": "未运行"},
+              "test_status": {"passed": "通过", "stable_failure": "可稳定复现的失败", "flaky_failure": "非确定性失败", "infrastructure_failure": "基础设施失败", "test_generation_error": "测试生成失败", "insufficient_evidence": "证据不足", "not_run": "未执行", "UNKNOWN": "未知", "NOT_RUN": "未运行"},
+              "analysis_mode": {"full": "完整分析", "analysis_only": "只分析", "not_run": "未运行"},
+              "constraint_status": {"pass": "通过", "warning": "警告", "not_applicable": "不适用", "not_reported": "未报告"},
           }
-          verdict_labels = {
-              "PASS": "通过",
-              "WARNING": "警告",
-              "FAIL": "失败",
-              "UNKNOWN": "未知",
-              "NOT_RUN": "未运行",
-          }
-          test_labels = {
-              "passed": "通过",
-              "stable_failure": "可稳定复现的失败",
-              "flaky_failure": "非确定性失败",
-              "infrastructure_failure": "基础设施失败",
-              "test_generation_error": "测试生成失败",
-              "insufficient_evidence": "证据不足",
-              "not_run": "未执行",
-              "UNKNOWN": "未知",
-              "NOT_RUN": "未运行",
-          }
-          mode_labels = {
-              "full": "完整分析",
-              "analysis_only": "只分析",
-              "not_run": "未运行",
-          }
-          constraint_labels = {
-              "pass": "通过",
-              "warning": "警告",
-              "not_applicable": "不适用",
-              "not_reported": "未报告",
-          }
-
-          raw = os.environ.get("CODEX_AI_RESULT", "")
-          parse_error = ""
+          defaults = {"execution_status": "not_reported", "verdict": "UNKNOWN", "test_status": "UNKNOWN", "analysis_mode": "not_run", "constraint_status": "not_reported"}
           try:
-              data = json.loads(raw) if raw else {}
+              data = json.loads(os.environ.get("CODEX_AI_RESULT") or "{}")
               if not isinstance(data, dict):
                   raise ValueError("根节点不是 JSON 对象")
+              parse_error = ""
           except (json.JSONDecodeError, ValueError) as exc:
-              parse_error = f"无法解析 Codex AI 结果：{exc}"
               data = {}
+              parse_error = f"无法解析 Codex AI 结果：{exc}"
 
-          execution = str(data.get("execution_status") or "not_reported")
-          verdict = str(data.get("verdict") or "UNKNOWN")
-          test_status = str(data.get("test_status") or "UNKNOWN")
-          analysis_mode = str(data.get("analysis_mode") or "not_run")
-          constraint_status = str(data.get("constraint_status") or "not_reported")
-          constraint_reason = str(data.get("constraint_reason") or "")
-          failure_reason = str(data.get("failure_reason") or "")
-          comment = str(data.get("comment_markdown") or "").strip()
-          report_url = str(data.get("report_url") or "").strip()
-
-          def display(labels, value):
-              return f"{labels.get(value, value)} (`{value}`)"
-
+          values = {key: str(data.get(key) or default) for key, default in defaults.items()}
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
               stream.write("## Codex AI / Review（非阻塞）\n\n")
-              stream.write(
-                  "该结果仅供代码审查参考，不改变确定性 Local CI 状态，也不阻止合并。\n\n"
-              )
+              stream.write("该结果仅供代码审查参考，不改变确定性 Local CI 状态，也不阻止合并。\n\n")
               stream.write("| 字段 | 值 |\n| --- | --- |\n")
-              stream.write(
-                  f"| 执行状态 | {display(execution_labels, execution)} |\n"
-              )
-              stream.write(
-                  f"| AI 建议性结论 | {display(verdict_labels, verdict)} |\n"
-              )
-              stream.write(
-                  f"| 测试状态 | {display(test_labels, test_status)} |\n"
-              )
-              stream.write(
-                  f"| 分析模式 | {display(mode_labels, analysis_mode)} |\n"
-              )
-              stream.write(
-                  f"| 约束状态 | {display(constraint_labels, constraint_status)} |\n"
-              )
-              if constraint_reason:
-                  stream.write(f"\n**约束说明：** {constraint_reason}\n")
-              if failure_reason:
-                  stream.write(f"\n**执行说明：** {failure_reason}\n")
+              for key, title in (("execution_status", "执行状态"), ("verdict", "AI 建议性结论"), ("test_status", "测试状态"), ("analysis_mode", "分析模式"), ("constraint_status", "约束状态")):
+                  value = values[key]
+                  stream.write(f"| {title} | {labels[key].get(value, value)} (`{value}`) |\n")
+              for key, title in (("constraint_reason", "约束说明"), ("failure_reason", "执行说明")):
+                  if data.get(key):
+                      stream.write(f"\n**{title}：** {data[key]}\n")
               stream.write("\n### 关键问题概述\n\n")
-              stream.write(comment or "未生成 Codex AI 关键问题概述。")
-              stream.write("\n")
-              if report_url:
-                  stream.write(f"\n[查看 Gitee 完整报告]({report_url})\n")
+              stream.write(str(data.get("comment_markdown") or "未生成 Codex AI 关键问题概述。") + "\n")
+              if data.get("report_url"):
+                  stream.write(f"\n[查看 Gitee 完整报告]({data['report_url']})\n")
 
-          warnings = []
-          if parse_error:
-              warnings.append(parse_error)
-          if execution not in {"pass", "skipped"}:
+          warnings = [parse_error] if parse_error else []
+          if values["execution_status"] not in {"pass", "skipped"}:
               warnings.append("Codex AI 执行未完成，当前结果仅供参考。")
-          if verdict in {"WARNING", "FAIL"}:
-              warnings.append(f"Codex AI 给出{verdict_labels[verdict]}建议性结论。")
-          if test_status == "insufficient_evidence":
+          if values["verdict"] in {"WARNING", "FAIL"}:
+              warnings.append(f"Codex AI 给出{labels['verdict'][values['verdict']]}建议性结论。")
+          if values["test_status"] == "insufficient_evidence":
               warnings.append("Codex AI 定向测试证据不足。")
-          if constraint_status == "warning":
+          if values["constraint_status"] == "warning":
               warnings.append("Codex AI 测试执行超出轻量约束。")
           for warning in warnings:
               print(f"::warning title=Codex AI（非阻塞）::{warning}")
           PY
-          python_status=$?
-          if [ "${python_status}" -ne 0 ]; then
-            {
-              echo "## Codex AI / Review（非阻塞）"
-              echo
-              echo "Codex AI 摘要生成失败；该问题不影响确定性 Local CI 状态。"
-            } >> "${GITHUB_STEP_SUMMARY}"
+          status=$?
+          if [ "${status}" -ne 0 ]; then
             echo "::warning title=Codex AI（非阻塞）::Codex AI 摘要生成失败。"
           fi
           exit 0

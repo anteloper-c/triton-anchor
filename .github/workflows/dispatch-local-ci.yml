@@ -1,23 +1,16 @@
 name: Dispatch Local CI via Gitee
 
 on:
-  workflow_run:
-    workflows: ["Security Gate"]
-    types: [completed]
   push:
-    branches:
-      - main
-      - jiwang-delivery-ci
-      - ai-ci
   workflow_dispatch:
     inputs:
       source_branch:
         description: "GitHub branch represented by this local CI task"
         required: false
-        default: "jiwang-delivery-ci"
+        default: ""
         type: string
       commit_sha:
-        description: "Commit SHA to test; defaults to the workflow commit"
+        description: "Commit SHA to test; defaults to the branch head"
         required: false
         default: ""
         type: string
@@ -26,9 +19,46 @@ on:
         required: false
         default: "sample"
         type: choice
-        options:
-          - sample
-          - full
+        options: [sample, full]
+  workflow_call:
+    inputs:
+      pr_number:
+        required: false
+        default: ""
+        type: string
+      head_sha:
+        required: true
+        type: string
+      comparison_base_sha:
+        required: false
+        default: ""
+        type: string
+      tested_sha:
+        required: true
+        type: string
+      worker_revision_sha:
+        required: true
+        type: string
+      base_ref:
+        required: false
+        default: ""
+        type: string
+      head_repo:
+        required: true
+        type: string
+      head_ref:
+        required: true
+        type: string
+      target_branch:
+        required: true
+        type: string
+      run_title:
+        required: false
+        default: ""
+        type: string
+    secrets:
+      GITEE_TOKEN:
+        required: true
 
 permissions:
   actions: write
@@ -36,15 +66,11 @@ permissions:
   statuses: write
 
 concurrency:
-  group: dispatch-local-ci-${{ github.event_name }}-${{ github.event.workflow_run.id || github.ref_name || inputs.source_branch }}-${{ inputs.flaggems_mode || 'sample' }}
+  group: dispatch-local-ci-${{ inputs.head_ref || inputs.source_branch || github.ref_name }}-${{ inputs.tested_sha || inputs.commit_sha || github.sha }}-${{ inputs.flaggems_mode || 'sample' }}
   cancel-in-progress: true
 
 jobs:
   dispatch-local-ci:
-    if: >-
-      github.event_name != 'workflow_run' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'pull_request_target')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -53,186 +79,107 @@ jobs:
       GITEE_CI_REPO: ${{ vars.GITEE_RESULTS_REPO || 'triton-anchor-local-ci-results' }}
       GITEE_CI_REPO_URL: ${{ vars.GITEE_RESULTS_REPO_URL }}
       GITEE_CI_WEB_URL: ${{ vars.GITEE_RESULTS_WEB_URL || 'https://gitee.com/likehupochuan/triton-anchor-local-ci-results' }}
-      GITEE_USERNAME: ${{ secrets.GITEE_USERNAME }}
+      GITEE_USERNAME: ${{ vars.GITEE_USERNAME || 'likehupochuan' }}
       GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-      RECEIVER_REF: ${{ vars.LOCAL_CI_RECEIVER_REF || github.event.repository.default_branch }}
       RECEIVER_WAIT_SECONDS: ${{ vars.LOCAL_CI_RECEIVER_WAIT_SECONDS || '20400' }}
 
     steps:
-      - name: Download trusted Security Gate metadata
-        if: ${{ github.event_name == 'workflow_run' }}
-        uses: actions/download-artifact@v4
-        with:
-          name: security-gate-metadata
-          path: ${{ runner.temp }}/security-gate
-          github-token: ${{ github.token }}
-          run-id: ${{ github.event.workflow_run.id }}
-
-      - name: Resolve authorized task metadata
+      - name: Resolve frozen task metadata
         id: meta
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           REPOSITORY: ${{ github.repository }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+          INPUT_HEAD_SHA: ${{ inputs.head_sha }}
+          INPUT_BASE_SHA: ${{ inputs.comparison_base_sha }}
+          INPUT_TESTED_SHA: ${{ inputs.tested_sha }}
+          INPUT_WORKER_SHA: ${{ inputs.worker_revision_sha }}
+          INPUT_BASE_REF: ${{ inputs.base_ref }}
+          INPUT_HEAD_REPO: ${{ inputs.head_repo }}
+          INPUT_HEAD_REF: ${{ inputs.head_ref }}
+          INPUT_TARGET_BRANCH: ${{ inputs.target_branch }}
           EVENT_SHA: ${{ inputs.commit_sha || github.sha }}
           EVENT_SOURCE_BRANCH: ${{ inputs.source_branch || github.ref_name }}
           REQUESTED_FLAGGEMS_MODE: ${{ inputs.flaggems_mode || 'sample' }}
         run: |
           set -euo pipefail
 
-          PR_NUMBER=""
-          HEAD_SHA="${EVENT_SHA}"
-          HEAD_REF="${EVENT_SOURCE_BRANCH}"
-          HEAD_REPO="${REPOSITORY}"
-          BASE_SHA=""
-          BASE_REF=""
-          TESTED_SHA="${EVENT_SHA}"
-          TESTED_REF=""
+          PR_NUMBER="${INPUT_PR_NUMBER}"
+          HEAD_SHA="${INPUT_HEAD_SHA:-${EVENT_SHA}}"
+          HEAD_REF="${INPUT_HEAD_REF:-${EVENT_SOURCE_BRANCH}}"
+          HEAD_REPO="${INPUT_HEAD_REPO:-${REPOSITORY}}"
+          BASE_SHA="${INPUT_BASE_SHA}"
+          BASE_REF="${INPUT_BASE_REF}"
+          TESTED_SHA="${INPUT_TESTED_SHA:-${EVENT_SHA}}"
+          WORKER_REVISION_SHA="${INPUT_WORKER_SHA:-${GITHUB_SHA}}"
+          TARGET_BRANCH="${INPUT_TARGET_BRANCH:-${EVENT_SOURCE_BRANCH}}"
+          TESTED_REF="refs/heads/${HEAD_REF}"
           TESTED_SHA_KIND="commit"
-          HEAD_TASK_REF=""
+          flaggems_mode="${REQUESTED_FLAGGEMS_MODE:-sample}"
 
-          if [ "${EVENT_NAME}" = "workflow_run" ]; then
-            metadata_file="${RUNNER_TEMP}/security-gate/metadata.json"
-            test -s "${metadata_file}" || {
-              echo "::error::Missing Security Gate metadata"
-              exit 1
-            }
+          case "${flaggems_mode}" in sample|full) ;; *) exit 2 ;; esac
 
-            PR_NUMBER="$(jq -r '.pr_number // empty' "${metadata_file}")"
-            HEAD_SHA="$(jq -r '.head_sha // empty' "${metadata_file}")"
-            HEAD_REF="$(jq -r '.head_ref // empty' "${metadata_file}")"
-            HEAD_REPO="$(jq -r '.head_repo // empty' "${metadata_file}")"
-            BASE_SHA="$(jq -r '.base_sha // empty' "${metadata_file}")"
-            BASE_REF="$(jq -r '.base_ref // empty' "${metadata_file}")"
-
-            for value in "${PR_NUMBER}" "${HEAD_SHA}" "${HEAD_REF}" \
-                         "${HEAD_REPO}" "${BASE_SHA}" "${BASE_REF}"; do
-              test -n "${value}" || {
-                echo "::error::Security Gate metadata is incomplete"
-                exit 1
-              }
-            done
-
-            pr_payload="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
-            current_head_sha="$(jq -r '.head.sha // empty' <<< "${pr_payload}")"
-            current_base_sha="$(jq -r '.base.sha // empty' <<< "${pr_payload}")"
-            if [ "${current_head_sha}" != "${HEAD_SHA}" ]; then
-              echo "Skip stale authorization: ${HEAD_SHA}"
-              echo "should_dispatch=false" >> "${GITHUB_OUTPUT}"
-              exit 0
-            fi
-            if [ "${current_base_sha}" != "${BASE_SHA}" ]; then
-              echo "Skip stale base authorization: ${BASE_SHA}"
-              echo "should_dispatch=false" >> "${GITHUB_OUTPUT}"
-              exit 0
-            fi
-
+          if [ -n "${PR_NUMBER}" ]; then
             TESTED_REF="refs/pull/${PR_NUMBER}/merge"
-            if ! TESTED_SHA="$(
-              git ls-remote "https://github.com/${REPOSITORY}.git" "${TESTED_REF}" |
-                awk '{print $1}'
-            )"; then
-              echo "::error::Unable to resolve PR test merge ref ${TESTED_REF}"
-              exit 1
-            fi
-            if [[ ! "${TESTED_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "::error::PR test merge ref is unavailable; do not fall back to PR head: ${TESTED_REF}"
-              exit 1
-            fi
             TESTED_SHA_KIND="pr_merge"
-            HEAD_TASK_REF="ci/head/pr-${PR_NUMBER}/${HEAD_REF}"
-          fi
-
-          flaggems_mode="sample"
-          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            flaggems_mode="${REQUESTED_FLAGGEMS_MODE:-sample}"
-          fi
-          case "${flaggems_mode}" in
-            sample|full) ;;
-            *)
-              echo "::error::Unsupported FlagGems mode: ${flaggems_mode}"
-              exit 1
-              ;;
-          esac
-
-          context="${CONTEXT}"
-          if [ "${EVENT_NAME}" = "workflow_run" ]; then
             task_ref="ci/pr-${PR_NUMBER}/${HEAD_REF}"
             base_task_ref="ci/base/pr-${PR_NUMBER}/${HEAD_REF}"
+            head_task_ref="ci/head/pr-${PR_NUMBER}/${HEAD_REF}"
             metadata_ref="ci/meta/pr-${PR_NUMBER}/${HEAD_REF}"
-            head_task_ref="${HEAD_TASK_REF}"
+            fetch_ref="${TESTED_REF}"
             base_fetch_ref="refs/heads/${BASE_REF}"
-          elif [ "${flaggems_mode}" = "full" ]; then
+            head_fetch_ref="refs/pull/${PR_NUMBER}/head"
+            context="${CONTEXT}"
+          elif [ "${flaggems_mode}" = full ]; then
             task_ref="ci/full/${HEAD_REF}"
-            base_task_ref=""
-            metadata_ref=""
-            head_task_ref=""
-            base_fetch_ref=""
+            base_task_ref=""; head_task_ref=""; metadata_ref=""
+            fetch_ref="refs/heads/${HEAD_REF}"; base_fetch_ref=""; head_fetch_ref=""
             context="${CONTEXT}/full"
           else
             task_ref="ci/push/${HEAD_REF}"
-            base_task_ref=""
-            metadata_ref=""
-            head_task_ref=""
-            base_fetch_ref=""
+            base_task_ref=""; head_task_ref=""; metadata_ref=""
+            fetch_ref="refs/heads/${HEAD_REF}"; base_fetch_ref=""; head_fetch_ref=""
+            context="${CONTEXT}"
           fi
 
-          if ! git check-ref-format "refs/heads/${task_ref}"; then
-            echo "::error::Generated Gitee task ref is not a valid git branch: ${task_ref}"
-            exit 1
+          for value in "${HEAD_SHA}" "${TESTED_SHA}" "${WORKER_REVISION_SHA}"; do
+            [[ "${value}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Invalid SHA: ${value}"; exit 1; }
+          done
+          if [ -n "${PR_NUMBER}" ]; then
+            [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]] || exit 1
+            [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
           fi
-          if [ -n "${metadata_ref}" ] && \
-            ! git check-ref-format "refs/heads/${metadata_ref}"; then
-            echo "::error::Generated Gitee metadata ref is not a valid git branch: ${metadata_ref}"
-            exit 1
-          fi
+          git check-ref-format "refs/heads/${task_ref}"
 
-          if [ "${EVENT_NAME}" = "workflow_run" ]; then
-            fetch_ref="${TESTED_REF}"
-            head_fetch_ref="refs/pull/${PR_NUMBER}/head"
-            source_label="${HEAD_REPO}:${HEAD_REF}"
-          elif [ "${EVENT_NAME}" = "push" ]; then
-            fetch_ref="${GITHUB_REF}"
-            head_fetch_ref=""
-            TESTED_REF="${GITHUB_REF}"
-            source_label="${HEAD_REF}"
-          else
-            fetch_ref="refs/heads/${HEAD_REF}"
-            head_fetch_ref=""
-            TESTED_REF="refs/heads/${HEAD_REF}"
-            source_label="${HEAD_REF}"
-          fi
           {
-            echo "should_dispatch=true"
             echo "pr_number=${PR_NUMBER}"
-            echo "sha=${TESTED_SHA}"
-            echo "tested_sha=${TESTED_SHA}"
-            echo "tested_ref=${TESTED_REF}"
-            echo "tested_sha_kind=${TESTED_SHA_KIND}"
             echo "head_sha=${HEAD_SHA}"
             echo "head_ref=${HEAD_REF}"
             echo "head_repo=${HEAD_REPO}"
             echo "base_sha=${BASE_SHA}"
             echo "base_ref=${BASE_REF}"
+            echo "target_branch=${TARGET_BRANCH}"
+            echo "tested_sha=${TESTED_SHA}"
+            echo "worker_revision_sha=${WORKER_REVISION_SHA}"
+            echo "tested_ref=${TESTED_REF}"
+            echo "tested_sha_kind=${TESTED_SHA_KIND}"
             echo "source_branch=${HEAD_REF}"
-            echo "source_label=${source_label}"
             echo "task_ref=${task_ref}"
             echo "base_task_ref=${base_task_ref}"
             echo "head_task_ref=${head_task_ref}"
             echo "metadata_ref=${metadata_ref}"
+            echo "fetch_ref=${fetch_ref}"
             echo "base_fetch_ref=${base_fetch_ref}"
             echo "head_fetch_ref=${head_fetch_ref}"
-            echo "fetch_ref=${fetch_ref}"
             echo "flaggems_mode=${flaggems_mode}"
             echo "context=${context}"
             echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Fetch exact task commit
-        if: ${{ steps.meta.outputs.should_dispatch == 'true' }}
+      - name: Fetch and verify exact task commits
         env:
-          SHA: ${{ steps.meta.outputs.sha }}
+          TESTED_SHA: ${{ steps.meta.outputs.tested_sha }}
           FETCH_REF: ${{ steps.meta.outputs.fetch_ref }}
           BASE_SHA: ${{ steps.meta.outputs.base_sha }}
           BASE_FETCH_REF: ${{ steps.meta.outputs.base_fetch_ref }}
@@ -241,226 +188,135 @@ jobs:
           TESTED_SHA_KIND: ${{ steps.meta.outputs.tested_sha_kind }}
         run: |
           set -euo pipefail
-
           git init .
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-
-          # Gitee rejects relay updates when the pushed commit has shallow ancestry.
           git fetch --no-tags origin "+${FETCH_REF}:refs/local-ci/task"
-
-          actual_ref_sha="$(git rev-parse refs/local-ci/task)"
-          if [ "${TESTED_SHA_KIND}" = "pr_merge" ] && [ "${actual_ref_sha}" != "${SHA}" ]; then
-            echo "::error::Fetched PR test merge ${actual_ref_sha}, expected ${SHA}"
-            exit 1
-          fi
-          if ! git cat-file -e "${SHA}^{commit}" 2>/dev/null; then
-            git fetch --no-tags origin "${SHA}"
-          fi
-          if ! git cat-file -e "${SHA}^{commit}" 2>/dev/null; then
-            echo "::error::Task commit is unavailable after fetching ${FETCH_REF}: ${SHA}"
-            exit 1
-          fi
-
+          [ "$(git rev-parse refs/local-ci/task)" = "${TESTED_SHA}" ]
           if [ -n "${BASE_SHA}" ]; then
             git fetch --no-tags origin "+${BASE_FETCH_REF}:refs/local-ci/base"
-            actual_base_sha="$(git rev-parse refs/local-ci/base)"
-            if [ "${actual_base_sha}" != "${BASE_SHA}" ]; then
-              echo "::error::Fetched PR base ${actual_base_sha}, expected ${BASE_SHA}"
-              exit 1
-            fi
+            [ "$(git rev-parse refs/local-ci/base)" = "${BASE_SHA}" ]
           fi
-
-          if [ -n "${HEAD_SHA}" ] && [ -n "${HEAD_FETCH_REF}" ]; then
+          if [ -n "${HEAD_FETCH_REF}" ]; then
             git fetch --no-tags origin "+${HEAD_FETCH_REF}:refs/local-ci/head"
-            actual_head_sha="$(git rev-parse refs/local-ci/head)"
-            if [ "${actual_head_sha}" != "${HEAD_SHA}" ]; then
-              echo "::error::Fetched PR head ${actual_head_sha}, expected ${HEAD_SHA}"
-              exit 1
-            fi
+            [ "$(git rev-parse refs/local-ci/head)" = "${HEAD_SHA}" ]
           fi
-
-          if [ "${TESTED_SHA_KIND}" = "pr_merge" ]; then
-            parents="$(git rev-list --parents -n 1 "${SHA}")"
-            set -- ${parents}
-            if [ "$#" -ne 3 ] || [ "$2" != "${BASE_SHA}" ] || [ "$3" != "${HEAD_SHA}" ]; then
-              echo "::error::PR test merge parents do not match base/head: ${parents}"
-              exit 1
-            fi
+          if [ "${TESTED_SHA_KIND}" = pr_merge ]; then
+            read -r commit parent1 parent2 extra < <(git rev-list --parents -n 1 "${TESTED_SHA}")
+            [ -z "${extra:-}" ] && [ "${parent1}" = "${BASE_SHA}" ] && [ "${parent2}" = "${HEAD_SHA}" ]
           fi
+          git checkout --detach "${TESTED_SHA}"
 
-          git checkout --detach "${SHA}"
-
-          actual_checkout_sha="$(git rev-parse HEAD)"
-          if [ "${actual_checkout_sha}" != "${SHA}" ]; then
-            echo "::error::Checked out ${actual_checkout_sha}, expected ${SHA}"
-            exit 1
-          fi
-
-      - name: Push task ref to CI relay repository
-        if: ${{ steps.meta.outputs.should_dispatch == 'true' }}
+      - name: Push task and metadata refs to Gitee
         env:
           GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          SHA: ${{ steps.meta.outputs.sha }}
-          TASK_REF: ${{ steps.meta.outputs.task_ref }}
-          BASE_SHA: ${{ steps.meta.outputs.base_sha }}
-          BASE_REF: ${{ steps.meta.outputs.base_ref }}
-          BASE_TASK_REF: ${{ steps.meta.outputs.base_task_ref }}
-          HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
-          HEAD_REF: ${{ steps.meta.outputs.head_ref }}
-          HEAD_REPO: ${{ steps.meta.outputs.head_repo }}
-          HEAD_TASK_REF: ${{ steps.meta.outputs.head_task_ref }}
           TESTED_SHA: ${{ steps.meta.outputs.tested_sha }}
           TESTED_REF: ${{ steps.meta.outputs.tested_ref }}
           TESTED_SHA_KIND: ${{ steps.meta.outputs.tested_sha_kind }}
+          WORKER_REVISION_SHA: ${{ steps.meta.outputs.worker_revision_sha }}
+          TASK_REF: ${{ steps.meta.outputs.task_ref }}
+          BASE_TASK_REF: ${{ steps.meta.outputs.base_task_ref }}
+          HEAD_TASK_REF: ${{ steps.meta.outputs.head_task_ref }}
           METADATA_REF: ${{ steps.meta.outputs.metadata_ref }}
+          BASE_SHA: ${{ steps.meta.outputs.base_sha }}
+          BASE_REF: ${{ steps.meta.outputs.base_ref }}
+          HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
+          HEAD_REF: ${{ steps.meta.outputs.head_ref }}
+          HEAD_REPO: ${{ steps.meta.outputs.head_repo }}
+          TARGET_BRANCH: ${{ steps.meta.outputs.target_branch }}
           PR_NUMBER: ${{ steps.meta.outputs.pr_number }}
           CAPTURED_AT: ${{ steps.meta.outputs.started_at }}
         run: |
           set -euo pipefail
-
-          if [ -z "${GITEE_TOKEN}" ]; then
-            echo "GITEE_TOKEN is empty"
-            exit 1
-          fi
-
-          GITEE_USERNAME="${GITEE_USERNAME:-${GITEE_CI_OWNER}}"
-          export GITEE_USERNAME
+          [ -n "${GITEE_TOKEN}" ] || { echo "GITEE_TOKEN is empty"; exit 1; }
           repo_url="${GITEE_CI_REPO_URL:-https://gitee.com/${GITEE_CI_OWNER}/${GITEE_CI_REPO}.git}"
           askpass="${RUNNER_TEMP}/gitee-askpass.sh"
-          cat > "${askpass}" <<'SH'
-          #!/usr/bin/env sh
-          case "$1" in
-            *Username*) printf '%s\n' "${GITEE_USERNAME}" ;;
-            *) printf '%s\n' "${GITEE_TOKEN}" ;;
-          esac
-          SH
+          printf '#!/bin/sh\ncase "$1" in *Username*) printf "%%s\\n" "$GITEE_USERNAME" ;; *) printf "%%s\\n" "$GITEE_TOKEN" ;; esac\n' > "${askpass}"
           chmod 700 "${askpass}"
-
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          export GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0
+          git config user.name github-actions
+          git config user.email github-actions@github.com
           git remote add gitee-ci "${repo_url}"
-
-          if [ -n "${BASE_SHA}" ] && [ -n "${BASE_TASK_REF}" ]; then
-            GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
-              git push --force gitee-ci "refs/local-ci/base:refs/heads/${BASE_TASK_REF}"
-          fi
-
-          if [ -n "${HEAD_SHA}" ] && [ -n "${HEAD_TASK_REF}" ]; then
-            GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
-              git push --force gitee-ci "refs/local-ci/head:refs/heads/${HEAD_TASK_REF}"
-          fi
+          [ -z "${BASE_TASK_REF}" ] || git push --force gitee-ci "refs/local-ci/base:refs/heads/${BASE_TASK_REF}"
+          [ -z "${HEAD_TASK_REF}" ] || git push --force gitee-ci "refs/local-ci/head:refs/heads/${HEAD_TASK_REF}"
 
           if [ -n "${METADATA_REF}" ]; then
-            pr_payload="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
-            PR_TITLE="$(jq -r '.title // ""' <<< "${pr_payload}")"
-            PR_DESCRIPTION="$(jq -r '.body // ""' <<< "${pr_payload}")"
+            pr_payload="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
             metadata_file="${RUNNER_TEMP}/task-metadata.json"
             jq -n \
-              --arg schema "triton-anchor-local-ci-task-metadata/v2" \
-              --arg event_kind "pull_request" \
+              --arg schema triton-anchor-local-ci-task-metadata/v2 \
+              --arg event_kind pull_request \
               --arg task_ref "${TASK_REF}" \
               --arg base_task_ref "${BASE_TASK_REF}" \
               --arg head_task_ref "${HEAD_TASK_REF}" \
-              --arg target_sha "${SHA}" \
+              --arg target_sha "${TESTED_SHA}" \
               --arg tested_sha "${TESTED_SHA}" \
               --arg tested_ref "${TESTED_REF}" \
               --arg tested_sha_kind "${TESTED_SHA_KIND}" \
-              --arg base_branch "${BASE_REF}" \
-              --arg base_sha "${BASE_SHA}" \
-              --arg head_branch "${HEAD_REF}" \
-              --arg head_sha "${HEAD_SHA}" \
-              --arg head_repo "${HEAD_REPO}" \
+              --arg worker_revision_sha "${WORKER_REVISION_SHA}" \
+              --arg base_branch "${BASE_REF}" --arg base_sha "${BASE_SHA}" \
+              --arg head_branch "${HEAD_REF}" --arg head_sha "${HEAD_SHA}" \
+              --arg head_repo "${HEAD_REPO}" --arg target_branch "${TARGET_BRANCH}" \
               --arg pr_number "${PR_NUMBER}" \
-              --arg title "${PR_TITLE:-}" \
-              --arg description "${PR_DESCRIPTION:-}" \
+              --arg title "$(jq -r '.title // ""' <<< "${pr_payload}")" \
+              --arg description "$(jq -r '.body // ""' <<< "${pr_payload}")" \
               --arg captured_at "${CAPTURED_AT}" \
-              '{
-                schema: $schema,
-                event_kind: $event_kind,
-                task_ref: $task_ref,
-                base_task_ref: $base_task_ref,
-                head_task_ref: $head_task_ref,
-                target_sha: $target_sha,
-                tested_sha: $tested_sha,
-                tested_ref: $tested_ref,
-                tested_sha_kind: $tested_sha_kind,
-                base_branch: $base_branch,
-                base_sha: $base_sha,
-                head_branch: $head_branch,
-                head_sha: $head_sha,
-                head_repo: $head_repo,
-                pr_number: ($pr_number | tonumber),
-                title: (($title | gsub("\r\n?"; "\n"))[0:500]),
-                description: (($description | gsub("\r\n?"; "\n"))[0:8000]),
-                captured_at: $captured_at,
-                title_truncated: (($title | gsub("\r\n?"; "\n") | length) > 500),
-                description_truncated: (($description | gsub("\r\n?"; "\n") | length) > 8000)
-              }' > "${metadata_file}"
-
-            metadata_blob="$(git hash-object -w "${metadata_file}")"
-            metadata_tree="$(
-              printf '100644 blob %s\ttask-metadata.json\n' "${metadata_blob}" | git mktree
-            )"
-            metadata_commit="$(
-              printf 'Local CI metadata for PR #%s\n' "${PR_NUMBER}" | \
-                git commit-tree "${metadata_tree}"
-            )"
-            GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
-              git push --force gitee-ci \
-                "${metadata_commit}:refs/heads/${METADATA_REF}"
+              '{schema:$schema,event_kind:$event_kind,task_ref:$task_ref,base_task_ref:$base_task_ref,head_task_ref:$head_task_ref,target_sha:$target_sha,tested_sha:$tested_sha,tested_ref:$tested_ref,tested_sha_kind:$tested_sha_kind,worker_revision_sha:$worker_revision_sha,base_branch:$base_branch,base_sha:$base_sha,head_branch:$head_branch,head_sha:$head_sha,head_repo:$head_repo,target_branch:$target_branch,pr_number:($pr_number|tonumber),title:($title[0:500]),description:($description[0:8000]),captured_at:$captured_at}' > "${metadata_file}"
+            blob="$(git hash-object -w "${metadata_file}")"
+            tree="$(printf '100644 blob %s\ttask-metadata.json\n' "${blob}" | git mktree)"
+            commit="$(printf 'Local CI metadata for PR #%s\n' "${PR_NUMBER}" | git commit-tree "${tree}")"
+            git push --force gitee-ci "${commit}:refs/heads/${METADATA_REF}"
           fi
+          git push --force gitee-ci "HEAD:refs/heads/${TASK_REF}"
 
-          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
-            git push --force gitee-ci "HEAD:refs/heads/${TASK_REF}"
-
-      - name: Mark local CI pending
-        if: ${{ steps.meta.outputs.should_dispatch == 'true' }}
+      - name: Mark Local CI pending
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ steps.meta.outputs.sha }}
+          STATUS_SHA: ${{ steps.meta.outputs.head_sha }}
           TASK_REF: ${{ steps.meta.outputs.task_ref }}
           STATUS_CONTEXT: ${{ steps.meta.outputs.context }}
-          FLAGGEMS_MODE: ${{ steps.meta.outputs.flaggems_mode }}
         run: |
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${SHA}" \
-            -f state=pending \
-            -f context="${STATUS_CONTEXT}" \
-            -f description="local CI ${FLAGGEMS_MODE} task queued on Gitee" \
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${STATUS_SHA}" \
+            -f state=pending -f context="${STATUS_CONTEXT}" \
+            -f description="local CI task queued on Gitee" \
             -f target_url="${GITEE_CI_WEB_URL}/tree/${TASK_REF}"
 
-      - name: Start result receiver
-        if: ${{ steps.meta.outputs.should_dispatch == 'true' }}
+      - name: Start Gateway receiver continuation
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ steps.meta.outputs.sha }}
+          PR_NUMBER: ${{ steps.meta.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
+          BASE_SHA: ${{ steps.meta.outputs.base_sha }}
+          TESTED_SHA: ${{ steps.meta.outputs.tested_sha }}
+          WORKER_REVISION_SHA: ${{ steps.meta.outputs.worker_revision_sha }}
           SOURCE_BRANCH: ${{ steps.meta.outputs.source_branch }}
+          TARGET_BRANCH: ${{ steps.meta.outputs.target_branch }}
           TASK_REF: ${{ steps.meta.outputs.task_ref }}
           STARTED_AT: ${{ steps.meta.outputs.started_at }}
           STATUS_CONTEXT: ${{ steps.meta.outputs.context }}
         run: |
-          gh workflow run receive-local-ci-result.yml \
-            --repo "${GITHUB_REPOSITORY}" \
-            --ref "${RECEIVER_REF}" \
-            -f sha="${SHA}" \
-            -f source_branch="${SOURCE_BRANCH}" \
-            -f task_ref="${TASK_REF}" \
-            -f context="${STATUS_CONTEXT}" \
-            -f attempt="1" \
-            -f started_at="${STARTED_AT}" \
-            -f wait_seconds="${RECEIVER_WAIT_SECONDS}"
+          if [ -n "${PR_NUMBER}" ]; then
+            receiver_title="Receive PR #${PR_NUMBER}: ${SOURCE_BRANCH}"
+          else
+            receiver_title="Receive ${SOURCE_BRANCH}: ${TESTED_SHA:0:12}"
+          fi
+          gh workflow run ci-gateway.yml --repo "${GITHUB_REPOSITORY}" --ref "${GITHUB_REF_NAME}" \
+            -f gateway_contract_version=3 -f mode=receive \
+            -f pr_number="${PR_NUMBER}" -f expected_head_sha="${HEAD_SHA}" \
+            -f comparison_base_sha="${BASE_SHA}" -f tested_sha="${TESTED_SHA}" \
+            -f worker_revision_sha="${WORKER_REVISION_SHA}" \
+            -f source_branch="${SOURCE_BRANCH}" -f target_branch="${TARGET_BRANCH}" \
+            -f task_ref="${TASK_REF}" -f context="${STATUS_CONTEXT}" \
+            -f attempt=1 -f started_at="${STARTED_AT}" \
+            -f wait_seconds="${RECEIVER_WAIT_SECONDS}" \
+            -f run_title="${receiver_title}"
 
       - name: Mark dispatch failure
-        if: >-
-          failure() &&
-          steps.meta.outputs.should_dispatch == 'true' &&
-          steps.meta.outputs.sha != ''
+        if: ${{ failure() && steps.meta.outputs.head_sha != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ steps.meta.outputs.sha }}
+          STATUS_SHA: ${{ steps.meta.outputs.head_sha }}
           STATUS_CONTEXT: ${{ steps.meta.outputs.context || env.CONTEXT }}
         run: |
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${SHA}" \
-            -f state=error \
-            -f context="${STATUS_CONTEXT}" \
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${STATUS_SHA}" \
+            -f state=error -f context="${STATUS_CONTEXT}" \
             -f description="failed to dispatch local CI task"

@@ -40,6 +40,8 @@ REQUIRED_V2_FIELDS = {
     "head_branch",
     "head_sha",
     "head_repo",
+    "target_branch",
+    "worker_revision_sha",
 }
 
 
@@ -247,6 +249,12 @@ def validate_v2_document(
 
     base_branch = validate_nonempty_string(document["base_branch"], "base_branch")
     head_repo = validate_nonempty_string(document["head_repo"], "head_repo")
+    target_branch = validate_nonempty_string(document["target_branch"], "target_branch")
+    if target_branch != base_branch:
+        fail("target_branch 必须等于 base_branch")
+    worker_revision_sha = validate_sha(
+        document["worker_revision_sha"], "worker_revision_sha"
+    )
 
     canonical = {
         "schema": SCHEMA_V2,
@@ -263,6 +271,8 @@ def validate_v2_document(
         "head_branch": task_branch,
         "head_sha": head_sha,
         "head_repo": head_repo,
+        "target_branch": target_branch,
+        "worker_revision_sha": worker_revision_sha,
         "pr_number": expected_pr_number,
         "title": title,
         "description": description,

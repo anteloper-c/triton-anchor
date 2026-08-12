@@ -1,4 +1,5 @@
 name: Public API Breaking Change Notification
+run-name: ${{ github.event.workflow_run.display_title }}
 
 on:
   workflow_run:
@@ -60,20 +61,18 @@ jobs:
               return;
             }
 
-            const validBreakingResult =
+            const validResult =
               result &&
               result.schema_version === 1 &&
-              result.status === 'breaking' &&
-              Number.isInteger(result.breaking_count) &&
-              result.breaking_count > 0 &&
+              ['breaking', 'compatible'].includes(result.status) &&
               Array.isArray(result.changes) &&
               result.event_name === run.event &&
               typeof result.head_sha === 'string' &&
               /^[0-9a-f]{40}$/i.test(result.head_sha) &&
               result.head_sha === run.head_sha;
 
-            if (!validBreakingResult) {
-              core.info('The result is compatible, erroneous, stale, or malformed; no author notification is needed.');
+            if (!validResult) {
+              core.info('The result is erroneous, stale, or malformed; no author notification is needed.');
               return;
             }
 
@@ -83,8 +82,13 @@ jobs:
               typeof change.symbol === 'string' &&
               typeof change.message === 'string'
             );
-            if (breakingChanges.length === 0) {
-              core.warning('Breaking count was non-zero but no valid breaking entries were present.');
+            if (
+              result.status === 'breaking' &&
+              (!Number.isInteger(result.breaking_count) ||
+                result.breaking_count <= 0 ||
+                breakingChanges.length === 0)
+            ) {
+              core.warning('Breaking result did not contain a valid count and change list.');
               return;
             }
 
@@ -127,6 +131,17 @@ jobs:
               ].join('\n');
             }
 
+            function resolvedBody() {
+              return [
+                marker,
+                'Resolved: the latest public API compatibility result is compatible.',
+                '',
+                `[View the compatibility report](${runUrl})`,
+                '',
+                'This comment is updated automatically when the check runs again.'
+              ].join('\n');
+            }
+
             if (run.event === 'pull_request') {
               const prNumber = Number(result.pr_number || run.pull_requests?.[0]?.number);
               if (!Number.isInteger(prNumber) || prNumber <= 0) {
@@ -139,12 +154,6 @@ jobs:
                 core.notice('The pull request has advanced since this result; skipping a stale notification.');
                 return;
               }
-              const login = validLogin(pull.user?.login) || validLogin(run.actor?.login);
-              if (!login) {
-                core.warning('Could not determine a safe GitHub login to mention.');
-                return;
-              }
-
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner,
                 repo,
@@ -154,6 +163,23 @@ jobs:
               const existing = comments.find((comment) =>
                 comment.user?.type === 'Bot' && comment.body?.includes(marker)
               );
+              if (result.status === 'compatible') {
+                if (existing) {
+                  await github.rest.issues.updateComment({
+                    owner,
+                    repo,
+                    comment_id: existing.id,
+                    body: resolvedBody()
+                  });
+                }
+                return;
+              }
+
+              const login = validLogin(pull.user?.login) || validLogin(run.actor?.login);
+              if (!login) {
+                core.warning('Could not determine a safe GitHub login to mention.');
+                return;
+              }
               const body = bodyFor(login);
               if (existing) {
                 await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
@@ -163,11 +189,6 @@ jobs:
               return;
             }
 
-            const login = validLogin(run.actor?.login) || validLogin(result.actor);
-            if (!login) {
-              core.warning('Could not determine a safe GitHub login to mention.');
-              return;
-            }
             const comments = await github.paginate('GET /repos/{owner}/{repo}/commits/{commit_sha}/comments', {
               owner,
               repo,
@@ -177,6 +198,23 @@ jobs:
             const existing = comments.find((comment) =>
               comment.user?.type === 'Bot' && comment.body?.includes(marker)
             );
+            if (result.status === 'compatible') {
+              if (existing) {
+                await github.request('PATCH /repos/{owner}/{repo}/comments/{comment_id}', {
+                  owner,
+                  repo,
+                  comment_id: existing.id,
+                  body: resolvedBody()
+                });
+              }
+              return;
+            }
+
+            const login = validLogin(run.actor?.login) || validLogin(result.actor);
+            if (!login) {
+              core.warning('Could not determine a safe GitHub login to mention.');
+              return;
+            }
             const body = bodyFor(login);
             if (existing) {
               await github.request('PATCH /repos/{owner}/{repo}/comments/{comment_id}', {

@@ -33,6 +33,8 @@ def v2_document(**overrides: object) -> dict[str, object]:
         "head_branch": "feature",
         "head_sha": HEAD_SHA,
         "head_repo": "owner/repo",
+        "target_branch": "main",
+        "worker_revision_sha": "d" * 40,
         "pr_number": 42,
         "title": "Add merge-aware Local CI",
         "description": "Test the GitHub PR merge result.",
@@ -61,6 +63,8 @@ def test_v2_metadata_records_pr_merge_identity() -> None:
     assert canonical["tested_ref"] == "refs/pull/42/merge"
     assert canonical["base_sha"] == BASE_SHA
     assert canonical["head_sha"] == HEAD_SHA
+    assert canonical["target_branch"] == "main"
+    assert canonical["worker_revision_sha"] == "d" * 40
 
 
 @pytest.mark.parametrize(
@@ -72,6 +76,8 @@ def test_v2_metadata_records_pr_merge_identity() -> None:
         ("tested_sha_kind", "head", "tested_sha_kind 必须是 pr_merge"),
         ("base_sha", HEAD_SHA, "base_sha 与当前 PR base ref 不一致"),
         ("head_sha", BASE_SHA, "head_sha 与当前 PR head ref 不一致"),
+        ("target_branch", "release", "target_branch 必须等于 base_branch"),
+        ("worker_revision_sha", "invalid", "worker_revision_sha 必须是 40 位"),
     ],
 )
 def test_v2_metadata_rejects_ambiguous_or_stale_identity(

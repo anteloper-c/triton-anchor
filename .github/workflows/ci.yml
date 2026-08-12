@@ -5,9 +5,7 @@ name: CI
 
 on:
   push:
-    branches: [main, develop, jiwang-delivery-ci, ai-ci]
   pull_request:
-    branches: [main, develop, ai-ci]
 
 # 同一分支上新的推送自动取消旧的运行
 concurrency:

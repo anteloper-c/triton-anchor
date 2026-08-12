@@ -2,7 +2,6 @@ name: Backend Status Pages
 
 on:
   push:
-    branches: [jiwang-delivery-ci, main, feat/backend-status-pages, ai-ci]
     paths:
       - "dashboard/**"
       - "scripts/dashboard/**"
@@ -17,6 +16,21 @@ on:
       - "python/triton_anchor/tests/test_dashboard_*.py"
       - ".github/workflows/backend-status-pages.yml"
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_branch:
+        required: true
+        type: string
+      task_ref:
+        required: true
+        type: string
+      run_title:
+        required: false
+        default: ""
+        type: string
+    secrets:
+      GITEE_TOKEN:
+        required: true
 
 permissions:
   contents: read
@@ -46,9 +60,10 @@ jobs:
           GITEE_RESULTS_REPO_URL: ${{ vars.GITEE_RESULTS_REPO_URL }}
           GITEE_RESULTS_BRANCH: ${{ vars.GITEE_RESULTS_BRANCH || 'local-ci-results' }}
           GITEE_RESULTS_WEB_URL: ${{ vars.GITEE_RESULTS_WEB_URL || 'https://gitee.com/likehupochuan/triton-anchor-local-ci-results' }}
+          GITEE_USERNAME: ${{ vars.GITEE_USERNAME || 'likehupochuan' }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-          DASHBOARD_SOURCE_BRANCH: ${{ vars.DASHBOARD_SOURCE_BRANCH || 'ci/push/jiwang-delivery-ci' }}
-          DASHBOARD_FULL_TEST_SOURCE_BRANCH: ${{ vars.DASHBOARD_FULL_TEST_SOURCE_BRANCH || 'ci/full/main' }}
+          DASHBOARD_SOURCE_BRANCH: ${{ vars.DASHBOARD_SOURCE_BRANCH || format('ci/push/{0}', vars.LOCAL_CI_PAGES_BRANCH || 'CI_dev') }}
+          DASHBOARD_FULL_TEST_SOURCE_BRANCH: ${{ vars.DASHBOARD_FULL_TEST_SOURCE_BRANCH || format('ci/full/{0}', vars.LOCAL_CI_PAGES_BRANCH || 'CI_dev') }}
           BACKEND_PROFILE: ${{ vars.LOCAL_CI_BACKEND_PROFILE || 'sophgo-cmodel' }}
         run: |
           if [[ -z "${GITEE_TOKEN}" ]]; then
@@ -61,7 +76,7 @@ jobs:
           cat > "${askpass}" <<'SH'
           #!/usr/bin/env sh
           case "$1" in
-            *Username*) printf '%s\n' "${GITEE_RESULTS_OWNER}" ;;
+            *Username*) printf '%s\n' "${GITEE_USERNAME}" ;;
             *) printf '%s\n' "${GITEE_TOKEN}" ;;
           esac
           SH
@@ -105,7 +120,7 @@ jobs:
 
   deploy:
     name: Deploy dashboard
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name != 'pull_request' && github.ref_name == (vars.LOCAL_CI_PAGES_BRANCH || 'CI_dev') }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

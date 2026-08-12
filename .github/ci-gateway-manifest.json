@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "gateway_contract_version": "3",
+  "role": "worker",
+  "tested_revision": "merge-result",
+  "capabilities": [
+    "route",
+    "security-scan",
+    "codeql",
+    "dispatch",
+    "receive",
+    "pages",
+    "cancel",
+    "cross-branch-pr",
+    "cross-branch-push",
+    "merge-result"
+  ]
+}
