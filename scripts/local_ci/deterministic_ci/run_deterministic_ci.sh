@@ -3,26 +3,56 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_CI_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+TASK_TMP_TOOL="${LOCAL_CI_ROOT}/shared/task_tmp.py"
+target_sha="${1:?usage: run_deterministic_ci.sh <commit-sha>}"
+if [[ ! "${target_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "Local CI target SHA must be a lowercase 40-character hexadecimal commit." >&2
+  exit 2
+fi
+
 
 if [[ "${LOCAL_CI_SCRIPT_STAGED:-0}" != "1" ]]; then
-  staged_dir="/tmp/triton-anchor-local-ci.$$"
-  mkdir -p "${staged_dir}"
+  task_tmp_root="$(mktemp -d "/tmp/triton-anchor-local-ci-task.${target_sha:0:12}.XXXXXX")"
+  "${PYTHON_BIN:-python3}" "${TASK_TMP_TOOL}" prepare \
+    --path "${task_tmp_root}" \
+    --target-sha "${target_sha}"
+  staged_dir="${task_tmp_root}/runner"
   cp -a "${LOCAL_CI_ROOT}/." "${staged_dir}/"
   export LOCAL_CI_RUNNER_DIR="${staged_dir}"
   export LOCAL_CI_SCRIPT_STAGED="1"
-  staged_status=0
-  bash "${staged_dir}/deterministic_ci/run_deterministic_ci.sh" "$@" || staged_status=$?
-  rm -rf -- "${staged_dir}"
-  exit "${staged_status}"
+  export LOCAL_CI_TASK_TMP_ROOT="${task_tmp_root}"
+  export TMPDIR="${task_tmp_root}/tmp"
+
+  cleanup_staged_task_tmp() {
+    local status="$?"
+    local cleanup_status=0
+    trap - EXIT INT TERM
+    set +e
+    "${PYTHON_BIN:-python3}" "${TASK_TMP_TOOL}" cleanup \
+      --path "${task_tmp_root}" \
+      --target-sha "${target_sha}" || cleanup_status=$?
+    if [[ ${cleanup_status} -ne 0 ]]; then
+      echo "Failed to clean Local CI task temporary root: ${task_tmp_root}" >&2
+      if [[ ${status} -eq 0 ]]; then
+        status="${cleanup_status}"
+      fi
+    fi
+    exit "${status}"
+  }
+  trap cleanup_staged_task_tmp EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  bash "${staged_dir}/deterministic_ci/run_deterministic_ci.sh" "$@"
+  exit 0
 fi
 
 RUNNER_ROOT="${LOCAL_CI_RUNNER_DIR:-${LOCAL_CI_ROOT}}"
 PERFORMANCE_SCRIPT_DIR="${RUNNER_ROOT}/deterministic_ci/performance"
 FLAGGEMS_SCRIPT_DIR="${RUNNER_ROOT}/deterministic_ci/flaggems"
 DUMP_ARTIFACT_TOOL="${RUNNER_ROOT}/shared/dump_artifacts.py"
+TASK_TMP_TOOL="${RUNNER_ROOT}/shared/task_tmp.py"
 # shellcheck disable=SC1091
 source "${RUNNER_ROOT}/shared/path_utils.sh"
-target_sha="${1:?usage: run_deterministic_ci.sh <commit-sha>}"
 
 WORKSPACE="${WORKSPACE:-/workspace}"
 ANCHOR_DIR="${ANCHOR_DIR:-${WORKSPACE}/triton-anchor}"
@@ -116,7 +146,12 @@ DELIVERY_ARTIFACT_DIR="${DELIVERY_ARTIFACT_DIR:-${LOCAL_CI_ARTIFACT_ROOT}/${run_
 FLAGGEMS_SELECTED_FILE="${FLAGGEMS_SELECTED_FILE:-${DELIVERY_ARTIFACT_DIR}/flaggems-selected.txt}"
 SOPHGO_TRITON_DUMP_DIR="/workspace/triton-dump-dir"
 ROOT_TRITON_DUMP_DIR="/root/.triton/dump"
-LOCAL_CI_TASK_DUMP_ROOT="/tmp/triton-anchor-local-ci-dump.${target_sha:0:12}.$$"
+LOCAL_CI_TASK_TMP_ROOT="${LOCAL_CI_TASK_TMP_ROOT:?LOCAL_CI_TASK_TMP_ROOT must be provided by the Local CI task owner}"
+LOCAL_CI_TASK_TMP_DIR="${LOCAL_CI_TASK_TMP_ROOT}/tmp"
+LOCAL_CI_TASK_DUMP_ROOT="${LOCAL_CI_TASK_TMP_ROOT}/dump"
+LOCAL_CI_TASK_CREDENTIAL_DIR="${LOCAL_CI_TASK_TMP_ROOT}/credentials"
+LOCAL_CI_TASK_BENCHMARK_ROOT="${LOCAL_CI_TASK_TMP_ROOT}/benchmark"
+TMPDIR="${LOCAL_CI_TASK_TMP_DIR}"
 FAILURE_IR_ARTIFACT_DIR="${DELIVERY_ARTIFACT_DIR}/failure-ir"
 
 export WORKSPACE ANCHOR_DIR BACKEND_PROFILE EXPECTED_TRITON_BACKEND BACKEND_PATH
@@ -124,7 +159,22 @@ export BACKEND_ENVSETUP BACKEND_ENVSETUP_ARGS BACKEND_TEST_COMMAND
 export RUN_FLAGGEMS_TESTS FLAGGEMS_CLONE_DIR FLAGGEMS_REF FLAGGEMS_PIP_PACKAGES FLAGGEMS_TEST_MODE FLAGGEMS_SAMPLE_SIZE FLAGGEMS_RANDOM_SEED FLAGGEMS_TEST_OP FLAGGEMS_TEST_COMMAND FLAGGEMS_PYTEST_ARGS FLAGGEMS_IDLE_TIMEOUT_SECONDS FLAGGEMS_TOTAL_TIMEOUT_SECONDS FLAGGEMS_FULL_TIMEOUT_EXTENSION_SECONDS FLAGGEMS_FULL_HARD_TIMEOUT_SECONDS FLAGGEMS_CLEAR_CACHE FLAGGEMS_WHITELIST FLAGGEMS_FULL_LIST FLAGGEMS_SELECTED_FILE
 export LLVM_BUILD_DIR PPL_ROOT PYTHON_BIN PYTHON_VENV_ACTIVATE FRONTEND_BUILD_MODE GITHUB_SHA="${target_sha}" GITHUB_REF="refs/heads/${GITEE_BRANCH}"
 export BACKEND_PROFILE MAX_JOBS CMAKE_BUILD_PARALLEL_LEVEL NINJAFLAGS UV_LINK_MODE
+export LOCAL_CI_TASK_TMP_ROOT TMPDIR
 
+if [[ ! -r "${TASK_TMP_TOOL}" ]]; then
+  echo "Task temporary directory tool is missing from the trusted runner snapshot: ${TASK_TMP_TOOL}" >&2
+  exit 2
+fi
+"${PYTHON_BIN}" "${TASK_TMP_TOOL}" validate \
+  --path "${LOCAL_CI_TASK_TMP_ROOT}" \
+  --target-sha "${target_sha}" >/dev/null
+
+task_tmp_path="$(realpath -e -- "${LOCAL_CI_TASK_TMP_ROOT}")"
+artifact_path="$(realpath -m -- "${DELIVERY_ARTIFACT_DIR}")"
+if [[ "${artifact_path}" == "${task_tmp_path}" || "${artifact_path}" == "${task_tmp_path}"/* ]]; then
+  echo "DELIVERY_ARTIFACT_DIR must be outside the task temporary root: ${artifact_path}" >&2
+  exit 2
+fi
 mkdir -p "${DELIVERY_ARTIFACT_DIR}"
 
 use_uv() {
@@ -139,7 +189,7 @@ setup_gitee_git_auth() {
   fi
 
   local askpass
-  askpass="$(mktemp /tmp/local-ci-gitee-askpass.XXXXXX)"
+  askpass="$(mktemp "${LOCAL_CI_TASK_CREDENTIAL_DIR}/gitee-askpass.XXXXXX")"
   write_gitee_askpass "${askpass}"
   export GITEE_USERNAME GITEE_TOKEN
   export GIT_ASKPASS="${askpass}"
@@ -288,6 +338,16 @@ prune_task_dumps() {
     --profile task-dumps --root / >/dev/null
 }
 
+clean_task_dump_stage() {
+  local stage_name="$1"
+  local safe_stage
+  safe_stage="$(safe_path_part "${stage_name}")"
+  "${PYTHON_BIN}" "${TASK_TMP_TOOL}" clean-owned \
+    --path "${LOCAL_CI_TASK_TMP_ROOT}" \
+    --target-sha "${target_sha}" \
+    --relative "dump/${safe_stage}" >/dev/null
+}
+
 prepare_dump_stage() {
   local stage_name="$1"
   local safe_stage
@@ -317,6 +377,7 @@ finish_dump_stage() {
   local stage_status="$3"
   local collection_status=0
   local cleanup_status=0
+  local task_cleanup_status=0
   if [[ ${stage_status} -ne 0 ]]; then
     collect_failure_ir "${stage_name}" "${task_dump_dir}" || collection_status=$?
     if [[ ${collection_status} -ne 0 ]]; then
@@ -324,6 +385,13 @@ finish_dump_stage() {
     fi
   fi
   prune_task_dumps || cleanup_status=$?
+  clean_task_dump_stage "${stage_name}" || task_cleanup_status=$?
+  if [[ ${task_cleanup_status} -ne 0 ]]; then
+    echo "Failed to clean task-owned Triton dump directory after ${stage_name}." >&2
+    if [[ ${cleanup_status} -eq 0 ]]; then
+      cleanup_status="${task_cleanup_status}"
+    fi
+  fi
   if [[ ${cleanup_status} -ne 0 ]]; then
     echo "Failed to clean managed Triton dump directories after ${stage_name}." >&2
   fi
@@ -520,10 +588,12 @@ source_anchor_env() {
   fi
 
   if [[ -f "${envsetup_file}" ]]; then
+    local command_tmp_dir="${TMPDIR}"
     bash -n "${envsetup_file}"
     set +u
     # shellcheck disable=SC1090
     source "${envsetup_file}"
+    export TMPDIR="${command_tmp_dir}"
     set -u
   fi
 }
@@ -531,6 +601,7 @@ source_anchor_env() {
 source_backend_env() {
   local setup_script="${BACKEND_ENVSETUP}"
   local command_dump_dir="${TRITON_DUMP_DIR:-}"
+  local command_tmp_dir="${TMPDIR}"
   local setup_status=0
   if [[ -z "${setup_script}" ]]; then
     return 0
@@ -549,6 +620,7 @@ source_backend_env() {
   if [[ -n "${command_dump_dir}" ]]; then
     export TRITON_DUMP_DIR="${command_dump_dir}"
   fi
+  export TMPDIR="${command_tmp_dir}"
   set -u
   return "${setup_status}"
 }
@@ -636,6 +708,8 @@ run_compile_benchmark() {
       --kernels "${COMPILE_BENCHMARK_KERNELS}" \
       --repeat "${COMPILE_BENCHMARK_REPEAT}" \
       --warmup "${COMPILE_BENCHMARK_WARMUP}" \
+      --cache-root "${LOCAL_CI_TASK_BENCHMARK_ROOT}/compile/cache" \
+      --dump-root "${LOCAL_CI_TASK_BENCHMARK_ROOT}/compile/dump" \
       --output-json "${candidate_json}" \
       --output-csv "${candidate_csv}"; then
     COMPILE_TIME_STATUS="fail"
@@ -706,6 +780,8 @@ run_pass_profile() {
       --kernels "${PASS_PROFILE_KERNELS}" \
       --repeat "${PASS_PROFILE_REPEAT}" \
       --warmup "${PASS_PROFILE_WARMUP}" \
+      --cache-root "${LOCAL_CI_TASK_BENCHMARK_ROOT}/pass-profile/cache" \
+      --dump-root "${LOCAL_CI_TASK_BENCHMARK_ROOT}/pass-profile/dump" \
       --output-json "${candidate_json}" \
       --output-events-csv "${candidate_events_csv}" \
       --output-summary-csv "${candidate_summary_csv}" \
@@ -780,6 +856,7 @@ run_ir_serialization_benchmark() {
       --kernels "${IR_SERIALIZATION_KERNELS}" \
       --repeat "${IR_SERIALIZATION_REPEAT}" \
       --warmup "${IR_SERIALIZATION_WARMUP}" \
+      --work-root "${LOCAL_CI_TASK_BENCHMARK_ROOT}/ir-serialization" \
       --output-json "${candidate_json}" \
       --output-csv "${candidate_csv}" \
       --output-markdown "${candidate_markdown}"; then

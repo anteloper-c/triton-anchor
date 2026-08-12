@@ -181,7 +181,9 @@ codex-workspace.patch
 codex-generated-files.tar.gz
 ```
 
-容器本地 artifact 目录可能额外包含 `failure-ir/<stage>/{manifest.json,task/,sophgo/,root/}` 和 `failure-ir-collection.log`。`failure-ir/` 只在失败命令实际产生 `.ttir`、`.linalg` 或 `.pplir` 时创建；不会复制 `.so`、成功命令 dump 或旧任务 dump。它供紧随确定性 CI 的 Codex 失败诊断读取，当前 publisher allowlist 不把原始 IR 推送到 Gitee 结果分支。确定性 runner 在任务开始、各命令边界和退出时清理 Sophgo envsetup 使用的 `/workspace/triton-dump-dir`、`/root/.triton/dump` fallback 及本任务专属 dump 目录。Triton/FlagGems cache 与 benchmark 临时目录不属于这次清理范围，Codex 临时容器仍可复用热缓存。
+容器本地 artifact 目录可能额外包含 `failure-ir/<stage>/{manifest.json,task/,sophgo/,root/}` 和 `failure-ir-collection.log`。`failure-ir/` 只在失败命令实际产生 `.ttir`、`.linalg` 或 `.pplir` 时创建；不会复制 `.so`、成功命令 dump 或旧任务 dump。它供紧随确定性 CI 的 Codex 失败诊断读取，当前 publisher allowlist 不把原始 IR 推送到 Gitee 结果分支。确定性 runner 在 `/tmp/triton-anchor-local-ci-task.<sha>.<random>/` 下统一持有 `TMPDIR`、dump、runner、临时凭据和 benchmark 隔离目录；失败 IR 提升到该目录之外的 artifact 后，阶段 dump 立即清理，任务退出时按 ownership marker 回收整个任务目录。
+
+任务清理不会扫描 `/tmp/[0-9]+-[0-9]+` 或其他全局路径，也不会触碰 `/root/.triton/cache`、`/root/.flaggems/code_cache`、`/root/.cache/uv`、`/root/.cache/pip` 和 `/opt/venv`。这些共享缓存继续供后续 Local CI 与 Codex 复用。当前只治理正常任务生命周期；异常中断后的过期任务目录回收策略尚未启用。
 
 本次不把 `TRITON_CACHE_DIR` 改为任务级临时目录。它保存以源码、Triton/backend 和编译配置为 key 的可复用编译产物，命中时会跳过编译 pipeline；与只用于诊断的 dump 不同。compile benchmark 已使用并清理独立 session cache。应先上线 dump 清理并观察 snapshot 计时与 cache 体积，再决定是否需要独立的 cache 生命周期方案。
 

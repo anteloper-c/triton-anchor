@@ -14,7 +14,6 @@ from pathlib import Path
 
 
 IR_SUFFIXES = {".ttir", ".linalg", ".pplir"}
-TASK_DUMP_PREFIX = "triton-anchor-local-ci-dump."
 TASK_DUMP_RELATIVE_DIRS = (
     Path("root/.triton/dump"),
     Path("workspace/triton-dump-dir"),
@@ -156,13 +155,7 @@ def mapped_path(root: Path, relative: Path) -> Path:
 
 
 def managed_targets(root: Path) -> list[Path]:
-    targets = [mapped_path(root, relative) for relative in TASK_DUMP_RELATIVE_DIRS]
-    temporary_root = mapped_path(root, Path("tmp"))
-    if temporary_root.is_dir() and not temporary_root.is_symlink():
-        for child in sorted(temporary_root.iterdir()):
-            if child.name.startswith(TASK_DUMP_PREFIX):
-                targets.append(child)
-    return targets
+    return [mapped_path(root, relative) for relative in TASK_DUMP_RELATIVE_DIRS]
 
 
 def build_prune_plan(target: Path) -> PrunePlan | None:
@@ -226,9 +219,6 @@ def execute_prune_plans(plans: list[PrunePlan]) -> dict[str, int]:
         removed_bytes += plan.bytes
         if any(plan.target.iterdir()):
             raise RuntimeError(f"cleanup target is not empty: {plan.target}")
-        if plan.target.name.startswith(TASK_DUMP_PREFIX):
-            plan.target.rmdir()
-            removed_directories += 1
     return {
         "removed_files": removed_files,
         "removed_directories": removed_directories,

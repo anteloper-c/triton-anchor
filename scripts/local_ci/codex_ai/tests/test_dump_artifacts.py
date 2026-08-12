@@ -91,7 +91,7 @@ def test_collect_without_ir_does_not_create_artifact_directory(tmp_path: Path):
     assert not output_root.exists()
 
 
-def test_task_dump_prune_removes_only_managed_dump_state(tmp_path: Path):
+def test_dump_prune_removes_only_shared_fallback_dump_state(tmp_path: Path):
     dump = tmp_path / "root/.triton/dump"
     sophgo_dump = tmp_path / "workspace/triton-dump-dir"
     task_dump = tmp_path / "tmp/triton-anchor-local-ci-dump.abc123"
@@ -114,11 +114,11 @@ def test_task_dump_prune_removes_only_managed_dump_state(tmp_path: Path):
 
     result = run_tool("prune", "--profile", "task-dumps", "--root", str(tmp_path))
 
-    assert result["removed_files"] == 3
-    assert result["removed_bytes"] == 3 * len(b"unused")
+    assert result["removed_files"] == 2
+    assert result["removed_bytes"] == 2 * len(b"unused")
     assert not any(dump.iterdir())
     assert not any(sophgo_dump.iterdir())
-    assert not task_dump.exists()
+    assert (task_dump / "payload.so").read_bytes() == b"unused"
     assert (cache / "payload.so").read_bytes() == b"unused"
     assert (flaggems_cache / "payload.so").read_bytes() == b"unused"
     assert (benchmark_dir / "payload.so").read_bytes() == b"unused"

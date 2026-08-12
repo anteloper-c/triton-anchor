@@ -48,8 +48,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kernels", default=",".join(DEFAULT_KERNELS))
     parser.add_argument("--repeat", type=int, default=5)
     parser.add_argument("--warmup", type=int, default=1)
-    parser.add_argument("--cache-root", default="/tmp/triton_anchor_compile_bench/cache")
-    parser.add_argument("--dump-root", default="/tmp/triton_anchor_compile_bench/dump")
+    temporary_root = Path(os.environ.get("TMPDIR", "/tmp"))
+    parser.add_argument(
+        "--cache-root",
+        default=str(temporary_root / "triton_anchor_compile_bench/cache"),
+    )
+    parser.add_argument(
+        "--dump-root",
+        default=str(temporary_root / "triton_anchor_compile_bench/dump"),
+    )
     parser.add_argument("--output-json", default="compile_benchmark_results.json")
     parser.add_argument("--output-csv", default="compile_benchmark_results.csv")
     parser.add_argument("--rtol", type=float, default=1.0e-2)

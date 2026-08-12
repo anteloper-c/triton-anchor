@@ -295,9 +295,10 @@ bash scripts/local_ci/orchestration/run_deterministic_ci_in_container.sh <sha> <
 
 - 从配置或调用环境读取 profile；
 - 保留 task 级 `FLAGGEMS_TEST_MODE` 和 `FRONTEND_BUILD_MODE` 覆盖；
-- 通过 `docker cp` 把可信 runner 快照复制到容器临时目录；
+- 在 `/tmp/triton-anchor-local-ci-task.<sha>.<random>/` 创建带 ownership marker 的任务根目录；
+- 通过 `docker cp` 把可信 runner 快照复制到任务根的 `runner/`；
 - 将构建、后端、FlagGems、性能和路径变量通过 `-e` 传入；
-- 通过 `docker exec` 执行 `deterministic_ci/run_deterministic_ci.sh <sha>`。
+- 通过 `docker exec` 执行 `deterministic_ci/run_deterministic_ci.sh <sha>`；runner 返回且其子进程退出后，校验 marker、SHA、父目录和挂载边界，再回收整个任务根。
 
 容器 token 规则：优先使用 `LOCAL_CI_CONTAINER_GITEE_TOKEN`/read token；只有 `LOCAL_CI_ALLOW_WRITE_TOKEN_IN_CONTAINER=1` 时才回退到 `GITEE_TOKEN`。自动执行 fork PR 时必须关闭该回退，并尽量让容器使用空 token 或只读 token。
 
@@ -343,9 +344,11 @@ setup Gitee auth
 
 功能阶段失败会设置 `LOCAL_CI_RESULT_STATUS=1`，最终退出非零。性能比较超过阈值或缺少 baseline 通常写 `warning`，不会把 GitHub overall status 置为 failure；必须查看详细报告而不能只看 overall status。
 
-当前 Sophgo backend 的 `envsetup.sh` 将 `TRITON_DUMP_DIR` 设为 `/workspace/triton-dump-dir`。每个通过 `run_logged` 执行的命令（包括 backend rebuild）改用 `/tmp/triton-anchor-local-ci-dump.<sha>.<pid>/<stage>` 作为独立 `TRITON_DUMP_DIR`；若命令内部再次 source backend envsetup，`source_backend_env` 会恢复该命令目录。命令失败时，runner 在清理前只把本命令目录、Sophgo 共享目录和 root fallback 中的 `.ttir`、`.linalg`、`.pplir` 复制到 `artifact-dir/failure-ir/<stage>/` 并写 manifest；`.so`、其他扩展名、成功命令 dump 和旧任务 dump 不保留。`/workspace/triton-dump-dir` 与 `/root/.triton/dump` 会在每个命令边界清空。清理范围不包含 `/root/.triton/cache`、`/root/.flaggems/code_cache` 或 benchmark 临时目录，避免让 Codex 诊断无条件冷启动。
+当前 Sophgo backend 的 `envsetup.sh` 将 `TRITON_DUMP_DIR` 设为 `/workspace/triton-dump-dir`。每个通过 `run_logged` 执行的命令（包括 backend rebuild）改用任务根的 `dump/<stage>` 作为独立 `TRITON_DUMP_DIR`；若命令内部再次 source backend envsetup，`source_backend_env` 会恢复该命令目录。命令失败时，runner 在清理前只把本命令目录、Sophgo 共享目录和 root fallback 中的 `.ttir`、`.linalg`、`.pplir` 复制到任务根之外的 `artifact-dir/failure-ir/<stage>/` 并写 manifest；`.so`、其他扩展名、成功命令 dump 和旧任务 dump 不保留。随后阶段 dump 立即回收，`/workspace/triton-dump-dir` 与 `/root/.triton/dump` 在命令边界清空。
 
 `TRITON_CACHE_DIR` 与 dump 的职责不同，不随本清理任务改成任务级目录。Triton cache key 包含 Triton 实现、kernel source、backend、编译 options 和会影响缓存的环境变量，目录保存编译阶段产物、metadata 与最终 binary；命中时会跳过编译 pipeline。长期复用可加速不受当前 diff 影响的 kernel 和 Codex 定向复跑。compile benchmark 已使用自身 session cache 并在 `finally` 清理；FlagGems 的可选清 cache 服务测试隔离。只有在 dump 清理上线后，实际体积和 snapshot 计时仍证明 cache 是主要瓶颈时，才应另行设计 cache 生命周期，不能把调试 dump 的清理规则直接套到编译 cache。
+
+任务根统一承载 `TMPDIR`、runner、临时 askpass、dump 和三类 benchmark 的隔离 work/cache/dump，正常退出时整体回收。遵循 `TMPDIR` 的 backend/运行时临时 `.so` 会随任务回收；现有 `/tmp/<数字>-<worker>` 创建方是否遵循 `TMPDIR`，必须以服务器下一次任务结果验证。清理只接受 marker 所声明的单个任务根或其 `dump/<stage>`，拒绝挂载点、跨文件系统和路径逃逸；不会扫描 `/tmp/[0-9]+-[0-9]+`，也不触碰 `/root/.triton/cache`、`/root/.flaggems/code_cache`、uv/pip cache 或 `/opt/venv`。异常中断后的过期任务目录回收尚未启用，待另行确定策略。
 
 当前实现中的 backend rebuild 逻辑仍直接使用 `triton_sophgo_backend` 包名和 wheel glob。`BACKEND_PROFILE` 虽然是参数化的，但这部分并未完全泛化；新后端必须检查并可能需要专用 profile/脚本。
 
