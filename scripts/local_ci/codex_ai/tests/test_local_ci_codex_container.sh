@@ -1054,10 +1054,8 @@ grep -Fxq "max_test_command_duration_seconds: 601" "${over_limit_output}/codex-a
 grep -Fxq "total_test_command_duration_seconds: 3601" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: warning" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fq "生成测试文件数量 6 超过限制 5" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fq "命令数量 31 超过限制 30" "${over_limit_output}/codex-ai-comment.md"
 grep -Fq "单条命令最长耗时 601 秒" "${over_limit_output}/codex-ai-report.md"
 grep -Fq "测试和诊断命令累计耗时 3601 秒" "${over_limit_output}/codex-ai-report.md"
-grep -Fq "验证范围提醒：" "${over_limit_output}/codex-ai-comment.md"
 
 run_case zero-tests zero_tests 0 30 0
 zero_output="${test_root}/zero-tests/output"

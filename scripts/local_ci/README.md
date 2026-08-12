@@ -194,7 +194,7 @@ Codex 报告格式为 `triton-anchor-codex-ai-report/v3`。除审查摘要、文
 - 当前 diff 实际实现情况；
 - 支持该判断的代码、测试或 Local CI 证据；多条依据必须拆成独立条目。
 
-实现状态 `implemented`、`partially_implemented`、`not_implemented`、`not_assessable` 和 `not_applicable` 只表示声明与实现的一致程度，不替代 `PASS`/`WARNING`/`FAIL`。PR comment 会优先展示审查摘要、本地确定性 CI 检查简述、贡献者目标与实现情况、需要处理的问题和验证情况；判断依据和验证说明应使用提交者和审核者可理解的自然语言，并按条目展示。`AI-001`、`TEST-001`、`RUN-001` 等机器关联 ID 只保留在结构化 JSON 和完整报告中，PR comment 将问题和建议测试显示为自然序号，并将 `RUN-xxx` 替换为对应执行记录的 `purpose`，例如“缓存失效定向测试”“Python 语法检查”或“扩展模块构建”；审查主体统一称为“Codex AI 自动审查”。文件级明细折叠在评论底部；完整报告保留全部证据。
+实现状态 `implemented`、`partially_implemented`、`not_implemented`、`not_assessable` 和 `not_applicable` 只表示声明与实现的一致程度，不替代 `PASS`/`WARNING`/`FAIL`。PR comment 会优先展示审查摘要、本地确定性 CI 检查简述、贡献者目标与实现情况、需要处理的问题、验证情况和剩余风险；判断依据和验证说明应使用提交者和审核者可理解的自然语言，并按条目展示。`AI-001`、`TEST-001`、`RUN-001` 等机器关联 ID 只保留在结构化 JSON 和完整报告中，PR comment 将问题和建议测试显示为自然序号，并将 `RUN-xxx` 替换为对应执行记录的 `purpose`，例如“缓存失效定向测试”“Python 语法检查”或“扩展模块构建”；审查主体统一称为“Codex AI 自动审查”。文件级明细折叠在评论底部；完整报告保留全部证据。
 
 每个 finding 必须定位到本次 diff 中未删除的文件，并使用单行或最多 12 行的连续范围。Renderer 会在 exact-SHA checkout 中确认文件存在、范围没有越界且不全是空行；`code_role` 说明该行实际负责的功能。Bridge 从结构化报告生成固定到审查 SHA 的 GitHub 链接，PR 提交者可直接打开修复位置，审核者可核对行号、功能说明和完整证据是否一致。
 

@@ -988,11 +988,19 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
         *[f"  - {comment_inline(item, 1_500)}" for item in test_execution_summary],
         "",
     ])
-    if args.constraint_status == "warning":
-        lines.extend([
-            f"- 验证范围提醒：{comment_inline(args.constraint_reason, 1_500)}",
-            "",
-        ])
+
+    lines.extend([
+        "### 剩余风险",
+        "",
+    ])
+    residual_risks = document["residual_risks"]
+    if residual_risks:
+        lines.extend(
+            f"- {comment_inline(risk, 1_500)}" for risk in residual_risks
+        )
+    else:
+        lines.append("未报告剩余风险。")
+    lines.append("")
 
     lines.extend([
         "### 变更文件",

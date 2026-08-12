@@ -304,8 +304,6 @@ grep -Fq "### 需要处理的问题" "${comment_md}"
 grep -Fq "### 变更文件" "${comment_md}"
 grep -Fq "这段代码负责：该条件决定缓存命中后是否继续复用旧状态" "${comment_md}"
 grep -Fq "<details>" "${comment_md}"
-grep -Fq "验证范围提醒：" "${comment_md}"
-grep -Fq "测试命令数量超过轻量约束" "${comment_md}"
 if grep -Fq "新分支直接复用缓存值" "${comment_md}"; then
   echo "PR 评论不应包含 finding 的完整证据" >&2
   exit 1
