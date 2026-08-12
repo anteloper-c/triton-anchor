@@ -28,13 +28,13 @@
         "expected_behavior": {"type": "string"},
         "implementation_summary": {"type": "string"},
         "evidence": {
-          "oneOf": [
+          "anyOf": [
             {"type": "string"},
             {
               "type": "array",
               "minItems": 1,
               "maxItems": 8,
-              "uniqueItems": true,
+              "description": "Duplicate items are rejected during report validation.",
               "items": {"type": "string"}
             }
           ]
@@ -222,13 +222,13 @@
           ]
         },
         "summary": {
-          "oneOf": [
+          "anyOf": [
             {"type": "string"},
             {
               "type": "array",
               "minItems": 1,
               "maxItems": 8,
-              "uniqueItems": true,
+              "description": "Duplicate items are rejected during report validation.",
               "items": {"type": "string"}
             }
           ]

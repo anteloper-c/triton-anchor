@@ -4,8 +4,47 @@ set -euo pipefail
 codex_ai_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo_root="$(cd "${codex_ai_dir}/../../.." && pwd)"
 renderer="${repo_root}/scripts/local_ci/codex_ai/render_codex_ai_report.py"
+schema="${repo_root}/scripts/local_ci/codex_ai/codex_ai_report.schema.json"
 test_root="$(mktemp -d /tmp/local-ci-codex-report-test.XXXXXX)"
 trap 'rm -rf -- "${test_root}"' EXIT
+
+python3 - "${schema}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+schema = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+unsupported_keywords = {
+    "allOf",
+    "dependentRequired",
+    "dependentSchemas",
+    "if",
+    "not",
+    "oneOf",
+    "then",
+    "else",
+    "uniqueItems",
+}
+
+
+def validate(node, location="$"):
+    if isinstance(node, dict):
+        unsupported = unsupported_keywords.intersection(node)
+        assert not unsupported, f"{location}: unsupported keywords: {sorted(unsupported)}"
+        if node.get("type") == "object":
+            properties = node.get("properties", {})
+            assert node.get("additionalProperties") is False
+            assert set(node.get("required", [])) == set(properties)
+        for key, value in node.items():
+            validate(value, f"{location}.{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            validate(value, f"{location}[{index}]")
+
+
+
+validate(schema)
+PY
 
 valid_json="${test_root}/valid.json"
 report_md="${test_root}/report.md"
