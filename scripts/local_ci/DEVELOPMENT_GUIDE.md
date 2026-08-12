@@ -396,6 +396,7 @@ Codex AI CI 是非阻塞的审查和 targeted diagnosis 辅助层：
 | `codex_ai/run_codex_ai_ci.sh` | 主 orchestration：参数校验、凭据校验、差异清单、容器生命周期、提示词渲染、Codex 执行、报告校验、workspace 收集和 summary。 |
 | `codex_ai/prepare_codex_checkout.sh` | 从 Gitee branch clone disposable checkout，校验 branch/SHA/base SHA，detach exact target，移除 Gitee remote。 |
 | `codex_ai/validate_codex_ai_credentials.py` | 校验独立 Codex home、路径组件、symlink/hardlink、文件权限、TOML provider 和 `OPENAI_API_KEY`。 |
+| `codex_ai/normalize_codex_ai_report.py` | 在严格校验前保守修正 `not_run` 与已执行命令的机械矛盾，记录归一化原因并原子更新 JSON。 |
 | `codex_ai/setup_codex_ai_container.sh` | 部署前 prerequisite check；只检查，不创建长期 Docker resource。 |
 | `shared/validate_task_metadata.py` | 校验 PR metadata schema、task ref、target SHA、PR number、UTC timestamp 和文本长度，输出 canonical JSON。 |
 | `orchestration/fetch_task_metadata.sh` | 从 `ci/meta/...` 获取 `task-metadata.json`，交给 validator。 |

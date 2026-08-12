@@ -59,6 +59,7 @@ workspace_patch_path="${output_dir}/codex-workspace.patch"
 generated_files_path="${output_dir}/codex-generated-files.tar.gz"
 schema_path="${SCRIPT_DIR}/codex_ai_report.schema.json"
 renderer_path="${SCRIPT_DIR}/render_codex_ai_report.py"
+normalizer_path="${SCRIPT_DIR}/normalize_codex_ai_report.py"
 checkout_helper="${SCRIPT_DIR}/prepare_codex_checkout.sh"
 credentials_validator="${SCRIPT_DIR}/validate_codex_ai_credentials.py"
 task_metadata_validator="${LOCAL_CI_ROOT}/shared/validate_task_metadata.py"
@@ -860,6 +861,9 @@ validate_prerequisites() {
   if [[ ! -r "${renderer_path}" ]]; then
     fail_ai_ci "报告渲染器不可读：${renderer_path}"
   fi
+  if [[ ! -r "${normalizer_path}" ]]; then
+    fail_ai_ci "报告归一化工具不可读：${normalizer_path}"
+  fi
   if [[ ! -r "${checkout_helper}" ]]; then
     fail_ai_ci "checkout helper 不可读：${checkout_helper}"
   fi
@@ -1540,6 +1544,11 @@ if grep -Fq '"command_execution"' "${log_path}"; then
   command_executed="true"
 fi
 if [[ ${exit_code} -eq 0 ]]; then
+  if ! "${PYTHON_BIN}" "${normalizer_path}" --input "${report_json_path}" \
+    >> "${log_path}" 2>&1; then
+    echo "Codex AI 报告归一化未完成，将由严格报告校验继续处理原始输出。" \
+      >> "${log_path}"
+  fi
   constraint_args=(
     "${report_json_path}"
     "${analysis_mode}"

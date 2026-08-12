@@ -20,6 +20,7 @@ CANONICAL_PATHS = (
     "codex_ai/prepare_codex_checkout.sh",
     "codex_ai/setup_codex_ai_container.sh",
     "codex_ai/validate_codex_ai_credentials.py",
+    "codex_ai/normalize_codex_ai_report.py",
     "codex_ai/render_codex_ai_report.py",
     "codex_ai/codex_ai_report.schema.json",
     "codex_ai/prompts/codex_ai_success.md",

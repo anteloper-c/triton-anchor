@@ -142,6 +142,7 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 - 所有生成的测试路径写入 `test_execution.generated_test_files`；每条命令都必须在 `test_execution.commands` 中记录 `purpose`、命令文本、退出码、耗时、状态和中文证据。`purpose` 使用不超过 120 字的中文名词短语说明该项工作的功能和类型，例如“缓存失效定向测试”“Python 语法检查”或“扩展模块构建”，不得包含 `RUN-xxx`。
 - `test_execution.summary`：输出包含 1 至 8 条中文验证说明的 JSON 字符串数组，每项只表达一项验证工作、结果、未执行原因或证据边界；即使只有一条也使用单元素数组，不得把多项说明挤在同一字符串中。
 - `test_execution.status` 必须与命令记录一致：没有执行命令时使用 `not_run` 或 `insufficient_evidence`；全部已执行命令通过时才可使用 `passed`；存在可稳定复现的失败、非确定性失败或基础设施失败时，整体状态使用对应枚举；测试生成过程失败时使用 `test_generation_error`。计划但未执行的命令状态使用 `not_executed`，并在证据中说明原因。
+- 只要 `test_execution.commands` 中存在一条状态不是 `not_executed` 的测试、构建、lint、诊断或代码检查命令，整体状态就绝不能使用 `not_run`；即使命令已执行但证据仍不足，也必须使用 `insufficient_evidence`。
 
 当 diff、可达调用链或已有证据表明需要进一步验证时，Codex 可以在预算允许范围内扩大验证范围，运行相关测试子集、局部构建、lint、类型检查或必要的集成验证；触发条件包括但不限于：
 
@@ -185,4 +186,5 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 - `integration.scope` 必须明确写出本次改动与调用链、组件或结果协议之间的集成检查范围，不能只输出 `integration`、`scope` 等键名或英文短语。
 - 中文要求适用于字段值而不是 JSON 键名、固定枚举、命令文本、代码符号和路径；不要以这些固定内容代替中文解释。
 - 没有具体缺陷时 `findings` 必须为空数组，不得为了填充报告而编造问题。
+- 输出前必须逐条核对 `test_execution.commands[*].status`：若存在任何已执行命令，`test_execution.status` 不得为 `not_run`，并重新核对 `verdict` 是否与最终测试状态和 findings 一致。
 - `completion_marker` 必须是 `CODEX_AI_CI_COMPLETE`。

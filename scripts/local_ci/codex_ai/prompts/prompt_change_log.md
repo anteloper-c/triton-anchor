@@ -1,3 +1,31 @@
+## 2026-08-12：保守归一化 not_run 与已执行命令的状态矛盾
+
+### 修改原因
+
+报告 renderer 已严格拒绝 `test_execution.status=not_run` 与已执行命令同时出现，但此前只依赖 prompt 要求模型保持两个字段一致。模型偶发把“没有执行产品测试”概括为 `not_run`，同时又记录已执行的代码检查或诊断命令，导致内容基本完整的辅助审查在最终固定格式校验阶段整体失败。
+
+### 修改内容
+
+- success/failure prompt 和 schema description 明确：只要 `commands` 中存在状态不是 `not_executed` 的命令，整体状态就不能使用 `not_run`；
+- 新增窄范围报告归一化工具，在严格 renderer 校验前把该矛盾保守改为 `insufficient_evidence`，绝不自动改为 `passed`；
+- 同步按 findings 和归一化后的测试状态校正 verdict，并在 JSON 摘要和执行日志中记录归一化原因；
+- 原始 JSON 通过同目录临时文件原子替换，归一化失败时继续由原 renderer 严格校验，不吞掉其他格式或语义错误；
+- 增加单元、严格 renderer 联动和 fake-container runner 场景，覆盖 PASS 到 WARNING、HIGH finding 保持 FAIL，以及纯 `not_executed` 不触发归一化。
+
+### 兼容性与风险
+
+- 不新增报告字段、不修改 schema 版本或状态枚举；合法报告不会被改写；
+- 原 renderer 的跨字段校验保持不变，命令退出码、中文、manifest、finding 和其他报告错误仍会被拒绝；
+- 归一化结果使用 `insufficient_evidence` 和 WARNING，避免把仅有代码检查或诊断命令误报为测试通过；
+- Codex AI 仍为非阻塞辅助审查，不改变确定性 Local CI 合入门禁。
+
+### 验证
+
+通过 Python/JSON 解析、归一化单元与严格 renderer 联动测试、模块布局测试、Shell 语法、Codex 中文报告契约、CLI 原子写入和 `git diff --check`。完整 fake-container harness 在 Windows 上被现有 Linux 专用 `os.geteuid()` 校验阻断，新增 runner 场景需以 Linux CI 结果为准。
+
+---
+
+
 ## 2026-08-12：只向失败诊断暴露当前失败命令的文本 IR
 
 ### 修改原因
