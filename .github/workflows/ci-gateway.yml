@@ -1597,7 +1597,8 @@ jobs:
     permissions:
       actions: write
       contents: read
-      pull-requests: read
+      issues: write
+      pull-requests: write
       statuses: write
     uses: ./.github/workflows/receive-local-ci-result.yml
     with:
