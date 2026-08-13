@@ -1,3 +1,27 @@
+## 2026-08-13：拆分 Codex 语义审查与 Runner 可信事实
+
+### 修改原因
+
+旧报告要求模型同时生成审查结论和可由 Runner 观测的执行事实。尤其是 `test_execution.status=not_run` 与 JSONL 中已经执行命令的事实可能冲突，导致审查内容可用但整份报告在最后校验阶段失败。
+
+### 修改内容
+
+- Codex 改为输出语义审查载荷，保留审查摘要、合入建议、贡献者声明评估、逐文件说明、五类行为覆盖、finding、建议测试、剩余风险和命令语义说明；
+- success/failure prompt 明确影响链、逐文件证据、五类行为的具体检查范围、三层推理和跨文件生产者/消费者契约，避免语义载荷退化成模板摘要；
+- Runner 根据可信 Git manifest 生成变更文件，根据工作区归档生成测试文件，根据 Codex JSONL 生成命令、退出码和耗时，并派生状态、verdict、ID 和完成标记；
+- 保留逐文件 `changed_files`、五类 `behavior_coverage` 及其 PR comment/完整报告展示；结构、字段类型、枚举和逐文件覆盖继续严格校验；
+- 空白或英文自然语言改为保守的中文默认展示；finding 的可信文件 ID、路径边界和行号仍严格校验；
+- `generated_test_files` 只从可信工作区归档中的测试路径派生；turn 完成和命令执行从解析后的 JSONL 事件/账本判断，不再依赖字符串命中或不完整占位事件；
+- 删除已停用的上游 PR 镜像和 RACE-org main 自动同步 workflow、实现、测试、凭据说明及维护文档；
+- 删除旧的 `normalize_codex_ai_report.py` 及其测试，不增加第二次 Codex 修复调用；
+- 保持 canonical v3、Markdown renderer、PR comment 和 bridge 的下游兼容性。
+
+### 验证
+
+通过 builder/JSONL 单元测试、schema 契约、模块布局、Shell 语法、完整 fake-container harness 和 `git diff --check`。Linux/WSL 相关 Python 测试共 75 项通过，另有 3 个子测试通过。
+
+---
+
 ## 2026-08-12：保守归一化 not_run 与已执行命令的状态矛盾
 
 ### 修改原因

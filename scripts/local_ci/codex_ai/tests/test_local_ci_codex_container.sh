@@ -209,12 +209,12 @@ def run_git(arguments: list[str]) -> int:
     return completed.returncode
 
 
-def write_report(
+def write_analysis(
     mode: str,
     output_path: Path,
     changed_files_manifest: list[dict[str, str]],
     context_status: str,
-) -> None:
+) -> list[dict[str, object]]:
     if scenario == "format_error":
         summary = "English-only summary."
     elif mode == "analysis_only":
@@ -226,6 +226,7 @@ def write_report(
     else:
         summary = "未发现具体缺陷，生成的定向测试已经通过。"
 
+    command_events: list[dict[str, object]] = []
     if mode == "analysis_only" and scenario == "analysis_diagnostic":
         checkout = mapped("/codex-workspace/checkout")
         generated = checkout / "generated_tests" / "test_failure_diagnostic.py"
@@ -234,47 +235,38 @@ def write_report(
             "def test_failure_diagnostic():\n    assert True\n",
             encoding="utf-8",
         )
-        execution = {
-            "status": "passed",
-            "summary": "生成并执行一个定向诊断用例，诊断命令通过。",
-            "generated_test_files": [
-                "generated_tests/test_failure_diagnostic.py"
-            ],
+        command = "python3 -m pytest generated_tests/test_failure_diagnostic.py"
+        test_assessment = {
+            "evidence_level": "sufficient",
+            "summary": ["生成并执行一个定向诊断用例，诊断命令通过。"],
             "commands": [
                 {
-                    "id": "RUN-001",
                     "purpose": "失败路径定向诊断",
-                    "command": (
-                        "python3 -m pytest "
-                        "generated_tests/test_failure_diagnostic.py"
-                    ),
-                    "exit_code": 0,
-                    "duration_seconds": 0.1,
-                    "status": "passed",
+                    "command": command,
                     "evidence": "定向失败诊断用例执行通过。",
+                    "failure_classification": "none",
                 }
             ],
         }
+        command_events.append(
+            {"id": "cmd-001", "command": command, "exit_code": 0, "duration_seconds": 0.1}
+        )
     elif mode == "analysis_only":
-        execution = {
-            "status": "not_run",
-            "summary": "已分析失败日志，本次没有必要生成或执行额外诊断测试。",
-            "generated_test_files": [],
+        test_assessment = {
+            "evidence_level": "not_needed",
+            "summary": ["已分析失败日志，本次没有必要生成或执行额外诊断测试。"],
             "commands": [],
         }
     elif scenario in {"zero_tests", "docs_only"}:
-        execution = {
-            "status": (
-                "insufficient_evidence"
-                if scenario == "zero_tests"
-                else "not_run"
+        test_assessment = {
+            "evidence_level": (
+                "insufficient" if scenario == "zero_tests" else "not_needed"
             ),
-            "summary": (
+            "summary": [
                 "可测试代码改动没有生成或执行定向测试，当前证据不足。"
                 if scenario == "zero_tests"
                 else "本次只包含文档改动，因此不需要生成或执行测试。"
-            ),
-            "generated_test_files": [],
+            ],
             "commands": [],
         }
     elif scenario == "over_limit":
@@ -290,28 +282,30 @@ def write_report(
                 "def test_generated():\n    assert True\n",
                 encoding="utf-8",
             )
+        command = "python3 -m pytest generated_tests/test_generated_1.py -q"
+        test_assessment = {
+            "evidence_level": "sufficient",
+            "summary": ["测试通过，但实际文件数、命令数和耗时超过轻量约束。"],
+            "commands": [
+                {
+                    "purpose": "生成测试约束验证",
+                    "command": command,
+                    "evidence": "定向测试命令执行通过。",
+                    "failure_classification": "none",
+                }
+                for _ in range(31)
+            ],
+        }
         durations = [601, *([100] * 30)]
-        commands = [
+        command_events.extend(
             {
-                "id": f"RUN-{index:03d}",
-                "purpose": "生成测试约束验证",
-                "command": (
-                    "python3 -m pytest "
-                    f"generated_tests/test_generated_1.py -q"
-                ),
+                "id": f"cmd-{index:03d}",
+                "command": command,
                 "exit_code": 0,
                 "duration_seconds": duration,
-                "status": "passed",
-                "evidence": "定向测试命令执行通过。",
             }
             for index, duration in enumerate(durations, start=1)
-        ]
-        execution = {
-            "status": "passed",
-            "summary": "测试通过，但声明的文件数、命令数和耗时超过轻量约束。",
-            "generated_test_files": generated_files,
-            "commands": commands,
-        }
+        )
     else:
         checkout = mapped("/codex-workspace/checkout")
         generated = checkout / "generated_tests" / "test_generated.py"
@@ -320,78 +314,30 @@ def write_report(
             "def test_generated():\n    assert True\n",
             encoding="utf-8",
         )
-        execution = {
-            "status": "passed",
-            "summary": "生成的定向测试共执行一个用例并通过。",
-            "generated_test_files": ["generated_tests/test_generated.py"],
+        command = "python3 -m pytest generated_tests/test_generated.py"
+        test_assessment = {
+            "evidence_level": "sufficient",
+            "summary": ["生成的定向测试共执行一个用例并通过。"],
             "commands": [
                 {
-                    "id": "RUN-001",
                     "purpose": "生成代码路径定向测试",
-                    "command": (
-                        "python3 -m pytest "
-                        "generated_tests/test_generated.py"
-                    ),
-                    "exit_code": 0,
-                    "duration_seconds": 0.2,
-                    "status": "passed",
+                    "command": command,
                     "evidence": "定向测试共执行一个用例并通过。",
+                    "failure_classification": "none",
                 }
             ],
         }
+        command_events.append(
+            {"id": "cmd-001", "command": command, "exit_code": 0, "duration_seconds": 0.2}
+        )
 
-    if scenario == "inconsistent_not_run":
-        execution["status"] = "not_run"
-
-    validation_strategy = (
-        "执行 RUN-001 并记录该文件相关验证结果。"
-        if execution["commands"]
-        else "未执行：本次没有运行额外验证命令。"
-    )
-    changed_files = [
-        {
-            "path": item["path"],
-            "change_type": item["change_type"],
-            "summary": "检查了该文件在当前差异中的具体改动。",
-            "impact": "该文件可能影响当前任务覆盖的代码或文档行为。",
-            "validation_strategy": validation_strategy,
-        }
-        for item in changed_files_manifest
-    ]
-    behavior_coverage = {
-        "normal": {
-            "scope": "检查改动涉及的正常执行路径。",
-            "strategy": "结合代码差异和定向测试验证。",
-            "result": "未发现新的正常路径缺陷。",
-        },
-        "boundary": {
-            "scope": "检查改动涉及的边界输入路径。",
-            "strategy": "检查条件分支和现有边界测试。",
-            "result": "未发现新的边界路径缺陷。",
-        },
-        "error": {
-            "scope": "检查改动涉及的错误处理路径。",
-            "strategy": "检查异常分支和失败日志。",
-            "result": "未发现可复现的产品错误。",
-        },
-        "compatibility": {
-            "scope": "检查改动涉及的接口兼容路径。",
-            "strategy": "比较既有接口约定和当前实现。",
-            "result": "未发现新的兼容性问题。",
-        },
-        "integration": {
-            "scope": "检查改动与现有调用链的集成路径。",
-            "strategy": "检查调用关系并执行定向回归。",
-            "result": "未发现新的集成问题。",
-        },
-    }
     if context_status == "available":
         change_request_assessment = {
             "status": "implemented",
             "contributor_goal": "贡献者希望增强适配器在新边界条件下的稳健性。",
             "expected_behavior": "适配器应正确处理贡献者声明的新边界条件。",
             "implementation_summary": "代码差异实现了声明的边界条件处理。",
-            "evidence": "代码差异和定向验证支持当前实现判断。",
+            "evidence": ["代码差异和定向验证支持当前实现判断。"],
         }
     elif context_status == "not_applicable":
         change_request_assessment = {
@@ -399,7 +345,7 @@ def write_report(
             "contributor_goal": "当前任务不是 PR，因此没有贡献者功能声明。",
             "expected_behavior": "当前任务不是 PR，因此声明的预期行为不适用。",
             "implementation_summary": "本次仅依据代码差异执行审查，不进行 PR 声明对照。",
-            "evidence": "任务上下文明确标记为非 PR 推送任务。",
+            "evidence": ["任务上下文明确标记为非 PR 推送任务。"],
         }
     else:
         change_request_assessment = {
@@ -407,11 +353,10 @@ def write_report(
             "contributor_goal": "PR 功能声明元数据不可用，无法可靠归纳贡献者目标。",
             "expected_behavior": "PR 功能声明元数据不可用，无法确认声明的预期行为。",
             "implementation_summary": "当前只能审查代码差异，不能判断实现与声明是否一致。",
-            "evidence": "任务上下文缺少通过校验的 PR 功能声明元数据。",
+            "evidence": ["任务上下文缺少通过校验的 PR 功能声明元数据。"],
         }
 
-    report = {
-        "verdict": "WARNING" if scenario == "zero_tests" else "PASS",
+    analysis = {
         "summary": summary,
         "merge_recommendation": (
             "建议先确认确定性 Local CI 的失败原因并完成复测后再合入。"
@@ -419,20 +364,47 @@ def write_report(
             else "当前未发现需要阻塞合入的问题，可以结合原始 CI 结果决定合入。"
         ),
         "change_request_assessment": change_request_assessment,
-        "changed_files": changed_files,
-        "behavior_coverage": behavior_coverage,
+        "changed_files": [
+            {
+                "file_id": item["file_id"],
+                "summary": "检查了该文件在当前差异中的具体改动。",
+                "impact": "该文件可能影响当前任务覆盖的代码或文档行为。",
+                "validation_strategy": (
+                    "执行定向验证命令并记录该文件相关结果。"
+                    if test_assessment["commands"]
+                    else "未执行：本次没有运行额外验证命令。"
+                ),
+            }
+            for item in changed_files_manifest
+        ],
+        "behavior_coverage": {
+            name: {
+                "scope": f"检查改动涉及的{name}行为路径。",
+                "strategy": "结合代码差异和定向验证检查。",
+                "result": "未发现新的行为缺陷。",
+            }
+            for name in ("normal", "boundary", "error", "compatibility", "integration")
+        },
         "findings": [],
         "suggested_tests": [],
         "residual_risks": ["本次仅覆盖了与代码差异直接相关的路径。"],
-        "test_execution": execution,
-        "completion_marker": "CODEX_AI_CI_COMPLETE",
+        "test_assessment": test_assessment,
     }
+    if not command_events:
+        command_events.append(
+            {
+                "id": "cmd-inspect-001",
+                "command": "git diff --stat",
+                "exit_code": 0,
+                "duration_seconds": 0.05,
+            }
+        )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        json.dumps(report, ensure_ascii=False),
+        json.dumps(analysis, ensure_ascii=False),
         encoding="utf-8",
     )
-
+    return command_events
 
 if not original:
     raise SystemExit(2)
@@ -584,6 +556,7 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
     assert manifest_match is not None
     changed_files_manifest = json.loads(manifest_match.group(1))
     assert isinstance(changed_files_manifest, list)
+    assert all(item["file_id"] == f"FILE-{index:03d}" for index, item in enumerate(changed_files_manifest, start=1))
     if "- Branch: ci/pr-42/feature" in prompt:
         assert "- Diff Mode: merge-base" in prompt
         assert "- PR Head SHA: " in prompt
@@ -614,7 +587,22 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
     assert "未列出的 Triton-anchor 项目不变量、跨层契约或行为风险" in prompt
     assert "不得扩展到与本次变更没有可达关系的全仓或泛化审计" in prompt
     assert "以下问题类型仅为高优先级提示，不是封闭清单" in prompt
-    assert "以上五类只是 schema 要求的报告维度，不是行为路径的封闭分类" in prompt
+    assert "behavior_coverage` 必须分别记录" in prompt
+    assert "这五类不是行为风险的封闭清单" in prompt
+    assert "覆盖全部变更文件和相关可达调用链" in prompt
+    assert "从变更符号向外建立影响链" in prompt or "从失败阶段和变更符号双向建立影响链" in prompt
+    assert "逐文件说明用于证明没有漏看文件" in prompt
+    assert "不能用逐文件摘要代替跨文件" in prompt
+    assert "normal`：主要成功路径" in prompt
+    assert "boundary`：空值、极值" in prompt
+    assert "error`：" in prompt and "清理/回滚" in prompt
+    assert "compatibility`：公共 API" in prompt
+    assert "integration`：跨模块调用链" in prompt
+    assert "至少完成三层推理" in prompt
+    assert "跨文件生产者/消费者是否同步" in prompt
+    assert "语义载荷必须承载" in prompt
+    assert "changed_files` 证明文件级覆盖" in prompt
+    assert "不能退化成" in prompt
     assert "具有可复现路径或充分静态证据" in prompt
     assert "AI-CI 维护问题" in prompt
     assert "现有 Shell harness" in prompt
@@ -640,11 +628,11 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
         assert "至少预留 450 秒" in prompt
         assert "失败用例最多额外复跑一次" in prompt
         assert "默认避免运行全量测试或完整重编译" in prompt
-        assert "test_execution.status` 必须使用 `insufficient_evidence" in prompt
+        assert "test_assessment.evidence_level` 使用 `insufficient" in prompt
         expected = "false" if scenario == "docs_only" else "true"
         assert f"- Test Generation Expected: {expected}" in prompt
     assert environment.get("CODEX_HOME") == "/root/.codex"
-    assert environment.get("AI_SCHEMA_PATH") == "/codex-workspace/codex-ai-report.schema.json"
+    assert environment.get("AI_SCHEMA_PATH") == "/codex-workspace/codex-ai-analysis.schema.json"
     if scenario in {"timeout", "startup_timeout"}:
         time.sleep(5)
         raise SystemExit(0)
@@ -652,13 +640,31 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
         r'"status":"(available|missing|invalid|not_applicable)"', prompt
     )
     assert context_match is not None
-    write_report(
+    command_events = write_analysis(
         mode,
-        mapped(environment["AI_REPORT_PATH"]),
+        mapped(environment["AI_ANALYSIS_PATH"]),
         changed_files_manifest,
         context_match.group(1),
     )
-    print(json.dumps({"type": "item.completed", "item": {"type": "command_execution"}}))
+    for event in command_events:
+        print(json.dumps({
+            "type": "item.started",
+            "item": {
+                "id": event["id"],
+                "type": "command_execution",
+                "command": event["command"],
+            },
+        }))
+        print(json.dumps({
+            "type": "item.completed",
+            "item": {
+                "id": event["id"],
+                "type": "command_execution",
+                "command": event["command"],
+                "exit_code": event["exit_code"],
+                "duration_seconds": event["duration_seconds"],
+            },
+        }))
     print(json.dumps({"type": "turn.completed"}))
     raise SystemExit(0)
 
@@ -861,6 +867,9 @@ grep -Fq 'triton-anchor-codex-ai-report/v3' "${success_output}/codex-ai-report.m
 grep -Fq "## 具体文件变更" "${success_output}/codex-ai-report.md"
 grep -Fq "## 行为覆盖" "${success_output}/codex-ai-report.md"
 grep -Fq "## Codex AI 自动审查" "${success_output}/codex-ai-comment.md"
+grep -Fq "### 变更文件" "${success_output}/codex-ai-comment.md"
+grep -Fq "检查了该文件在当前差异中的具体改动。" \
+  "${success_output}/codex-ai-comment.md"
 grep -Fq "### 验证情况" "${success_output}/codex-ai-comment.md"
 grep -Fq "<details>" "${success_output}/codex-ai-comment.md"
 python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert len(data) == 1 and data[0]["path"] == "payload.txt"' \
@@ -1065,20 +1074,20 @@ zero_output="${test_root}/zero-tests/output"
 grep -Fxq "status: pass" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_execution_status: insufficient_evidence" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fxq "generated_test_file_count: 0" "${zero_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_command_count: 0" "${zero_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_command_count: 1" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_generation_expected: true" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: warning" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fq "### 剩余风险" "${zero_output}/codex-ai-comment.md"
 grep -Fq "本次仅覆盖了与代码差异直接相关的路径。" \
   "${zero_output}/codex-ai-comment.md"
-grep -Fq "未记录测试、构建或 lint 命令" "${zero_output}/codex-ai-report.md"
+grep -Fq "可测试代码改动未生成测试文件" "${zero_output}/codex-ai-report.md"
 
 run_case docs-only docs_only 0 30 0 "${docs_target_sha}" "${base_sha}" "${docs_branch}"
 docs_output="${test_root}/docs-only/output"
 grep -Fxq "status: pass" "${docs_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_execution_status: not_run" "${docs_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_execution_status: passed" "${docs_output}/codex-ai-ci-summary.txt"
 grep -Fxq "generated_test_file_count: 0" "${docs_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_command_count: 0" "${docs_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_command_count: 1" "${docs_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_generation_expected: false" "${docs_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: pass" "${docs_output}/codex-ai-ci-summary.txt"
 grep -Fq "只包含文档改动" "${docs_output}/codex-ai-report.md"
@@ -1092,12 +1101,12 @@ analysis_output="${test_root}/analysis/output"
 grep -Fxq "status: pass" "${analysis_output}/codex-ai-ci-summary.txt"
 grep -Fxq "local_ci_status: 1" "${analysis_output}/codex-ai-ci-summary.txt"
 grep -Fxq "analysis_mode: analysis_only" "${analysis_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_execution_status: not_run" "${analysis_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_execution_status: passed" "${analysis_output}/codex-ai-ci-summary.txt"
 grep -Fxq "generated_test_file_count: 0" "${analysis_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_command_count: 0" "${analysis_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_command_count: 1" "${analysis_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: pass" "${analysis_output}/codex-ai-ci-summary.txt"
 grep -Fxq "workspace_dirty: false" "${analysis_output}/codex-ai-ci-summary.txt"
-grep -Fq "状态：未执行" "${analysis_output}/codex-ai-report.md"
+grep -Fq "状态：通过" "${analysis_output}/codex-ai-report.md"
 
 run_case analysis-diagnostic analysis_diagnostic 1 30 0
 analysis_diagnostic_output="${test_root}/analysis-diagnostic/output"
@@ -1117,18 +1126,19 @@ grep -Fxq "workspace_dirty: true" \
 grep -Fq "test_failure_diagnostic.py" \
   "${analysis_diagnostic_output}/codex-workspace-status.txt"
 
-run_case normalized-report inconsistent_not_run 0 30 0
-normalized_output="${test_root}/normalized-report/output"
-grep -Fxq "status: pass" "${normalized_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_execution_status: insufficient_evidence" "${normalized_output}/codex-ai-ci-summary.txt"
-grep -Fxq "report_verdict: WARNING" "${normalized_output}/codex-ai-ci-summary.txt"
-grep -Fq "Normalized Codex AI report:" "${normalized_output}/codex-ai-ci.log"
-grep -Fq "整体状态已从未执行保守归一化为证据不足" "${normalized_output}/codex-ai-report.json"
-run_case format-error format_error 0 30 1
+run_case canonical-builder success 0 30 0
+canonical_output="${test_root}/canonical-builder/output"
+grep -Fxq "status: pass" "${canonical_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_execution_status: passed" "${canonical_output}/codex-ai-ci-summary.txt"
+grep -Fq '"file_id": "FILE-001"' "${canonical_output}/codex-ai-analysis.json"
+grep -Fq '"path": "payload.txt"' "${canonical_output}/codex-ai-report.json"
+grep -Fq '"id": "RUN-001"' "${canonical_output}/codex-ai-report.json"
+grep -Fq '"exit_code": 0' "${canonical_output}/codex-ai-report.json"
+run_case format-error format_error 0 30 0
 format_output="${test_root}/format-error/output"
-grep -Fxq "report_format_valid: false" "${format_output}/codex-ai-ci-summary.txt"
-grep -Fq "中文内容校验" "${format_output}/codex-ai-ci-summary.txt"
-assert_chinese_failure_report "${format_output}"
+grep -Fxq "report_format_valid: true" "${format_output}/codex-ai-ci-summary.txt"
+grep -Fq "Codex 原始说明：English-only summary." \
+  "${format_output}/codex-ai-report.md"
 
 run_case timeout timeout 0 1 1
 timeout_output="${test_root}/timeout/output"

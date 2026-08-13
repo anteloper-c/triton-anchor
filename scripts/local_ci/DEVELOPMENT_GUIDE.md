@@ -394,17 +394,23 @@ Codex AI CI 是非阻塞的审查和 targeted diagnosis 辅助层：
 | 文件 | 职责 |
 | --- | --- |
 | `codex_ai/run_codex_ai_ci.sh` | 主 orchestration：参数校验、凭据校验、差异清单、容器生命周期、提示词渲染、Codex 执行、报告校验、workspace 收集和 summary。 |
+| `codex_ai/classify_codex_review_context.py` | 将 changed-files manifest 分组为轻量 review context profile，并生成注入 prompt 的优先级提示和 `codex-context-summary.json`。 |
 | `codex_ai/prepare_codex_checkout.sh` | 从 Gitee branch clone disposable checkout，校验 branch/SHA/base SHA，detach exact target，移除 Gitee remote。 |
 | `codex_ai/validate_codex_ai_credentials.py` | 校验独立 Codex home、路径组件、symlink/hardlink、文件权限、TOML provider 和 `OPENAI_API_KEY`。 |
-| `codex_ai/normalize_codex_ai_report.py` | 在严格校验前保守修正 `not_run` 与已执行命令的机械矛盾，记录归一化原因并原子更新 JSON。 |
 | `codex_ai/setup_codex_ai_container.sh` | 部署前 prerequisite check；只检查，不创建长期 Docker resource。 |
 | `shared/validate_task_metadata.py` | 校验 PR metadata schema、task ref、target SHA、PR number、UTC timestamp 和文本长度，输出 canonical JSON。 |
 | `orchestration/fetch_task_metadata.sh` | 从 `ci/meta/...` 获取 `task-metadata.json`，交给 validator。 |
-| `codex_ai/codex_ai_report.schema.json` | Codex 结构化 JSON schema，报告格式为 `triton-anchor-codex-ai-report/v3`，包含贡献者目标与实现情况评估。 |
+| `codex_ai/codex_ai_analysis.schema.json` | Codex 语义输出 schema，承载审查结论、逐文件说明、五类行为覆盖、finding、建议测试和验证说明。 |
+| `codex_ai/codex_jsonl_evidence.py` | 记录并解析 Codex JSONL 事件，生成可信命令、退出码、耗时和完成事件证据。 |
+| `codex_ai/build_codex_ai_report.py` | 合并可信 Git 清单、Codex JSONL 命令事实和工作区产物，生成 canonical v3 报告。 |
+| `codex_ai/codex_ai_report.schema.json` | 下游 `triton-anchor-codex-ai-report/v3` 报告契约。 |
 | `codex_ai/prompts/codex_ai_success.md` | Local CI 成功时的完整审查 prompt，要求覆盖 diff 并按约束生成/执行 targeted validation。 |
 | `codex_ai/prompts/codex_ai_failure.md` | Local CI 失败时的诊断 prompt，要求区分产品代码可稳定复现的失败、非确定性失败和基础设施失败。 |
 | `codex_ai/render_codex_ai_report.py` | 校验固定 JSON 结构、changed-files manifest、中文说明、verdict 规则并渲染完整 Markdown 和 PR comment。 |
 | `codex_ai/tests/test_local_ci_codex_ai.sh` | renderer 的成功、warning、中文、manifest 和字段校验测试。 |
+| `codex_ai/tests/test_codex_review_context.py` | classifier 的文件分组、profile 优先级和异常输入回归测试。 |
+| `codex_ai/tests/test_build_codex_ai_report.py` | canonical 报告构建、可信命令合并和语义边界测试。 |
+| `codex_ai/tests/test_codex_jsonl_evidence.py` | Codex JSONL 命令、退出码、耗时和完成事件解析测试。 |
 | `codex_ai/tests/test_local_ci_codex_container.sh` | fake Docker 下的 Codex 容器、PR merge-base、metadata、timeout、failure fallback、产物和凭据 hash 测试。 |
 | `codex_ai/tests/test_local_ci_codex_container_setup.sh` | setup prerequisite 的 fake Docker 测试。 |
 | `results/tests/test_local_ci_bridge.py` | bridge 状态、PR 评论和结果解析单元测试。 |
@@ -660,7 +666,7 @@ GitHub status 没有 warning 状态，所以性能 warning 仍映射为 success�
 - `parse_estimate`：`max(0, deserialize - read_text)`，仅为诊断估算；
 - `roundtrip`：serialize + write + deserialize。
 
-默认 warmup 3、repeat 20，delivery 默认比较 `serialize,deserialize`，阈值和噪声下限均为配置项。比较器只检查 slowdown，缺失 baseline 产生 warning。
+默认 warmup 3、repeat 20，delivery 默认通过 `deterministic_ci/performance/compare_ir_serialization.py` 比较 `serialize,deserialize`；阈值和噪声下限均为配置项。比较器只检查 slowdown，缺失 baseline 产生 warning。
 
 ### 8.4 Baseline 命名空间
 

@@ -44,12 +44,15 @@ container_codex_home="/root/.codex"
 container_workspace_root="/codex-workspace"
 container_checkout_dir="${container_workspace_root}/checkout"
 container_input_dir="${container_workspace_root}/input"
-container_report_json_path="${container_workspace_root}/codex-ai-report.json"
-container_schema_path="${container_workspace_root}/codex-ai-report.schema.json"
+container_analysis_json_path="${container_workspace_root}/codex-ai-analysis.json"
+container_schema_path="${container_workspace_root}/codex-ai-analysis.schema.json"
+container_jsonl_recorder_path="${container_workspace_root}/codex-jsonl-evidence.py"
 container_local_ci_log="${container_input_dir}/local-ci.log"
 container_changed_files_manifest="${container_input_dir}/codex-changed-files-manifest.json"
 
 log_path="${output_dir}/codex-ai-ci.log"
+codex_jsonl_path="${output_dir}/codex-ai-events.jsonl"
+analysis_json_path="${output_dir}/codex-ai-analysis.json"
 report_json_path="${output_dir}/codex-ai-report.json"
 report_path="${output_dir}/codex-ai-report.md"
 comment_path="${output_dir}/codex-ai-comment.md"
@@ -57,9 +60,12 @@ summary_path="${output_dir}/codex-ai-ci-summary.txt"
 workspace_status_path="${output_dir}/codex-workspace-status.txt"
 workspace_patch_path="${output_dir}/codex-workspace.patch"
 generated_files_path="${output_dir}/codex-generated-files.tar.gz"
-schema_path="${SCRIPT_DIR}/codex_ai_report.schema.json"
+command_ledger_path="${output_dir}/codex-command-ledger.json"
+schema_path="${SCRIPT_DIR}/codex_ai_analysis.schema.json"
 renderer_path="${SCRIPT_DIR}/render_codex_ai_report.py"
-normalizer_path="${SCRIPT_DIR}/normalize_codex_ai_report.py"
+report_builder_path="${SCRIPT_DIR}/build_codex_ai_report.py"
+jsonl_evidence_path="${SCRIPT_DIR}/codex_jsonl_evidence.py"
+review_context_classifier="${SCRIPT_DIR}/classify_codex_review_context.py"
 checkout_helper="${SCRIPT_DIR}/prepare_codex_checkout.sh"
 credentials_validator="${SCRIPT_DIR}/validate_codex_ai_credentials.py"
 task_metadata_validator="${LOCAL_CI_ROOT}/shared/validate_task_metadata.py"
@@ -68,6 +74,7 @@ prompt_dir="${SCRIPT_DIR}/prompts"
 success_prompt_template="${prompt_dir}/codex_ai_success.md"
 failure_prompt_template="${prompt_dir}/codex_ai_failure.md"
 changed_files_manifest_path="${output_dir}/codex-changed-files-manifest.json"
+analysis_manifest_path="${output_dir}/codex-analysis-files-manifest.json"
 
 status="fail"
 exit_code=1
@@ -856,13 +863,19 @@ validate_prerequisites() {
     fail_ai_ci "宿主机找不到 Python：${PYTHON_BIN}"
   fi
   if [[ ! -r "${schema_path}" ]]; then
-    fail_ai_ci "报告 schema 不可读：${schema_path}"
+    fail_ai_ci "语义分析 schema 不可读：${schema_path}"
   fi
   if [[ ! -r "${renderer_path}" ]]; then
     fail_ai_ci "报告渲染器不可读：${renderer_path}"
   fi
-  if [[ ! -r "${normalizer_path}" ]]; then
-    fail_ai_ci "报告归一化工具不可读：${normalizer_path}"
+  if [[ ! -r "${report_builder_path}" ]]; then
+    fail_ai_ci "canonical 报告构建器不可读：${report_builder_path}"
+  fi
+  if [[ ! -r "${jsonl_evidence_path}" ]]; then
+    fail_ai_ci "Codex JSONL 证据工具不可读：${jsonl_evidence_path}"
+  fi
+  if [[ ! -r "${review_context_classifier}" ]]; then
+    fail_ai_ci "审查上下文分类器不可读：${review_context_classifier}"
   fi
   if [[ ! -r "${checkout_helper}" ]]; then
     fail_ai_ci "checkout helper 不可读：${checkout_helper}"
@@ -1044,13 +1057,18 @@ print(len(json.load(open(sys.argv[1], encoding="utf-8"))))
 ' "${changed_files_manifest_path}")"; then
     return 1
   fi
-  changed_files_manifest_json="$(<"${changed_files_manifest_path}")"
+  if ! "${PYTHON_BIN}" "${report_builder_path}" prepare-manifest \
+    --input "${changed_files_manifest_path}" \
+    --output "${analysis_manifest_path}" >> "${log_path}" 2>&1; then
+    return 1
+  fi
+  changed_files_manifest_json="$(<"${analysis_manifest_path}")"
 }
 
 classify_review_context() {
   local context_lines=()
   mapfile -t context_lines < <(
-    "${PYTHON_BIN}" "${SCRIPT_DIR}/classify_codex_review_context.py" \
+    "${PYTHON_BIN}" "${review_context_classifier}" \
       "${changed_files_manifest_path}" "${analysis_mode}"
   )
   if [[ "${#context_lines[@]}" -ne 3 ]]; then
@@ -1235,14 +1253,19 @@ create_ephemeral_container() {
     "${ephemeral_container}:${container_checkout_dir}"; then
     fail_prepare_step "无法把经过验证的 checkout 复制到临时容器"
   fi
-  if ! run_prepare_command "copy_report_schema" docker cp "${schema_path}" \
+  if ! run_prepare_command "copy_analysis_schema" docker cp "${schema_path}" \
     "${ephemeral_container}:${container_schema_path}"; then
-    fail_prepare_step "无法把报告 schema 复制到临时容器"
+    fail_prepare_step "无法把语义分析 schema 复制到临时容器"
   fi
   if ! run_prepare_command "copy_changed_files_manifest" docker cp \
-    "${changed_files_manifest_path}" \
+    "${analysis_manifest_path}" \
     "${ephemeral_container}:${container_changed_files_manifest}"; then
     fail_prepare_step "无法把变更文件清单复制到临时容器"
+  fi
+  if ! run_prepare_command "copy_jsonl_evidence_tool" docker cp \
+    "${jsonl_evidence_path}" \
+    "${ephemeral_container}:${container_jsonl_recorder_path}"; then
+    fail_prepare_step "无法把 Codex JSONL 证据工具复制到临时容器"
   fi
   if [[ -f "${output_dir}/local-ci.log" ]]; then
     if ! run_prepare_command "copy_local_ci_log" docker cp \
@@ -1296,7 +1319,11 @@ collect_container_workspace() {
     git -C "${container_checkout_dir}" diff --binary HEAD \
     > "${workspace_patch_path}" 2>> "${log_path}" || true
   if docker exec --user 0 "${ephemeral_container}" bash -c \
-    'set -euo pipefail; cd "$1"; git ls-files --others --exclude-standard -z > "$2"; tar --null --files-from="$2" -czf "$3"' \
+    'set -euo pipefail; cd "$1"; {
+       git diff --name-only --diff-filter=ACMRTUXB -z HEAD;
+       git ls-files --others --exclude-standard -z;
+     } | sort -zu > "$2";
+     tar --null --verbatim-files-from --files-from="$2" -czf "$3"' \
     bash "${container_checkout_dir}" "${container_untracked_list}" \
     "${container_generated_files}" >> "${log_path}" 2>&1; then
     docker exec --user 0 "${ephemeral_container}" cat "${container_generated_files}" \
@@ -1309,11 +1336,14 @@ if ! mkdir -p "${output_dir}" || [[ ! -w "${output_dir}" ]]; then
   exit 1
 fi
 : > "${log_path}"
+: > "${codex_jsonl_path}"
+: > "${analysis_json_path}"
 : > "${report_json_path}"
 : > "${report_path}"
 : > "${comment_path}"
 : > "${workspace_status_path}"
 : > "${workspace_patch_path}"
+printf '[]\n' > "${command_ledger_path}"
 printf '[]\n' > "${changed_files_manifest_path}"
 
 validate_prerequisites
@@ -1450,7 +1480,8 @@ printf '%s\n' "${prompt}" | timeout --signal=TERM --kill-after=30s \
     --env "AI_ANALYSIS_MODE=${analysis_mode}" \
     --env "AI_CODEX_BIN=${container_codex_bin}" \
     --env "AI_SCHEMA_PATH=${container_schema_path}" \
-    --env "AI_REPORT_PATH=${container_report_json_path}" \
+    --env "AI_ANALYSIS_PATH=${container_analysis_json_path}" \
+    --env "AI_JSONL_RECORDER_PATH=${container_jsonl_recorder_path}" \
     --env "AI_REASONING_EFFORT=${CODEX_AI_CI_REASONING_EFFORT}" \
     --env "AI_PYTHON_VENV_ACTIVATE=${PYTHON_VENV_ACTIVATE}" \
     --env "AI_SOURCE_ENVSETUP=${SOURCE_ENVSETUP}" \
@@ -1491,21 +1522,23 @@ printf '%s\n' "${prompt}" | timeout --signal=TERM --kill-after=30s \
         export CODEX_AI_ENVIRONMENT_STATUS="incomplete"
       fi
       unset GITEE_TOKEN GITEE_USERNAME GIT_ASKPASS
-      exec "${AI_CODEX_BIN}" exec \
-        --ephemeral \
-        --json \
-        --sandbox danger-full-access \
-        --ignore-rules \
-        --config "model_reasoning_effort=\"${AI_REASONING_EFFORT}\"" \
-        --output-schema "${AI_SCHEMA_PATH}" \
-        --output-last-message "${AI_REPORT_PATH}" \
-        -
-    ' >> "${log_path}" 2>&1 &
+      set -o pipefail
+      "${AI_CODEX_BIN}" exec \
+          --ephemeral \
+          --json \
+          --sandbox danger-full-access \
+          --ignore-rules \
+          --config "model_reasoning_effort=\"${AI_REASONING_EFFORT}\"" \
+          --output-schema "${AI_SCHEMA_PATH}" \
+          --output-last-message "${AI_ANALYSIS_PATH}" \
+          - |
+        python3 "${AI_JSONL_RECORDER_PATH}" record
+    ' > "${codex_jsonl_path}" 2>> "${log_path}" &
 codex_exec_pid=$!
 startup_deadline=$((SECONDS + 10#${CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS}))
 while kill -0 "${codex_exec_pid}" 2>/dev/null; do
   if grep -Eq '"type"[[:space:]]*:[[:space:]]*"(item\.(started|completed)|turn\.completed)"' \
-    "${log_path}"; then
+    "${codex_jsonl_path}"; then
     startup_progress="true"
     break
   fi
@@ -1522,32 +1555,50 @@ done
 wait "${codex_exec_pid}"
 exit_code=$?
 if grep -Eq '"type"[[:space:]]*:[[:space:]]*"(item\.(started|completed)|turn\.completed)"' \
-  "${log_path}"; then
+  "${codex_jsonl_path}"; then
   startup_progress="true"
 fi
 set -e
 
-docker exec --user 0 "${ephemeral_container}" cat "${container_report_json_path}" \
-  > "${report_json_path}" 2>> "${log_path}" || true
+docker exec --user 0 "${ephemeral_container}" cat "${container_analysis_json_path}" \
+  > "${analysis_json_path}" 2>> "${log_path}" || true
 collect_container_workspace
 
 if [[ -s "${workspace_status_path}" ]]; then
   workspace_dirty="true"
 fi
-if grep -Fq "CODEX_AI_CI_COMPLETE" "${report_json_path}"; then
-  marker_found="true"
+if ! "${PYTHON_BIN}" "${jsonl_evidence_path}" extract \
+  --input "${codex_jsonl_path}" \
+  --output "${command_ledger_path}" >> "${log_path}" 2>&1; then
+  echo "Codex JSONL 命令证据提取失败。" >> "${log_path}"
 fi
-if grep -Fq '"turn.completed"' "${log_path}"; then
+if "${PYTHON_BIN}" "${jsonl_evidence_path}" has-event \
+  --input "${codex_jsonl_path}" --type "turn.completed"; then
   turn_completed="true"
 fi
-if grep -Fq '"command_execution"' "${log_path}"; then
+if "${PYTHON_BIN}" - "${command_ledger_path}" <<'PY'
+import json
+import sys
+
+document = json.load(open(sys.argv[1], encoding="utf-8"))
+raise SystemExit(0 if isinstance(document, list) and document else 1)
+PY
+then
   command_executed="true"
 fi
 if [[ ${exit_code} -eq 0 ]]; then
-  if ! "${PYTHON_BIN}" "${normalizer_path}" --input "${report_json_path}" \
-    >> "${log_path}" 2>&1; then
-    echo "Codex AI 报告归一化未完成，将由严格报告校验继续处理原始输出。" \
-      >> "${log_path}"
+  "${PYTHON_BIN}" "${report_builder_path}" build \
+    --analysis "${analysis_json_path}" \
+    --output "${report_json_path}" \
+    --manifest "${changed_files_manifest_path}" \
+    --command-ledger "${command_ledger_path}" \
+    --generated-archive "${generated_files_path}" \
+    --repository-root "${workspace_dir}" \
+    --analysis-mode "${analysis_mode}" \
+    --test-generation-expected "${test_generation_expected}" \
+    >> "${log_path}" 2>&1 || true
+  if grep -Fq "CODEX_AI_CI_COMPLETE" "${report_json_path}"; then
+    marker_found="true"
   fi
   constraint_args=(
     "${report_json_path}"
@@ -1673,14 +1724,16 @@ elif [[ ${exit_code} -eq 124 || ${exit_code} -eq 137 ]]; then
   set_failure_reason "Codex 执行超过 ${CODEX_AI_CI_TIMEOUT_SECONDS} 秒硬超时"
 elif [[ ${exit_code} -ne 0 ]]; then
   set_failure_reason "Codex exec 异常退出，退出码为 ${exit_code}"
-elif [[ "${marker_found}" != "true" ]]; then
-  set_failure_reason "结构化报告缺少 CODEX_AI_CI_COMPLETE 标记"
 elif [[ "${report_format_valid}" != "true" ]]; then
+  builder_failure_tail="$(grep -F "Invalid Codex AI analysis:" "${log_path}" | tail -n 1 || true)"
   renderer_failure_tail="$(grep -F "Invalid Codex AI report:" "${log_path}" | tail -n 1 || true)"
-  if [[ "${renderer_failure_tail}" == *".file"* || "${renderer_failure_tail}" == *".line"* || "${renderer_failure_tail}" == *"finding"* ]]; then
+  validation_failure_tail="${builder_failure_tail:-${renderer_failure_tail}}"
+  if [[ "${validation_failure_tail}" == *".file"* || "${validation_failure_tail}" == *".line"* || "${validation_failure_tail}" == *"finding"* ]]; then
     failure_code="invalid_finding_location"
   fi
-  set_failure_reason "结构化报告未通过 schema、固定格式或中文内容校验${renderer_failure_tail:+：${renderer_failure_tail}}"
+  set_failure_reason "结构化报告未通过 schema、固定格式或中文内容校验${validation_failure_tail:+：${validation_failure_tail}}"
+elif [[ "${marker_found}" != "true" ]]; then
+  set_failure_reason "runner 生成的结构化报告缺少 CODEX_AI_CI_COMPLETE 标记"
 elif [[ "${turn_completed}" != "true" ]]; then
   set_failure_reason "Codex JSONL 日志中没有 turn.completed 事件"
 elif [[ "${command_executed}" != "true" ]]; then

@@ -46,7 +46,6 @@ bash scripts/local_ci/poll_gitee_and_run.sh
 | `codex_ai/` | exact-SHA checkout、临时容器、prompt、schema、报告和测试预算。 |
 | `results/` | 固定 allowlist 复制产物、发布 Gitee 结果、回写 GitHub。 |
 | `shared/` | task metadata、结果路径和 shell 路径归一化等跨模块协议。 |
-| `upstream_pr_mirror/` | GitHub 托管 runner 上的上游 PR 镜像控制逻辑及其测试。 |
 
 依赖方向应保持单向：poller 调用 orchestration、deterministic、Codex 和 results；Codex 与 results 只通过 `shared/` 使用共享协议。不要重新增加根目录兼容 wrapper。
 
@@ -56,9 +55,6 @@ bash scripts/local_ci/poll_gitee_and_run.sh
 scripts/local_ci/
 ├── poll_gitee_and_run.sh                  # 稳定入口：轮询 Gitee task ref，串起确定性 CI、Codex 和结果发布
 ├── config.example.env                     # 部署配置模板；生产配置放在服务器环境，不提交仓库
-├── upstream_pr_mirror/                    # GitHub Actions 上运行的 RACE-org PR 镜像控制逻辑
-│   ├── mirror_upstream_prs.py             # 拉取精确 refs，推送镜像分支并创建或更新 fork PR
-│   └── tests/                             # 镜像 payload、分支白名单和同步服务测试
 ├── README.md                              # 面向日常维护者的使用说明
 ├── DEVELOPMENT_GUIDE.md                  # 面向开发者和 agent coding 的长期上下文与规范
 ├── orchestration/                         # 任务上下文准备和容器内确定性 CI 编排
@@ -70,8 +66,15 @@ scripts/local_ci/
 │   └── performance/                       # 三类性能采集、比较器和共享读取工具
 ├── codex_ai/                              # Codex AI 非阻塞辅助审查链路
 │   ├── run_codex_ai_ci.sh                 # 渲染 prompt、启动临时容器、收集 AI 报告
+│   ├── classify_codex_review_context.py    # 按 changed-files manifest 生成审查 profile、提示和文件分组
+│   ├── prepare_codex_checkout.sh           # 准备并校验 exact-SHA disposable checkout
+│   ├── setup_codex_ai_container.sh         # 部署前只读 prerequisite check
+│   ├── validate_codex_ai_credentials.py    # 校验独立 Codex home 和凭据边界
 │   ├── prompts/                           # success/failure prompt 和 prompt 维护记录
-│   ├── codex_ai_report.schema.json        # Codex 输出 JSON 契约
+│   ├── codex_ai_analysis.schema.json      # Codex 语义输出契约（逐文件说明、行为覆盖和审查结论）
+│   ├── codex_jsonl_evidence.py            # 解析可信命令、退出码、耗时和完成事件
+│   ├── build_codex_ai_report.py           # 合并 Git、JSONL 和工作区事实，生成 canonical 报告
+│   ├── codex_ai_report.schema.json        # 下游 canonical v3 报告契约
 │   ├── render_codex_ai_report.py          # 校验 JSON 并渲染 Markdown 报告和 PR comment
 │   └── tests/                             # Codex prompt、报告和容器 harness 测试
 ├── results/                               # 结果发布和 GitHub 回写
@@ -80,6 +83,9 @@ scripts/local_ci/
 │   └── tests/                             # bridge 和发布协议相关测试
 ├── shared/                                # 跨模块共享协议，避免各模块重复实现路径和 metadata 规则
 │   ├── result_paths.py                    # Python 侧结果路径协议
+│   ├── finding_locations.py               # finding 文件位置和行号边界校验
+│   ├── dump_artifacts.py                  # 归档当前任务失败 IR 并清理受控 dump 目录
+│   ├── task_tmp.py                        # 创建、校验和清理任务级临时目录
 │   ├── path_utils.sh                      # Shell 侧路径归一化
 │   └── validate_task_metadata.py          # PR metadata 校验
 └── tests/                                 # Local CI 模块布局和入口约束测试
@@ -92,7 +98,6 @@ scripts/local_ci/
 3. AI 报告、prompt、schema 或 PR comment 异常，先看 `codex_ai/`。
 4. Gitee 结果、GitHub status 或 PR 评论发布异常，先看 `results/`。
 5. 涉及路径、task metadata、结果目录命名的兼容问题，先看 `shared/`。
-6. 上游 PR 没有正确镜像到 fork，检查 `upstream_pr_mirror/` 和对应 GitHub workflow。
 
 `__pycache__/`、`.pyc`、临时 run 目录和服务器上的生产配置都不是源码结构的一部分，不应作为稳定接口引用。
 

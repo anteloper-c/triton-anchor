@@ -259,6 +259,7 @@
                 "type": "string",
                 "enum": [
                   "passed",
+                  "failed",
                   "stable_failure",
                   "flaky_failure",
                   "infrastructure_failure",

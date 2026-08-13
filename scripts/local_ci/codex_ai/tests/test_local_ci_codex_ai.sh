@@ -5,16 +5,17 @@ codex_ai_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo_root="$(cd "${codex_ai_dir}/../../.." && pwd)"
 renderer="${repo_root}/scripts/local_ci/codex_ai/render_codex_ai_report.py"
 schema="${repo_root}/scripts/local_ci/codex_ai/codex_ai_report.schema.json"
+analysis_schema="${repo_root}/scripts/local_ci/codex_ai/codex_ai_analysis.schema.json"
 test_root="$(mktemp -d /tmp/local-ci-codex-report-test.XXXXXX)"
 trap 'rm -rf -- "${test_root}"' EXIT
 
-python3 - "${schema}" <<'PY'
+python3 - "${schema}" "${analysis_schema}" <<'PY'
 import json
-import re
 import sys
 from pathlib import Path
 
 schema = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+analysis_schema = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
 unsupported_keywords = {
     "allOf",
     "dependentRequired",
@@ -44,104 +45,35 @@ def validate(node, location="$"):
 
 
 
-def resolve(node, path):
-    for part in path:
-        node = node[part]
-    return node
-
-
-def require_chinese_pattern(path):
-    node = resolve(schema, path)
-    location = ".".join(str(part) for part in path)
-    pattern = node.get("pattern")
-    assert pattern, f"{location}: missing Chinese text pattern"
-    compiled = re.compile(pattern)
-    assert compiled.search("包含中文说明。"), f"{location}: pattern rejects Chinese text"
-    assert not compiled.search("English-only text."), (
-        f"{location}: pattern accepts English-only text"
-    )
-
-
-chinese_paths = [
-    ("properties", "summary"),
-    ("properties", "merge_recommendation"),
-]
-for field in ("contributor_goal", "expected_behavior", "implementation_summary"):
-    chinese_paths.append(
-        ("properties", "change_request_assessment", "properties", field)
-    )
-for branch in (0, 1):
-    suffix = () if branch == 0 else ("items",)
-    chinese_paths.append(
-        (
-            "properties",
-            "change_request_assessment",
-            "properties",
-            "evidence",
-            "anyOf",
-            branch,
-            *suffix,
-        )
-    )
-for field in ("summary", "impact", "validation_strategy"):
-    chinese_paths.append(
-        ("properties", "changed_files", "items", "properties", field)
-    )
-for behavior in ("normal", "boundary", "error", "compatibility", "integration"):
-    for field in ("scope", "strategy", "result"):
-        chinese_paths.append(
-            (
-                "properties",
-                "behavior_coverage",
-                "properties",
-                behavior,
-                "properties",
-                field,
-            )
-        )
-for field in ("code_role", "title", "evidence", "impact", "fix_direction"):
-    chinese_paths.append(
-        ("properties", "findings", "items", "properties", field)
-    )
-chinese_paths.extend(
-    [
-        ("properties", "suggested_tests", "items", "properties", "description"),
-        ("properties", "residual_risks", "items"),
-        ("properties", "test_execution", "properties", "summary", "anyOf", 0),
-        (
-            "properties",
-            "test_execution",
-            "properties",
-            "summary",
-            "anyOf",
-            1,
-            "items",
-        ),
-        (
-            "properties",
-            "test_execution",
-            "properties",
-            "commands",
-            "items",
-            "properties",
-            "purpose",
-        ),
-        (
-            "properties",
-            "test_execution",
-            "properties",
-            "commands",
-            "items",
-            "properties",
-            "evidence",
-        ),
-    ]
-)
-
-
 validate(schema)
-for path in chinese_paths:
-    require_chinese_pattern(path)
+validate(analysis_schema)
+assert "verdict" not in analysis_schema["properties"]
+assert "completion_marker" not in analysis_schema["properties"]
+assert "test_execution" not in analysis_schema["properties"]
+assert set(analysis_schema["properties"]) == {
+    "summary",
+    "merge_recommendation",
+    "change_request_assessment",
+    "changed_files",
+    "behavior_coverage",
+    "findings",
+    "suggested_tests",
+    "residual_risks",
+    "test_assessment",
+}
+assert set(analysis_schema["properties"]["changed_files"]["items"]["properties"]) == {
+    "file_id", "summary", "impact", "validation_strategy"
+}
+assert set(analysis_schema["properties"]["behavior_coverage"]["properties"]) == {
+    "normal", "boundary", "error", "compatibility", "integration"
+}
+assert set(analysis_schema["properties"]["test_assessment"]["properties"]) == {
+    "evidence_level", "summary", "commands"
+}
+assert analysis_schema["properties"]["change_request_assessment"]["properties"]["evidence"]["maxItems"] == 8
+assert analysis_schema["properties"]["test_assessment"]["properties"]["summary"]["maxItems"] == 8
+assert analysis_schema["properties"]["test_assessment"]["properties"]["commands"]["items"]["properties"]["purpose"]["maxLength"] == 120
+assert "pattern" not in analysis_schema["properties"]["summary"]
 PY
 
 valid_json="${test_root}/valid.json"

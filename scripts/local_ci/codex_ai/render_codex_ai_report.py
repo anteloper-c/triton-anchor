@@ -98,6 +98,7 @@ TEST_EXECUTION_STATUSES = {
 }
 COMMAND_STATUSES = {
     "passed",
+    "failed",
     "stable_failure",
     "flaky_failure",
     "infrastructure_failure",
@@ -548,6 +549,7 @@ def validate_report(
         if command_status == "passed" and command["exit_code"] != 0:
             raise ValueError(f"{location}.passed command must have exit_code 0")
         if command_status in {
+            "failed",
             "stable_failure",
             "flaky_failure",
             "infrastructure_failure",
@@ -672,6 +674,7 @@ TEST_EXECUTION_STATUS_LABELS = {
 }
 COMMAND_STATUS_LABELS = {
     "passed": "通过",
+    "failed": "失败（尚未完成稳定性或基础设施归因）",
     "stable_failure": "可稳定复现的失败",
     "flaky_failure": "非确定性失败",
     "infrastructure_failure": "基础设施失败",

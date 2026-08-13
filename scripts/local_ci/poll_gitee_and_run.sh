@@ -226,10 +226,14 @@ stage_runner_scripts() {
     deterministic_ci/performance/ir_serialization_benchmark.py \
     deterministic_ci/performance/compare_ir_serialization.py \
     codex_ai/run_codex_ai_ci.sh \
+    codex_ai/classify_codex_review_context.py \
     codex_ai/prepare_codex_checkout.sh \
     codex_ai/setup_codex_ai_container.sh \
     codex_ai/validate_codex_ai_credentials.py \
+    codex_ai/build_codex_ai_report.py \
+    codex_ai/codex_jsonl_evidence.py \
     codex_ai/render_codex_ai_report.py \
+    codex_ai/codex_ai_analysis.schema.json \
     codex_ai/codex_ai_report.schema.json \
     codex_ai/prompts/codex_ai_success.md \
     codex_ai/prompts/codex_ai_failure.md \

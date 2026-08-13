@@ -26,18 +26,12 @@ jobs:
         run: python -m pip install --upgrade pip pytest
 
       - name: Check Local CI scripts
+        shell: bash
         run: |
-          bash -n scripts/local_ci/poll_gitee_and_run.sh
-          bash -n scripts/local_ci/orchestration/run_deterministic_ci_in_container.sh
-          bash -n scripts/local_ci/deterministic_ci/run_deterministic_ci.sh
-          python -m py_compile scripts/local_ci/deterministic_ci/performance/compile_benchmark.py
-          python -m py_compile scripts/local_ci/deterministic_ci/performance/common.py
-          python -m py_compile scripts/local_ci/deterministic_ci/performance/compare_compile_time.py
-          python -m py_compile scripts/local_ci/deterministic_ci/performance/ir_serialization_benchmark.py
-          python -m py_compile scripts/local_ci/deterministic_ci/performance/compare_ir_serialization.py
-          python -m py_compile scripts/local_ci/results/publish_gitee_result.py
-          python -m py_compile scripts/local_ci/results/bridge_gitee_to_github_status.py
-          python -m py_compile scripts/local_ci/shared/finding_locations.py
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(find scripts/local_ci -type f -name '*.sh' -print0)
+          python -m compileall -q scripts/local_ci
 
       - name: Check Local CI contracts
         run: >-

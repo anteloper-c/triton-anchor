@@ -101,7 +101,6 @@ jobs:
         run: |
           pytest python/triton_anchor/tests/ \
             scripts/ci/tests/ \
-            scripts/local_ci/upstream_pr_mirror/tests/ \
             -v \
             --tb=short \
             --cov=python/triton_anchor \
