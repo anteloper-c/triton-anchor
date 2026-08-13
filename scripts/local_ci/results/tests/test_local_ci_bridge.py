@@ -233,7 +233,9 @@ class CodexCommentTests(unittest.TestCase):
             "state": "open",
             "draft": False,
             "head": {"sha": "a" * 40},
-            "base": {"sha": "b" * 40, "ref": "CI_dev"},
+            # The PR API base SHA may lag behind the base parent frozen in the
+            # GitHub merge-result; freshness is bound to head/ref/merge SHA.
+            "base": {"sha": "e" * 40, "ref": "CI_dev"},
             "merge_commit_sha": "c" * 40,
         }
         args = SimpleNamespace(

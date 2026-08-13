@@ -82,7 +82,7 @@ flowchart TB
 
 默认分支只保留控制面：监听全仓库 PR、执行人工授权、校验目标 Worker 和路由精确版本。普通目标分支持有完整 Worker，实现 Security Gate、任务投递、结果接收、取消和 Pages。目标分支没有 manifest 时，可以由 `LOCAL_CI_FALLBACK_WORKER_BRANCH` 指定的 Worker 临时代管；manifest 已存在但损坏或版本不兼容时直接失败，不会静默回退。
 
-`ci-gateway.yml` 是统一入口和契约实现，不直接执行本地测试。Contract v3 固定 `dispatch`、`push`、`receive`、`pages`、`cancel` 五种 mode，以及 head、base、Merge-Result、手动请求和 Worker 精确版本等 SHA 字段。PR 的实际被测对象始终是 GitHub `refs/pull/<PR号>/merge`，其两个 parent 必须分别等于冻结的 base 和 head。
+`ci-gateway.yml` 是统一入口和契约实现，不直接执行本地测试。Contract v3 固定 `dispatch`、`push`、`receive`、`pages`、`cancel` 五种 mode，以及 head、base、Merge-Result、手动请求和 Worker 精确版本等 SHA 字段。PR 的实际被测对象始终是 GitHub `refs/pull/<PR号>/merge`：第二个 parent 必须等于当前 PR head，第一个 parent 作为该 Merge-Result 实际采用的 `comparison_base_sha`。
 
 ```mermaid
 flowchart LR
@@ -96,7 +96,9 @@ flowchart LR
   R --> C --> W --> S --> G --> L --> G --> W --> P
 ```
 
-外部 fork 的自动事件只写入 pending。具有 `write`、`maintain` 或 `admin` 权限的维护者需要在默认分支手动运行 Gateway 并输入 PR 编号；Gateway 会现场读取 head/base/merge SHA，因此后续 force-push、retarget、关闭或转 draft 都会让旧授权和旧结果失效。
+外部 fork 的自动事件进入 `local-ci-fork-approval` Environment。仓库为该 Environment 配置 Required reviewers 后，维护者在 Actions 运行页面点击 `Review deployments` 才会继续；未配置 reviewer 时自动继续，适合先验证链路，但不构成人工授权门禁。审批后 Gateway 会再次读取 head 和 Merge-Result，因此 force-push、retarget、关闭或转 draft 都会使旧审批和旧结果失效。默认分支的手动 `mode=dispatch` + PR 编号入口继续作为备用方式。
+
+PR 页面只显示最新提交对应的 Checks。Gateway 的 Actions `run-name` 会记录 PR 编号及 head/Merge-Result SHA，commit status 的详情链接指向对应的具体 run，因此旧提交的执行记录仍可在 Actions 历史中区分和查看。
 
 ## 3. GitHub 侧 CI
 
@@ -231,14 +233,14 @@ Local CI 由 `.github/workflows/ci-gateway.yml` 统一接收，并调用 `.githu
 
 - 持有完整 Worker 的普通分支 push 自动运行自身任务；
 - 同仓 PR 自动路由到目标分支 Worker；目标分支无 manifest 时回退到配置的 fallback Worker；
-- 外部 fork PR 由维护者在默认分支手动授权；
+- 外部 fork PR 自动进入 Environment 审批；未配置 Required reviewers 时自动继续，手动 Gateway 入口作为备用；
 - 无 Worker 分支的 push 可由维护者在默认分支使用 `mode=push` 手动代跑。
 
 默认分支 Router 使用 `pull_request_target` 读取 PR 元数据，但不读取 Gitee secret、不 checkout 或执行 PR 代码。只有普通目标分支 Worker 在完成精确 SHA 和 Security Gate 校验后调用 dispatcher，并在该 Worker 的受信任 workflow 上读取 Gitee 凭据。
 
 ### 4.2 精确 SHA 和任务引用
 
-调度 workflow 首先确定 `tested_sha`、`base_sha`、`head_sha`、`source_branch` 和 `task_ref`，然后核对实际 checkout 的 SHA。PR 场景下 `tested_sha` 是 `refs/pull/<PR号>/merge` 指向的 GitHub test merge commit；如果该 ref 不存在或 parent 与 base/head 不匹配，调度会失败或跳过，不会回退测试 PR head。任务引用规则如下：
+调度 workflow 首先确定 `tested_sha`、`comparison_base_sha`、`head_sha`、`source_branch` 和 `task_ref`，然后核对实际 checkout 的 SHA。PR 场景下 `tested_sha` 是 `refs/pull/<PR号>/merge` 指向的 GitHub test merge commit，`comparison_base_sha` 来自其第一个 parent，第二个 parent 必须匹配当前 PR head；如果该 ref 不存在或 head parent 不匹配，调度会失败或跳过，不会回退测试 PR head。任务引用规则如下：
 
 | 任务 | Gitee ref | 含义 |
 | --- | --- | --- |

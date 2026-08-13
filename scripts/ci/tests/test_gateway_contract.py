@@ -84,8 +84,20 @@ class GatewayV3ContractTests(unittest.TestCase):
     def test_external_fork_requires_live_maintainer_authorization(self) -> None:
         self.assertIn("getCollaboratorPermissionLevel", self.gateway)
         self.assertIn("write', 'maintain', 'admin", self.gateway)
-        self.assertIn("external fork requires maintainer authorization", self.gateway)
+        self.assertIn("approve-external-fork:", self.gateway)
+        self.assertIn("local-ci-fork-approval", self.gateway)
+        self.assertIn("external-fork-environment", self.gateway)
+        self.assertIn("manual-maintainer:", self.gateway)
         self.assertIn("pull.head.sha !== process.env.EXPECTED_HEAD_SHA", self.gateway)
+
+    def test_merge_result_base_comes_from_first_parent(self) -> None:
+        self.assertIn("const comparisonBaseSha = parents[0]", self.gateway)
+        self.assertIn("core.setOutput('base_sha', comparisonBaseSha)", self.gateway)
+        self.assertIn("head ${pull.head.sha.slice(0, 12)} merge ${testedSha.slice(0, 12)}", self.gateway)
+        self.assertNotIn(
+            "parents[0].toLowerCase() !== pull.base.sha.toLowerCase()",
+            self.gateway,
+        )
 
     def test_security_gate_is_reusable_and_blocks_dispatch(self) -> None:
         self.assertIn("workflow_call:", self.security)

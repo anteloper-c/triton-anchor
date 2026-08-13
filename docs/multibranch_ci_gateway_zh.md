@@ -80,13 +80,13 @@ sequenceDiagram
   W->>W: mode=pages（仅指定分支部署）
 ```
 
-目标分支 manifest 不存在时可回退；manifest 已存在但 JSON 损坏、Contract 不兼容、能力或必要文件缺失时明确失败。外部 fork 自动事件只写 pending，维护者在默认分支输入 PR 编号手动授权；授权始终绑定现场读取的 SHA。
+目标分支 manifest 不存在时可回退；manifest 已存在但 JSON 损坏、Contract 不兼容、能力或必要文件缺失时明确失败。外部 fork 自动进入 `local-ci-fork-approval` Environment；配置 Required reviewers 后等待维护者审批，未配置时自动继续。默认分支输入 PR 编号的手动入口保留为备用，所有授权都绑定审批后现场重验的 head 和 Merge-Result SHA。
 
 PR 的 pending、success、failure 和 error Required status 均写入 `tested_sha`。只有尚未得到可用 Merge-Result 的早期路由失败，才在 PR head 写独立的 `${LOCAL_CI_CONTEXT}/routing` 诊断状态。
 
 ## 生命周期与结果隔离
 
-- force-push：新事件使旧授权失效；旧 receiver 发现 head 或 merge SHA 变化后不再回写。
+- force-push：取消旧的等待审批和 receiver，为新 head 创建新审批；新 dispatcher 覆盖同名 Gitee task ref，避免异步清理误删新任务。旧 receiver 发现 head 或 merge SHA 变化后不再回写。
 - retarget：取消旧目标和 fallback Worker 的等待任务，再按新目标重新路由。
 - close/draft：取消等待、写 error，并清理未消费的 task/base/head/metadata refs。
 - 跨分支 push：只回写真实 source branch commit status，不请求 Pages。

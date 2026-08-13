@@ -449,7 +449,6 @@ def current_pr_matches(args: argparse.Namespace, tested_sha: str) -> bool:
         and isinstance(head, dict)
         and isinstance(base, dict)
         and head.get("sha") == args.expected_head_sha
-        and base.get("sha") == args.comparison_base_sha
         and base.get("ref") == args.target_branch
         and payload.get("merge_commit_sha") == tested_sha
     )

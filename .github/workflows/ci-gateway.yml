@@ -1,5 +1,5 @@
 name: CI Gateway
-run-name: ${{ inputs.run_title || github.event.pull_request.title || format('CI gateway on {0}', github.ref_name) }}
+run-name: ${{ inputs.run_title || (github.event_name == 'pull_request_target' && format('Route PR #{0} head {1}', github.event.pull_request.number, github.event.pull_request.head.sha)) || format('CI gateway on {0}', github.ref_name) }}
 
 on:
   pull_request_target:
@@ -161,7 +161,7 @@ jobs:
             } else if (action === 'synchronize' && externalFork) {
               targetRef = pull.base.ref;
               reason = 'external fork head changed; maintainer authorization expired';
-              deleteTaskRef = true;
+              deleteTaskRef = false;
             } else if (action === 'edited' && previousBaseRef) {
               targetRef = previousBaseRef;
               reason = 'pull request retargeted';
@@ -312,6 +312,7 @@ jobs:
       statuses: write
     outputs:
       should_route: ${{ steps.prepare.outputs.should_route }}
+      requires_approval: ${{ steps.prepare.outputs.requires_approval }}
       pr_number: ${{ steps.prepare.outputs.pr_number }}
       head_sha: ${{ steps.prepare.outputs.head_sha }}
       base_sha: ${{ steps.prepare.outputs.base_sha }}
@@ -338,9 +339,10 @@ jobs:
               : process.env.MANUAL_PR_NUMBER;
             const shaPattern = /^[0-9a-f]{40}$/i;
             const statusTarget =
-              `${context.serverUrl}/${owner}/${repo}/actions/workflows/ci-gateway.yml`;
+              `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
 
             core.setOutput('should_route', 'false');
+            core.setOutput('requires_approval', 'false');
             if (!/^[1-9][0-9]*$/.test(prText)) {
               throw new Error('pr_number must be a positive integer');
             }
@@ -400,7 +402,6 @@ jobs:
               if (automatic) {
                 if (
                   pull.head.sha !== eventPull.head.sha ||
-                  pull.base.sha !== eventPull.base.sha ||
                   pull.base.ref !== eventPull.base.ref
                 ) {
                   core.notice(`PR #${prNumber} changed after this event; ignoring stale routing.`);
@@ -429,8 +430,8 @@ jobs:
                 await publishStatus('error', 'local CI is paused while the pull request is draft');
                 return;
               }
-              if (!shaPattern.test(pull.head.sha) || !shaPattern.test(pull.base.sha)) {
-                throw new Error('GitHub returned an invalid pull request head or base SHA');
+              if (!shaPattern.test(pull.head.sha)) {
+                throw new Error('GitHub returned an invalid pull request head SHA');
               }
               if (!pull.head.repo?.full_name || !pull.head.ref || !pull.base.ref) {
                 throw new Error('Pull request repository or branch metadata is incomplete');
@@ -475,23 +476,17 @@ jobs:
               const parents = mergeCommit.parents?.map((parent) => parent.sha) || [];
               if (
                 parents.length !== 2 ||
-                parents[0].toLowerCase() !== pull.base.sha.toLowerCase() ||
                 parents[1].toLowerCase() !== pull.head.sha.toLowerCase()
               ) {
-                throw new Error('GitHub merge-result parents do not match the frozen base and head');
+                throw new Error('GitHub merge-result head parent does not match the current PR head');
+              }
+              const comparisonBaseSha = parents[0];
+              if (!shaPattern.test(comparisonBaseSha)) {
+                throw new Error('GitHub merge-result returned an invalid base parent SHA');
               }
 
               const sameRepository = pull.head.repo.full_name === `${owner}/${repo}`;
-              if (automatic && !sameRepository) {
-                await publishStatus(
-                  'pending',
-                  'external fork requires maintainer authorization from the default-branch Gateway'
-                );
-                core.notice(
-                  `PR #${prNumber} is from an external fork; a maintainer must run CI Gateway manually.`
-                );
-                return;
-              }
+              const requiresApproval = automatic && !sameRepository;
 
               const cleanTitle = String(pull.title || '')
                 .replace(/[\u0000-\u001f\u007f]+/g, ' ')
@@ -499,14 +494,20 @@ jobs:
                 .trim()
                 .slice(0, 140);
               const authorizationSource = automatic
-                ? 'same-repository-event'
+                ? (sameRepository ? 'same-repository-event' : 'external-fork-environment')
                 : `manual-maintainer:${context.actor}`;
 
-              await publishStatus('pending', 'local CI authorization and routing in progress');
+              await publishStatus(
+                'pending',
+                requiresApproval
+                  ? 'external fork Local CI is waiting for environment approval'
+                  : 'local CI authorization and routing in progress'
+              );
               core.setOutput('should_route', 'true');
+              core.setOutput('requires_approval', requiresApproval ? 'true' : 'false');
               core.setOutput('pr_number', String(prNumber));
               core.setOutput('head_sha', pull.head.sha);
-              core.setOutput('base_sha', pull.base.sha);
+              core.setOutput('base_sha', comparisonBaseSha);
               core.setOutput('tested_sha', testedSha);
               core.setOutput('base_ref', pull.base.ref);
               core.setOutput('head_repo', pull.head.repo.full_name);
@@ -514,17 +515,103 @@ jobs:
               core.setOutput('authorization_source', authorizationSource);
               core.setOutput(
                 'run_title',
-                `PR #${prNumber}: ${cleanTitle || pull.head.sha.slice(0, 12)}`
+                `PR #${prNumber} head ${pull.head.sha.slice(0, 12)} merge ${testedSha.slice(0, 12)}: ${cleanTitle || 'Local CI'}`
               );
             } catch (error) {
               await publishStatus('error', `failed to authorize local CI: ${error.message}`);
               throw error;
             }
 
+  approve-external-fork:
+    name: Approve external fork Local CI
+    needs: prepare-route
+    if: ${{ needs.prepare-route.outputs.requires_approval == 'true' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: local-ci-fork-approval-${{ needs.prepare-route.outputs.pr_number }}
+      cancel-in-progress: true
+    environment:
+      name: ${{ vars.LOCAL_CI_FORK_APPROVAL_ENVIRONMENT || 'local-ci-fork-approval' }}
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Revalidate approved PR revision
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ needs.prepare-route.outputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ needs.prepare-route.outputs.head_sha }}
+          COMPARISON_BASE_SHA: ${{ needs.prepare-route.outputs.base_sha }}
+          TESTED_SHA: ${{ needs.prepare-route.outputs.tested_sha }}
+          BASE_REF: ${{ needs.prepare-route.outputs.base_ref }}
+          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = Number.parseInt(process.env.PR_NUMBER, 10);
+            const markError = async (description) => {
+              await github.rest.repos.createCommitStatus({
+                owner,
+                repo,
+                sha: process.env.TESTED_SHA,
+                state: 'error',
+                context: process.env.STATUS_CONTEXT,
+                description: description.slice(0, 140),
+                target_url:
+                  `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              });
+            };
+
+            try {
+              const { data: pull } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: prNumber,
+              });
+              if (
+                pull.state !== 'open' ||
+                pull.draft ||
+                pull.head.sha.toLowerCase() !== process.env.EXPECTED_HEAD_SHA.toLowerCase() ||
+                pull.base.ref !== process.env.BASE_REF
+              ) {
+                throw new Error('Pull request changed while waiting for environment approval');
+              }
+              const mergeRef = await github.rest.git.getRef({
+                owner,
+                repo,
+                ref: `pull/${prNumber}/merge`,
+              });
+              const approvedMergeSha = String(mergeRef.data.object?.sha || '');
+              if (approvedMergeSha.toLowerCase() !== process.env.TESTED_SHA.toLowerCase()) {
+                throw new Error('Pull request merge result changed while waiting for approval');
+              }
+              const mergeCommit = await github.rest.git.getCommit({
+                owner,
+                repo,
+                commit_sha: process.env.TESTED_SHA,
+              });
+              const parents = mergeCommit.data.parents?.map((parent) => parent.sha) || [];
+              if (
+                parents.length !== 2 ||
+                parents[0].toLowerCase() !== process.env.COMPARISON_BASE_SHA.toLowerCase() ||
+                parents[1].toLowerCase() !== process.env.EXPECTED_HEAD_SHA.toLowerCase()
+              ) {
+                throw new Error('Pull request merge-result parents changed while waiting for approval');
+              }
+              core.info(`External fork PR #${prNumber} is approved for ${process.env.TESTED_SHA}.`);
+            } catch (error) {
+              await markError(`external fork approval expired: ${error.message}`);
+              throw error;
+            }
+
   route-pull-request:
     name: Route PR to target branch CI
-    needs: prepare-route
-    if: ${{ needs.prepare-route.outputs.should_route == 'true' }}
+    needs:
+      - route-cancellation
+      - prepare-route
+      - approve-external-fork
+    if: ${{ always() && (needs.route-cancellation.result == 'success' || needs.route-cancellation.result == 'skipped') && needs.prepare-route.result == 'success' && needs.prepare-route.outputs.should_route == 'true' && (needs.prepare-route.outputs.requires_approval != 'true' || needs.approve-external-fork.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -568,7 +655,7 @@ jobs:
               '.github/workflows/backend-status-pages.yml',
             ];
             const statusTarget =
-              `${context.serverUrl}/${owner}/${repo}/actions/workflows/ci-gateway.yml`;
+              `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
 
             const markError = async (description) => {
               await github.rest.repos.createCommitStatus({
@@ -674,7 +761,6 @@ jobs:
                 pull.state !== 'open' ||
                 pull.draft ||
                 pull.head.sha !== process.env.EXPECTED_HEAD_SHA ||
-                pull.base.sha !== process.env.COMPARISON_BASE_SHA ||
                 pull.base.ref !== process.env.BASE_REF
               ) {
                 throw new Error('Pull request changed after authorization; rerun the Gateway');
@@ -696,8 +782,8 @@ jobs:
               const parents = mergeCommit.data.parents?.map((parent) => parent.sha) || [];
               if (
                 parents.length !== 2 ||
-                parents[0] !== pull.base.sha ||
-                parents[1] !== pull.head.sha
+                parents[0].toLowerCase() !== process.env.COMPARISON_BASE_SHA.toLowerCase() ||
+                parents[1].toLowerCase() !== process.env.EXPECTED_HEAD_SHA.toLowerCase()
               ) {
                 throw new Error('Pull request merge-result parents changed during routing');
               }
@@ -725,7 +811,6 @@ jobs:
                 latestPull.state !== 'open' ||
                 latestPull.draft ||
                 latestPull.head.sha !== process.env.EXPECTED_HEAD_SHA ||
-                latestPull.base.sha !== process.env.COMPARISON_BASE_SHA ||
                 latestPull.base.ref !== process.env.BASE_REF
               ) {
                 throw new Error('Pull request changed while validating workers; rerun the Gateway');
@@ -956,9 +1041,11 @@ jobs:
   route-failure-status:
     name: Publish route failure
     needs:
+      - route-cancellation
       - prepare-route
+      - approve-external-fork
       - route-pull-request
-    if: ${{ always() && needs.prepare-route.outputs.should_route == 'true' && (needs.route-pull-request.result == 'failure' || needs.route-pull-request.result == 'cancelled') }}
+    if: ${{ always() && needs.prepare-route.outputs.should_route == 'true' && ((needs.route-cancellation.result == 'failure' || needs.route-cancellation.result == 'cancelled') || (needs.prepare-route.outputs.requires_approval == 'true' && (needs.approve-external-fork.result == 'failure' || needs.approve-external-fork.result == 'cancelled')) || needs.route-pull-request.result == 'failure' || needs.route-pull-request.result == 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -1071,6 +1158,7 @@ jobs:
               }
               if (
                 process.env.AUTHORIZATION_SOURCE !== 'same-repository-event' &&
+                process.env.AUTHORIZATION_SOURCE !== 'external-fork-environment' &&
                 !process.env.AUTHORIZATION_SOURCE.startsWith('manual-maintainer:')
               ) {
                 throw new Error('Dispatch request has no trusted authorization source');
@@ -1100,9 +1188,6 @@ jobs:
                   `PR base ${pull.base.ref} cannot use worker branch ${process.env.TARGET_REF}`
                 );
               }
-              if (pull.base.sha.toLowerCase() !== process.env.COMPARISON_BASE_SHA.toLowerCase()) {
-                throw new Error('PR comparison base changed after routing');
-              }
               if (
                 pull.head.sha.toLowerCase() !==
                 process.env.EXPECTED_HEAD_SHA.toLowerCase()
@@ -1129,8 +1214,8 @@ jobs:
               const parents = mergeCommit.data.parents?.map((parent) => parent.sha) || [];
               if (
                 parents.length !== 2 ||
-                parents[0] !== pull.base.sha ||
-                parents[1] !== pull.head.sha
+                parents[0].toLowerCase() !== process.env.COMPARISON_BASE_SHA.toLowerCase() ||
+                parents[1].toLowerCase() !== process.env.EXPECTED_HEAD_SHA.toLowerCase()
               ) {
                 throw new Error('PR merge-result parents do not match frozen base/head');
               }
@@ -1183,7 +1268,7 @@ jobs:
                 .slice(0, 160);
               core.setOutput('pr_number', String(prNumber));
               core.setOutput('head_sha', pull.head.sha);
-              core.setOutput('comparison_base_sha', pull.base.sha);
+              core.setOutput('comparison_base_sha', process.env.COMPARISON_BASE_SHA);
               core.setOutput('tested_sha', process.env.TESTED_SHA);
               core.setOutput('worker_revision_sha', process.env.WORKER_REVISION_SHA);
               core.setOutput('base_ref', pull.base.ref);
@@ -1467,6 +1552,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read
       pull-requests: read
       statuses: write
     outputs:
@@ -1566,7 +1652,6 @@ jobs:
                   pull.state !== 'open' ||
                   pull.draft ||
                   pull.head.sha !== process.env.EXPECTED_HEAD_SHA ||
-                  pull.base.sha !== process.env.COMPARISON_BASE_SHA ||
                   pull.base.ref !== process.env.TARGET_BRANCH ||
                   (!workerMatchesBase && !fallbackHandlesBase)
                 ) {
@@ -1580,6 +1665,20 @@ jobs:
                 });
                 if (mergeRef.data.object?.sha !== process.env.TESTED_SHA) {
                   core.notice('PR merge result changed while Local CI was running.');
+                  return;
+                }
+                const mergeCommit = await github.rest.git.getCommit({
+                  owner,
+                  repo,
+                  commit_sha: process.env.TESTED_SHA,
+                });
+                const parents = mergeCommit.data.parents?.map((parent) => parent.sha) || [];
+                if (
+                  parents.length !== 2 ||
+                  parents[0].toLowerCase() !== process.env.COMPARISON_BASE_SHA.toLowerCase() ||
+                  parents[1].toLowerCase() !== process.env.EXPECTED_HEAD_SHA.toLowerCase()
+                ) {
+                  core.notice('PR merge-result parents changed while Local CI was running.');
                   return;
                 }
               }
@@ -1773,6 +1872,9 @@ jobs:
           SH
           chmod 700 "${askpass}"
 
+          git_dir="${RUNNER_TEMP}/gitee-cancel.git"
+          git init --bare "${git_dir}" >/dev/null
+
           refs=("${TASK_REF}")
           if [[ "${TASK_REF}" =~ ^ci/pr-([0-9]+)/(.+)$ ]]; then
             refs+=(
@@ -1786,7 +1888,7 @@ jobs:
               git ls-remote --exit-code --heads "${repo_url}" "refs/heads/${ref}" \
               >/dev/null 2>&1; then
               GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
-                git push "${repo_url}" ":refs/heads/${ref}"
+                git --git-dir="${git_dir}" push "${repo_url}" ":refs/heads/${ref}"
               echo "Deleted Gitee task ref: ${ref}"
             else
               echo "Gitee task ref already absent: ${ref}"

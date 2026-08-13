@@ -61,8 +61,7 @@ jobs:
             if (
               pull.state !== 'open' ||
               pull.draft ||
-              pull.head.sha !== process.env.EXPECTED_HEAD_SHA ||
-              pull.base.sha !== process.env.COMPARISON_BASE_SHA
+              pull.head.sha !== process.env.EXPECTED_HEAD_SHA
             ) {
               throw new Error('Pull request changed before the security scan');
             }
