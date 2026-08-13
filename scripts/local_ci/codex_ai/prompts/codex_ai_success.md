@@ -138,6 +138,7 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 - 只有当已有产物不可用且风险无法通过更小验证覆盖时，才可记录为建议测试或剩余风险，不要在当前预算内强行完整重编译。
 - 文档改动或其他经影响分析确认不需要额外动态测试或诊断的改动可以不生成测试；必须在 `test_assessment.summary` 中用中文说明依据，并将 `evidence_level` 设为 `not_needed`。是否需要测试不能只由文件路径或改动类型决定。
 - 需要动态验证但现有测试、Local CI 证据和当前命令仍不足以覆盖主要风险时，`test_assessment.evidence_level` 使用 `insufficient`，不能虚报为 `sufficient`；创建测试的过程本身失败时使用 `test_generation_error`。
+- 已执行或已复用的验证足以支撑当前 AI 审查结论时，`test_assessment.evidence_level` 必须使用 `sufficient`，即使本轮没有新增测试文件；只有存在具体未关闭验证缺口并写入 `suggested_tests` 时才使用 `insufficient`，相关风险边界可以同时写入 `residual_risks`。
 - Runner 从容器工作区事实推导 `generated_test_files`，从 Codex JSONL 推导命令退出码与耗时，并确定最终 `test_execution.status`、`verdict`、所有 ID 和完成标记；不要输出这些 runner 字段。是否生成新测试文件不是证据充分性的必要条件。
 - `test_assessment.commands` 用于给本轮命令补充用途、证据和失败归因。Runner 以 JSONL 中实际执行的命令为准：漏报命令不会使报告失败；多报或写错的命令会被忽略。
 - `failure_classification` 不是退出状态：通过命令使用 `none`；产品失败使用 `product`；同命令至少一次通过且至少一次失败时使用 `flaky`；明确由环境、权限、网络、容器、设备或 runner 资源导致时使用 `infrastructure`；证据不足使用 `unknown`。Runner 会根据真实重复执行结果保守推导 stable/flaky/infrastructure，条件不足时使用 `insufficient_evidence`。

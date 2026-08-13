@@ -217,9 +217,48 @@ def test_sufficient_existing_validation_derives_passed_without_generated_files(t
     assert report["test_execution"]["generated_test_files"] == []
 
 
-def test_insufficient_evidence_stays_insufficient_with_successful_command(tmp_path):
+def test_insufficient_level_with_annotated_success_derives_passed(tmp_path):
     command = "python3 -m pytest scripts/local_ci/results/tests/test_local_ci_bridge.py -q"
     document = analysis(command)
+    document["test_assessment"]["evidence_level"] = "insufficient"
+    document["test_assessment"]["summary"] = [
+        "执行桥接单测并通过，当前没有列出仍需补充的验证项。"
+    ]
+    document["residual_risks"] = []
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.2}],
+        archive_entries=[],
+        test_generation_expected=True,
+    )
+    assert report["test_execution"]["status"] == "passed"
+
+
+def test_suggested_test_keeps_insufficient_with_successful_command(tmp_path):
+    command = "python3 -m pytest scripts/local_ci/results/tests/test_local_ci_bridge.py -q"
+    document = analysis(command)
+    document["test_assessment"]["evidence_level"] = "insufficient"
+    document["suggested_tests"] = [
+        {
+            "priority": "HIGH",
+            "target": "scripts/local_ci/codex_ai/tests/test_local_ci_codex_container.sh",
+            "description": "补跑容器契约以覆盖 runner、提示词和报告输出。",
+        }
+    ]
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.2}],
+        archive_entries=[],
+        test_generation_expected=True,
+    )
+    assert report["test_execution"]["status"] == "insufficient_evidence"
+
+
+def test_unannotated_success_does_not_override_insufficient(tmp_path):
+    command = "python3 -m pytest scripts/local_ci/results/tests/test_local_ci_bridge.py -q"
+    document = analysis("not-an-executed-command")
     document["test_assessment"]["evidence_level"] = "insufficient"
     report = build(
         tmp_path,

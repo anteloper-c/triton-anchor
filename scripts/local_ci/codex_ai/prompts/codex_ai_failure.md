@@ -140,6 +140,7 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 - 禁止修改生产实现代码。
 - 优先选择与失败阶段、diff 和疑似根因直接相关的最小有效诊断命令。
 - 没有必要执行定向诊断时，将 `test_assessment.evidence_level` 设为 `not_needed`；需要验证但证据不足时使用 `insufficient`；测试生成过程失败时使用 `test_generation_error`。
+- 已执行或已复用的诊断足以支撑当前 AI 诊断结论时，`test_assessment.evidence_level` 必须使用 `sufficient`，即使本轮没有新增诊断测试文件；只有存在具体未关闭诊断缺口并写入 `suggested_tests` 时才使用 `insufficient`，相关风险边界可以同时写入 `residual_risks`。
 - 如果 artifact 缺失、路径不可读、产物与当前 checkout 不匹配，或需要全量测试/完整重编译才能完成归因但当前预算不允许执行，不得虚报为已归因或已验证通过，应写入 `residual_risks` 和 `suggested_tests`。
 - Runner 从容器工作区事实推导 `generated_test_files`，从 Codex JSONL 推导命令退出码与耗时，并确定最终 `test_execution.status`、`verdict`、所有 ID 和完成标记；不要输出这些 runner 字段。
 - `test_assessment.commands` 用于给本轮命令补充用途、证据和失败归因。Runner 以 JSONL 中实际执行的命令为准：漏报命令不会使报告失败；多报或写错的命令会被忽略。

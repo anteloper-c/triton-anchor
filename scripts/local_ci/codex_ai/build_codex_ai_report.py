@@ -342,22 +342,23 @@ def semantic_command_annotations(
 
 def build_commands(
     analysis: dict[str, Any], ledger: list[dict[str, Any]]
-) -> tuple[list[dict[str, Any]], list[str]]:
+) -> tuple[list[dict[str, Any]], list[str], int]:
     annotations = semantic_command_annotations(analysis)
     commands: list[dict[str, Any]] = []
     classifications: list[str] = []
+    annotated_count = 0
     for index, fact in enumerate(ledger, start=1):
-        annotation = (
-            annotations[fact["command"]].popleft()
-            if annotations[fact["command"]]
-            else {
+        if annotations[fact["command"]]:
+            annotation = annotations[fact["command"]].popleft()
+            annotated_count += 1
+        else:
+            annotation = {
                 "purpose": "Codex 执行的验证或诊断命令",
                 "evidence": "执行结果来自可信 Codex JSONL 事件。",
                 "failure_classification": (
                     "none" if fact["exit_code"] == 0 else "unknown"
                 ),
             }
-        )
         classification = annotation["failure_classification"]
         if fact["exit_code"] == 0:
             classification = "none"
@@ -378,11 +379,11 @@ def build_commands(
         index for index, command in enumerate(commands) if command["exit_code"] != 0
     ]
     if not failed_indexes:
-        return commands, classifications
+        return commands, classifications, annotated_count
     if all(classifications[index] == "infrastructure" for index in failed_indexes):
         for index in failed_indexes:
             commands[index]["status"] = "infrastructure_failure"
-        return commands, classifications
+        return commands, classifications, annotated_count
 
     outcomes: dict[str, list[int]] = defaultdict(list)
     for command in commands:
@@ -395,7 +396,7 @@ def build_commands(
     if flaky and all(commands[index]["command"] in flaky for index in failed_indexes):
         for index in failed_indexes:
             commands[index]["status"] = "flaky_failure"
-        return commands, classifications
+        return commands, classifications, annotated_count
 
     failures = Counter(commands[index]["command"] for index in failed_indexes)
     stable = {text for text, count in failures.items() if count >= 2}
@@ -406,12 +407,15 @@ def build_commands(
     ):
         for index in failed_indexes:
             commands[index]["status"] = "stable_failure"
-    return commands, classifications
+    return commands, classifications, annotated_count
 
 
 def derive_execution_status(
     evidence_level: str,
     commands: list[dict[str, Any]],
+    *,
+    annotated_command_count: int,
+    has_suggested_tests: bool,
 ) -> str:
     if evidence_level == "test_generation_error":
         return "test_generation_error"
@@ -428,6 +432,8 @@ def derive_execution_status(
             return "stable_failure"
         return "insufficient_evidence"
     if evidence_level in {"sufficient", "not_needed"}:
+        return "passed"
+    if annotated_command_count > 0 and not has_suggested_tests:
         return "passed"
     return "insufficient_evidence"
 
@@ -655,7 +661,7 @@ def build_report(args: argparse.Namespace) -> None:
         for relative in parse_generated_archive(args.generated_archive)
         if is_test_path(relative)
     ]
-    commands, _ = build_commands(analysis, ledger)
+    commands, _, annotated_command_count = build_commands(analysis, ledger)
 
     assessment = require_object(analysis["test_assessment"], "test_assessment")
     require_exact_keys(assessment, TEST_ASSESSMENT_KEYS, "test_assessment")
@@ -664,10 +670,6 @@ def build_report(args: argparse.Namespace) -> None:
     )
     if evidence_level not in EVIDENCE_LEVELS:
         raise ValueError("test_assessment.evidence_level is invalid")
-    execution_status = derive_execution_status(
-        evidence_level,
-        commands,
-    )
     raw_execution_summary = require_array(
         assessment["summary"], "test_assessment.summary"
     )
@@ -695,6 +697,12 @@ def build_report(args: argparse.Namespace) -> None:
 
     findings = build_findings(analysis, file_by_id, args.repository_root)
     suggested_tests = build_suggested_tests(analysis)
+    execution_status = derive_execution_status(
+        evidence_level,
+        commands,
+        annotated_command_count=annotated_command_count,
+        has_suggested_tests=bool(suggested_tests),
+    )
     residual_risks = [
         text_or_default(
             require_string(item, f"residual_risks[{index}]"),

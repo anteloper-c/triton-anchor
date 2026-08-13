@@ -293,7 +293,7 @@ def write_analysis(
     elif scenario == "ci_wording":
         command = "python3 -m pytest scripts/local_ci/results/tests/test_local_ci_bridge.py -q"
         test_assessment = {
-            "evidence_level": "sufficient",
+            "evidence_level": "insufficient",
             "summary": [
                 "桥接单测覆盖了新文案映射，执行结果通过。",
                 "静态核对了 workflow、报告渲染器和状态桥接文案。",
