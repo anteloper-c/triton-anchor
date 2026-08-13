@@ -1,5 +1,5 @@
 name: CI Gateway
-run-name: ${{ inputs.run_title || (github.event_name == 'pull_request_target' && format('Route PR #{0} head {1}', github.event.pull_request.number, github.event.pull_request.head.sha)) || format('CI gateway on {0}', github.ref_name) }}
+run-name: "${{ inputs.run_title || (github.event_name == 'pull_request_target' && format('Route PR #{0} head {1}', github.event.pull_request.number, github.event.pull_request.head.sha)) || format('CI gateway on {0}', github.ref_name) }}"
 
 on:
   pull_request_target:
@@ -1610,12 +1610,6 @@ jobs:
                 throw new Error('Receiver branch, source branch, or SHA input is invalid');
               }
               if (
-                process.env.EXPECTED_HEAD_SHA &&
-                process.env.EXPECTED_HEAD_SHA === process.env.TESTED_SHA
-              ) {
-                throw new Error('PR receiver must distinguish head SHA from merge-result SHA');
-              }
-              if (
                 process.env.WORKFLOW_SHA.toLowerCase() !==
                 process.env.WORKER_REVISION_SHA.toLowerCase()
               ) {
@@ -1633,6 +1627,9 @@ jobs:
               }
 
               if (prMatch) {
+                if (process.env.EXPECTED_HEAD_SHA === process.env.TESTED_SHA) {
+                  throw new Error('PR receiver must distinguish head SHA from merge-result SHA');
+                }
                 if (
                   process.env.PR_NUMBER !== prMatch[1] ||
                   !shaPattern.test(process.env.EXPECTED_HEAD_SHA) ||

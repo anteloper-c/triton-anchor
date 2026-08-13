@@ -120,6 +120,11 @@ class GatewayV3ContractTests(unittest.TestCase):
     def test_manual_push_and_receiver_use_explicit_sha_fields(self) -> None:
         self.assertIn("REQUESTED_SHA: ${{ inputs.requested_sha }}", self.gateway)
         self.assertIn("TESTED_SHA: ${{ inputs.tested_sha }}", self.gateway)
+        pr_match_at = self.gateway.index("if (prMatch) {")
+        distinct_sha_at = self.gateway.index(
+            "PR receiver must distinguish head SHA from merge-result SHA"
+        )
+        self.assertLess(pr_match_at, distinct_sha_at)
         self.assertIn("mode=receive", self.dispatcher)
         self.assertIn("--status-sha", self.receiver)
         self.assertIn("--comparison-base-sha", self.receiver)
