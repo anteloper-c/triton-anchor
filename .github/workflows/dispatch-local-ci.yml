@@ -1,4 +1,5 @@
 name: Dispatch Local CI via Gitee
+run-name: "${{ inputs.run_title || format('Push {0} | {1} | dispatch', inputs.source_branch || github.ref_name, inputs.commit_sha || github.sha) }}"
 
 on:
   push:
@@ -82,6 +83,7 @@ jobs:
       GITEE_USERNAME: ${{ vars.GITEE_USERNAME || 'likehupochuan' }}
       GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
       RECEIVER_WAIT_SECONDS: ${{ vars.LOCAL_CI_RECEIVER_WAIT_SECONDS || '20400' }}
+      RECEIVER_MAX_ATTEMPTS: ${{ vars.LOCAL_CI_RECEIVER_MAX_ATTEMPTS || '6' }}
 
     steps:
       - name: Resolve frozen task metadata
@@ -295,9 +297,9 @@ jobs:
           STATUS_CONTEXT: ${{ steps.meta.outputs.context }}
         run: |
           if [ -n "${PR_NUMBER}" ]; then
-            receiver_title="Receive PR #${PR_NUMBER}: ${SOURCE_BRANCH}"
+            receiver_title="PR ${PR_NUMBER} | h:${HEAD_SHA:0:7} m:${TESTED_SHA:0:7} | receive 1/${RECEIVER_MAX_ATTEMPTS}"
           else
-            receiver_title="Receive ${SOURCE_BRANCH}: ${TESTED_SHA:0:12}"
+            receiver_title="Push ${SOURCE_BRANCH} | ${TESTED_SHA:0:7} | receive 1/${RECEIVER_MAX_ATTEMPTS}"
           fi
           gh workflow run ci-gateway.yml --repo "${GITHUB_REPOSITORY}" --ref "${GITHUB_REF_NAME}" \
             -f gateway_contract_version=3 -f mode=receive \

@@ -1,5 +1,5 @@
 name: CI Gateway
-run-name: "${{ inputs.run_title || (github.event_name == 'pull_request_target' && format('Route PR #{0} head {1}', github.event.pull_request.number, github.event.pull_request.head.sha)) || format('CI gateway on {0}', github.ref_name) }}"
+run-name: "${{ inputs.run_title || (github.event_name == 'pull_request_target' && format('PR {0} | h:{1} | route', github.event.pull_request.number, github.event.pull_request.head.sha)) || (github.event_name == 'workflow_dispatch' && inputs.mode == 'dispatch' && inputs.pr_number != '' && format('PR {0} | route', inputs.pr_number)) || (github.event_name == 'workflow_dispatch' && inputs.mode == 'push' && format('Push {0} | route', inputs.source_branch)) || format('CI Gateway | {0}', github.ref_name) }}"
 
 on:
   pull_request_target:
@@ -110,7 +110,7 @@ on:
         default: false
         type: boolean
       run_title:
-        description: "Sanitized source title shown as the workflow run name"
+        description: "Workflow run title passed between Gateway stages"
         required: false
         default: ""
         type: string
@@ -272,7 +272,7 @@ jobs:
                     context: process.env.STATUS_CONTEXT,
                     cancellation_reason: reason,
                     delete_task_ref: String(deleteTaskRef && worker.ref === cleanupRef),
-                    run_title: `Cancel PR #${pull.number}: ${reason}`,
+                    run_title: `PR ${pull.number} | h:${pull.head.sha.slice(0, 7)} | cancel`,
                   },
                 });
                 core.info(
@@ -488,11 +488,6 @@ jobs:
               const sameRepository = pull.head.repo.full_name === `${owner}/${repo}`;
               const requiresApproval = automatic && !sameRepository;
 
-              const cleanTitle = String(pull.title || '')
-                .replace(/[\u0000-\u001f\u007f]+/g, ' ')
-                .replace(/\s+/g, ' ')
-                .trim()
-                .slice(0, 140);
               const authorizationSource = automatic
                 ? (sameRepository ? 'same-repository-event' : 'external-fork-environment')
                 : `manual-maintainer:${context.actor}`;
@@ -515,7 +510,7 @@ jobs:
               core.setOutput('authorization_source', authorizationSource);
               core.setOutput(
                 'run_title',
-                `PR #${prNumber} head ${pull.head.sha.slice(0, 12)} merge ${testedSha.slice(0, 12)}: ${cleanTitle || 'Local CI'}`
+                `PR ${prNumber} | h:${pull.head.sha.slice(0, 7)} m:${testedSha.slice(0, 7)} | dispatch`
               );
             } catch (error) {
               await publishStatus('error', `failed to authorize local CI: ${error.message}`);
@@ -1011,7 +1006,7 @@ jobs:
                 throw new Error(`Branch ${sourceBranch} changed while routing; run Gateway again`);
               }
 
-              const runTitle = `Push ${sourceBranch}: ${statusSha.slice(0, 12)}`;
+              const runTitle = `Push ${sourceBranch} | ${statusSha.slice(0, 7)} | dispatch`;
               await github.rest.actions.createWorkflowDispatch({
                 owner,
                 repo,
@@ -1260,7 +1255,8 @@ jobs:
               }
 
               const cleanTitle = String(
-                process.env.INPUT_RUN_TITLE || `PR #${prNumber}: ${pull.title}`
+                process.env.INPUT_RUN_TITLE ||
+                  `PR ${prNumber} | h:${pull.head.sha.slice(0, 7)} m:${process.env.TESTED_SHA.slice(0, 7)} | dispatch`
               )
                 .replace(/[\u0000-\u001f\u007f]+/g, ' ')
                 .replace(/\s+/g, ' ')
@@ -1274,7 +1270,11 @@ jobs:
               core.setOutput('base_ref', pull.base.ref);
               core.setOutput('head_repo', pull.head.repo.full_name);
               core.setOutput('head_ref', pull.head.ref);
-              core.setOutput('run_title', cleanTitle || `PR #${prNumber}`);
+              core.setOutput(
+                'run_title',
+                cleanTitle ||
+                  `PR ${prNumber} | h:${pull.head.sha.slice(0, 7)} m:${process.env.TESTED_SHA.slice(0, 7)} | dispatch`
+              );
             } catch (error) {
               await markError(`local CI worker validation failed: ${error.message}`);
               throw error;
@@ -1475,7 +1475,7 @@ jobs:
 
               const cleanTitle = String(
                 process.env.INPUT_RUN_TITLE ||
-                  `Push ${process.env.SOURCE_BRANCH}: ${statusSha.slice(0, 12)}`
+                  `Push ${process.env.SOURCE_BRANCH} | ${statusSha.slice(0, 7)} | dispatch`
               )
                 .replace(/[\u0000-\u001f\u007f]+/g, ' ')
                 .replace(/\s+/g, ' ')
@@ -1821,7 +1821,8 @@ jobs:
               throw new Error('Cancellation task_ref does not match the PR metadata');
             }
 
-            const prefix = `Receive PR #${process.env.PR_NUMBER}:`;
+            const legacyPrefix = `Receive PR #${process.env.PR_NUMBER}:`;
+            const receiverPrefix = `PR ${process.env.PR_NUMBER} |`;
             const runs = [];
             for (const status of ['queued', 'in_progress']) {
               const response = await github.rest.actions.listWorkflowRuns({
@@ -1835,7 +1836,11 @@ jobs:
               runs.push(...response.data.workflow_runs);
             }
             for (const run of runs) {
-              if (run.id === context.runId || !run.display_title?.startsWith(prefix)) {
+              const title = run.display_title || '';
+              const isReceiver =
+                title.startsWith(legacyPrefix) ||
+                (title.startsWith(receiverPrefix) && title.includes(' | receive'));
+              if (run.id === context.runId || !isReceiver) {
                 continue;
               }
               await github.rest.actions.cancelWorkflowRun({

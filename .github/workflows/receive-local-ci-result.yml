@@ -1,5 +1,5 @@
 name: Receive Local CI Result
-run-name: ${{ inputs.run_title || format('{0} @ {1}', inputs.source_branch, inputs.tested_sha) }}
+run-name: "${{ inputs.run_title || (inputs.pr_number != '' && format('PR {0} | h:{1} m:{2} | receive {3}', inputs.pr_number, inputs.expected_head_sha, inputs.tested_sha, inputs.attempt)) || format('Push {0} | {1} | receive {2}', inputs.source_branch, inputs.tested_sha, inputs.attempt) }}"
 
 on:
   workflow_call:
@@ -145,9 +145,9 @@ jobs:
               if [ "${ATTEMPT}" -lt "${MAX_ATTEMPTS}" ]; then
                 next_attempt=$((ATTEMPT + 1))
                 if [ -n "${PR_NUMBER}" ]; then
-                  receiver_title="Receive PR #${PR_NUMBER}: ${SOURCE_BRANCH}"
+                  receiver_title="PR ${PR_NUMBER} | h:${EXPECTED_HEAD_SHA:0:7} m:${TESTED_SHA:0:7} | receive ${next_attempt}/${MAX_ATTEMPTS}"
                 else
-                  receiver_title="Receive ${SOURCE_BRANCH}: ${TESTED_SHA:0:12}"
+                  receiver_title="Push ${SOURCE_BRANCH} | ${TESTED_SHA:0:7} | receive ${next_attempt}/${MAX_ATTEMPTS}"
                 fi
                 gh workflow run ci-gateway.yml --repo "${REPO}" --ref "${GITHUB_REF_NAME}" \
                   -f gateway_contract_version=3 -f mode=receive \
@@ -192,7 +192,8 @@ jobs:
             -f gateway_contract_version=3 -f mode=pages \
             -f tested_sha="${TESTED_SHA}" -f worker_revision_sha="${WORKER_REVISION_SHA}" \
             -f source_branch="${SOURCE_BRANCH}" -f target_branch="${TARGET_BRANCH}" \
-            -f task_ref="${TASK_REF}" -f run_title="Refresh Dashboard: ${SOURCE_BRANCH}"
+            -f task_ref="${TASK_REF}" \
+            -f run_title="Push ${SOURCE_BRANCH} | ${TESTED_SHA:0:7} | pages"
 
   stage-results:
     name: Local CI / ${{ matrix.name }}

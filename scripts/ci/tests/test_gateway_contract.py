@@ -93,7 +93,10 @@ class GatewayV3ContractTests(unittest.TestCase):
     def test_merge_result_base_comes_from_first_parent(self) -> None:
         self.assertIn("const comparisonBaseSha = parents[0]", self.gateway)
         self.assertIn("core.setOutput('base_sha', comparisonBaseSha)", self.gateway)
-        self.assertIn("head ${pull.head.sha.slice(0, 12)} merge ${testedSha.slice(0, 12)}", self.gateway)
+        self.assertIn(
+            "h:${pull.head.sha.slice(0, 7)} m:${testedSha.slice(0, 7)} | dispatch",
+            self.gateway,
+        )
         self.assertNotIn(
             "parents[0].toLowerCase() !== pull.base.sha.toLowerCase()",
             self.gateway,
