@@ -85,7 +85,7 @@ CODEX_TEST_STATUS_LABELS = {
     "passed": "所执行的验证命令均通过",
     "stable_failure": "存在可稳定复现的失败",
     "flaky_failure": "存在非确定性失败",
-    "infrastructure_failure": "基础设施失败",
+    "infrastructure_failure": "受环境限制，未完全执行",
     "test_generation_error": "测试生成失败",
     "insufficient_evidence": "证据不足",
     "not_reported": "未报告",
@@ -933,7 +933,7 @@ def codex_advisory_description(codex_ai: CodexAIResult) -> str:
     if test_status == "flaky_failure":
         return "Codex AI 测试存在非确定性失败（非阻塞）"
     if test_status == "infrastructure_failure":
-        return "Codex AI 测试遇到基础设施失败（非阻塞）"
+        return "Codex AI 补充验证受环境限制，未完全执行（非阻塞）"
     if test_status == "test_generation_error":
         return "Codex AI 测试生成失败（非阻塞）"
     if verdict == "WARNING":

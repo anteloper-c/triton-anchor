@@ -668,7 +668,7 @@ TEST_EXECUTION_STATUS_LABELS = {
     "passed": "所执行的验证命令均通过",
     "stable_failure": "可稳定复现的失败",
     "flaky_failure": "非确定性失败",
-    "infrastructure_failure": "基础设施失败",
+    "infrastructure_failure": "受环境限制，未完全执行",
     "test_generation_error": "测试生成失败",
     "insufficient_evidence": "证据不足",
 }
@@ -677,7 +677,7 @@ COMMAND_STATUS_LABELS = {
     "failed": "失败（尚未完成稳定性或基础设施归因）",
     "stable_failure": "可稳定复现的失败",
     "flaky_failure": "非确定性失败",
-    "infrastructure_failure": "基础设施失败",
+    "infrastructure_failure": "环境限制导致未完成",
     "not_executed": "未执行",
 }
 CONSTRAINT_STATUS_LABELS = {

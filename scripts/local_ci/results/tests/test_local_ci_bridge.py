@@ -398,7 +398,7 @@ class CodexCommentTests(unittest.TestCase):
             ),
             (
                 changed(verdict="PASS", test_status="infrastructure_failure"),
-                "基础设施失败",
+                "受环境限制，未完全执行",
             ),
             (
                 changed(verdict="PASS", test_status="test_generation_error"),
