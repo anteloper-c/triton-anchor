@@ -144,6 +144,11 @@ class GatewayV3ContractTests(unittest.TestCase):
         self.assertIn("--status-sha", self.receiver)
         self.assertIn("--comparison-base-sha", self.receiver)
 
+    def test_direct_push_dispatch_title_omits_full_sha(self) -> None:
+        run_name = self.dispatcher.splitlines()[1]
+        self.assertIn("format('Push {0} | dispatch'", run_name)
+        self.assertNotIn("inputs.commit_sha || github.sha", run_name)
+
     def test_required_statuses_target_the_tested_revision(self) -> None:
         self.assertIn("`${process.env.STATUS_CONTEXT}/routing`", self.gateway)
         self.assertIn("sha: process.env.TESTED_SHA", self.gateway)

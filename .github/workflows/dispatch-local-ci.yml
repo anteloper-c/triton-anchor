@@ -1,5 +1,5 @@
 name: Dispatch Local CI via Gitee
-run-name: "${{ inputs.run_title || format('Push {0} | {1} | dispatch', inputs.source_branch || github.ref_name, inputs.commit_sha || github.sha) }}"
+run-name: "${{ inputs.run_title || format('Push {0} | dispatch', inputs.source_branch || github.ref_name) }}"
 
 on:
   push:
