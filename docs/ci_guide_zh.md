@@ -80,7 +80,7 @@ flowchart TB
 
 ### 2.4 多分支 Gateway v3
 
-默认分支只保留控制面：监听全仓库 PR、执行人工授权、校验目标 Worker 和路由精确版本。普通目标分支持有完整 Worker，实现 Security Gate、任务投递、结果接收、取消和 Pages。目标分支没有 manifest 时，可以由 `LOCAL_CI_FALLBACK_WORKER_BRANCH` 指定的 Worker 临时代管；manifest 已存在但损坏或版本不兼容时直接失败，不会静默回退。
+默认分支只保留控制面：监听全仓库 PR、执行人工授权、校验目标 Worker 和路由精确版本。普通目标分支持有完整 Worker，实现 Security Gate、任务投递、结果接收、取消和 Pages。目标分支没有 manifest 时，可以由 `LOCAL_CI_FALLBACK_WORKER_BRANCH` 指定的 Worker 临时代管；`LOCAL_CI_FALLBACK_PR_ENABLED=false` 可关闭新的 PR 代管，`LOCAL_CI_FALLBACK_PUSH_ENABLED=false` 可关闭手动跨分支 push 代管。两个开关未配置时均默认为 `true`。manifest 已存在但损坏或版本不兼容时仍直接失败，不会静默回退。
 
 `ci-gateway.yml` 是统一入口和契约实现，不直接执行本地测试。Contract v3 固定 `dispatch`、`push`、`receive`、`pages`、`cancel` 五种 mode，以及 head、base、Merge-Result、手动请求和 Worker 精确版本等 SHA 字段。PR 的实际被测对象始终是 GitHub `refs/pull/<PR号>/merge`：第二个 parent 必须等于当前 PR head，第一个 parent 作为该 Merge-Result 实际采用的 `comparison_base_sha`。
 
@@ -489,11 +489,13 @@ Secret 不应写入仓库、task ref 或普通日志。
 常用变量包括：
 
 - Gitee 结果仓库：`GITEE_RESULTS_OWNER`、`GITEE_RESULTS_REPO`、`GITEE_RESULTS_REPO_URL`、`GITEE_RESULTS_BRANCH`、`GITEE_RESULTS_WEB_URL`、`GITEE_USERNAME`；
-- Local CI 状态与路由：`LOCAL_CI_CONTEXT`、`LOCAL_CI_FALLBACK_WORKER_BRANCH`、`LOCAL_CI_RECEIVER_WAIT_SECONDS`、`LOCAL_CI_RECEIVER_MAX_ATTEMPTS`；
+- Local CI 状态与路由：`LOCAL_CI_CONTEXT`、`LOCAL_CI_FALLBACK_WORKER_BRANCH`、`LOCAL_CI_FALLBACK_PR_ENABLED`、`LOCAL_CI_FALLBACK_PUSH_ENABLED`、`LOCAL_CI_RECEIVER_WAIT_SECONDS`、`LOCAL_CI_RECEIVER_MAX_ATTEMPTS`；
 - Pages 数据源：`DASHBOARD_SOURCE_BRANCH`、`DASHBOARD_FULL_TEST_SOURCE_BRANCH`、`LOCAL_CI_BACKEND_PROFILE`；
 - 构建依赖和后端：LLVM、PPL、Sophgo backend、torch_tpu 和 FlagGems 相关变量。
 
 `GITEE_RESULTS_OWNER` 表示仓库所有者，`GITEE_USERNAME` 表示 token 对应的认证用户名，两者可以不同。例如结果仓库属于组织、token 属于个人账号时，owner 使用组织名，username 使用个人账号。Receiver、Pages 和 dispatcher 始终继续运行精确的 Worker revision，不再通过可配置 ref 跳回默认分支。
+
+两个 fallback 开关未配置时均默认为 `true`。PR 开关只控制目标分支缺少 manifest 时是否创建新的代管任务；push 开关只控制 fallback Worker 是否代跑其他分支的手动 push 请求。关闭开关不会停止已有 receiver、取消清理或 fallback Worker 自身任务。
 
 ### 5.3 本地 `config.env`
 

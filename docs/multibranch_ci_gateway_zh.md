@@ -90,6 +90,7 @@ PR 的 pending、success、failure 和 error Required status 均写入 `tested_s
 - retarget：取消旧目标和 fallback Worker 的等待任务，再按新目标重新路由。
 - close/draft：取消等待、写 error，并清理未消费的 task/base/head/metadata refs。
 - 跨分支 push：只回写真实 source branch commit status，不请求 Pages。
+- fallback 开关：`LOCAL_CI_FALLBACK_PR_ENABLED` 和 `LOCAL_CI_FALLBACK_PUSH_ENABLED` 默认均为 `true`；设为 `false` 时分别禁止新的 PR 代管和手动跨分支 push 代管，不影响已有任务清理或 fallback Worker 自身任务。
 - Pages：所有 Worker 分支可构建验证，只有 `LOCAL_CI_PAGES_BRANCH` 指定分支可部署；生产默认 `CI_dev`。
 
 ## 接入新普通分支

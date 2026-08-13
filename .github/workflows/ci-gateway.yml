@@ -120,6 +120,8 @@ permissions: {}
 env:
   GATEWAY_CONTRACT_VERSION: "3"
   FALLBACK_WORKER_BRANCH: ${{ vars.LOCAL_CI_FALLBACK_WORKER_BRANCH || 'CI_dev' }}
+  FALLBACK_PR_ENABLED: ${{ vars.LOCAL_CI_FALLBACK_PR_ENABLED || 'true' }}
+  FALLBACK_PUSH_ENABLED: ${{ vars.LOCAL_CI_FALLBACK_PUSH_ENABLED || 'true' }}
 
 jobs:
   route-cancellation:
@@ -785,6 +787,11 @@ jobs:
 
               let worker = await inspectWorker(pull.base.ref, true);
               if (worker === null) {
+                if (process.env.FALLBACK_PR_ENABLED.trim().toLowerCase() !== 'true') {
+                  throw new Error(
+                    `Target branch ${pull.base.ref} has no worker and PR fallback is disabled`
+                  );
+                }
                 const fallbackRef = process.env.FALLBACK_WORKER_BRANCH.trim();
                 if (!fallbackRef) {
                   throw new Error(
@@ -939,6 +946,14 @@ jobs:
               }
               if (!fallbackRef) {
                 throw new Error('No fallback worker branch is configured');
+              }
+              if (
+                sourceBranch !== fallbackRef &&
+                process.env.FALLBACK_PUSH_ENABLED.trim().toLowerCase() !== 'true'
+              ) {
+                throw new Error(
+                  `Cross-branch push fallback is disabled for ${sourceBranch}`
+                );
               }
 
               const { data: source } = await github.rest.repos.getBranch({
@@ -1184,6 +1199,12 @@ jobs:
                 );
               }
               if (
+                crossBranch &&
+                process.env.FALLBACK_PR_ENABLED.trim().toLowerCase() !== 'true'
+              ) {
+                throw new Error('Cross-branch PR fallback is disabled');
+              }
+              if (
                 pull.head.sha.toLowerCase() !==
                 process.env.EXPECTED_HEAD_SHA.toLowerCase()
               ) {
@@ -1413,6 +1434,12 @@ jobs:
                 process.env.TARGET_REF !== process.env.FALLBACK_WORKER_BRANCH
               ) {
                 throw new Error('Cross-branch push must run on the configured fallback worker');
+              }
+              if (
+                process.env.SOURCE_BRANCH !== process.env.TARGET_REF &&
+                process.env.FALLBACK_PUSH_ENABLED.trim().toLowerCase() !== 'true'
+              ) {
+                throw new Error('Cross-branch push fallback is disabled');
               }
               if (
                 !shaPattern.test(statusSha) ||

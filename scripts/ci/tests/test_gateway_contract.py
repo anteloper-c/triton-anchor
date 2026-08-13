@@ -120,6 +120,18 @@ class GatewayV3ContractTests(unittest.TestCase):
         self.assertIn("invalid JSON", self.gateway)
         self.assertIn("incompatible manifest", self.gateway)
 
+    def test_fallback_switches_default_to_enabled(self) -> None:
+        self.assertIn(
+            "FALLBACK_PR_ENABLED: ${{ vars.LOCAL_CI_FALLBACK_PR_ENABLED || 'true' }}",
+            self.gateway,
+        )
+        self.assertIn(
+            "FALLBACK_PUSH_ENABLED: ${{ vars.LOCAL_CI_FALLBACK_PUSH_ENABLED || 'true' }}",
+            self.gateway,
+        )
+        self.assertIn("PR fallback is disabled", self.gateway)
+        self.assertIn("Cross-branch push fallback is disabled", self.gateway)
+
     def test_manual_push_and_receiver_use_explicit_sha_fields(self) -> None:
         self.assertIn("REQUESTED_SHA: ${{ inputs.requested_sha }}", self.gateway)
         self.assertIn("TESTED_SHA: ${{ inputs.tested_sha }}", self.gateway)
