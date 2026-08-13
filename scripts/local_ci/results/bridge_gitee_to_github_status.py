@@ -125,6 +125,7 @@ class Target:
     sha: str
     label: str
     source_repository: str = ""
+    head_sha: str = ""
 
 
 @dataclass(frozen=True)
@@ -510,6 +511,7 @@ def list_open_pr_targets(limit: int) -> list[Target]:
                         merge_sha,
                         f"PR #{number} {source_label}",
                         github_repo(),
+                        head_sha,
                     )
                 )
         if len(payload) < per_page:
@@ -527,7 +529,9 @@ def gitee_file_url(web_url: str, results_branch: str, rel_path: str) -> str:
 
 
 def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: str) -> LocalCIResult | None:
-    commit_dir = result_commit_dir(target.task_ref, target.sha).as_posix()
+    commit_dir = result_commit_dir(
+        target.task_ref, target.sha, target.head_sha
+    ).as_posix()
     latest_path = f"{commit_dir}/latest.txt"
     run_id_text = gitee_content(
         args.gitee_owner,
@@ -1038,7 +1042,10 @@ def write_github_outputs(result: LocalCIResult | None) -> None:
 def sync_target(args: argparse.Namespace, target: Target, set_pending: bool) -> LocalCIResult | None:
     gitee_token = os.getenv("GITEE_TOKEN", "")
     if set_pending:
-        post_github_status(target.sha, "pending", args.context, "Waiting for Gitee local CI result")
+        pending_description = "Waiting for Gitee local CI result"
+        if target.head_sha:
+            pending_description = f"Merge {target.sha[:12]}: queued on Gitee"
+        post_github_status(target.sha, "pending", args.context, pending_description)
 
     timeout = max(args.timeout_seconds, 0)
     interval = max(args.poll_interval_seconds, 1)
@@ -1073,6 +1080,7 @@ def sync_target(args: argparse.Namespace, target: Target, set_pending: bool) -> 
                 status_sha,
                 target.label,
                 target.source_repository,
+                target.head_sha,
             )
             post_stage_statuses(args, status_target, result)
             try:
@@ -1101,6 +1109,11 @@ def sync_target(args: argparse.Namespace, target: Target, set_pending: bool) -> 
                     description = "Gitee local CI passed with " + ", ".join(warnings) + " warning"
                 if result.publish_manifest and result.publish_manifest.missing_expected_files:
                     description = "Gitee local CI passed; artifact manifest has warnings"
+                if target.head_sha:
+                    description = (
+                        f"Merge {target.sha[:12]}: "
+                        f"{description.replace('Gitee local CI', 'Local CI', 1)}"
+                    )
                 post_github_status(status_sha, "success", args.context, description, result.target_url)
                 print(f"Gitee local CI passed for {target.label}: {result.target_url}")
             else:
@@ -1108,7 +1121,11 @@ def sync_target(args: argparse.Namespace, target: Target, set_pending: bool) -> 
                     status_sha,
                     "failure",
                     args.context,
-                    f"Gitee local CI failed: status {result.exit_code}",
+                    (
+                        f"Merge {target.sha[:12]}: Local CI failed: status {result.exit_code}"
+                        if target.head_sha
+                        else f"Gitee local CI failed: status {result.exit_code}"
+                    ),
                     result.target_url,
                 )
                 print(f"Gitee local CI failed for {target.label}: {result.target_url}")
@@ -1168,6 +1185,7 @@ def main() -> int:
             args.sha,
             args.source_branch,
             github_repo(),
+            args.expected_head_sha,
         )
         try:
             result = sync_target(args, target, args.set_pending)

@@ -273,13 +273,19 @@ jobs:
       - name: Mark Local CI pending
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.meta.outputs.pr_number }}
           STATUS_SHA: ${{ steps.meta.outputs.tested_sha }}
           TASK_REF: ${{ steps.meta.outputs.task_ref }}
           STATUS_CONTEXT: ${{ steps.meta.outputs.context }}
         run: |
+          if [ -n "${PR_NUMBER}" ]; then
+            description="Merge ${STATUS_SHA:0:12}: queued on Gitee"
+          else
+            description="local CI task queued on Gitee"
+          fi
           gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${STATUS_SHA}" \
             -f state=pending -f context="${STATUS_CONTEXT}" \
-            -f description="local CI task queued on Gitee" \
+            -f description="${description}" \
             -f target_url="${GITEE_CI_WEB_URL}/tree/${TASK_REF}"
 
       - name: Start Gateway receiver continuation

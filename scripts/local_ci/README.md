@@ -117,12 +117,12 @@ scripts/local_ci/
 
 ```text
 runs/ci_push/ci_push_<branch>/<sha>/<run-id>/
-runs/ci_pr/ci_pr-<number>_<branch>/<sha>/<run-id>/
+runs/ci_pr/ci_pr-<number>_<branch>/h-<head12>_m-<merge12>/<run-id>/
 runs/ci_pr/ci_base_pr-<number>_<branch>/<sha>/<run-id>/
 runs/ci_full/ci_full_<branch>/<sha>/<run-id>/
 ```
 
-`safe_path_part` 是历史结果协议的一部分，会压缩非法字符并可能发生碰撞。`shared/path_utils.sh` 和 `shared/result_paths.py` 必须保持现有归一化语义；修改前要先补历史路径兼容测试和迁移方案。
+PR candidate 目录同时标识 head 和 Merge-Result；旧的纯 Merge SHA 目录不再由 receiver 读取。`safe_path_part` 会压缩非法字符并可能发生碰撞，`shared/path_utils.sh` 和 `shared/result_paths.py` 必须保持相同的分支名归一化语义。
 
 ## 一次任务的生命周期
 

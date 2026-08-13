@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--results-repo-url", default="")
     parser.add_argument("--results-web-url", default="")
     parser.add_argument("--sha", required=True)
+    parser.add_argument("--head-sha", default="")
     parser.add_argument("--source-branch", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-dir", required=True)
@@ -586,8 +587,10 @@ def main() -> int:
 
     status_text = "passed" if args.exit_code == 0 else "failed"
     try:
-        rel_dir = result_run_dir(args.source_branch, args.sha, args.run_id)
-        commit_dir = result_commit_dir(args.source_branch, args.sha)
+        rel_dir = result_run_dir(
+            args.source_branch, args.sha, args.run_id, args.head_sha
+        )
+        commit_dir = result_commit_dir(args.source_branch, args.sha, args.head_sha)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -652,7 +655,7 @@ def main() -> int:
             "Result directories are grouped under runs/ci_full/, "
             "runs/ci_pr/, and runs/ci_push/.\n\n"
             "- Full: runs/ci_full/ci_full_<branch>/<commit>/<run-id>/\n"
-            "- PR: runs/ci_pr/ci_pr-<number>_<branch>/<commit>/<run-id>/\n"
+            "- PR: runs/ci_pr/ci_pr-<number>_<branch>/h-<head12>_m-<merge12>/<run-id>/\n"
             "- PR base: runs/ci_pr/ci_base_pr-<number>_<branch>/<commit>/<run-id>/\n"
             "- Push: runs/ci_push/ci_push_<branch>/<commit>/<run-id>/\n\n"
             "Compile-time baselines are stored under "

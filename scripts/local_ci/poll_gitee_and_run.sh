@@ -178,6 +178,7 @@ publish_result() {
   local run_id="$3"
   local run_dir="$4"
   local branch="$5"
+  local head_sha="${6:-}"
   if [[ "${PUBLISH_GITEE_RESULTS}" != "1" ]]; then
     echo "PUBLISH_GITEE_RESULTS is not 1; skip publishing Gitee result branch and commit comment."
     return 0
@@ -198,6 +199,9 @@ publish_result() {
     --results-branch "${GITEE_RESULTS_BRANCH}"
     --context "${GITEE_RESULT_CONTEXT}"
   )
+  if [[ -n "${head_sha}" ]]; then
+    args+=(--head-sha "${head_sha}")
+  fi
   "${PYTHON_BIN:-python3}" \
     "${LOCAL_CI_RUNNER_DIR}/results/publish_gitee_result.py" "${args[@]}"
 }
@@ -591,7 +595,7 @@ PY
 
   local publish_status=0
   set +e
-  publish_result "${sha}" "${status}" "${run_id}" "${run_dir}" "${branch}"
+  publish_result "${sha}" "${status}" "${run_id}" "${run_dir}" "${branch}" "${head_sha}"
   publish_status=$?
   set -e
 

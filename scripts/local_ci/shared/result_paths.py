@@ -53,12 +53,21 @@ def result_task_dir(task_ref: str) -> PurePosixPath:
     )
 
 
-def result_commit_dir(task_ref: str, sha: str) -> PurePosixPath:
-    return result_task_dir(task_ref) / safe_path_part(sha)
+def result_commit_dir(task_ref: str, sha: str, head_sha: str = "") -> PurePosixPath:
+    normalized = task_ref.strip("/")
+    if re.fullmatch(r"ci/pr-[0-9]+/.+", normalized):
+        if not re.fullmatch(r"[0-9a-fA-F]{40}", head_sha):
+            raise ValueError("PR result paths require a full head SHA")
+        commit_part = f"h-{head_sha[:12]}_m-{sha[:12]}"
+    else:
+        commit_part = safe_path_part(sha)
+    return result_task_dir(task_ref) / commit_part
 
 
-def result_run_dir(task_ref: str, sha: str, run_id: str) -> PurePosixPath:
-    return result_commit_dir(task_ref, sha) / safe_path_part(run_id)
+def result_run_dir(
+    task_ref: str, sha: str, run_id: str, head_sha: str = ""
+) -> PurePosixPath:
+    return result_commit_dir(task_ref, sha, head_sha) / safe_path_part(run_id)
 
 
 def gitee_tree_url(web_url: str, ref: str, relative_path: str | PurePosixPath) -> str:

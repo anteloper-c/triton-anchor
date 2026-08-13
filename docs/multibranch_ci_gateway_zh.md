@@ -82,7 +82,7 @@ sequenceDiagram
 
 目标分支 manifest 不存在时可回退；manifest 已存在但 JSON 损坏、Contract 不兼容、能力或必要文件缺失时明确失败。外部 fork 自动进入 `local-ci-fork-approval` Environment；配置 Required reviewers 后等待维护者审批，未配置时自动继续。默认分支输入 PR 编号的手动入口保留为备用，所有授权都绑定审批后现场重验的 head 和 Merge-Result SHA。
 
-PR 的 pending、success、failure 和 error Required status 均写入 `tested_sha`。只有尚未得到可用 Merge-Result 的早期路由失败，才在 PR head 写独立的 `${LOCAL_CI_CONTEXT}/routing` 诊断状态。
+PR 的 pending、success、failure 和 error Required status 均写入 `tested_sha`，主状态描述同时显示 `Merge <12位SHA>`。只有尚未得到可用 Merge-Result 的早期路由失败，才在 PR head 写独立的 `${LOCAL_CI_CONTEXT}/routing` 诊断状态。
 
 ## 生命周期与结果隔离
 

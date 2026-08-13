@@ -98,7 +98,7 @@ flowchart LR
 
 外部 fork 的自动事件进入 `local-ci-fork-approval` Environment。仓库为该 Environment 配置 Required reviewers 后，维护者在 Actions 运行页面点击 `Review deployments` 才会继续；未配置 reviewer 时自动继续，适合先验证链路，但不构成人工授权门禁。审批后 Gateway 会再次读取 head 和 Merge-Result，因此 force-push、retarget、关闭或转 draft 都会使旧审批和旧结果失效。默认分支的手动 `mode=dispatch` + PR 编号入口继续作为备用方式。
 
-PR 页面只显示最新提交对应的 Checks。Gateway 的 Actions `run-name` 会记录 PR 编号及 head/Merge-Result SHA，commit status 的详情链接指向对应的具体 run，因此旧提交的执行记录仍可在 Actions 历史中区分和查看。
+PR 页面只显示最新提交对应的 Checks。Gateway 的 Actions `run-name` 会记录 PR 编号及 head/Merge-Result SHA；Local CI 主状态描述显示当前 Merge-Result 的 12 位短 SHA，详情链接指向对应的具体 run，因此旧提交的执行记录仍可在 Actions 历史中区分和查看。
 
 ## 3. GitHub 侧 CI
 
@@ -413,10 +413,12 @@ PR 任务通过 `ci/base/pr-*` 获取 base SHA，并把 `ci/pr-*` 指向 GitHub 
 
 ```text
 runs/ci_full/ci_full_<branch>/<sha>/<run-id>/
-runs/ci_pr/ci_pr-<number>_<branch>/<sha>/<run-id>/
+runs/ci_pr/ci_pr-<number>_<branch>/h-<head12>_m-<merge12>/<run-id>/
 runs/ci_pr/ci_base_pr-<number>_<branch>/<sha>/<run-id>/
 runs/ci_push/ci_push_<branch>/<sha>/<run-id>/
 ```
+
+PR candidate 目录同时标识 head 和 Merge-Result；旧的纯 Merge SHA 目录仅保留为历史文件，新 receiver 不再读取。
 
 结果可包含：
 
@@ -540,7 +542,7 @@ BACKEND_TEST_COMMAND="python3 tests/test_smoke.py && python3 tests/test_jit.py"
 1. 基础 CI、构建预检和公共 API 兼容性自动运行。
 2. Local CI dispatch 将 PR test merge、head 和 base 的精确 SHA 推送到 Gitee。
 3. 本地 poller 在 test merge checkout 上执行前端、后端、FlagGems 和性能检查。
-4. Required commit status 写在 PR Merge-Result SHA 上并保持 pending，直到 receiver 取得本地结果；`expected_head_sha` 只用于授权和过期校验。
+4. Required commit status 写在 PR Merge-Result SHA 上并保持 pending，直到 receiver 取得本地结果；主状态描述显示 `Merge <12位SHA>`，`expected_head_sha` 只用于授权和过期校验。
 5. 如检测到 Breaking Change，兼容性检查失败，并在 PR 下通知作者。
 
 PR 有新提交或 base 更新时触发新的 test merge ref，同一个 PR task ref 更新为新的 tested SHA，旧结果不会被当作当前合并结果。

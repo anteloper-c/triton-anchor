@@ -594,7 +594,7 @@ runs/ci_pr/ci_pr-<number>_<branch>/
 runs/ci_pr/ci_base_pr-<number>_<branch>/
 ```
 
-之后追加 `<sha>/<run-id>`。`safe_path_part()` 当前把连续非法字符压缩为 `_`，这不是 collision-resistant namespace。例如不同的 branch 可能归一化到同一个目录；改变此函数会影响 publisher、bridge、dashboard workflow 和历史结果兼容性，必须添加迁移/兼容测试后再改。
+Full、push 和 PR base 之后追加 `<sha>/<run-id>`；PR candidate 追加 `h-<head12>_m-<merge12>/<run-id>`。旧的纯 Merge SHA 目录仅作为历史文件保留，新 receiver 不再读取。`safe_path_part()` 当前把连续非法字符压缩为 `_`，这不是 collision-resistant namespace，例如不同的 branch 可能归一化到同一个目录；publisher 和 bridge 必须保持相同的路径规则。
 
 ### 7.3 Publisher：`results/publish_gitee_result.py`
 

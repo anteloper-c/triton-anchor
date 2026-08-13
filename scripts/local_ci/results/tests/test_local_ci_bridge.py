@@ -73,6 +73,7 @@ class CodexCommentTests(unittest.TestCase):
             "ci/pr-42/feature",
             "a" * 40,
             "PR #42 feature",
+            head_sha="b" * 40,
         )
         self.result = bridge.LocalCIResult(
             0,
