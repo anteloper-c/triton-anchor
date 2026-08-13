@@ -191,7 +191,7 @@ def test_not_needed_with_no_commands_derives_not_run(tmp_path):
     assert report["verdict"] == "PASS"
 
 
-def test_not_needed_with_successful_inspection_command_derives_passed(tmp_path):
+def test_not_needed_with_successful_inspection_ignores_generation_hint(tmp_path):
     document = analysis("git diff --stat")
     document["test_assessment"]["evidence_level"] = "not_needed"
     report = build(
@@ -199,9 +199,36 @@ def test_not_needed_with_successful_inspection_command_derives_passed(tmp_path):
         document,
         [{"command": "git diff --stat", "exit_code": 0, "duration_seconds": 0.1}],
         archive_entries=[],
-        test_generation_expected=False,
+        test_generation_expected=True,
     )
     assert report["test_execution"]["status"] == "passed"
+
+
+def test_sufficient_existing_validation_derives_passed_without_generated_files(tmp_path):
+    command = "python3 -m pytest scripts/local_ci/results/tests/test_local_ci_bridge.py -q"
+    report = build(
+        tmp_path,
+        analysis(command),
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.2}],
+        archive_entries=[],
+        test_generation_expected=True,
+    )
+    assert report["test_execution"]["status"] == "passed"
+    assert report["test_execution"]["generated_test_files"] == []
+
+
+def test_insufficient_evidence_stays_insufficient_with_successful_command(tmp_path):
+    command = "python3 -m pytest scripts/local_ci/results/tests/test_local_ci_bridge.py -q"
+    document = analysis(command)
+    document["test_assessment"]["evidence_level"] = "insufficient"
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.2}],
+        archive_entries=[],
+        test_generation_expected=True,
+    )
+    assert report["test_execution"]["status"] == "insufficient_evidence"
 
 
 def test_unmatched_semantic_command_is_ignored(tmp_path):
@@ -338,7 +365,7 @@ def test_unreported_ledger_command_cannot_result_in_not_run(tmp_path):
         [{"command": actual, "exit_code": 0, "duration_seconds": 0.2}],
     )
     assert report["test_execution"]["commands"][0]["command"] == actual
-    assert report["test_execution"]["status"] == "insufficient_evidence"
+    assert report["test_execution"]["status"] == "passed"
 
 
 def test_omitted_semantic_commands_do_not_hide_failure_ledger(tmp_path):

@@ -60,6 +60,25 @@ git -C "${source_repo}" commit -q -m docs
 docs_target_sha="$(git -C "${source_repo}" rev-parse HEAD)"
 git -C "${source_repo}" push -q gitee "HEAD:refs/heads/${docs_branch}"
 
+ci_wording_branch="ci/push/ci-wording-test"
+git -C "${source_repo}" checkout -q --detach "${base_sha}"
+mkdir -p \
+  "${source_repo}/.github/workflows" \
+  "${source_repo}/scripts/local_ci/codex_ai" \
+  "${source_repo}/scripts/local_ci/results/tests"
+printf 'summary: old text\n' \
+  > "${source_repo}/.github/workflows/receive-local-ci-result.yml"
+printf 'STATUS_LABEL = "旧文案"\n' \
+  > "${source_repo}/scripts/local_ci/codex_ai/render_codex_ai_report.py"
+printf 'BRIDGE_LABEL = "旧文案"\n' \
+  > "${source_repo}/scripts/local_ci/results/bridge_gitee_to_github_status.py"
+printf 'def test_label():\n    assert True\n' \
+  > "${source_repo}/scripts/local_ci/results/tests/test_local_ci_bridge.py"
+git -C "${source_repo}" add .github scripts
+git -C "${source_repo}" commit -q -m ci-wording
+ci_wording_target_sha="$(git -C "${source_repo}" rev-parse HEAD)"
+git -C "${source_repo}" push -q gitee "HEAD:refs/heads/${ci_wording_branch}"
+
 pr_branch="ci/pr-42/feature"
 pr_base_branch="ci/base/pr-42/feature"
 pr_head_branch="ci/head/pr-42/feature"
@@ -219,6 +238,8 @@ def write_analysis(
         summary = "English-only summary."
     elif mode == "analysis_only":
         summary = "确定性 Local CI 未通过，本次完成了差异审查和失败诊断。"
+    elif scenario == "ci_wording":
+        summary = "本次只同步 Codex AI 本地 CI 的对外文案，相关桥接单测已通过。"
     elif scenario == "docs_only":
         summary = "本次只包含文档改动，因此没有生成或执行测试。"
     elif scenario == "zero_tests":
@@ -269,6 +290,26 @@ def write_analysis(
             ],
             "commands": [],
         }
+    elif scenario == "ci_wording":
+        command = "python3 -m pytest scripts/local_ci/results/tests/test_local_ci_bridge.py -q"
+        test_assessment = {
+            "evidence_level": "sufficient",
+            "summary": [
+                "桥接单测覆盖了新文案映射，执行结果通过。",
+                "静态核对了 workflow、报告渲染器和状态桥接文案。",
+            ],
+            "commands": [
+                {
+                    "purpose": "状态桥接文案回归测试",
+                    "command": command,
+                    "evidence": "桥接单测执行通过。",
+                    "failure_classification": "none",
+                }
+            ],
+        }
+        command_events.append(
+            {"id": "cmd-001", "command": command, "exit_code": 0, "duration_seconds": 0.2}
+        )
     elif scenario == "over_limit":
         checkout = mapped("/codex-workspace/checkout")
         generated_files = [
@@ -620,7 +661,10 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
     else:
         assert "Local CI 环境、产物复用与验证约束" in prompt
         assert "触发条件包括但不限于" in prompt
-        assert "且存在可测试代码路径时，应生成 1 至 15 个定向测试用例" in prompt
+        assert "只是 runner 根据变更文件路径给出的审查提示" in prompt
+        assert "现有定向测试已经能够覆盖主要风险时，应优先复用或执行这些测试" in prompt
+        assert "只有确实需要新增覆盖且现有测试无法表达时，才创建 1 至 15 个定向测试用例" in prompt
+        assert "是否生成新测试文件不是证据充分性的必要条件" in prompt
         assert "最多创建或修改 5 个测试文件" in prompt
         assert "最多执行 30 条测试、构建、lint 或诊断命令" in prompt
         assert "单条命令预计不超过 600 秒" in prompt
@@ -1076,11 +1120,12 @@ grep -Fxq "test_execution_status: insufficient_evidence" "${zero_output}/codex-a
 grep -Fxq "generated_test_file_count: 0" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_command_count: 1" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_generation_expected: true" "${zero_output}/codex-ai-ci-summary.txt"
-grep -Fxq "constraint_status: warning" "${zero_output}/codex-ai-ci-summary.txt"
+grep -Fxq "constraint_status: pass" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fq "### 剩余风险" "${zero_output}/codex-ai-comment.md"
 grep -Fq "本次仅覆盖了与代码差异直接相关的路径。" \
   "${zero_output}/codex-ai-comment.md"
-grep -Fq "可测试代码改动未生成测试文件" "${zero_output}/codex-ai-report.md"
+grep -Fq "可测试代码改动没有生成或执行定向测试，当前证据不足。" \
+  "${zero_output}/codex-ai-report.md"
 
 run_case docs-only docs_only 0 30 0 "${docs_target_sha}" "${base_sha}" "${docs_branch}"
 docs_output="${test_root}/docs-only/output"
@@ -1095,6 +1140,20 @@ if grep -Fq "验证范围提醒：" "${docs_output}/codex-ai-comment.md"; then
   echo "纯文档改动不应产生测试执行约束警告" >&2
   exit 1
 fi
+
+run_case ci-wording ci_wording 0 30 0 \
+  "${ci_wording_target_sha}" "${base_sha}" "${ci_wording_branch}"
+ci_wording_output="${test_root}/ci-wording/output"
+grep -Fxq "status: pass" "${ci_wording_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_execution_status: passed" "${ci_wording_output}/codex-ai-ci-summary.txt"
+grep -Fxq "generated_test_file_count: 0" \
+  "${ci_wording_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_command_count: 1" "${ci_wording_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_generation_expected: true" \
+  "${ci_wording_output}/codex-ai-ci-summary.txt"
+grep -Fq -- "- 补充验证结果：**所执行的验证命令均通过**" \
+  "${ci_wording_output}/codex-ai-comment.md"
+grep -Fq "状态桥接文案回归测试" "${ci_wording_output}/codex-ai-report.md"
 
 run_case analysis success 1 30 0
 analysis_output="${test_root}/analysis/output"

@@ -412,9 +412,6 @@ def build_commands(
 def derive_execution_status(
     evidence_level: str,
     commands: list[dict[str, Any]],
-    generated_files: list[str],
-    analysis_mode: str,
-    test_generation_expected: bool,
 ) -> str:
     if evidence_level == "test_generation_error":
         return "test_generation_error"
@@ -430,14 +427,9 @@ def derive_execution_status(
         if statuses == {"stable_failure"}:
             return "stable_failure"
         return "insufficient_evidence"
-    if evidence_level != "sufficient":
-        if evidence_level != "not_needed" or (
-            analysis_mode == "full" and test_generation_expected
-        ):
-            return "insufficient_evidence"
-    if analysis_mode == "full" and test_generation_expected and not generated_files:
-        return "insufficient_evidence"
-    return "passed"
+    if evidence_level in {"sufficient", "not_needed"}:
+        return "passed"
+    return "insufficient_evidence"
 
 
 def normalize_assessment(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -675,9 +667,6 @@ def build_report(args: argparse.Namespace) -> None:
     execution_status = derive_execution_status(
         evidence_level,
         commands,
-        generated_files,
-        args.analysis_mode,
-        args.test_generation_expected,
     )
     raw_execution_summary = require_array(
         assessment["summary"], "test_assessment.summary"

@@ -1602,8 +1602,6 @@ if [[ ${exit_code} -eq 0 ]]; then
   fi
   constraint_args=(
     "${report_json_path}"
-    "${analysis_mode}"
-    "${test_generation_expected}"
     "${CODEX_AI_CI_MAX_GENERATED_TEST_FILES}"
     "${CODEX_AI_CI_MAX_TEST_COMMANDS}"
     "${CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS}"
@@ -1615,12 +1613,10 @@ import json
 import sys
 
 execution = json.load(open(sys.argv[1], encoding="utf-8"))["test_execution"]
-analysis_mode = sys.argv[2]
-test_generation_expected = sys.argv[3] == "true"
-max_files = int(sys.argv[4])
-max_commands = int(sys.argv[5])
-recommended_timeout = int(sys.argv[6])
-test_budget = int(sys.argv[7])
+max_files = int(sys.argv[2])
+max_commands = int(sys.argv[3])
+recommended_timeout = int(sys.argv[4])
+test_budget = int(sys.argv[5])
 generated_files = execution["generated_test_files"]
 commands = execution["commands"]
 durations = [float(command["duration_seconds"]) for command in commands]
@@ -1645,12 +1641,6 @@ if total_duration > test_budget:
     reasons.append(
         f"测试和诊断命令累计耗时 {total_duration:g} 秒超过建议预算 "
         f"{test_budget} 秒"
-    )
-if analysis_mode == "full" and test_generation_expected and not generated_files:
-    reasons.append("可测试代码改动未生成测试文件，测试证据不足")
-if analysis_mode == "full" and test_generation_expected and not commands:
-    reasons.append(
-        "可测试代码改动未记录测试、构建或 lint 命令，测试证据不足"
     )
 constraint_status = "warning" if reasons else "pass"
 constraint_reason = (
