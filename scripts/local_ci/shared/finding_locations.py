@@ -10,7 +10,6 @@ from pathlib import PurePosixPath
 FINDING_LINE_RE = re.compile(
     r"^(?P<start>[1-9][0-9]*)(?:-(?P<end>[1-9][0-9]*))?$"
 )
-MAX_FINDING_LINE_SPAN = 12
 
 
 def parse_finding_line_range(value: str) -> tuple[int, int] | None:
@@ -19,7 +18,7 @@ def parse_finding_line_range(value: str) -> tuple[int, int] | None:
         return None
     start = int(match.group("start"))
     end = int(match.group("end") or start)
-    if end < start or end - start >= MAX_FINDING_LINE_SPAN:
+    if end < start:
         return None
     return start, end
 

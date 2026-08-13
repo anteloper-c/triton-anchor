@@ -150,6 +150,7 @@ cat > "${valid_json}" <<'JSON'
       "fix_direction": "在复用缓存前校验版本号，并为失配路径补充测试。"
     }
   ],
+  "unlocated_findings": [],
   "suggested_tests": [
     {
       "id": "TEST-001",
@@ -162,6 +163,7 @@ cat > "${valid_json}" <<'JSON'
     "本次只执行了定向测试，尚未覆盖并发更新场景。"
   ],
   "test_execution": {
+    "evidence_level": "sufficient",
     "status": "passed",
     "summary": [
       "RUN-001 执行的缓存失效测试已经通过。",
@@ -214,6 +216,8 @@ grep -Fq "缓存命中后返回了过期状态" "${report_md}"
 grep -Fq "这段代码负责" "${report_md}"
 grep -Fq "## 建议测试" "${report_md}"
 grep -Fq "## 测试执行" "${report_md}"
+grep -Fq -- "- Codex 对验证证据的判断：证据充分" "${report_md}"
+grep -Fq -- "- Runner 事实校验：所执行的验证命令均通过" "${report_md}"
 grep -Fq "## 测试执行约束" "${report_md}"
 grep -Fq "状态：警告" "${report_md}"
 grep -Fq "测试命令数量超过轻量约束" "${report_md}"
@@ -228,19 +232,24 @@ grep -Fq -- "- 判断依据：" "${comment_md}"
 grep -Fq -- "  - 代码差异缺少版本校验。" "${comment_md}"
 grep -Fq -- "  - 缓存版本失配定向测试复现了过期状态。" "${comment_md}"
 grep -Fq "### 验证情况" "${comment_md}"
-grep -Fq -- "- 补充验证结果：**所执行的验证命令均通过**" "${comment_md}"
-grep -Fq -- "- 说明：" "${comment_md}"
-grep -Fq -- "  - 缓存版本失配定向测试执行的缓存失效测试已经通过。" "${comment_md}"
+grep -Fq -- "- 验证内容与结果：" "${comment_md}"
+grep -Fq -- "  - 缓存版本失配定向测试执行成功。" "${comment_md}"
+grep -Fq -- "- 限制与未覆盖：" "${comment_md}"
 grep -Fq -- "  - 验证覆盖了版本变化后的缓存失效路径。" "${comment_md}"
+if grep -Eq -- "^- (验证依据|执行内容|执行结果)：" "${comment_md}"; then
+  echo "PR 评论仍使用旧的验证分组" >&2
+  exit 1
+fi
+if grep -Eq "Codex 对验证证据的判断|Runner 事实校验|Codex 说明：|Runner 校验：" "${comment_md}"; then
+  echo "PR 评论仍暴露内部验证状态或来源标签" >&2
+  exit 1
+fi
 grep -Fq "### 需要处理的问题" "${comment_md}"
 grep -Fq "### 变更文件" "${comment_md}"
 grep -Fq "这段代码负责：该条件决定缓存命中后是否继续复用旧状态" "${comment_md}"
+grep -Fq -- "- 核心证据：新分支直接复用缓存值，但没有核对当前版本号。" "${comment_md}"
 grep -Fq "<details>" "${comment_md}"
-if grep -Fq "新分支直接复用缓存值" "${comment_md}"; then
-  echo "PR 评论不应包含 finding 的完整证据" >&2
-  exit 1
-fi
-if grep -Eq '(^|[^A-Za-z0-9_])(AI|TEST|RUN)-[0-9]{3}([^A-Za-z0-9_]|$)' "${comment_md}"; then
+if grep -Eq '(^|[^A-Za-z0-9_])(AI|TEST|RUN)-[0-9]{3,}([^A-Za-z0-9_]|$)' "${comment_md}"; then
   echo "PR 评论不应包含内部结构化编号" >&2
   exit 1
 fi

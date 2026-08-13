@@ -203,7 +203,13 @@ Codex 报告格式为 `triton-anchor-codex-ai-report/v3`。除审查摘要、文
 
 实现状态 `implemented`、`partially_implemented`、`not_implemented`、`not_assessable` 和 `not_applicable` 只表示声明与实现的一致程度，不替代 `PASS`/`WARNING`/`FAIL`。PR comment 会优先展示审查摘要、本地确定性 CI 检查简述、贡献者目标与实现情况、需要处理的问题、验证情况和剩余风险；判断依据和验证说明应使用提交者和审核者可理解的自然语言，并按条目展示。`AI-001`、`TEST-001`、`RUN-001` 等机器关联 ID 只保留在结构化 JSON 和完整报告中，PR comment 将问题和建议测试显示为自然序号，并将 `RUN-xxx` 替换为对应执行记录的 `purpose`，例如“缓存失效定向测试”“Python 语法检查”或“扩展模块构建”；审查主体统一称为“Codex AI 自动审查”。文件级明细折叠在评论底部；完整报告保留全部证据。
 
-每个 finding 必须定位到本次 diff 中未删除的文件，并使用单行或最多 12 行的连续范围。Renderer 会在 exact-SHA checkout 中确认文件存在、范围没有越界且不全是空行；`code_role` 说明该行实际负责的功能。Bridge 从结构化报告生成固定到审查 SHA 的 GitHub 链接，PR 提交者可直接打开修复位置，审核者可核对行号、功能说明和完整证据是否一致。
+机器 ID 至少使用三位数字，但不设置三位上限；大规模差异中的 `FILE-1000`、`AI-1000`、`TEST-1000` 和 `RUN-1000` 仍属于合法关联 ID，公开评论同样会隐藏或转换这些内部编号。
+
+每个 finding 必须定位到本次 diff 中未删除的文件，并使用单行或起止有序的连续范围；prompt 要求优先选择能够定位根因的最窄范围，但范围宽度不再作为整份报告失效条件。Renderer 会在 exact-SHA checkout 中确认文件存在且范围没有越界；`code_role` 说明该行实际负责的功能。两类 finding 都会在 PR comment 保留核心证据。Bridge 从结构化报告生成固定到审查 SHA 的 GitHub 链接：定位有效时生成精确行链接；行号无效但文件仍能通过可信 FILE-ID 映射时生成不带行锚点的文件链接，并明确标注“具体行号待核对”；无法映射到可信变更文件时不伪造链接。模型遗漏逐文件说明或提供重复引用时，Runner 会保留可信 Git 文件清单并明确标记证据缺口；finding 定位无法验证时，其原始严重度、标题、证据、影响和修复方向会完整保留为“定位待核对的问题”，不会作废整份报告或隐藏问题。
+
+PR comment 的“验证情况”不展示 `evidence_level` 或 `test_execution.status` 的内部状态标签，而是直接分为“验证内容与结果”“限制与未覆盖”两组事实。“验证内容与结果”同时展示 Codex 对现有 Local CI 证据、静态审查范围、已覆盖路径和观察结果的说明，以及来自可信 JSONL 命令账本和任务级归档的测试文件与实际结果；命令用途直接与结果组合展示，避免重复罗列，没有新命令时明确说明“本次未新增验证命令”。未执行建议测试和动态验证缺口进入“限制与未覆盖”，由缺口产生的具体行为风险才进入“剩余风险”；finding 定位或逐文件说明等报告完整性提醒只保留在对应问题、剩余风险和合入建议中，不再把成功命令描述成证据不足。内部 `evidence_level` 和执行状态继续保留在结构化 JSON、完整报告和诊断摘要中，并独立参与 verdict 计算。
+
+如果 Codex 审查在形成可信语义载荷前失败，fallback 评论仍按两组事实展示：“验证内容与结果”说明未形成可信载荷或可由 Runner 核验的结论，“限制与未覆盖”明确审查未完成；内部报告使用 `unavailable`，不会伪装成 Codex 主动给出的 `insufficient`。
 
 Codex AI-CI 的审查目标是服务 `triton-anchor` 仓库及其后续分支，而不是做泛化 AI 审查平台。主要关注：Triton/AnchorIR 前端语义、TTIR pipeline、adapter/ABI、C++/MLIR binding、Public API 兼容性、Local CI 任务/结果协议、后端 smoke/FlagGems/性能证据是否支持本次 diff。纯风格、泛化重构或与这些主线无关的建议不应扩大成阻塞 finding。
 
@@ -260,7 +266,7 @@ Windows Git Bash 不能替代 Linux harness：`python3`、`/tmp`、symlink 权�
 | 确定性 CI 未启动 | `local-ci.log`、容器是否运行、`LOCAL_CI_SCRIPT_DIR` 是否包含完整 canonical 模块树。 |
 | 结果已生成但 GitHub pending | `local-ci-results` 是否 push 成功、`latest.txt` 是否指向当前 run、bridge 是否能读取 Gitee API。 |
 | Codex 失败但 Local CI 通过 | 查看 `codex-ai-ci-summary.txt` 的 `failure_code`、`failure_reason`、Codex log 和凭据校验；这是非阻塞路径。 |
-| 报告格式失败 | 检查 schema v3、prompt、renderer、changed-files manifest、`codex-context-summary.json` 是否同步，尤其是新增字段和中文说明；finding 定位无效会映射为固定 failure code。 |
+| 报告生成失败 | 先按 `failure_code` 区分 `analysis_contract_failed`（Codex 语义载荷不满足公开契约）、`trusted_report_input_failed`（manifest、命令账本或生成文件归档异常）、`report_contract_failed`（Runner canonical 报告内部契约异常）和 `report_metadata_failed`（Runner 无法读取执行事实）；finding 定位无效本身会保留为“定位待核对的问题”，不再作废整份报告。 |
 | 性能 warning | 先确认 baseline SHA/profile、backend commit 和 artifact 有效性，再判断是否是真回归。 |
 | PR comment 没有更新 | task ref 必须是 `ci/pr-<number>/...`，comment 必须包含稳定 marker 且由 Bot 发布。 |
 

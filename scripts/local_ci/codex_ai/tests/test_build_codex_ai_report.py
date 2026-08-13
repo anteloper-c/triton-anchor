@@ -2,9 +2,11 @@ import copy
 import importlib.util
 import io
 import json
+import re
 import tarfile
 from argparse import Namespace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -69,6 +71,43 @@ def analysis(command: str = "python3 -m pytest generated_tests/test_generated.py
     }
 
 
+def finding(*, file_id: str = "FILE-001", line: str = "1") -> dict:
+    return {
+        "severity": "MEDIUM",
+        "category": "correctness",
+        "file_id": file_id,
+        "line": line,
+        "code_role": "该行负责计算返回结果。",
+        "title": "返回结果错误",
+        "evidence": "该表达式会产生错误结果。",
+        "impact": "调用方会收到错误结果。",
+        "fix_direction": "修正该表达式并补充测试。",
+    }
+
+
+def comment_args() -> Namespace:
+    return Namespace(
+        branch="CI_dev",
+        base_sha="a" * 40,
+        requested_base_sha="",
+        diff_mode="two-point",
+        target_sha="b" * 40,
+        head_sha="",
+        local_ci_status="0",
+        tested_sha_kind="commit",
+        changed_file_count=1,
+        constraint_status="pass",
+        constraint_reason="未发现测试数量或耗时超出轻量约束。",
+    )
+
+
+def set_nested(document: dict, path: tuple[object, ...], value: object) -> None:
+    current: Any = document
+    for part in path[:-1]:
+        current = current[part]
+    current[path[-1]] = value
+
+
 def write_archive(path: Path, entries: list[tuple[str, bytes, str]]) -> None:
     with tarfile.open(path, "w:gz") as archive:
         for name, payload, kind in entries:
@@ -91,10 +130,12 @@ def build(
     archive_entries=None,
     *,
     test_generation_expected=True,
+    source_text: str | None = "value = 1\n",
 ):
     repository_root = tmp_path / "repo"
     repository_root.mkdir(exist_ok=True)
-    (repository_root / "example.py").write_text("value = 1\n", encoding="utf-8")
+    if source_text is not None:
+        (repository_root / "example.py").write_text(source_text, encoding="utf-8")
     manifest_path = tmp_path / "manifest.json"
     analysis_path = tmp_path / "analysis.json"
     ledger_path = tmp_path / "ledger.json"
@@ -138,6 +179,7 @@ def test_builder_assigns_trusted_fields_and_pass_status(tmp_path):
     assert report["changed_files"][0]["path"] == "example.py"
     assert report["changed_files"][0]["summary"] == "调整了示例代码的执行逻辑。"
     assert report["behavior_coverage"]["normal"]["scope"] == "检查normal对应的行为路径。"
+    assert report["test_execution"]["evidence_level"] == "sufficient"
     assert report["test_execution"]["status"] == "passed"
     assert report["test_execution"]["commands"][0] == {
         "id": "RUN-001",
@@ -151,17 +193,54 @@ def test_builder_assigns_trusted_fields_and_pass_status(tmp_path):
     assert report["completion_marker"] == "CODEX_AI_CI_COMPLETE"
 
 
+def test_public_validation_uses_fact_groups_without_internal_status_labels(tmp_path):
+    command = "python3 -m pytest generated_tests/test_generated.py"
+    report = build(
+        tmp_path,
+        analysis(command),
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.2}],
+    )
+
+    comment = RENDERER.render_comment(report, comment_args())
+    validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
+
+    assert "- 验证内容与结果：" in validation
+    assert "  - 生成并执行了一个定向测试。" in validation
+    assert "生成了 1 个任务级测试文件：generated_tests/test_generated.py。" in validation
+    assert "'generated_tests/test_generated.py'" not in validation
+    assert "  - 生成代码路径定向测试执行成功。" in validation
+    assert "- 限制与未覆盖：" in validation
+    assert "  - 本次未报告额外的验证限制或未覆盖项。" in validation
+    assert "- 验证依据：" not in validation
+    assert "- 执行内容：" not in validation
+    assert "- 执行结果：" not in validation
+    assert "Codex 对验证证据的判断" not in comment
+    assert "Runner 事实校验" not in comment
+    assert "Codex 说明：" not in validation
+    assert "Runner 校验：" not in validation
+
+
 @pytest.mark.parametrize(
-    ("exits", "classification", "expected"),
+    ("exits", "classification", "expected", "public_result"),
     [
-        ([1], "product", "insufficient_evidence"),
-        ([1, 1], "product", "stable_failure"),
-        ([1, 0], "flaky", "flaky_failure"),
-        ([2], "infrastructure", "infrastructure_failure"),
+        (
+            [1],
+            "product",
+            "insufficient_evidence",
+            "执行失败，现有记录尚不足以完成稳定性或根因归因",
+        ),
+        ([1, 1], "product", "stable_failure", "出现可稳定复现的失败"),
+        ([1, 0], "flaky", "flaky_failure", "重复执行时出现不一致结果"),
+        (
+            [2],
+            "infrastructure",
+            "infrastructure_failure",
+            "受运行环境限制，未能完整执行",
+        ),
     ],
 )
 def test_failure_status_is_derived_from_repeated_ledger(
-    tmp_path, exits, classification, expected
+    tmp_path, exits, classification, expected, public_result
 ):
     command = "python3 -m pytest generated_tests/test_generated.py"
     document = analysis(command)
@@ -177,6 +256,9 @@ def test_failure_status_is_derived_from_repeated_ledger(
     report = build(tmp_path, document, ledger)
     assert report["test_execution"]["status"] == expected
     assert report["verdict"] == "WARNING"
+    comment = RENDERER.render_comment(report, comment_args())
+    validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
+    assert public_result in validation
 
 
 def test_not_needed_with_no_commands_derives_not_run(tmp_path):
@@ -189,6 +271,103 @@ def test_not_needed_with_no_commands_derives_not_run(tmp_path):
     report = build(tmp_path, document, [], archive_entries=[])
     assert report["test_execution"]["status"] == "not_run"
     assert report["verdict"] == "PASS"
+
+
+def test_sufficient_reused_evidence_with_no_commands_keeps_runner_not_run(tmp_path):
+    document = analysis()
+    document["test_assessment"] = {
+        "evidence_level": "sufficient",
+        "summary": ["复用的确定性 Local CI 证据足以支撑当前审查结论。"],
+        "commands": [],
+    }
+    report = build(tmp_path, document, [], archive_entries=[])
+    assert report["test_execution"]["evidence_level"] == "sufficient"
+    assert report["test_execution"]["status"] == "not_run"
+    assert report["verdict"] == "PASS"
+
+
+def test_insufficient_evidence_with_no_commands_warns_without_faking_runner_status(
+    tmp_path,
+):
+    document = analysis()
+    document["test_assessment"] = {
+        "evidence_level": "insufficient",
+        "summary": ["当前没有足够的动态验证证据。"],
+        "commands": [],
+    }
+    report = build(tmp_path, document, [], archive_entries=[])
+    assert report["test_execution"]["evidence_level"] == "insufficient"
+    assert report["test_execution"]["status"] == "not_run"
+    assert report["verdict"] == "WARNING"
+
+    comment = RENDERER.render_comment(report, comment_args())
+    validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
+    assert "  - 本次未新增验证命令。" in validation
+    assert "  - 本次没有新的命令执行结果。" in validation
+    assert "  - 现有验证尚未覆盖本次变更的全部风险。" in validation
+
+
+def test_unavailable_is_reserved_for_consistent_failure_fallback(tmp_path):
+    document = analysis()
+    report = build(tmp_path, document, [])
+    report["test_execution"].update(
+        {
+            "evidence_level": "unavailable",
+            "status": "unavailable",
+            "summary": ["Runner 校验：没有形成可信的执行事实结论。"],
+            "generated_test_files": [],
+            "commands": [],
+        }
+    )
+    report["verdict"] = "WARNING"
+    RENDERER.validate_report(
+        report,
+        [{"path": "example.py", "change_type": "modified"}],
+        tmp_path / "repo",
+    )
+    comment = RENDERER.render_comment(report, comment_args())
+    validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
+    assert "Codex AI-CI 未形成可由 Runner 核验的执行结果" in validation
+    assert "Codex AI-CI 未完成，当前没有形成可信的验证记录" in validation
+    assert "Runner 校验：" not in validation
+
+    invalid_report = json.loads(json.dumps(report))
+    invalid_report["test_execution"]["commands"] = [
+        {
+            "id": "RUN-001",
+            "command": "python3 -m pytest",
+            "purpose": "定向测试",
+            "exit_code": 0,
+            "duration_seconds": 0.1,
+            "status": "not_executed",
+            "evidence": "Runner 没有执行这条命令。",
+        }
+    ]
+    with pytest.raises(ValueError, match="cannot contain commands or generated files"):
+        RENDERER.validate_report(
+            invalid_report,
+            [{"path": "example.py", "change_type": "modified"}],
+            tmp_path / "repo",
+        )
+
+    invalid_report = json.loads(json.dumps(report))
+    invalid_report["test_execution"]["generated_test_files"] = [
+        "generated_tests/test_generated.py"
+    ]
+    with pytest.raises(ValueError, match="cannot contain commands or generated files"):
+        RENDERER.validate_report(
+            invalid_report,
+            [{"path": "example.py", "change_type": "modified"}],
+            tmp_path / "repo",
+        )
+
+    report["test_execution"]["status"] = "not_run"
+    with pytest.raises(ValueError, match="must be reported together"):
+        RENDERER.validate_report(
+            report,
+            [{"path": "example.py", "change_type": "modified"}],
+            tmp_path / "repo",
+        )
 
 
 def test_not_needed_with_successful_inspection_ignores_generation_hint(tmp_path):
@@ -217,7 +396,7 @@ def test_sufficient_existing_validation_derives_passed_without_generated_files(t
     assert report["test_execution"]["generated_test_files"] == []
 
 
-def test_insufficient_level_with_annotated_success_derives_passed(tmp_path):
+def test_insufficient_codex_evidence_is_not_upgraded_by_successful_command(tmp_path):
     command = "python3 -m pytest scripts/local_ci/results/tests/test_local_ci_bridge.py -q"
     document = analysis(command)
     document["test_assessment"]["evidence_level"] = "insufficient"
@@ -232,7 +411,9 @@ def test_insufficient_level_with_annotated_success_derives_passed(tmp_path):
         archive_entries=[],
         test_generation_expected=True,
     )
+    assert report["test_execution"]["evidence_level"] == "insufficient"
     assert report["test_execution"]["status"] == "passed"
+    assert report["verdict"] == "WARNING"
 
 
 def test_suggested_test_keeps_insufficient_with_successful_command(tmp_path):
@@ -253,7 +434,27 @@ def test_suggested_test_keeps_insufficient_with_successful_command(tmp_path):
         archive_entries=[],
         test_generation_expected=True,
     )
-    assert report["test_execution"]["status"] == "insufficient_evidence"
+    assert report["test_execution"]["status"] == "passed"
+    comment = RENDERER.render_comment(report, comment_args())
+    validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
+    assert "尚未执行：补跑容器契约以覆盖 runner、提示词和报告输出。" in validation
+
+
+def test_generation_error_has_public_execution_facts_and_limit(tmp_path):
+    document = analysis()
+    document["test_assessment"] = {
+        "evidence_level": "test_generation_error",
+        "summary": ["创建定向测试时未能完成测试文件生成。"],
+        "commands": [],
+    }
+    document["residual_risks"] = ["异常路径仍缺少动态验证。"]
+    report = build(tmp_path, document, [], archive_entries=[])
+
+    assert report["test_execution"]["status"] == "test_generation_error"
+    comment = RENDERER.render_comment(report, comment_args())
+    validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
+    assert "定向测试生成未完成，因此没有形成预期的命令执行结果" in validation
+    assert "测试生成阶段未完成，当前没有形成预期的动态验证覆盖" in validation
 
 
 def test_unannotated_success_does_not_override_insufficient(tmp_path):
@@ -267,7 +468,7 @@ def test_unannotated_success_does_not_override_insufficient(tmp_path):
         archive_entries=[],
         test_generation_expected=True,
     )
-    assert report["test_execution"]["status"] == "insufficient_evidence"
+    assert report["test_execution"]["status"] == "passed"
 
 
 def test_unmatched_semantic_command_is_ignored(tmp_path):
@@ -278,37 +479,330 @@ def test_unmatched_semantic_command_is_ignored(tmp_path):
     assert report["test_execution"]["status"] == "not_run"
 
 
-def test_unknown_file_id_is_rejected(tmp_path):
+def test_unknown_finding_file_id_becomes_explicit_residual_risk(tmp_path):
     document = analysis()
-    document["findings"] = [
+    document["findings"] = [finding(file_id="FILE-999")]
+    command = document["test_assessment"]["commands"][0]["command"]
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.1}],
+    )
+    assert report["findings"] == []
+    assert report["unlocated_findings"][0]["title"] == "返回结果错误"
+    assert report["verdict"] == "WARNING"
+    assert report["test_execution"]["status"] == "passed"
+    assert any("完整语义已保留" in risk for risk in report["residual_risks"])
+
+
+def test_unlocated_high_finding_keeps_fail_verdict(tmp_path):
+    document = analysis()
+    high_finding = finding(file_id="FILE-999")
+    high_finding["severity"] = "HIGH"
+    document["findings"] = [high_finding]
+    command = document["test_assessment"]["commands"][0]["command"]
+
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.1}],
+    )
+
+    assert report["findings"] == []
+    assert report["unlocated_findings"][0]["severity"] == "HIGH"
+    assert report["verdict"] == "FAIL"
+
+
+def test_unlocated_finding_keeps_full_semantics_in_public_comment(tmp_path):
+    document = analysis()
+    document["findings"] = [finding(file_id="FILE-999")]
+    command = document["test_assessment"]["commands"][0]["command"]
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.1}],
+    )
+    args = Namespace(
+        branch="CI_dev",
+        base_sha="a" * 40,
+        requested_base_sha="",
+        diff_mode="two-point",
+        target_sha="b" * 40,
+        head_sha="",
+        local_ci_status="0",
+        tested_sha_kind="commit",
+        changed_file_count=1,
+        constraint_status="pass",
+        constraint_reason="未发现测试数量或耗时超出轻量约束。",
+    )
+
+    comment = RENDERER.render_comment(report, args)
+
+    assert "[中风险·定位待核对] 返回结果错误" in comment
+    assert "- 核心证据：该表达式会产生错误结果" in comment
+    assert "该表达式会产生错误结果" in comment
+    assert "调用方会收到错误结果" in comment
+    assert "修正该表达式并补充测试" in comment
+    assert "当前未发现需要阻塞合入的问题" in report["merge_recommendation"]
+    assert "结构化语义载荷缺口" in report["merge_recommendation"]
+
+
+def test_public_comment_preserves_key_findings_within_length_budget(tmp_path):
+    command = "python3 -m pytest generated_tests/test_generated.py"
+    document = analysis(command)
+    long_text = "这是用于验证评论长度预算的完整语义证据。" * 500
+    document["change_request_assessment"]["evidence"] = [
+        f"第 {index} 条判断依据。{long_text}" for index in range(8)
+    ]
+    document["findings"] = []
+    for _ in range(10):
+        item = finding()
+        for key in ("code_role", "title", "evidence", "impact", "fix_direction"):
+            item[key] = long_text
+        document["findings"].append(item)
+    document["residual_risks"] = [
+        f"第 {index} 项剩余风险。{long_text}" for index in range(100)
+    ]
+    document["test_assessment"]["summary"] = [
+        f"第 {index} 条验证说明。{long_text}" for index in range(8)
+    ]
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.1}],
+    )
+    args = Namespace(
+        branch="CI_dev",
+        base_sha="a" * 40,
+        requested_base_sha="",
+        diff_mode="two-point",
+        target_sha="b" * 40,
+        head_sha="",
+        local_ci_status="0",
+        tested_sha_kind="commit",
+        changed_file_count=1,
+        constraint_status="pass",
+        constraint_reason="未发现测试数量或耗时超出轻量约束。",
+    )
+
+    comment = RENDERER.render_comment(report, args)
+
+    assert len(comment) <= RENDERER.MAX_COMMENT_LENGTH
+    assert "- 这段代码负责：" in comment
+    assert "- 核心证据：" in comment
+    assert "- 影响：" in comment
+    assert "- 建议：" in comment
+    assert "另有 4 条判断依据" in comment
+    assert "另有 2 条验证说明" in comment
+    assert "另有 94 项剩余风险" in comment
+    assert "另有 5 个问题" in comment
+
+
+def test_wide_finding_line_range_is_preserved(tmp_path):
+    document = analysis()
+    document["findings"] = [finding(line="2-20")]
+    command = document["test_assessment"]["commands"][0]["command"]
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.1}],
+        source_text="".join(f"value_{index} = {index}\n" for index in range(1, 21)),
+    )
+    assert report["findings"][0]["line"] == "2-20"
+    assert report["verdict"] == "WARNING"
+
+
+def test_out_of_bounds_finding_becomes_explicit_residual_risk(tmp_path):
+    document = analysis()
+    document["findings"] = [finding(line="1-20")]
+    command = document["test_assessment"]["commands"][0]["command"]
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.1}],
+        source_text="value = 1\n",
+    )
+    assert report["findings"] == []
+    assert report["unlocated_findings"][0]["trusted_file"] == "example.py"
+    assert any("完整语义已保留" in risk for risk in report["residual_risks"])
+
+
+@pytest.mark.parametrize("line", ["0", "2-1", "not-a-line", "", None, 12])
+def test_invalid_finding_line_is_preserved_as_unlocated(tmp_path, line):
+    document = analysis()
+    document["findings"] = [finding(line=line)]
+    command = document["test_assessment"]["commands"][0]["command"]
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.1}],
+    )
+    assert report["findings"] == []
+    assert report["unlocated_findings"][0]["reported_line"]
+    assert report["unlocated_findings"][0]["title"] == "返回结果错误"
+
+
+def test_deleted_file_finding_is_preserved_as_unlocated(tmp_path):
+    document = {"findings": [finding()]}
+    valid, unlocated, warnings = BUILDER.build_findings(
+        document,
+        {"FILE-001": {"path": "example.py", "change_type": "deleted"}},
+        tmp_path,
+    )
+    assert valid == []
+    assert unlocated[0]["title"] == "返回结果错误"
+    assert warnings
+
+
+def test_unreadable_finding_file_becomes_explicit_residual_risk(tmp_path):
+    document = analysis()
+    document["findings"] = [finding(line="1")]
+    command = document["test_assessment"]["commands"][0]["command"]
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.1}],
+        source_text=None,
+    )
+    assert report["findings"] == []
+    assert report["unlocated_findings"][0]["trusted_file"] == "example.py"
+    assert any("完整语义已保留" in risk for risk in report["residual_risks"])
+
+
+def test_blank_finding_line_does_not_discard_report(tmp_path):
+    document = analysis()
+    document["findings"] = [finding(line="1")]
+    command = document["test_assessment"]["commands"][0]["command"]
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.1}],
+        source_text="\nvalue = 1\n",
+    )
+    assert report["findings"][0]["line"] == "1"
+
+
+def test_command_purpose_is_sanitized_after_language_normalization(tmp_path):
+    document = analysis()
+    document["test_assessment"]["commands"][0]["purpose"] = "RUN-001 " + "x" * 111
+    command = document["test_assessment"]["commands"][0]["command"]
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.1}],
+    )
+    purpose = report["test_execution"]["commands"][0]["purpose"]
+    assert len(purpose) <= 120
+    assert "RUN-001" not in purpose
+    assert "相关验证" in purpose
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("summary",),
+        ("merge_recommendation",),
+        ("change_request_assessment", "contributor_goal"),
+        ("change_request_assessment", "expected_behavior"),
+        ("change_request_assessment", "implementation_summary"),
+        ("change_request_assessment", "evidence", 0),
+        ("changed_files", 0, "summary"),
+        ("changed_files", 0, "impact"),
+        ("changed_files", 0, "validation_strategy"),
+        *[
+            ("behavior_coverage", behavior, field)
+            for behavior in ("normal", "boundary", "error", "compatibility", "integration")
+            for field in ("scope", "strategy", "result")
+        ],
+        *[
+            ("findings", 0, field)
+            for field in ("code_role", "title", "evidence", "impact", "fix_direction")
+        ],
+        ("suggested_tests", 0, "target"),
+        ("suggested_tests", 0, "description"),
+        ("residual_risks", 0),
+        ("test_assessment", "summary", 0),
+        ("test_assessment", "commands", 0, "purpose"),
+        ("test_assessment", "commands", 0, "evidence"),
+    ],
+)
+@pytest.mark.parametrize("replacement", ["", "English-only text."])
+def test_all_human_readable_analysis_fields_are_safely_normalized(
+    tmp_path, path, replacement
+):
+    command = "python3 -m pytest generated_tests/test_generated.py"
+    document = analysis(command)
+    document["findings"] = [finding()]
+    document["suggested_tests"] = [
         {
-            "severity": "MEDIUM",
-            "category": "correctness",
-            "file_id": "FILE-999",
-            "line": "1",
-            "code_role": "该行负责计算返回结果。",
-            "title": "返回结果错误",
-            "evidence": "该表达式会产生错误结果。",
-            "impact": "调用方会收到错误结果。",
-            "fix_direction": "修正该表达式并补充测试。",
+            "priority": "LOW",
+            "target": "generated_tests/test_generated.py",
+            "description": "补充一个定向回归测试。",
         }
     ]
-    with pytest.raises(ValueError, match="retained changed file"):
-        build(tmp_path, document, [])
+    set_nested(document, path, replacement)
+
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.1}],
+    )
+
+    assert report["completion_marker"] == "CODEX_AI_CI_COMPLETE"
 
 
-def test_invalid_changed_file_annotation_is_rejected(tmp_path):
+def test_blank_semantic_command_annotation_is_ignored(tmp_path):
+    command = "python3 -m pytest generated_tests/test_generated.py"
+    document = analysis(command)
+    document["test_assessment"]["commands"][0]["command"] = ""
+
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.1}],
+    )
+
+    assert report["test_execution"]["commands"][0]["purpose"] == (
+        "Codex 执行的验证或诊断命令"
+    )
+
+
+@pytest.mark.parametrize(
+    "changed_files",
+    [
+        [],
+        [
+            {
+                "file_id": "FILE-999",
+                "summary": "调整了示例代码。",
+                "impact": "影响示例行为。",
+                "validation_strategy": "执行定向检查。",
+            }
+        ],
+    ],
+)
+def test_incomplete_changed_file_annotations_preserve_manifest(tmp_path, changed_files):
     document = analysis()
-    document["changed_files"][0]["file_id"] = "FILE-999"
-    with pytest.raises(ValueError, match="does not cover the Git manifest"):
-        build(tmp_path, document, [])
+    document["changed_files"] = changed_files
+    command = document["test_assessment"]["commands"][0]["command"]
+    report = build(
+        tmp_path,
+        document,
+        [{"command": command, "exit_code": 0, "duration_seconds": 0.1}],
+    )
+    assert report["changed_files"][0]["path"] == "example.py"
+    assert "未提供该文件" in report["changed_files"][0]["summary"]
+    assert report["test_execution"]["status"] == "passed"
+    assert not any(
+        "逐文件语义说明" in item for item in report["test_execution"]["summary"]
+    )
+    assert any("逐文件语义说明" in item for item in report["residual_risks"])
+    assert report["verdict"] == "WARNING"
 
-
-def test_missing_changed_file_annotation_is_rejected(tmp_path):
-    document = analysis()
-    document["changed_files"] = []
-    with pytest.raises(ValueError, match="does not cover the Git manifest"):
-        build(tmp_path, document, [])
+    comment = RENDERER.render_comment(report, comment_args())
+    validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
+    assert "逐文件语义说明" not in validation
+    assert "逐文件语义说明" in comment.split("### 剩余风险", 1)[1]
 
 
 def test_missing_behavior_category_is_rejected(tmp_path):
@@ -335,18 +829,65 @@ def test_invalid_semantic_enum_is_rejected(tmp_path, field, value, message):
         build(tmp_path, document, [])
 
 
-def test_semantic_summary_overflow_and_duplicates_are_rejected(tmp_path):
+def test_semantic_summary_overflow_and_duplicates_are_normalized(tmp_path):
     document = analysis()
     document["test_assessment"]["summary"] = ["重复说明。", "重复说明。"]
-    with pytest.raises(ValueError, match="must not contain duplicates"):
-        build(tmp_path, document, [])
+    report = build(tmp_path, document, [])
+    assert report["test_execution"]["summary"] == ["Codex 说明：重复说明。"]
 
     document = analysis()
     document["change_request_assessment"]["evidence"] = [
         f"第 {index} 条判断依据。" for index in range(9)
     ]
-    with pytest.raises(ValueError, match="at most 8 items"):
-        build(tmp_path, document, [])
+    report = build(tmp_path, document, [])
+    assert len(report["change_request_assessment"]["evidence"]) == 8
+
+
+def test_generated_identifiers_scale_beyond_three_digits(tmp_path):
+    command = "python3 -m pytest generated_tests/test_generated.py"
+    document = analysis(command)
+    document["findings"] = [finding() for _ in range(1_000)]
+    document["suggested_tests"] = [
+        {
+            "priority": "LOW",
+            "target": "generated_tests/test_generated.py",
+            "description": "补充定向回归测试。",
+        }
+        for _ in range(1_000)
+    ]
+    ledger = [
+        {"command": command, "exit_code": 0, "duration_seconds": 0.01}
+        for _ in range(1_000)
+    ]
+    report = build(tmp_path, document, ledger)
+    assert report["findings"][-1]["id"] == "AI-1000"
+    assert report["suggested_tests"][-1]["id"] == "TEST-1000"
+    assert report["test_execution"]["commands"][-1]["id"] == "RUN-1000"
+
+
+def test_file_identifiers_scale_beyond_three_digits() -> None:
+    manifest = [
+        {"path": f"file_{index}.py", "change_type": "modified"}
+        for index in range(1, 1_001)
+    ]
+    document = analysis()
+    document["changed_files"] = [
+        {
+            "file_id": "FILE-1000",
+            "summary": "更新了第一千个变更文件。",
+            "impact": "该文件的行为可能发生变化。",
+            "validation_strategy": "结合定向测试核对该文件。",
+        }
+    ]
+    changed_files, _ = BUILDER.build_changed_files(document, manifest, [])
+    assert changed_files[-1]["summary"] == "更新了第一千个变更文件。"
+    schema = json.loads(
+        (CODEX_AI_DIR / "codex_ai_analysis.schema.json").read_text(encoding="utf-8")
+    )
+    pattern = schema["properties"]["changed_files"]["items"]["properties"][
+        "file_id"
+    ]["pattern"]
+    assert re.fullmatch(pattern, "FILE-1000")
 
 
 def test_workspace_archive_only_reports_test_paths(tmp_path):
@@ -436,3 +977,131 @@ def test_omitted_semantic_commands_do_not_hide_failure_ledger(tmp_path):
 def test_generated_archive_rejects_escape_and_symlink(tmp_path, entry):
     with pytest.raises(ValueError):
         build(tmp_path, analysis(), [], archive_entries=[entry])
+
+
+def assert_closed_object_schema(node: dict, expected_keys: set[str]) -> None:
+    assert node["type"] == "object"
+    assert set(node["properties"]) == expected_keys
+    assert set(node["required"]) == expected_keys
+    assert node["additionalProperties"] is False
+
+
+def test_analysis_schema_matches_builder_contract() -> None:
+    schema = json.loads(
+        (CODEX_AI_DIR / "codex_ai_analysis.schema.json").read_text(encoding="utf-8")
+    )
+    assert_closed_object_schema(schema, BUILDER.ANALYSIS_KEYS)
+    properties = schema["properties"]
+    assert_closed_object_schema(
+        properties["change_request_assessment"], BUILDER.ASSESSMENT_KEYS
+    )
+    assert_closed_object_schema(
+        properties["changed_files"]["items"], BUILDER.CHANGED_FILE_KEYS
+    )
+    assert_closed_object_schema(
+        properties["behavior_coverage"], set(BUILDER.BEHAVIOR_LABELS)
+    )
+    for name in BUILDER.BEHAVIOR_LABELS:
+        assert_closed_object_schema(
+            properties["behavior_coverage"]["properties"][name],
+            BUILDER.BEHAVIOR_ITEM_KEYS,
+        )
+    assert_closed_object_schema(properties["findings"]["items"], BUILDER.FINDING_KEYS)
+    assert_closed_object_schema(
+        properties["suggested_tests"]["items"], BUILDER.SUGGESTED_TEST_KEYS
+    )
+    assessment = properties["test_assessment"]
+    assert_closed_object_schema(assessment, BUILDER.TEST_ASSESSMENT_KEYS)
+    assert_closed_object_schema(
+        assessment["properties"]["commands"]["items"],
+        BUILDER.COMMAND_ANNOTATION_KEYS,
+    )
+    assert set(
+        properties["change_request_assessment"]["properties"]["status"]["enum"]
+    ) == BUILDER.ASSESSMENT_STATUSES
+    assert set(properties["findings"]["items"]["properties"]["severity"]["enum"]) == (
+        BUILDER.SEVERITIES
+    )
+    assert set(properties["findings"]["items"]["properties"]["category"]["enum"]) == (
+        BUILDER.CATEGORIES
+    )
+    assert set(assessment["properties"]["evidence_level"]["enum"]) == (
+        BUILDER.EVIDENCE_LEVELS
+    )
+    assert set(
+        assessment["properties"]["commands"]["items"]["properties"][
+            "failure_classification"
+        ]["enum"]
+    ) == BUILDER.FAILURE_CLASSIFICATIONS
+
+
+def test_report_schema_matches_renderer_contract() -> None:
+    schema = json.loads(
+        (CODEX_AI_DIR / "codex_ai_report.schema.json").read_text(encoding="utf-8")
+    )
+    assert_closed_object_schema(schema, RENDERER.ROOT_KEYS)
+    properties = schema["properties"]
+    assert_closed_object_schema(
+        properties["change_request_assessment"],
+        RENDERER.CHANGE_REQUEST_ASSESSMENT_KEYS,
+    )
+    assert_closed_object_schema(
+        properties["changed_files"]["items"], RENDERER.CHANGED_FILE_KEYS
+    )
+    assert_closed_object_schema(
+        properties["behavior_coverage"], RENDERER.BEHAVIOR_COVERAGE_KEYS
+    )
+    for name in RENDERER.BEHAVIOR_COVERAGE_KEYS:
+        assert_closed_object_schema(
+            properties["behavior_coverage"]["properties"][name],
+            RENDERER.BEHAVIOR_ITEM_KEYS,
+        )
+    assert_closed_object_schema(properties["findings"]["items"], RENDERER.FINDING_KEYS)
+    assert_closed_object_schema(
+        properties["unlocated_findings"]["items"],
+        RENDERER.UNLOCATED_FINDING_KEYS,
+    )
+    assert_closed_object_schema(
+        properties["suggested_tests"]["items"], RENDERER.TEST_KEYS
+    )
+    execution = properties["test_execution"]
+    assert_closed_object_schema(execution, RENDERER.TEST_EXECUTION_KEYS)
+    assert_closed_object_schema(
+        execution["properties"]["commands"]["items"], RENDERER.COMMAND_KEYS
+    )
+    assert set(properties["verdict"]["enum"]) == {"PASS", "WARNING", "FAIL"}
+    assert set(
+        properties["change_request_assessment"]["properties"]["status"]["enum"]
+    ) == RENDERER.CHANGE_REQUEST_ASSESSMENT_STATUSES
+    assert set(properties["findings"]["items"]["properties"]["severity"]["enum"]) == (
+        RENDERER.SEVERITIES
+    )
+    assert set(properties["findings"]["items"]["properties"]["category"]["enum"]) == (
+        RENDERER.CATEGORIES
+    )
+    assert set(execution["properties"]["status"]["enum"]) == (
+        RENDERER.TEST_EXECUTION_STATUSES
+    )
+    assert set(execution["properties"]["evidence_level"]["enum"]) == (
+        RENDERER.EVIDENCE_LEVELS
+    )
+    assert execution["properties"]["summary"]["anyOf"][1]["maxItems"] == (
+        RENDERER.MAX_TEST_EXECUTION_SUMMARY_ITEMS
+    )
+    assert set(
+        execution["properties"]["commands"]["items"]["properties"]["status"][
+            "enum"
+        ]
+    ) == RENDERER.COMMAND_STATUSES
+    identifier_examples = {
+        "findings": "AI-1000",
+        "unlocated_findings": "AI-1000",
+        "suggested_tests": "TEST-1000",
+    }
+    for key, value in identifier_examples.items():
+        pattern = properties[key]["items"]["properties"]["id"]["pattern"]
+        assert re.fullmatch(pattern, value)
+    command_pattern = execution["properties"]["commands"]["items"]["properties"][
+        "id"
+    ]["pattern"]
+    assert re.fullmatch(command_pattern, "RUN-1000")

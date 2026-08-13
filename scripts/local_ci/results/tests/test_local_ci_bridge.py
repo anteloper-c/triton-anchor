@@ -136,6 +136,37 @@ class CodexCommentTests(unittest.TestCase):
             "相关验证已通过",
         )
 
+    def test_four_digit_internal_ids_are_supported_and_hidden(self) -> None:
+        report_json = json.dumps(
+            {
+                "findings": [
+                    {
+                        "id": "AI-1000",
+                        "file": "python/example.py",
+                        "line": "17",
+                    }
+                ],
+                "test_execution": {
+                    "commands": [
+                        {"id": "RUN-1000", "purpose": "大规模变更定向检查"}
+                    ]
+                },
+            }
+        )
+        purposes = bridge.validation_purposes_from_report(report_json)
+        locations = bridge.finding_locations_from_report(report_json)
+        public_text = bridge.public_comment_text(
+            "RUN-1000 已验证 AI-1000", purposes
+        )
+
+        self.assertEqual(purposes, (("RUN-1000", "大规模变更定向检查"),))
+        self.assertEqual(
+            locations,
+            (bridge.FindingLocation("AI-1000", "python/example.py", "17"),),
+        )
+        self.assertNotIn("RUN-1000", public_text)
+        self.assertNotIn("AI-1000", public_text)
+
     def test_comment_body_contains_summary_link_and_stable_marker(self) -> None:
         body = bridge.codex_pr_comment_body(self.target, self.result)
         self.assertIn("发现一个问题。", body)
@@ -147,7 +178,7 @@ class CodexCommentTests(unittest.TestCase):
         self.assertIn("`aaaaaaaaaaaa`", body)
         self.assertIn("Codex 自动审查状态：完成", body)
         self.assertIn("结论：警告", body)
-        self.assertIn("补充验证结果：存在可稳定复现的失败", body)
+        self.assertNotIn("Runner 命令与证据校验", body)
         self.assertIn("缓存版本失配定向测试稳定复现问题", body)
         self.assertNotIn("RUN-001", body)
         self.assertIn("Codex AI 自动审查已完成，本地确定性 CI 检查已通过", body)
@@ -175,6 +206,68 @@ class CodexCommentTests(unittest.TestCase):
             f"{self.target.sha}/python/example.py#L17-L18",
             body,
         )
+
+    def test_wide_finding_range_keeps_clickable_location(self) -> None:
+        locations = bridge.finding_locations_from_report(
+            json.dumps(
+                {
+                    "findings": [
+                        {
+                            "id": "AI-001",
+                            "file": "python/example.py",
+                            "line": "17-42",
+                        }
+                    ]
+                }
+            )
+        )
+        with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}):
+            links = bridge.github_finding_location_links(self.target, locations)
+
+        self.assertEqual(
+            locations,
+            (bridge.FindingLocation("AI-001", "python/example.py", "17-42"),),
+        )
+        self.assertIn(
+            "https://github.com/owner/repo/blob/"
+            f"{self.target.sha}/python/example.py#L17-L42",
+            links,
+        )
+
+    def test_unlocated_finding_with_trusted_file_gets_file_only_link(self) -> None:
+        locations = bridge.finding_locations_from_report(
+            json.dumps(
+                {
+                    "findings": [],
+                    "unlocated_findings": [
+                        {
+                            "id": "AI-001",
+                            "trusted_file": "python/example.py",
+                            "reported_line": "9999",
+                        },
+                        {
+                            "id": "AI-002",
+                            "trusted_file": "",
+                            "reported_line": "17",
+                        },
+                    ],
+                }
+            )
+        )
+        with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo"}):
+            links = bridge.github_finding_location_links(self.target, locations)
+
+        self.assertEqual(
+            locations,
+            (bridge.FindingLocation("AI-001", "python/example.py", ""),),
+        )
+        file_url = (
+            "https://github.com/owner/repo/blob/"
+            f"{self.target.sha}/python/example.py"
+        )
+        self.assertIn(f"[python/example.py（具体行号待核对）]({file_url})", links)
+        self.assertNotIn(f"{file_url}#L", links)
+        self.assertNotIn("问题 2", links)
 
     def test_fork_pr_location_uses_head_repository(self) -> None:
         fork_target = bridge.Target(
@@ -427,6 +520,17 @@ class CodexCommentTests(unittest.TestCase):
                 description = bridge.codex_advisory_description(codex_ai)
                 self.assertIn(expected, description)
                 self.assertIn("非阻塞", description)
+
+    def test_new_report_failure_codes_have_stable_public_labels(self) -> None:
+        expected = {
+            "analysis_contract_failed": "Codex 审查语义载荷未满足公开结构契约",
+            "trusted_report_input_failed": "Runner 生成的可信报告输入校验失败",
+            "report_contract_failed": "Runner 生成报告时内部契约校验失败",
+            "report_metadata_failed": "Runner 读取报告执行事实失败",
+        }
+        for code, label in expected.items():
+            with self.subTest(code=code):
+                self.assertEqual(bridge.public_failure_reason(code), label)
 
     def test_codex_ai_output_is_single_line_json(self) -> None:
         encoded = bridge.codex_ai_output_json(self.result)

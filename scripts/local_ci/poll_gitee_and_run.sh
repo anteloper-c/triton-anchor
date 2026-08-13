@@ -530,7 +530,7 @@ run_once() {
       local parsed_codex_ai_test_status
       parsed_codex_ai_test_status="$(awk -F ': ' '$1 == "test_execution_status" { print $2; exit }' "${codex_ai_summary}")"
       case "${parsed_codex_ai_test_status}" in
-        not_run | passed | stable_failure | flaky_failure | infrastructure_failure | test_generation_error | insufficient_evidence)
+        not_run | passed | stable_failure | flaky_failure | infrastructure_failure | test_generation_error | insufficient_evidence | unavailable)
           codex_ai_test_status="${parsed_codex_ai_test_status}"
           ;;
       esac

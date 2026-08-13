@@ -16,7 +16,6 @@ SHARED_SCRIPT_DIR = Path(__file__).resolve().parents[1] / "shared"
 if str(SHARED_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SHARED_SCRIPT_DIR))
 from finding_locations import (  # noqa: E402
-    MAX_FINDING_LINE_SPAN,
     normalized_repository_path,
     parse_finding_line_range as parse_shared_finding_line_range,
 )
@@ -29,6 +28,7 @@ ROOT_KEYS = {
     "changed_files",
     "behavior_coverage",
     "findings",
+    "unlocated_findings",
     "suggested_tests",
     "residual_risks",
     "test_execution",
@@ -70,12 +70,33 @@ FINDING_KEYS = {
     "impact",
     "fix_direction",
 }
+UNLOCATED_FINDING_KEYS = {
+    "id",
+    "severity",
+    "category",
+    "trusted_file",
+    "reported_line",
+    "location_issue",
+    "code_role",
+    "title",
+    "evidence",
+    "impact",
+    "fix_direction",
+}
 TEST_KEYS = {"id", "priority", "target", "description"}
 TEST_EXECUTION_KEYS = {
+    "evidence_level",
     "status",
     "summary",
     "generated_test_files",
     "commands",
+}
+EVIDENCE_LEVELS = {
+    "not_needed",
+    "sufficient",
+    "insufficient",
+    "test_generation_error",
+    "unavailable",
 }
 COMMAND_KEYS = {
     "id",
@@ -95,6 +116,7 @@ TEST_EXECUTION_STATUSES = {
     "infrastructure_failure",
     "test_generation_error",
     "insufficient_evidence",
+    "unavailable",
 }
 COMMAND_STATUSES = {
     "passed",
@@ -130,7 +152,7 @@ CATEGORIES = {
 }
 CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 MAX_ASSESSMENT_EVIDENCE_ITEMS = 8
-MAX_TEST_EXECUTION_SUMMARY_ITEMS = 8
+MAX_TEST_EXECUTION_SUMMARY_ITEMS = 10
 INTERNAL_COMMENT_ID_RE = re.compile(
     r"\b(AI|TEST|RUN)-0*([1-9][0-9]*)\b[ \t]*",
     re.IGNORECASE,
@@ -276,10 +298,7 @@ def parse_finding_line_range(value: Any, location: str) -> tuple[int, int]:
     text = require_string(value, location)
     line_range = parse_shared_finding_line_range(text)
     if line_range is None:
-        raise ValueError(
-            f"{location} must be a positive line number or a line range of at most "
-            f"{MAX_FINDING_LINE_SPAN} lines"
-        )
+        raise ValueError(f"{location} must be a positive, ordered line number or range")
     return line_range
 
 
@@ -333,9 +352,6 @@ def validate_finding_location(
             f"{location}.line {start}-{end} is outside {finding_file} with "
             f"{len(source_lines)} lines"
         )
-    relevant_lines = source_lines[start - 1 : end]
-    if not any(line.strip() for line in relevant_lines):
-        raise ValueError(f"{location}.line points only to blank lines")
 
 
 def validate_report(
@@ -442,7 +458,7 @@ def validate_report(
             raise ValueError(f"{location} must be an object")
         require_exact_keys(finding, FINDING_KEYS, location)
         finding_id = require_string(finding["id"], f"{location}.id")
-        if not re.fullmatch(r"AI-[0-9]{3}", finding_id):
+        if not re.fullmatch(r"AI-[0-9]{3,}", finding_id):
             raise ValueError(f"{location}.id has an invalid format")
         if finding_id in finding_ids:
             raise ValueError(f"duplicate finding id: {finding_id}")
@@ -465,6 +481,49 @@ def validate_report(
         for key in {"code_role", "title", "evidence", "impact", "fix_direction"}:
             require_chinese_string(finding[key], f"{location}.{key}")
 
+    unlocated_findings = document["unlocated_findings"]
+    if not isinstance(unlocated_findings, list):
+        raise ValueError("unlocated_findings must be an array")
+    for index, finding in enumerate(unlocated_findings):
+        location = f"unlocated_findings[{index}]"
+        if not isinstance(finding, dict):
+            raise ValueError(f"{location} must be an object")
+        require_exact_keys(finding, UNLOCATED_FINDING_KEYS, location)
+        finding_id = require_string(finding["id"], f"{location}.id")
+        if not re.fullmatch(r"AI-[0-9]{3,}", finding_id):
+            raise ValueError(f"{location}.id has an invalid format")
+        if finding_id in finding_ids:
+            raise ValueError(f"duplicate finding id: {finding_id}")
+        finding_ids.add(finding_id)
+        severity = require_string(finding["severity"], f"{location}.severity")
+        category = require_string(finding["category"], f"{location}.category")
+        if severity not in SEVERITIES:
+            raise ValueError(f"{location}.severity is invalid")
+        if category not in CATEGORIES:
+            raise ValueError(f"{location}.category is invalid")
+        if finding["trusted_file"]:
+            trusted_file = require_string(
+                finding["trusted_file"], f"{location}.trusted_file"
+            )
+            if trusted_file not in {
+                item["path"] for item in expected_files if item["change_type"] != "deleted"
+            }:
+                raise ValueError(
+                    f"{location}.trusted_file must be a retained changed file"
+                )
+        elif not isinstance(finding["trusted_file"], str):
+            raise ValueError(f"{location}.trusted_file must be a string")
+        require_string(finding["reported_line"], f"{location}.reported_line")
+        for key in {
+            "location_issue",
+            "code_role",
+            "title",
+            "evidence",
+            "impact",
+            "fix_direction",
+        }:
+            require_chinese_string(finding[key], f"{location}.{key}")
+
     tests = document["suggested_tests"]
     if not isinstance(tests, list):
         raise ValueError("suggested_tests must be an array")
@@ -475,7 +534,7 @@ def validate_report(
             raise ValueError(f"{location} must be an object")
         require_exact_keys(test, TEST_KEYS, location)
         test_id = require_string(test["id"], f"{location}.id")
-        if not re.fullmatch(r"TEST-[0-9]{3}", test_id):
+        if not re.fullmatch(r"TEST-[0-9]{3,}", test_id):
             raise ValueError(f"{location}.id has an invalid format")
         if test_id in test_ids:
             raise ValueError(f"duplicate test id: {test_id}")
@@ -491,11 +550,20 @@ def validate_report(
         raise ValueError("residual_risks must be an array")
     for index, risk in enumerate(residual_risks):
         require_chinese_string(risk, f"residual_risks[{index}]")
+    has_report_normalization_risk = any(
+        risk.startswith(REPORT_NORMALIZATION_RISK_PREFIX)
+        for risk in residual_risks
+    )
 
     test_execution = document["test_execution"]
     if not isinstance(test_execution, dict):
         raise ValueError("test_execution must be an object")
     require_exact_keys(test_execution, TEST_EXECUTION_KEYS, "test_execution")
+    evidence_level = require_string(
+        test_execution["evidence_level"], "test_execution.evidence_level"
+    )
+    if evidence_level not in EVIDENCE_LEVELS:
+        raise ValueError(f"unsupported evidence level: {evidence_level}")
     execution_status = require_string(
         test_execution["status"], "test_execution.status"
     )
@@ -523,7 +591,7 @@ def validate_report(
             raise ValueError(f"{location} must be an object")
         require_exact_keys(command, COMMAND_KEYS, location)
         command_id = require_string(command["id"], f"{location}.id")
-        if not re.fullmatch(r"RUN-[0-9]{3}", command_id):
+        if not re.fullmatch(r"RUN-[0-9]{3,}", command_id):
             raise ValueError(f"{location}.id has an invalid format")
         if command_id in command_ids:
             raise ValueError(f"duplicate command id: {command_id}")
@@ -574,6 +642,10 @@ def validate_report(
             )
     elif execution_status == "not_run" and executed_statuses:
         raise ValueError("test_execution.status not_run cannot contain executed commands")
+    elif execution_status == "unavailable" and (commands or generated_test_files):
+        raise ValueError(
+            "test_execution.status unavailable cannot contain commands or generated files"
+        )
     elif execution_status == "stable_failure":
         has_comparable_repeat = any(
             statuses.count("stable_failure") >= 2
@@ -616,12 +688,26 @@ def validate_report(
         "infrastructure_failure",
         "test_generation_error",
         "insufficient_evidence",
+        "unavailable",
     }
+    if (evidence_level == "unavailable") != (execution_status == "unavailable"):
+        raise ValueError(
+            "test_execution unavailable evidence and status must be reported together"
+        )
     expected_verdict = (
         "FAIL"
-        if any(finding["severity"] == "HIGH" for finding in findings)
+        if any(
+            finding["severity"] == "HIGH"
+            for finding in findings + unlocated_findings
+        )
         else "WARNING"
-        if findings or execution_status in warning_execution_statuses
+        if (
+                findings
+                or unlocated_findings
+                or has_report_normalization_risk
+                or evidence_level in {"insufficient", "test_generation_error"}
+            or execution_status in warning_execution_statuses
+        )
         else "PASS"
     )
     if verdict != expected_verdict:
@@ -671,6 +757,14 @@ TEST_EXECUTION_STATUS_LABELS = {
     "infrastructure_failure": "受环境限制，未完全执行",
     "test_generation_error": "测试生成失败",
     "insufficient_evidence": "证据不足",
+    "unavailable": "未获得可信结果",
+}
+EVIDENCE_LEVEL_LABELS = {
+    "not_needed": "无需额外动态验证",
+    "sufficient": "证据充分",
+    "insufficient": "证据不足",
+    "test_generation_error": "测试生成失败",
+    "unavailable": "未获得可信判断",
 }
 COMMAND_STATUS_LABELS = {
     "passed": "通过",
@@ -707,6 +801,12 @@ BEHAVIOR_LABELS = {
 }
 BEHAVIOR_ORDER = ("normal", "boundary", "error", "compatibility", "integration")
 MAX_COMMENT_LENGTH = 58_000
+MAX_COMMENT_ASSESSMENT_EVIDENCE_ITEMS = 4
+MAX_COMMENT_TEST_SUMMARY_ITEMS = 6
+MAX_COMMENT_VALIDATION_COMMAND_ITEMS = 6
+MAX_COMMENT_VALIDATION_LIMIT_ITEMS = 6
+MAX_COMMENT_RESIDUAL_RISK_ITEMS = 6
+REPORT_NORMALIZATION_RISK_PREFIX = "报告完整性提醒："
 
 
 def comment_inline(value: Any, limit: int = 2_000) -> str:
@@ -721,6 +821,137 @@ def public_comment_text(text: str, identifier_descriptions: dict[str, str]) -> s
         lambda match: public_comment_identifier(match, identifier_descriptions),
         text,
     )
+
+
+VALIDATION_SUMMARY_PREFIXES = ("Codex 说明：", "Runner 校验：")
+
+
+def public_validation_summary_item(value: str) -> str:
+    text = value.strip()
+    changed = True
+    while changed:
+        changed = False
+        for prefix in VALIDATION_SUMMARY_PREFIXES:
+            if text.startswith(prefix):
+                text = text[len(prefix) :].lstrip()
+                changed = True
+    return text or "本次没有提供可公开展示的验证依据。"
+
+
+def unique_comment_items(items: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        normalized = " ".join(item.split())
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result
+
+
+def limited_comment_items(
+    items: list[str], limit: int, omitted_noun: str
+) -> list[str]:
+    unique_items = unique_comment_items(items)
+    shown = unique_items[:limit]
+    lines = [f"  - {comment_inline(item, 1_000)}" for item in shown]
+    if len(unique_items) > len(shown):
+        lines.append(
+            f"  - 另有 {len(unique_items) - len(shown)} {omitted_noun}，请查看完整报告。"
+        )
+    return lines
+
+
+def public_validation_artifact_items(test_execution: dict[str, Any]) -> list[str]:
+    items: list[str] = []
+    generated_files = test_execution["generated_test_files"]
+    if generated_files:
+        shown_files = generated_files[:3]
+        paths = "、".join(comment_inline(path, 300) for path in shown_files)
+        suffix = (
+            f"，另有 {len(generated_files) - len(shown_files)} 个文件"
+            if len(generated_files) > len(shown_files)
+            else ""
+        )
+        items.append(
+            f"生成了 {len(generated_files)} 个任务级测试文件：{paths}{suffix}。"
+        )
+    if not test_execution["commands"]:
+        items.append("本次未新增验证命令。")
+    return items
+
+
+def public_command_result(purpose: str, statuses: set[str]) -> str:
+    purpose = purpose.rstrip("。！？；， ")
+    if "flaky_failure" in statuses:
+        return f"{purpose}重复执行时出现不一致结果。"
+    if "stable_failure" in statuses:
+        return f"{purpose}出现可稳定复现的失败。"
+    if "infrastructure_failure" in statuses:
+        return f"{purpose}受运行环境限制，未能完整执行。"
+    if "failed" in statuses:
+        return f"{purpose}执行失败，现有记录尚不足以完成稳定性或根因归因。"
+    if statuses == {"passed"}:
+        return f"{purpose}执行成功。"
+    if statuses == {"not_executed"}:
+        return f"{purpose}未执行。"
+    if "passed" in statuses:
+        return f"{purpose}已有成功记录，但仍存在未完成的执行记录。"
+    return f"{purpose}没有形成可公开归纳的执行结果。"
+
+
+def public_validation_result_items(test_execution: dict[str, Any]) -> list[str]:
+    statuses_by_purpose: dict[str, set[str]] = {}
+    for command in test_execution["commands"]:
+        statuses_by_purpose.setdefault(command["purpose"], set()).add(
+            command["status"]
+        )
+    if statuses_by_purpose:
+        return [
+            public_command_result(purpose, statuses)
+            for purpose, statuses in statuses_by_purpose.items()
+        ]
+
+    execution_status = test_execution["status"]
+    if execution_status == "test_generation_error":
+        return ["定向测试生成未完成，因此没有形成预期的命令执行结果。"]
+    if execution_status == "unavailable":
+        return ["Codex AI-CI 未形成可由 Runner 核验的执行结果。"]
+    return ["本次没有新的命令执行结果。"]
+
+
+def public_validation_limit_items(document: dict[str, Any]) -> list[str]:
+    test_execution = document["test_execution"]
+    execution_status = test_execution["status"]
+    evidence_level = test_execution["evidence_level"]
+    items: list[str] = []
+
+    if execution_status == "stable_failure":
+        items.append("可稳定复现的失败尚未经过修复后复测。")
+    elif execution_status == "flaky_failure":
+        items.append("重复执行结果不一致，仍需在可比且稳定的环境中复测。")
+    elif execution_status == "infrastructure_failure":
+        items.append("部分验证受运行环境限制，当前没有完成全部预期覆盖。")
+    elif execution_status == "test_generation_error":
+        items.append("测试生成阶段未完成，当前没有形成预期的动态验证覆盖。")
+    elif execution_status == "insufficient_evidence":
+        items.append("失败记录尚不足以完成稳定性或根因归因。")
+    elif execution_status == "unavailable":
+        items.append("Codex AI-CI 未完成，当前没有形成可信的验证记录。")
+
+    if evidence_level == "insufficient":
+        items.append("现有验证尚未覆盖本次变更的全部风险。")
+    elif evidence_level == "test_generation_error" and execution_status != "test_generation_error":
+        items.append("Codex 报告测试生成过程未完成。")
+    elif evidence_level == "unavailable" and execution_status != "unavailable":
+        items.append("Codex 没有形成可信的验证证据说明。")
+
+    items.extend(
+        f"尚未执行：{test['description']}" for test in document["suggested_tests"]
+    )
+    if not items:
+        items.append("本次未报告额外的验证限制或未覆盖项。")
+    return items
 
 
 def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
@@ -810,25 +1041,43 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
     lines.extend(["", "## 关键问题", ""])
 
     findings = document["findings"]
-    if not findings:
+    unlocated_findings = document["unlocated_findings"]
+    if not findings and not unlocated_findings:
         lines.extend(["未发现需要阻塞合并的关键问题。", ""])
-    else:
-        for finding in findings:
-            location = f"{inline(finding['file'])}:{inline(finding['line'])}"
-            lines.extend([
-                f"### {finding['id']}: {inline(finding['title'])}",
-                "",
-                "| 字段 | 值 |",
-                "| --- | --- |",
-                f"| 风险级别 | **{SEVERITY_LABELS[finding['severity']]}** |",
-                f"| 类别 | {CATEGORY_LABELS[finding['category']]} |",
-                f"| 位置 | `{location}` |",
-                f"| 这段代码负责 | {inline(finding['code_role'])} |",
-                f"| 证据 | {inline(finding['evidence'])} |",
-                f"| 影响 | {inline(finding['impact'])} |",
-                f"| 修复方向 | {inline(finding['fix_direction'])} |",
-                "",
-            ])
+    for finding in findings:
+        location = f"{inline(finding['file'])}:{inline(finding['line'])}"
+        lines.extend([
+            f"### {finding['id']}: {inline(finding['title'])}",
+            "",
+            "| 字段 | 值 |",
+            "| --- | --- |",
+            f"| 风险级别 | **{SEVERITY_LABELS[finding['severity']]}** |",
+            f"| 类别 | {CATEGORY_LABELS[finding['category']]} |",
+            f"| 位置 | `{location}` |",
+            f"| 这段代码负责 | {inline(finding['code_role'])} |",
+            f"| 证据 | {inline(finding['evidence'])} |",
+            f"| 影响 | {inline(finding['impact'])} |",
+            f"| 修复方向 | {inline(finding['fix_direction'])} |",
+            "",
+        ])
+    for finding in unlocated_findings:
+        trusted_file = finding["trusted_file"] or "未能映射可信变更文件"
+        location = f"{inline(trusted_file)}；模型行号 {inline(finding['reported_line'])}"
+        lines.extend([
+            f"### {finding['id']}: {inline(finding['title'])}（定位待核对）",
+            "",
+            "| 字段 | 值 |",
+            "| --- | --- |",
+            f"| 风险级别 | **{SEVERITY_LABELS[finding['severity']]}** |",
+            f"| 类别 | {CATEGORY_LABELS[finding['category']]} |",
+            f"| 定位状态 | {inline(finding['location_issue'])} |",
+            f"| 原始定位 | `{location}` |",
+            f"| 代码职责 | {inline(finding['code_role'])} |",
+            f"| 证据 | {inline(finding['evidence'])} |",
+            f"| 影响 | {inline(finding['impact'])} |",
+            f"| 修复方向 | {inline(finding['fix_direction'])} |",
+            "",
+        ])
 
     lines.extend(["## 建议测试", ""])
     tests = document["suggested_tests"]
@@ -853,7 +1102,8 @@ def render_report(document: dict[str, Any], args: argparse.Namespace) -> str:
     lines.extend([
         "## 测试执行",
         "",
-        f"- 状态：{TEST_EXECUTION_STATUS_LABELS[test_execution['status']]}",
+        f"- Codex 对验证证据的判断：{EVIDENCE_LEVEL_LABELS[test_execution['evidence_level']]}",
+        f"- Runner 事实校验：{TEST_EXECUTION_STATUS_LABELS[test_execution['status']]}",
         "- 说明：",
         *[f"  - {inline(item)}" for item in test_execution_summary],
         "",
@@ -928,6 +1178,17 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
     assessment_evidence = assessment_evidence_items(
         assessment["evidence"], "change_request_assessment.evidence"
     )
+    shown_assessment_evidence = assessment_evidence[
+        :MAX_COMMENT_ASSESSMENT_EVIDENCE_ITEMS
+    ]
+    assessment_evidence_lines = [
+        f"  - {comment_inline(item, 1_000)}" for item in shown_assessment_evidence
+    ]
+    if len(assessment_evidence) > len(shown_assessment_evidence):
+        assessment_evidence_lines.append(
+            f"  - 另有 {len(assessment_evidence) - len(shown_assessment_evidence)} "
+            "条判断依据，请查看完整报告。"
+        )
     lines = [
         "## Codex AI 自动审查",
         "",
@@ -948,24 +1209,25 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
         f"- 预期效果：{comment_inline(assessment['expected_behavior'], 1_500)}",
         f"- 当前实现情况：{comment_inline(assessment['implementation_summary'], 2_000)}",
         "- 判断依据：",
-        *[f"  - {comment_inline(item, 1_500)}" for item in assessment_evidence],
+        *assessment_evidence_lines,
         "",
         "### 需要处理的问题",
         "",
     ]
-    if not findings:
+    unlocated_findings = document["unlocated_findings"]
+    if not findings and not unlocated_findings:
         lines.extend([
             "基于当前代码差异和验证证据，没有发现需要处理的具体缺陷。",
             "",
         ])
     else:
-        shown = findings[:5]
-        for index, finding in enumerate(shown, start=1):
+        shown_findings = findings[:5]
+        for index, finding in enumerate(shown_findings, start=1):
             category = CATEGORY_LABELS.get(finding["category"], "其他问题")
             severity = SEVERITY_LABELS[finding["severity"]]
             location = (
-                f"{comment_inline(finding['file'])}:"
-                f"{comment_inline(finding['line'])}"
+                f"{comment_inline(finding['file'], 500)}:"
+                f"{comment_inline(finding['line'], 100)}"
             )
             lines.append(
                 f"#### {index}. [{severity}] {comment_inline(finding['title'], 400)}"
@@ -973,22 +1235,72 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
             lines.append("")
             lines.append(f"- 问题类型：{category}")
             lines.append(f"- 代码定位：`{location}`")
-            lines.append(f"- 这段代码负责：{comment_inline(finding['code_role'], 1_000)}")
+            lines.append(f"- 这段代码负责：{comment_inline(finding['code_role'], 800)}")
+            lines.append(f"- 核心证据：{comment_inline(finding['evidence'], 1_000)}")
             lines.append(f"- 影响：{comment_inline(finding['impact'], 1_000)}")
             lines.append(f"- 建议：{comment_inline(finding['fix_direction'], 1_000)}")
             lines.append("")
-        if len(findings) > len(shown):
+        remaining_slots = 5 - len(shown_findings)
+        shown_unlocated = unlocated_findings[:remaining_slots]
+        for index, finding in enumerate(
+            shown_unlocated, start=len(shown_findings) + 1
+        ):
+            category = CATEGORY_LABELS.get(finding["category"], "其他问题")
+            severity = SEVERITY_LABELS[finding["severity"]]
+            trusted_file = finding["trusted_file"] or "未能映射可信变更文件"
             lines.extend([
-                f"另有 {len(findings) - len(shown)} 个问题，请查看完整报告。",
+                f"#### {index}. [{severity}·定位待核对] "
+                f"{comment_inline(finding['title'], 400)}",
+                "",
+                f"- 问题类型：{category}",
+                f"- 原始定位：`{comment_inline(trusted_file, 500)}；"
+                f"模型行号 {comment_inline(finding['reported_line'], 100)}`",
+                f"- 定位状态：{comment_inline(finding['location_issue'], 800)}",
+                f"- 这段代码负责：{comment_inline(finding['code_role'], 800)}",
+                f"- 核心证据：{comment_inline(finding['evidence'], 1_000)}",
+                f"- 影响：{comment_inline(finding['impact'], 1_000)}",
+                f"- 建议：{comment_inline(finding['fix_direction'], 1_000)}",
+                "",
+            ])
+        shown_count = len(shown_findings) + len(shown_unlocated)
+        total_count = len(findings) + len(unlocated_findings)
+        if total_count > shown_count:
+            lines.extend([
+                f"另有 {total_count - shown_count} 个问题，请查看完整报告。",
                 "",
             ])
 
+    validation_basis_items = [
+        public_validation_summary_item(item) for item in test_execution_summary
+    ]
+    validation_artifact_items = public_validation_artifact_items(test_execution)
+    validation_result_items = public_validation_result_items(test_execution)
+    validation_limit_items = public_validation_limit_items(document)
     lines.extend([
         "### 验证情况",
         "",
-        f"- 补充验证结果：**{TEST_EXECUTION_STATUS_LABELS[test_execution['status']]}**",
-        "- 说明：",
-        *[f"  - {comment_inline(item, 1_500)}" for item in test_execution_summary],
+        "- 验证内容与结果：",
+        *limited_comment_items(
+            validation_basis_items,
+            MAX_COMMENT_TEST_SUMMARY_ITEMS,
+            "条验证说明",
+        ),
+        *limited_comment_items(
+            validation_artifact_items,
+            MAX_COMMENT_VALIDATION_COMMAND_ITEMS,
+            "条测试产物或执行说明",
+        ),
+        *limited_comment_items(
+            validation_result_items,
+            MAX_COMMENT_VALIDATION_COMMAND_ITEMS,
+            "条执行结果",
+        ),
+        "- 限制与未覆盖：",
+        *limited_comment_items(
+            validation_limit_items,
+            MAX_COMMENT_VALIDATION_LIMIT_ITEMS,
+            "项限制或未覆盖内容",
+        ),
         "",
     ])
 
@@ -998,9 +1310,15 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
     ])
     residual_risks = document["residual_risks"]
     if residual_risks:
+        shown_residual_risks = residual_risks[:MAX_COMMENT_RESIDUAL_RISK_ITEMS]
         lines.extend(
-            f"- {comment_inline(risk, 1_500)}" for risk in residual_risks
+            f"- {comment_inline(risk, 1_000)}" for risk in shown_residual_risks
         )
+        if len(residual_risks) > len(shown_residual_risks):
+            lines.append(
+                f"- 另有 {len(residual_risks) - len(shown_residual_risks)} "
+                "项剩余风险，请查看完整报告。"
+            )
     else:
         lines.append("未报告剩余风险。")
     lines.append("")

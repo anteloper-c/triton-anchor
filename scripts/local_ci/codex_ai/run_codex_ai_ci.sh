@@ -247,6 +247,7 @@ write_failure_report() {
   local fallback_contributor_goal="Codex AI 自动审查未完成，未能可靠归纳贡献者的修改目标。"
   local fallback_expected_behavior="Codex AI 自动审查未完成，未能可靠归纳贡献者声明的预期行为。"
   local fallback_implementation_summary="当前没有足够证据判断代码是否实现了声明目标。"
+  local public_failure_reason
   if [[ "${diff_mode}" == "merge-base" ]]; then
     rendered_diff_mode="merge-base"
   fi
@@ -260,7 +261,7 @@ write_failure_report() {
     repository_root_args=(--repository-root "${workspace_dir}")
   fi
   report_verdict="WARNING"
-  test_execution_status="insufficient_evidence"
+  test_execution_status="unavailable"
   generated_test_file_count="0"
   test_command_count="0"
   max_test_command_duration_seconds="0"
@@ -268,14 +269,16 @@ write_failure_report() {
   constraint_status="warning"
   constraint_reason="Codex AI 自动审查未完成，无法确认测试执行是否符合轻量约束。"
 
-  if ! "${PYTHON_BIN}" - "${failure_reason:-未知原因}" \
-    "${changed_files_manifest_path}" "${change_request_context_status}" \
+  public_failure_reason="$(codex_failure_public_reason "${failure_code:-codex_execution_failed}")"
+  if ! "${PYTHON_BIN}" - "${public_failure_reason}" \
+    "${changed_files_manifest_path}" \
+    "${change_request_context_status}" \
     > "${report_json_path}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-failure_reason = sys.argv[1]
+public_failure_reason = sys.argv[1]
 manifest_path = Path(sys.argv[2])
 context_status = sys.argv[3]
 try:
@@ -316,7 +319,7 @@ for key, label in labels.items():
 
 document = {
     "verdict": "WARNING",
-    "summary": f"Codex AI 自动审查未完成：{failure_reason}。本次没有生成可信的结构化审查摘要。",
+    "summary": f"Codex AI 自动审查未完成：{public_failure_reason}。本次没有生成可信的结构化审查摘要。",
     "merge_recommendation": "请先排查 AI 执行问题并重新运行，当前不要仅依据本次 AI 结果决定合入。",
     "change_request_assessment": {
         "status": "not_applicable" if context_status == "not_applicable" else "not_assessable",
@@ -336,21 +339,23 @@ document = {
             else "Codex AI 自动审查未完成，不能判断当前代码是否实现了声明目标。"
         ),
         "evidence": [
-            f"Codex AI 自动审查执行失败：{failure_reason}。当前没有完整的代码审查证据。"
+            f"Codex AI 自动审查执行失败：{public_failure_reason}。当前没有完整的代码审查证据。"
         ],
     },
     "changed_files": changed_files,
     "behavior_coverage": behavior_coverage,
     "findings": [],
+    "unlocated_findings": [],
     "suggested_tests": [],
     "residual_risks": [
         "当前代码差异仍需人工检查，或在修复执行环境后重新运行 Codex AI 自动审查。"
     ],
     "test_execution": {
-        "status": "insufficient_evidence",
+        "evidence_level": "unavailable",
+        "status": "unavailable",
         "summary": [
-            "Codex AI 自动审查未完成。",
-            "本次没有获得可信的测试执行结论。",
+            "Codex 说明：自动审查未完成，未获得可信的证据判断。",
+            "Runner 校验：没有可用于生成执行事实结论的完整报告。",
         ],
         "generated_test_files": [],
         "commands": [],
@@ -442,8 +447,9 @@ PY
     echo
     echo "## 测试执行"
     echo
-    echo "- 状态：证据不足"
-    echo "- 摘要：Codex AI 自动审查未完成，未获得可信的测试结果。"
+    echo "- Codex 对验证证据的判断：未获得可信判断"
+    echo "- Runner 事实校验：未获得可信结果"
+    echo "- 摘要：Codex AI 自动审查未完成。"
     echo
     echo "## 剩余风险"
     echo
@@ -485,10 +491,13 @@ PY
     echo
     echo "### 验证情况"
     echo
-    echo "- 补充验证结果：**未获得可信结果**"
-    echo "- 说明："
-    echo "  - Codex AI 自动审查未完成。"
-    echo "  - 本次没有获得可信的补充验证结果。"
+    echo "- 验证内容与结果："
+    echo "  - Codex AI 自动审查未形成可信的结构化语义载荷。"
+    echo "  - 本次未形成可公开确认的验证命令清单。"
+    echo "  - 本次没有形成可由 Runner 核验的完整执行结论。"
+    echo "- 限制与未覆盖："
+    echo "  - $(codex_failure_public_reason "${failure_code:-codex_execution_failed}")。"
+    echo "  - 当前代码差异仍需人工检查，或在修复执行环境后重新运行 Codex AI 自动审查。"
     echo
     echo "### 变更文件"
     echo
@@ -554,8 +563,10 @@ codex_failure_code_for_reason() {
     *"CODEX_AI_CI_COMPLETE"*) echo "missing_completion_marker" ;;
     *"turn.completed"*) echo "missing_turn_completed" ;;
     *"没有执行任何"*) echo "no_command_executed" ;;
-    *"schema"* | *"固定格式"* | *"中文内容"*) echo "schema_validation_failed" ;;
-    *"finding"* | *"行范围"* | *"行号"*) echo "invalid_finding_location" ;;
+    *"语义载荷"* | *"schema"*) echo "analysis_contract_failed" ;;
+    *"可信报告输入"*) echo "trusted_report_input_failed" ;;
+    *"内部报告契约"*) echo "report_contract_failed" ;;
+    *"执行事实元数据"*) echo "report_metadata_failed" ;;
     *"容器"* | *"Docker socket"* | *"镜像"*) echo "container_setup_failed" ;;
     *"checkout"* | *"差异"* | *"变更文件清单"*) echo "checkout_or_diff_failed" ;;
     *"宿主机缺少"* | *"Python"*) echo "prerequisite_failed" ;;
@@ -572,8 +583,11 @@ codex_failure_public_reason() {
     timeout) echo "Codex 自动审查执行超时" ;;
     startup_timeout) echo "Codex 自动审查启动阶段超时" ;;
     missing_completion_marker | missing_turn_completed) echo "Codex 自动审查没有完整结束" ;;
-    no_command_executed) echo "Codex 自动审查没有获得可核验的补充验证结果" ;;
-    schema_validation_failed) echo "Codex 审查结果格式校验未通过" ;;
+    no_command_executed) echo "Codex 自动审查没有获得可由 Runner 核验的命令与证据记录" ;;
+    analysis_contract_failed | schema_validation_failed) echo "Codex 审查语义载荷未满足公开结构契约" ;;
+    trusted_report_input_failed) echo "Runner 生成的可信报告输入校验失败" ;;
+    report_contract_failed) echo "Runner 生成报告时内部契约校验失败" ;;
+    report_metadata_failed) echo "Runner 读取报告执行事实失败" ;;
     invalid_finding_location) echo "Codex 问题定位信息校验未通过" ;;
     container_setup_failed) echo "Codex 审查运行环境启动失败" ;;
     checkout_or_diff_failed) echo "Codex 审查代码或差异准备失败" ;;
@@ -1716,12 +1730,21 @@ elif [[ ${exit_code} -ne 0 ]]; then
   set_failure_reason "Codex exec 异常退出，退出码为 ${exit_code}"
 elif [[ "${report_format_valid}" != "true" ]]; then
   builder_failure_tail="$(grep -F "Invalid Codex AI analysis:" "${log_path}" | tail -n 1 || true)"
+  trusted_input_failure_tail="$(grep -F "Invalid Codex AI trusted input:" "${log_path}" | tail -n 1 || true)"
   renderer_failure_tail="$(grep -F "Invalid Codex AI report:" "${log_path}" | tail -n 1 || true)"
-  validation_failure_tail="${builder_failure_tail:-${renderer_failure_tail}}"
-  if [[ "${validation_failure_tail}" == *".file"* || "${validation_failure_tail}" == *".line"* || "${validation_failure_tail}" == *"finding"* ]]; then
-    failure_code="invalid_finding_location"
+  if [[ -n "${trusted_input_failure_tail}" ]]; then
+    failure_code="trusted_report_input_failed"
+    set_failure_reason "可信报告输入校验失败：${trusted_input_failure_tail}"
+  elif [[ -n "${builder_failure_tail}" ]]; then
+    failure_code="analysis_contract_failed"
+    set_failure_reason "Codex 语义载荷未满足公开结构契约：${builder_failure_tail}"
+  elif [[ -n "${renderer_failure_tail}" ]]; then
+    failure_code="report_contract_failed"
+    set_failure_reason "Runner 生成的内部报告契约校验失败：${renderer_failure_tail}"
+  else
+    failure_code="report_metadata_failed"
+    set_failure_reason "Runner 无法读取结构化报告的执行事实元数据"
   fi
-  set_failure_reason "结构化报告未通过 schema、固定格式或中文内容校验${validation_failure_tail:+：${validation_failure_tail}}"
 elif [[ "${marker_found}" != "true" ]]; then
   set_failure_reason "runner 生成的结构化报告缺少 CODEX_AI_CI_COMPLETE 标记"
 elif [[ "${turn_completed}" != "true" ]]; then

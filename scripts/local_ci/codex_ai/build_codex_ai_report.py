@@ -6,15 +6,22 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 import tarfile
 from collections import Counter, defaultdict, deque
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 
+SHARED_SCRIPT_DIR = Path(__file__).resolve().parents[1] / "shared"
+if str(SHARED_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SHARED_SCRIPT_DIR))
+from finding_locations import parse_finding_line_range  # noqa: E402
+
+
 CHINESE_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
-FILE_ID_RE = re.compile(r"FILE-[0-9]{3}")
-LINE_RE = re.compile(r"([1-9][0-9]*)(?:-([1-9][0-9]*))?")
+FILE_ID_RE = re.compile(r"FILE-[0-9]{3,}")
+INTERNAL_ID_RE = re.compile(r"\b(AI|TEST|RUN)-0*([1-9][0-9]*)\b[ \t]*", re.IGNORECASE)
 SEVERITIES = {"HIGH", "MEDIUM", "LOW"}
 CATEGORIES = {
     "algorithm",
@@ -59,6 +66,7 @@ WARNING_EXECUTION_STATUSES = {
     "test_generation_error",
     "insufficient_evidence",
 }
+REPORT_NORMALIZATION_RISK_PREFIX = "报告完整性提醒："
 BEHAVIOR_LABELS = {
     "normal": "正常路径",
     "boundary": "边界路径",
@@ -97,6 +105,19 @@ FINDING_KEYS = {
     "impact",
     "fix_direction",
 }
+UNLOCATED_FINDING_KEYS = {
+    "id",
+    "severity",
+    "category",
+    "trusted_file",
+    "reported_line",
+    "location_issue",
+    "code_role",
+    "title",
+    "evidence",
+    "impact",
+    "fix_direction",
+}
 SUGGESTED_TEST_KEYS = {"priority", "target", "description"}
 TEST_ASSESSMENT_KEYS = {"evidence_level", "summary", "commands"}
 COMMAND_ANNOTATION_KEYS = {
@@ -105,6 +126,14 @@ COMMAND_ANNOTATION_KEYS = {
     "evidence",
     "failure_classification",
 }
+
+
+class InvalidFindingLocation(ValueError):
+    """A model-provided finding location cannot be mapped to trusted source."""
+
+
+class InvalidTrustedReportInput(ValueError):
+    """A runner-produced input cannot be trusted for canonical report building."""
 
 
 def load_json(path: Path) -> Any:
@@ -156,6 +185,19 @@ def text_or_default(value: Any, default: str) -> str:
     if CHINESE_RE.search(text) is None:
         return f"Codex 原始说明：{text}"
     return text
+
+
+def unique_in_order(items: list[str]) -> list[str]:
+    return list(dict.fromkeys(items))
+
+
+def command_purpose_or_default(value: Any) -> str:
+    text = text_or_default(value, "Codex 执行的验证或诊断命令")
+    replacements = {"AI": "相关问题", "TEST": "建议测试", "RUN": "相关验证"}
+    text = INTERNAL_ID_RE.sub(
+        lambda match: replacements[match.group(1).upper()], text
+    ).strip()
+    return text[:120].rstrip()
 
 
 def normalized_repo_path(value: Any, location: str) -> str:
@@ -280,26 +322,34 @@ def load_command_ledger(path: Path) -> list[dict[str, Any]]:
 
 def validate_line(value: Any, location: str, file_path: str, root: Path) -> str:
     if not isinstance(value, str):
-        raise ValueError(f"{location} must be a line number or range")
-    match = LINE_RE.fullmatch(value)
-    if match is None:
-        raise ValueError(f"{location} must be a positive line or line range")
-    start = int(match.group(1))
-    end = int(match.group(2) or start)
-    if end < start or end - start + 1 > 12:
-        raise ValueError(f"{location} must span at most 12 lines")
-    repository_root = root.resolve(strict=True)
+        raise InvalidFindingLocation(f"{location} must be a line number or range")
+    line_range = parse_finding_line_range(value)
+    if line_range is None:
+        raise InvalidFindingLocation(
+            f"{location} must be a positive, ordered line or line range"
+        )
+    _, end = line_range
+    try:
+        repository_root = root.resolve(strict=True)
+    except OSError as exc:
+        raise InvalidFindingLocation(
+            f"{location} cannot resolve the review checkout"
+        ) from exc
     candidate = repository_root.joinpath(*PurePosixPath(file_path).parts)
     try:
         resolved = candidate.resolve(strict=True)
         resolved.relative_to(repository_root)
     except (OSError, ValueError) as exc:
-        raise ValueError(f"{location} references an unreadable changed file") from exc
+        raise InvalidFindingLocation(
+            f"{location} references an unreadable changed file"
+        ) from exc
     if candidate.is_symlink() or not resolved.is_file():
-        raise ValueError(f"{location} references a non-regular changed file")
+        raise InvalidFindingLocation(
+            f"{location} references a non-regular changed file"
+        )
     line_count = len(resolved.read_text(encoding="utf-8", errors="replace").splitlines())
     if end > line_count:
-        raise ValueError(f"{location} exceeds the changed file line count")
+        raise InvalidFindingLocation(f"{location} exceeds the changed file line count")
     return value
 
 
@@ -322,15 +372,11 @@ def semantic_command_annotations(
         )
         if classification not in FAILURE_CLASSIFICATIONS:
             raise ValueError(f"{location}.failure_classification is invalid")
-        if len(purpose) > 120:
-            raise ValueError(f"{location}.purpose must contain at most 120 characters")
         if not command.strip():
             continue
         result[command.strip()].append(
             {
-                "purpose": text_or_default(
-                    purpose, "Codex 执行的验证或诊断命令"
-                ),
+                "purpose": command_purpose_or_default(purpose),
                 "evidence": text_or_default(
                     evidence, "执行结果来自可信 Codex JSONL 事件。"
                 ),
@@ -342,15 +388,13 @@ def semantic_command_annotations(
 
 def build_commands(
     analysis: dict[str, Any], ledger: list[dict[str, Any]]
-) -> tuple[list[dict[str, Any]], list[str], int]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     annotations = semantic_command_annotations(analysis)
     commands: list[dict[str, Any]] = []
     classifications: list[str] = []
-    annotated_count = 0
     for index, fact in enumerate(ledger, start=1):
         if annotations[fact["command"]]:
             annotation = annotations[fact["command"]].popleft()
-            annotated_count += 1
         else:
             annotation = {
                 "purpose": "Codex 执行的验证或诊断命令",
@@ -379,11 +423,11 @@ def build_commands(
         index for index, command in enumerate(commands) if command["exit_code"] != 0
     ]
     if not failed_indexes:
-        return commands, classifications, annotated_count
+        return commands, classifications
     if all(classifications[index] == "infrastructure" for index in failed_indexes):
         for index in failed_indexes:
             commands[index]["status"] = "infrastructure_failure"
-        return commands, classifications, annotated_count
+        return commands, classifications
 
     outcomes: dict[str, list[int]] = defaultdict(list)
     for command in commands:
@@ -396,7 +440,7 @@ def build_commands(
     if flaky and all(commands[index]["command"] in flaky for index in failed_indexes):
         for index in failed_indexes:
             commands[index]["status"] = "flaky_failure"
-        return commands, classifications, annotated_count
+        return commands, classifications
 
     failures = Counter(commands[index]["command"] for index in failed_indexes)
     stable = {text for text, count in failures.items() if count >= 2}
@@ -407,20 +451,17 @@ def build_commands(
     ):
         for index in failed_indexes:
             commands[index]["status"] = "stable_failure"
-    return commands, classifications, annotated_count
+    return commands, classifications
 
 
 def derive_execution_status(
     evidence_level: str,
     commands: list[dict[str, Any]],
-    *,
-    annotated_command_count: int,
-    has_suggested_tests: bool,
 ) -> str:
     if evidence_level == "test_generation_error":
         return "test_generation_error"
     if not commands:
-        return "not_run" if evidence_level == "not_needed" else "insufficient_evidence"
+        return "not_run"
     failed = [command for command in commands if command["exit_code"] != 0]
     if failed:
         statuses = {command["status"] for command in failed}
@@ -431,11 +472,7 @@ def derive_execution_status(
         if statuses == {"stable_failure"}:
             return "stable_failure"
         return "insufficient_evidence"
-    if evidence_level in {"sufficient", "not_needed"}:
-        return "passed"
-    if annotated_command_count > 0 and not has_suggested_tests:
-        return "passed"
-    return "insufficient_evidence"
+    return "passed"
 
 
 def normalize_assessment(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -459,20 +496,16 @@ def normalize_assessment(analysis: dict[str, Any]) -> dict[str, Any]:
     raw_evidence = require_array(
         raw["evidence"], "change_request_assessment.evidence"
     )
-    if len(raw_evidence) > 8:
-        raise ValueError("change_request_assessment.evidence must contain at most 8 items")
     checked_evidence = [
         require_string(item, f"change_request_assessment.evidence[{index}]")
         for index, item in enumerate(raw_evidence)
     ]
-    if len(set(checked_evidence)) != len(checked_evidence):
-        raise ValueError("change_request_assessment.evidence must not contain duplicates")
     evidence = [
         text_or_default(
             item,
             "现有证据不足，无法进一步确认贡献者声明。",
         )
-        for item in checked_evidence
+        for item in unique_in_order(checked_evidence)[:8]
     ]
     if not evidence:
         evidence = ["现有证据不足，无法进一步确认贡献者声明。"]
@@ -493,44 +526,54 @@ def normalize_assessment(analysis: dict[str, Any]) -> dict[str, Any]:
 
 def build_changed_files(
     analysis: dict[str, Any], manifest: list[dict[str, str]], commands: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     semantic_by_id: dict[str, dict[str, Any]] = {}
+    ignored_count = 0
+    expected_ids = {f"FILE-{index:03d}" for index in range(1, len(manifest) + 1)}
     for index, value in enumerate(
         require_array(analysis["changed_files"], "changed_files")
     ):
         location = f"changed_files[{index}]"
         raw = require_object(value, location)
         require_exact_keys(raw, CHANGED_FILE_KEYS, location)
-        file_id = require_string(raw["file_id"], f"{location}.file_id")
-        if FILE_ID_RE.fullmatch(file_id) is None:
-            raise ValueError(f"{location}.file_id is invalid")
-        if file_id in semantic_by_id:
-            raise ValueError(f"duplicate changed_files file_id: {file_id}")
+        file_id_value = raw["file_id"]
+        file_id = file_id_value if isinstance(file_id_value, str) else ""
         for key in {"summary", "impact", "validation_strategy"}:
             require_string(raw[key], f"{location}.{key}")
+        if (
+            FILE_ID_RE.fullmatch(file_id) is None
+            or file_id not in expected_ids
+            or file_id in semantic_by_id
+        ):
+            ignored_count += 1
+            continue
         semantic_by_id[file_id] = raw
-    expected_ids = {f"FILE-{index:03d}" for index in range(1, len(manifest) + 1)}
-    actual_ids = set(semantic_by_id)
-    if actual_ids != expected_ids:
-        raise ValueError(
-            "changed_files does not cover the Git manifest; "
-            f"missing={sorted(expected_ids - actual_ids)}, "
-            f"unexpected={sorted(actual_ids - expected_ids)}"
+    missing_count = len(expected_ids - set(semantic_by_id))
+    warnings = []
+    if missing_count:
+        warnings.append(
+            f"Codex 的逐文件语义说明缺少 {missing_count} 个可信变更文件；"
+            "报告已按 Git 清单保留这些文件，相关影响仍需人工核对。"
+        )
+    if ignored_count:
+        warnings.append(
+            f"Codex 的逐文件语义说明包含 {ignored_count} 个重复或无法映射的文件引用；"
+            "这些引用未作为可信文件说明使用。"
         )
     changed_files = []
     for index, item in enumerate(manifest, start=1):
-        semantic = semantic_by_id[f"FILE-{index:03d}"]
+        semantic = semantic_by_id.get(f"FILE-{index:03d}", {})
         changed_files.append(
             {
                 "path": item["path"],
                 "change_type": item["change_type"],
                 "summary": text_or_default(
                     semantic.get("summary"),
-                    "本轮 Codex AI 自动审查已覆盖该变更文件。",
+                    "Codex 未提供该文件的独立语义说明，已按可信 Git 清单保留。",
                 ),
                 "impact": text_or_default(
                     semantic.get("impact"),
-                    "具体影响已汇总在审查摘要、关键问题和剩余风险中。",
+                    "该文件的具体行为影响仍需结合代码差异人工核对。",
                 ),
                 "validation_strategy": text_or_default(
                     semantic.get("validation_strategy"),
@@ -542,7 +585,7 @@ def build_changed_files(
                 ),
             }
         )
-    return changed_files
+    return changed_files, warnings
 
 
 def build_behavior_coverage(analysis: dict[str, Any]) -> dict[str, dict[str, str]]:
@@ -575,25 +618,17 @@ def build_findings(
     analysis: dict[str, Any],
     file_by_id: dict[str, dict[str, str]],
     repository_root: Path,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     findings: list[dict[str, Any]] = []
+    unlocated_findings: list[dict[str, Any]] = []
     for index, value in enumerate(
         require_array(analysis["findings"], "findings"), start=1
     ):
         location = f"findings[{index - 1}]"
         raw = require_object(value, location)
         require_exact_keys(raw, FINDING_KEYS, location)
-        file_id = require_string(raw["file_id"], f"{location}.file_id")
-        trusted = file_by_id.get(file_id)
-        if (
-            FILE_ID_RE.fullmatch(file_id) is None
-            or trusted is None
-            or trusted["change_type"] == "deleted"
-        ):
-            raise ValueError(f"{location}.file_id must identify a retained changed file")
-        line = validate_line(
-            raw["line"], f"{location}.line", trusted["path"], repository_root
-        )
+        file_id_value = raw["file_id"]
+        file_id = file_id_value if isinstance(file_id_value, str) else ""
         severity = require_string(raw["severity"], f"{location}.severity")
         category = require_string(raw["category"], f"{location}.category")
         if severity not in SEVERITIES:
@@ -602,6 +637,35 @@ def build_findings(
             raise ValueError(f"{location}.category is invalid")
         for key in {"code_role", "title", "evidence", "impact", "fix_direction"}:
             require_string(raw[key], f"{location}.{key}")
+        trusted = file_by_id.get(file_id)
+        if (
+            FILE_ID_RE.fullmatch(file_id) is None
+            or trusted is None
+            or trusted["change_type"] == "deleted"
+        ):
+            unlocated_findings.append(
+                build_unlocated_finding(
+                    index,
+                    raw,
+                    trusted_file="",
+                    location_issue="模型提供的文件引用无法映射到可信的未删除变更文件。",
+                )
+            )
+            continue
+        try:
+            line = validate_line(
+                raw["line"], f"{location}.line", trusted["path"], repository_root
+            )
+        except InvalidFindingLocation:
+            unlocated_findings.append(
+                build_unlocated_finding(
+                    index,
+                    raw,
+                    trusted_file=trusted["path"],
+                    location_issue="模型提供的行号无法在可信审查 checkout 中验证。",
+                )
+            )
+            continue
         findings.append(
             {
                 "id": f"AI-{index:03d}",
@@ -616,7 +680,41 @@ def build_findings(
                 "fix_direction": text_or_default(raw.get("fix_direction"), "请结合该位置补充修复并复测。"),
             }
         )
-    return findings
+    warnings = []
+    if unlocated_findings:
+        warnings.append(
+            f"Codex 有 {len(unlocated_findings)} 个问题未能通过可信代码定位校验；"
+            "其完整语义已保留在“定位待核对的问题”中。"
+        )
+    return findings, unlocated_findings, warnings
+
+
+def build_unlocated_finding(
+    index: int,
+    raw: dict[str, Any],
+    *,
+    trusted_file: str,
+    location_issue: str,
+) -> dict[str, Any]:
+    return {
+        "id": f"AI-{index:03d}",
+        "severity": raw["severity"],
+        "category": raw["category"],
+        "trusted_file": trusted_file,
+        "reported_line": (
+            raw["line"].strip()
+            if isinstance(raw["line"], str) and raw["line"].strip()
+            else "未提供有效行号"
+        ),
+        "location_issue": location_issue,
+        "code_role": text_or_default(raw.get("code_role"), "该位置参与本次变更行为。"),
+        "title": text_or_default(raw.get("title"), "需要检查的代码问题"),
+        "evidence": text_or_default(raw.get("evidence"), "Codex 未提供完整问题证据。"),
+        "impact": text_or_default(raw.get("impact"), "可能影响本次变更涉及的行为。"),
+        "fix_direction": text_or_default(
+            raw.get("fix_direction"), "请重新定位该问题并结合证据修复和复测。"
+        ),
+    }
 
 
 def build_suggested_tests(analysis: dict[str, Any]) -> list[dict[str, Any]]:
@@ -651,17 +749,27 @@ def build_report(args: argparse.Namespace) -> None:
     merge_recommendation = require_string(
         analysis["merge_recommendation"], "merge_recommendation"
     )
-    manifest = load_manifest(args.manifest)
+    try:
+        manifest = load_manifest(args.manifest)
+        ledger = load_command_ledger(args.command_ledger)
+        generated_archive = parse_generated_archive(args.generated_archive)
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        ValueError,
+        tarfile.TarError,
+    ) as exc:
+        raise InvalidTrustedReportInput(str(exc)) from exc
     file_by_id = {
         f"FILE-{index:03d}": item for index, item in enumerate(manifest, start=1)
     }
-    ledger = load_command_ledger(args.command_ledger)
     generated_files = [
         relative
-        for relative in parse_generated_archive(args.generated_archive)
+        for relative in generated_archive
         if is_test_path(relative)
     ]
-    commands, _, annotated_command_count = build_commands(analysis, ledger)
+    commands, _ = build_commands(analysis, ledger)
 
     assessment = require_object(analysis["test_assessment"], "test_assessment")
     require_exact_keys(assessment, TEST_ASSESSMENT_KEYS, "test_assessment")
@@ -673,35 +781,36 @@ def build_report(args: argparse.Namespace) -> None:
     raw_execution_summary = require_array(
         assessment["summary"], "test_assessment.summary"
     )
-    if len(raw_execution_summary) > 8:
-        raise ValueError("test_assessment.summary must contain at most 8 items")
     checked_execution_summary = [
         require_string(item, f"test_assessment.summary[{index}]")
         for index, item in enumerate(raw_execution_summary)
     ]
-    if len(set(checked_execution_summary)) != len(checked_execution_summary):
-        raise ValueError("test_assessment.summary must not contain duplicates")
-    execution_summary = [
-        text_or_default(
+    codex_execution_summary = [
+        "Codex 说明：" + text_or_default(
             item,
             "本轮验证说明未完整提供。",
         )
-        for item in checked_execution_summary
+        for item in unique_in_order(checked_execution_summary)[:8]
     ]
-    if not execution_summary:
-        execution_summary = [
-            "本轮未执行额外命令。"
-            if not commands
-            else "执行结果由 runner 从可信 Codex JSONL 事件生成。"
+    if not codex_execution_summary:
+        codex_execution_summary = [
+            "Codex 说明：本次不需要执行额外验证命令。"
+            if evidence_level == "not_needed"
+            else "Codex 说明：模型未提供验证证据说明。"
         ]
 
-    findings = build_findings(analysis, file_by_id, args.repository_root)
+    findings, unlocated_findings, finding_warnings = build_findings(
+        analysis, file_by_id, args.repository_root
+    )
     suggested_tests = build_suggested_tests(analysis)
+    changed_files, changed_file_warnings = build_changed_files(
+        analysis, manifest, commands
+    )
+    normalization_warnings = finding_warnings + changed_file_warnings
+    execution_summary = unique_in_order(codex_execution_summary)[:10]
     execution_status = derive_execution_status(
         evidence_level,
         commands,
-        annotated_command_count=annotated_command_count,
-        has_suggested_tests=bool(suggested_tests),
     )
     residual_risks = [
         text_or_default(
@@ -712,31 +821,55 @@ def build_report(args: argparse.Namespace) -> None:
             require_array(analysis["residual_risks"], "residual_risks")
         )
     ]
-    changed_files = build_changed_files(analysis, manifest, commands)
+    normalization_risks = [
+        f"{REPORT_NORMALIZATION_RISK_PREFIX}{warning}"
+        for warning in normalization_warnings
+    ]
+    residual_risks = unique_in_order(residual_risks + normalization_risks)
+    for warning in normalization_warnings:
+        print(f"Normalized Codex AI analysis: {warning}")
     behavior_coverage = build_behavior_coverage(analysis)
     verdict = (
         "FAIL"
-        if any(finding["severity"] == "HIGH" for finding in findings)
+        if any(
+            finding["severity"] == "HIGH"
+            for finding in findings + unlocated_findings
+        )
         else "WARNING"
-        if findings or execution_status in WARNING_EXECUTION_STATUSES
+        if (
+            findings
+            or unlocated_findings
+            or normalization_warnings
+            or evidence_level in {"insufficient", "test_generation_error"}
+            or execution_status in WARNING_EXECUTION_STATUSES
+        )
         else "PASS"
     )
+    normalized_merge_recommendation = text_or_default(
+        merge_recommendation,
+        "请结合本地确定性 CI 检查结果决定是否合入。",
+    )
+    if normalization_warnings:
+        normalized_merge_recommendation = (
+            normalized_merge_recommendation.rstrip("。")
+            + "；另请人工核对报告中标记的结构化语义载荷缺口，"
+            "本次 Codex AI 结果不应单独作为合入依据。"
+        )
     report = {
         "verdict": verdict,
         "summary": text_or_default(
             summary, "本轮已完成代码差异的 Codex AI 自动审查。"
         ),
-        "merge_recommendation": text_or_default(
-            merge_recommendation,
-            "请结合本地确定性 CI 检查结果决定是否合入。",
-        ),
+        "merge_recommendation": normalized_merge_recommendation,
         "change_request_assessment": normalize_assessment(analysis),
         "changed_files": changed_files,
         "behavior_coverage": behavior_coverage,
         "findings": findings,
+        "unlocated_findings": unlocated_findings,
         "suggested_tests": suggested_tests,
         "residual_risks": residual_risks,
         "test_execution": {
+            "evidence_level": evidence_level,
             "status": execution_status,
             "summary": execution_summary,
             "generated_test_files": generated_files,
@@ -775,9 +908,20 @@ def main() -> int:
     args = parse_args()
     try:
         if args.command == "prepare-manifest":
-            prepare_manifest(args.input, args.output)
+            try:
+                prepare_manifest(args.input, args.output)
+            except (
+                OSError,
+                UnicodeError,
+                json.JSONDecodeError,
+                ValueError,
+            ) as exc:
+                raise InvalidTrustedReportInput(str(exc)) from exc
         else:
             build_report(args)
+    except InvalidTrustedReportInput as exc:
+        print(f"Invalid Codex AI trusted input: {exc}")
+        return 1
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError, tarfile.TarError) as exc:
         print(f"Invalid Codex AI analysis: {exc}")
         return 1

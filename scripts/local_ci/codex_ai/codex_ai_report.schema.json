@@ -143,7 +143,7 @@
       "items": {
         "type": "object",
         "properties": {
-          "id": {"type": "string", "pattern": "^AI-[0-9]{3}$"},
+          "id": {"type": "string", "pattern": "^AI-[0-9]{3,}$"},
           "severity": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
           "category": {
             "type": "string",
@@ -167,7 +167,8 @@
           "file": {"type": "string"},
           "line": {
             "type": "string",
-            "pattern": "^[1-9][0-9]*(?:-[1-9][0-9]*)?$"
+            "pattern": "^[1-9][0-9]*(?:-[1-9][0-9]*)?$",
+            "description": "可信变更文件中的正整数行号或起止有序的连续行范围。"
           },
           "code_role": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
           "title": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
@@ -190,12 +191,64 @@
         "additionalProperties": false
       }
     },
+    "unlocated_findings": {
+      "type": "array",
+      "description": "语义证据保留但文件或行号未能通过可信定位校验的问题。",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "pattern": "^AI-[0-9]{3,}$"},
+          "severity": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
+          "category": {
+            "type": "string",
+            "enum": [
+              "algorithm",
+              "business-logic",
+              "state-management",
+              "cache-consistency",
+              "concurrency",
+              "resource-lifecycle",
+              "data-integrity",
+              "correctness",
+              "regression",
+              "security",
+              "api-compatibility",
+              "performance",
+              "test-gap",
+              "other"
+            ]
+          },
+          "trusted_file": {"type": "string"},
+          "reported_line": {"type": "string"},
+          "location_issue": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+          "code_role": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+          "title": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+          "evidence": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+          "impact": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"},
+          "fix_direction": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
+        },
+        "required": [
+          "id",
+          "severity",
+          "category",
+          "trusted_file",
+          "reported_line",
+          "location_issue",
+          "code_role",
+          "title",
+          "evidence",
+          "impact",
+          "fix_direction"
+        ],
+        "additionalProperties": false
+      }
+    },
     "suggested_tests": {
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
-          "id": {"type": "string", "pattern": "^TEST-[0-9]{3}$"},
+          "id": {"type": "string", "pattern": "^TEST-[0-9]{3,}$"},
           "priority": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
           "target": {"type": "string"},
           "description": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
@@ -211,9 +264,14 @@
     "test_execution": {
       "type": "object",
       "properties": {
+        "evidence_level": {
+          "type": "string",
+          "description": "Codex 对现有验证证据是否足以支持本次审查结论的语义判断。",
+          "enum": ["not_needed", "sufficient", "insufficient", "test_generation_error", "unavailable"]
+        },
         "status": {
           "type": "string",
-          "description": "not_run 仅允许在 commands 为空或所有 command.status 均为 not_executed 时使用；只要存在已执行命令但证据仍不足，应使用 insufficient_evidence。",
+          "description": "not_run 表示 Runner 没有观察到已执行命令；只要存在已执行命令但事实仍不足，应使用 insufficient_evidence。unavailable 只用于 Codex 审查未形成可信报告的失败 fallback。",
           "enum": [
             "not_run",
             "passed",
@@ -221,7 +279,8 @@
             "flaky_failure",
             "infrastructure_failure",
             "test_generation_error",
-            "insufficient_evidence"
+            "insufficient_evidence",
+            "unavailable"
           ]
         },
         "summary": {
@@ -230,7 +289,7 @@
             {
               "type": "array",
               "minItems": 1,
-              "maxItems": 8,
+              "maxItems": 10,
               "description": "Duplicate items are rejected during report validation.",
               "items": {"type": "string", "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"}
             }
@@ -245,7 +304,7 @@
           "items": {
             "type": "object",
             "properties": {
-              "id": {"type": "string", "pattern": "^RUN-[0-9]{3}$"},
+              "id": {"type": "string", "pattern": "^RUN-[0-9]{3,}$"},
               "command": {"type": "string"},
               "purpose": {
                 "type": "string",
@@ -281,7 +340,7 @@
           }
         }
       },
-      "required": ["status", "summary", "generated_test_files", "commands"],
+      "required": ["evidence_level", "status", "summary", "generated_test_files", "commands"],
       "additionalProperties": false
     },
     "completion_marker": {
@@ -297,6 +356,7 @@
     "changed_files",
     "behavior_coverage",
     "findings",
+    "unlocated_findings",
     "suggested_tests",
     "residual_risks",
     "test_execution",

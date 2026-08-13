@@ -42,7 +42,7 @@ class StaleResultError(RuntimeError):
 
 CODEX_COMMENT_MARKER = "<!-- triton-anchor-codex-ai-comment -->"
 CODEX_COMMENT_SHA_MARKER_PREFIX = "triton-anchor-codex-ai-comment-sha"
-FINDING_ID_RE = re.compile(r"^AI-[0-9]{3}$")
+FINDING_ID_RE = re.compile(r"^AI-[0-9]{3,}$")
 GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 INTERNAL_COMMENT_ID_RE = re.compile(
     r"\b(AI|TEST|RUN)-0*([1-9][0-9]*)\b[ \t]*",
@@ -80,16 +80,6 @@ CODEX_VERDICT_LABELS = {
     "not_run": "未运行",
     "unknown": "未知",
 }
-CODEX_TEST_STATUS_LABELS = {
-    "not_run": "未运行",
-    "passed": "所执行的验证命令均通过",
-    "stable_failure": "存在可稳定复现的失败",
-    "flaky_failure": "存在非确定性失败",
-    "infrastructure_failure": "受环境限制，未完全执行",
-    "test_generation_error": "测试生成失败",
-    "insufficient_evidence": "证据不足",
-    "not_reported": "未报告",
-}
 CODEX_FAILURE_REASON_LABELS = {
     "codex_cli_unavailable": "Codex AI 自动审查工具在当前环境中不可用",
     "credential_validation_failed": "Codex 审查凭据校验未通过",
@@ -97,8 +87,12 @@ CODEX_FAILURE_REASON_LABELS = {
     "timeout": "Codex 自动审查执行超时",
     "missing_completion_marker": "Codex 自动审查没有完整结束",
     "missing_turn_completed": "Codex 自动审查没有完整结束",
-    "no_command_executed": "Codex 自动审查没有获得可核验的补充验证结果",
-    "schema_validation_failed": "Codex 审查结果格式校验未通过",
+    "no_command_executed": "Codex 自动审查没有获得可由 Runner 核验的命令与证据记录",
+    "analysis_contract_failed": "Codex 审查语义载荷未满足公开结构契约",
+    "schema_validation_failed": "Codex 审查语义载荷未满足公开结构契约",
+    "trusted_report_input_failed": "Runner 生成的可信报告输入校验失败",
+    "report_contract_failed": "Runner 生成报告时内部契约校验失败",
+    "report_metadata_failed": "Runner 读取报告执行事实失败",
     "invalid_finding_location": "Codex 问题定位信息校验未通过",
     "container_setup_failed": "Codex 审查运行环境启动失败",
     "checkout_or_diff_failed": "Codex 审查代码或差异准备失败",
@@ -327,12 +321,10 @@ def finding_locations_from_report(report_json: str) -> tuple[FindingLocation, ..
         return ()
     if not isinstance(document, dict):
         return ()
-    findings = document.get("findings")
-    if not isinstance(findings, list):
-        return ()
-
     locations: list[FindingLocation] = []
-    for finding in findings:
+    seen_ids: set[str] = set()
+    findings = document.get("findings")
+    for finding in findings if isinstance(findings, list) else []:
         if not isinstance(finding, dict):
             continue
         identifier = finding.get("id")
@@ -342,12 +334,34 @@ def finding_locations_from_report(report_json: str) -> tuple[FindingLocation, ..
             continue
         if (
             not FINDING_ID_RE.fullmatch(identifier)
+            or identifier in seen_ids
             or parse_finding_line_range(line) is None
         ):
             continue
         if normalized_repository_path(file_name) is None:
             continue
         locations.append(FindingLocation(identifier, file_name, line))
+        seen_ids.add(identifier)
+
+    unlocated_findings = document.get("unlocated_findings")
+    for finding in (
+        unlocated_findings if isinstance(unlocated_findings, list) else []
+    ):
+        if not isinstance(finding, dict):
+            continue
+        identifier = finding.get("id")
+        trusted_file = finding.get("trusted_file")
+        if not isinstance(identifier, str) or not isinstance(trusted_file, str):
+            continue
+        if (
+            not FINDING_ID_RE.fullmatch(identifier)
+            or identifier in seen_ids
+            or not trusted_file
+            or normalized_repository_path(trusted_file) is None
+        ):
+            continue
+        locations.append(FindingLocation(identifier, trusted_file, ""))
+        seen_ids.add(identifier)
     return tuple(locations)
 
 
@@ -374,7 +388,7 @@ def validation_purposes_from_report(report_json: str) -> tuple[tuple[str, str], 
         if not isinstance(identifier, str) or not isinstance(purpose, str):
             continue
         purpose = purpose.strip()
-        if re.fullmatch(r"RUN-[0-9]{3}", identifier) and purpose:
+        if re.fullmatch(r"RUN-[0-9]{3,}", identifier) and purpose:
             purposes.append((identifier, purpose))
     return tuple(purposes)
 
@@ -785,15 +799,9 @@ def codex_pr_comment_body(target: Target, result: LocalCIResult) -> str:
         result.codex_ai.execution_status, CODEX_EXECUTION_STATUS_LABELS
     )
     verdict_label = public_status_label(result.codex_ai.verdict, CODEX_VERDICT_LABELS)
-    test_label = public_status_label(
-        result.codex_ai.test_status, CODEX_TEST_STATUS_LABELS
-    )
     metadata_lines = [
         f"- 测试提交：`{target.sha[:12]}`",
-        (
-            f"- Codex 自动审查状态：{execution_label}；结论：{verdict_label}；"
-            f"补充验证结果：{test_label}"
-        ),
+        f"- Codex 自动审查状态：{execution_label}；结论：{verdict_label}",
     ]
     if result.codex_ai.failure_code:
         metadata_lines.append(
@@ -823,20 +831,25 @@ def github_finding_location_links(
     lines = [
         "### 可点击代码定位",
         "",
-        "链接固定到本次测试提交，便于提交者修复和审核者核对代码功能。",
+        "链接固定到本次测试提交，便于提交者修复和审核者核对代码功能；"
+        "已验证行号的问题链接到具体行，"
+        "仅能确认文件的问题链接到文件并标注行号待核对。",
         "",
     ]
     for location in locations[:5]:
         line_range = parse_finding_line_range(location.line)
+        if location.line and line_range is None:
+            continue
+        quoted_path = urllib.parse.quote(location.file, safe="/")
+        url = f"https://github.com/{repository}/blob/{target.sha}/{quoted_path}"
+        label = location.file.replace("`", "'").replace("@", "＠")
+        identifier = public_comment_text(location.identifier)
         if line_range is None:
+            lines.append(f"- {identifier}：[{label}（具体行号待核对）]({url})")
             continue
         start, end = line_range
         anchor = f"#L{start}" if end == start else f"#L{start}-L{end}"
-        quoted_path = urllib.parse.quote(location.file, safe="/")
-        url = f"https://github.com/{repository}/blob/{target.sha}/{quoted_path}{anchor}"
-        label = location.file.replace("`", "'").replace("@", "＠")
-        identifier = public_comment_text(location.identifier)
-        lines.append(f"- {identifier}：[{label}:L{location.line}]({url})")
+        lines.append(f"- {identifier}：[{label}:L{location.line}]({url}{anchor})")
     return "\n".join(lines) if len(lines) > 4 else ""
 
 

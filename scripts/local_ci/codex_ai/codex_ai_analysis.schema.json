@@ -46,7 +46,7 @@
       "items": {
         "type": "object",
         "properties": {
-          "file_id": {"type": "string", "pattern": "^FILE-[0-9]{3}$"},
+          "file_id": {"type": "string", "pattern": "^FILE-[0-9]{3,}$"},
           "summary": {"type": "string", "description": "该文件实际改变的代码、配置、测试或文档契约。"},
           "impact": {"type": "string", "description": "对行为、调用方、状态、数据、兼容性、CI/发布或覆盖的影响。"},
           "validation_strategy": {"type": "string", "description": "实际静态检查、复用证据、执行命令及结果；未执行时说明原因和边界。"}
@@ -139,8 +139,12 @@
               "other"
             ]
           },
-          "file_id": {"type": "string", "pattern": "^FILE-[0-9]{3}$"},
-          "line": {"type": "string", "pattern": "^[1-9][0-9]*(?:-[1-9][0-9]*)?$"},
+          "file_id": {"type": "string", "pattern": "^FILE-[0-9]{3,}$"},
+          "line": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*(?:-[1-9][0-9]*)?$",
+            "description": "可信变更文件中的正整数行号或起止有序的连续行范围；优先使用能够定位根因的最窄范围。"
+          },
           "code_role": {"type": "string"},
           "title": {"type": "string"},
           "evidence": {"type": "string"},

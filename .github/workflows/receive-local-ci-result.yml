@@ -249,7 +249,7 @@ jobs:
           labels = {
               "execution_status": {"pass": "完成", "fail": "执行失败", "skipped": "已跳过", "not_reported": "未报告"},
               "verdict": {"PASS": "通过", "WARNING": "警告", "FAIL": "失败", "UNKNOWN": "未知", "NOT_RUN": "未运行"},
-              "test_status": {"passed": "通过", "stable_failure": "可稳定复现的失败", "flaky_failure": "非确定性失败", "infrastructure_failure": "受环境限制，未完全执行", "test_generation_error": "测试生成失败", "insufficient_evidence": "证据不足", "not_run": "未执行", "UNKNOWN": "未知", "NOT_RUN": "未运行"},
+              "test_status": {"passed": "通过", "stable_failure": "可稳定复现的失败", "flaky_failure": "非确定性失败", "infrastructure_failure": "受环境限制，未完全执行", "test_generation_error": "测试生成失败", "insufficient_evidence": "证据不足", "unavailable": "未获得可信结果", "not_run": "未执行", "UNKNOWN": "未知", "NOT_RUN": "未运行"},
               "analysis_mode": {"full": "完整分析", "analysis_only": "只分析", "not_run": "未运行"},
               "constraint_status": {"pass": "通过", "warning": "警告", "not_applicable": "不适用", "not_reported": "未报告"},
           }
@@ -268,7 +268,7 @@ jobs:
               stream.write("## Codex AI / Review（非阻塞）\n\n")
               stream.write("该结果仅供代码审查参考，不改变确定性 Local CI 状态，也不阻止合并。\n\n")
               stream.write("| 字段 | 值 |\n| --- | --- |\n")
-              for key, title in (("execution_status", "执行状态"), ("verdict", "AI 建议性结论"), ("test_status", "测试状态"), ("analysis_mode", "分析模式"), ("constraint_status", "约束状态")):
+              for key, title in (("execution_status", "执行状态"), ("verdict", "AI 建议性结论"), ("test_status", "Runner 命令与证据校验"), ("analysis_mode", "分析模式"), ("constraint_status", "约束状态")):
                   value = values[key]
                   stream.write(f"| {title} | {labels[key].get(value, value)} (`{value}`) |\n")
               for key, title in (("constraint_reason", "约束说明"), ("failure_reason", "执行说明")):
@@ -285,7 +285,7 @@ jobs:
           if values["verdict"] in {"WARNING", "FAIL"}:
               warnings.append(f"Codex AI 给出{labels['verdict'][values['verdict']]}建议性结论。")
           if values["test_status"] == "insufficient_evidence":
-              warnings.append("Codex AI 定向测试证据不足。")
+              warnings.append("Codex 验证证据经 Runner 校验后仍不足。")
           if values["constraint_status"] == "warning":
               warnings.append("Codex AI 测试执行超出轻量约束。")
           for warning in warnings:

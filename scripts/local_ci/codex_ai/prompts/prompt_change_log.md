@@ -1,3 +1,51 @@
+## 2026-08-13：PR comment 按验证事实分组展示
+
+### 修改原因
+
+公开评论把 Codex 的证据判断和 Runner 的执行状态并列为两句结论时，可能出现“证据充分”和“证据不足”同时展示，维护者还需要理解内部状态来源。finding 定位或逐文件说明的报告完整性提醒也不应改变已经由可信命令账本确认的执行事实。
+
+### 修改内容
+
+- PR comment 的“验证情况”改为“验证内容与结果”“限制与未覆盖”两组事实，不再展示 `evidence_level`、`test_execution.status` 或来源前缀；
+- 命令用途与实际结果只来自可信 JSONL 账本并组合展示，生成测试来自任务级归档；没有新命令时明确说明未新增命令；
+- `test_assessment.summary` 只承载验证依据、已覆盖内容和观察结果；未执行验证进入 `suggested_tests`，由缺口产生的具体行为风险进入 `residual_risks`，避免两个公开分组语义交叉；
+- 报告完整性提醒从测试执行 summary/status 中移出，保留在问题、剩余风险和合入建议中，并继续独立使 verdict 保持 WARNING；
+- PR comment 底部元数据不再重复 Runner 测试状态，结构化 JSON、完整报告和 GitHub Actions 诊断摘要仍保留内部状态。
+
+### 兼容性与风险
+
+- 不修改分析或最终报告 schema，不改变确定性 Local CI 门禁和 Codex verdict；
+- prompt 继续要求完整的验证依据、覆盖范围和限制语义，只是不再要求模型把内部枚举改写成公开状态断言；
+- success、failure、无新增命令、稳定失败、非确定性失败、基础设施限制、测试生成失败和 fallback 均需通过公开评论契约测试。
+
+---
+
+## 2026-08-13：结构化语义载荷采用可恢复校验
+
+### 修改原因
+
+Codex 输出的 finding 行范围符合公开 JSON schema，但后置 builder/renderer 额外限制最多 12 行，导致内容和证据可用的整份审查被作废。复核还发现，重复说明、逐文件引用遗漏以及英文命令用途经过中文归一化后超长等可确定处理的偏差，也可能触发同类失败。
+
+### 修改内容
+
+- finding 行号语法统一由共享解析器处理，继续要求正整数、范围起止有序、可信未删除变更文件和真实文件边界，但不再以范围超过 12 行或指向空白行作废报告；prompt 仍要求优先使用能够定位根因的最窄范围；
+- 重复的贡献者判断依据和验证说明按原顺序去重，超出最终报告上限的条目确定性截断；命令用途在中文归一化后移除内部 ID 并按最终 schema 上限截断；
+- 模型遗漏逐文件说明、提供重复或无法映射的文件引用时，Runner 保留可信 manifest 和其他有效审查内容，把缺口写入剩余风险，并将事实校验降级为证据不足；finding 无法映射到可信文件或有效行号时，其严重度、标题、证据、影响和修复方向完整保留在“定位待核对的问题”中，不会因定位失败消失或降低 verdict；
+- builder、renderer 和 bridge 共用同一 finding 行号解析规则，宽范围仍能生成固定到测试提交的 GitHub 代码链接。
+- 最终报告保留 Codex 输出的 `test_assessment.evidence_level` 并将其显示为“Codex 对验证证据的判断”；Runner 的命令、退出码和交叉校验结果单独显示为“Runner 事实校验”。退出码 0 不再把 Codex 明确给出的 `insufficient` 自动提升为证据充分。
+- 验证说明按来源标记为“Codex 说明”和“Runner 校验”；没有新命令时 Runner 显示“未运行”，命令全部成功时显示“所执行的验证命令均通过”，Codex 的证据充分性仍独立参与 verdict，不再把“是否执行命令”和“证据是否充分”混成一个状态。
+- 失败分类拆分为 Codex 语义载荷契约、Runner 可信输入、Runner canonical 报告契约和执行事实元数据四类；公开评论不再用“schema、固定格式或中文内容校验”概括不同故障来源。
+- 审查未形成可信载荷时，Runner fallback 使用 `unavailable` 分别显示“未获得可信判断”和“未获得可信结果”；不再伪造为 Codex 主动给出的 `insufficient`。
+- FILE/AI/TEST/RUN 机器 ID 从“固定三位”改为“至少三位”，消除第 1000 个变更文件、finding、建议测试或命令通过前置 schema 后又被后置校验拒绝的隐藏上限。
+
+### 兼容性与风险
+
+- 最终报告新增 Codex 证据判断、定位待核对问题和仅供失败 fallback 使用的 `unavailable` 状态；正常审查状态、finding 严重度、确定性 Local CI 门禁和 Codex AI 非阻塞语义不变；
+- 路径边界、可信 FILE-ID 映射、删除文件拒绝、真实文件存在性和行号越界检查继续保留；两类 finding 都在 PR comment 展示核心证据：定位有效时生成精确行链接，行号失效但文件可信时生成不带行锚点的文件链接，无法映射可信文件时不伪造链接；完整问题语义和原严重度仍进入报告与 PR comment；
+- prompt 的审查宽度、五类行为覆盖、三层推理、逐文件检查和跨文件契约要求没有收缩。
+
+---
+
 ## 2026-08-13：按验证必要性判断测试证据
 
 ### 修改原因
@@ -403,7 +451,7 @@ GitHub Actions 双遍审查和跨层改动可能需要更多负向状态、语�
 
 - `change_request_assessment.evidence` canonical 输出改为 1 至 8 条中文字符串数组，renderer 兼容历史单字符串。
 - 完整报告和 PR comment 都把判断依据渲染为嵌套项目列表。
-- 	est_execution.summary canonical 输出改为 1 至 8 条中文验证说明数组，完整报告和 PR comment 都按子项目展示，renderer 兼容历史单字符串。
+- `test_execution.summary` canonical 输出改为 1 至 8 条中文验证说明数组，完整报告和 PR comment 都按子项目展示，renderer 兼容历史单字符串。
 - renderer 和 bridge 将公开评论中的 `AI-xxx`、`TEST-xxx` 转为公共中文序号，并将 `RUN-xxx` 替换为执行记录的中文 `purpose`；相关审查主体显示为“Codex AI 自动审查”，Local CI 显示为“本地确定性 CI 检查”。
 - bridge 将执行状态、审查结论、测试状态和固定失败代码映射为公共中文说明；失败 fallback 不再输出原始失败代码。
 - success/failure prompt 明确区分机器 ID 与公开自然语言字段，并补充 renderer、prompt、shell、bridge 契约测试。

@@ -44,7 +44,9 @@ printf 'before\n' > "${source_repo}/payload.txt"
 git -C "${source_repo}" add payload.txt
 git -C "${source_repo}" commit -q -m base
 base_sha="$(git -C "${source_repo}" rev-parse HEAD)"
-printf 'after\n' > "${source_repo}/payload.txt"
+for line_number in $(seq 1 20); do
+  printf 'after-%s\n' "${line_number}"
+done > "${source_repo}/payload.txt"
 git -C "${source_repo}" add payload.txt
 git -C "${source_repo}" commit -q -m target
 target_sha="$(git -C "${source_repo}" rev-parse HEAD)"
@@ -293,7 +295,7 @@ def write_analysis(
     elif scenario == "ci_wording":
         command = "python3 -m pytest scripts/local_ci/results/tests/test_local_ci_bridge.py -q"
         test_assessment = {
-            "evidence_level": "insufficient",
+            "evidence_level": "sufficient",
             "summary": [
                 "桥接单测覆盖了新文案映射，执行结果通过。",
                 "静态核对了 workflow、报告渲染器和状态桥接文案。",
@@ -431,6 +433,38 @@ def write_analysis(
         "residual_risks": ["本次仅覆盖了与代码差异直接相关的路径。"],
         "test_assessment": test_assessment,
     }
+    if scenario == "recoverable_payload":
+        analysis["change_request_assessment"]["evidence"] = [
+            "重复的判断依据。",
+            "重复的判断依据。",
+        ]
+        analysis["changed_files"] = []
+        analysis["findings"] = [
+            {
+                "severity": "MEDIUM",
+                "category": "correctness",
+                "file_id": changed_files_manifest[0]["file_id"],
+                "line": "2-20",
+                "code_role": "该范围负责处理示例数据。",
+                "title": "宽行范围仍应保留审查结论",
+                "evidence": "该问题定位跨越超过十二行，但仍属于有效文件范围。",
+                "impact": "旧的后置限制会错误作废整份审查报告。",
+                "fix_direction": "保留可信范围并继续渲染其余报告内容。",
+            }
+        ]
+        analysis["test_assessment"]["summary"] = [
+            "重复的验证说明。",
+            "重复的验证说明。",
+        ]
+        analysis["test_assessment"]["commands"][0]["purpose"] = (
+            "English-only purpose " + "x" * 98
+        )
+    elif scenario == "schema_error":
+        del analysis["behavior_coverage"]["integration"]
+    elif scenario == "trusted_input_error":
+        link = mapped("/codex-workspace/checkout/generated_tests/untrusted-link.py")
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to("/tmp/not-a-generated-test.py")
     if not command_events:
         command_events.append(
             {
@@ -441,10 +475,13 @@ def write_analysis(
             }
         )
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(analysis, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    if scenario == "malformed_analysis":
+        output_path.write_text("{", encoding="utf-8")
+    else:
+        output_path.write_text(
+            json.dumps(analysis, ensure_ascii=False),
+            encoding="utf-8",
+        )
     return command_events
 
 if not original:
@@ -915,6 +952,18 @@ grep -Fq "### 变更文件" "${success_output}/codex-ai-comment.md"
 grep -Fq "检查了该文件在当前差异中的具体改动。" \
   "${success_output}/codex-ai-comment.md"
 grep -Fq "### 验证情况" "${success_output}/codex-ai-comment.md"
+grep -Fq -- "- 验证内容与结果：" "${success_output}/codex-ai-comment.md"
+grep -Fq -- "- 限制与未覆盖：" "${success_output}/codex-ai-comment.md"
+if grep -Eq -- "^- (验证依据|执行内容|执行结果)：" \
+  "${success_output}/codex-ai-comment.md"; then
+  echo "成功场景的 PR 评论仍使用旧的验证分组" >&2
+  exit 1
+fi
+if grep -Eq "Codex 对验证证据的判断|Runner 事实校验|Codex 说明：|Runner 校验：" \
+  "${success_output}/codex-ai-comment.md"; then
+  echo "成功场景的 PR 评论仍暴露内部验证状态或来源标签" >&2
+  exit 1
+fi
 grep -Fq "<details>" "${success_output}/codex-ai-comment.md"
 python3 -c 'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert len(data) == 1 and data[0]["path"] == "payload.txt"' \
   "${success_output}/codex-changed-files-manifest.json"
@@ -1116,7 +1165,7 @@ grep -Fq "测试和诊断命令累计耗时 3601 秒" "${over_limit_output}/code
 run_case zero-tests zero_tests 0 30 0
 zero_output="${test_root}/zero-tests/output"
 grep -Fxq "status: pass" "${zero_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_execution_status: insufficient_evidence" "${zero_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_execution_status: passed" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fxq "generated_test_file_count: 0" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_command_count: 1" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_generation_expected: true" "${zero_output}/codex-ai-ci-summary.txt"
@@ -1126,6 +1175,10 @@ grep -Fq "本次仅覆盖了与代码差异直接相关的路径。" \
   "${zero_output}/codex-ai-comment.md"
 grep -Fq "可测试代码改动没有生成或执行定向测试，当前证据不足。" \
   "${zero_output}/codex-ai-report.md"
+grep -Fq -- "- 验证内容与结果：" "${zero_output}/codex-ai-comment.md"
+grep -Fq -- "- 限制与未覆盖：" "${zero_output}/codex-ai-comment.md"
+grep -Fq "现有验证尚未覆盖本次变更的全部风险" \
+  "${zero_output}/codex-ai-comment.md"
 
 run_case docs-only docs_only 0 30 0 "${docs_target_sha}" "${base_sha}" "${docs_branch}"
 docs_output="${test_root}/docs-only/output"
@@ -1151,8 +1204,12 @@ grep -Fxq "generated_test_file_count: 0" \
 grep -Fxq "test_command_count: 1" "${ci_wording_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_generation_expected: true" \
   "${ci_wording_output}/codex-ai-ci-summary.txt"
-grep -Fq -- "- 补充验证结果：**所执行的验证命令均通过**" \
-  "${ci_wording_output}/codex-ai-comment.md"
+grep -Fq -- "- 验证内容与结果：" "${ci_wording_output}/codex-ai-comment.md"
+if grep -Eq "Codex 对验证证据的判断|Runner 事实校验" \
+  "${ci_wording_output}/codex-ai-comment.md"; then
+  echo "CI 文案场景仍暴露内部验证状态" >&2
+  exit 1
+fi
 grep -Fq "状态桥接文案回归测试" "${ci_wording_output}/codex-ai-report.md"
 
 run_case analysis success 1 30 0
@@ -1198,6 +1255,94 @@ format_output="${test_root}/format-error/output"
 grep -Fxq "report_format_valid: true" "${format_output}/codex-ai-ci-summary.txt"
 grep -Fq "Codex 原始说明：English-only summary." \
   "${format_output}/codex-ai-report.md"
+
+run_case recoverable-payload recoverable_payload 0 30 0
+recoverable_output="${test_root}/recoverable-payload/output"
+grep -Fxq "status: pass" "${recoverable_output}/codex-ai-ci-summary.txt"
+grep -Fxq "report_format_valid: true" \
+  "${recoverable_output}/codex-ai-ci-summary.txt"
+grep -Fxq "report_verdict: WARNING" \
+  "${recoverable_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_execution_status: passed" \
+  "${recoverable_output}/codex-ai-ci-summary.txt"
+grep -Fq '"line": "2-20"' "${recoverable_output}/codex-ai-report.json"
+grep -Fq "逐文件语义说明缺少 1 个可信变更文件" \
+  "${recoverable_output}/codex-ai-report.md"
+recoverable_validation_section="$(
+  sed -n '/^### 验证情况$/,/^### 剩余风险$/p' \
+    "${recoverable_output}/codex-ai-comment.md"
+)"
+if grep -Fq "逐文件语义说明" <<< "${recoverable_validation_section}"; then
+  echo "报告完整性提醒错误进入了公开验证情况" >&2
+  exit 1
+fi
+grep -Fq "报告完整性提醒：" "${recoverable_output}/codex-ai-comment.md"
+if grep -Fq "结构化报告未通过" \
+  "${recoverable_output}/codex-ai-ci-summary.txt"; then
+  echo "可恢复的结构化载荷偏差错误作废了整份报告" >&2
+  exit 1
+fi
+
+run_case schema-error schema_error 0 30 1
+schema_error_output="${test_root}/schema-error/output"
+if ! grep -Fxq "status: fail" \
+  "${schema_error_output}/codex-ai-ci-summary.txt"; then
+  cat "${schema_error_output}/codex-ai-ci-summary.txt" >&2
+  exit 1
+fi
+if ! grep -Fxq "failure_code: analysis_contract_failed" \
+  "${schema_error_output}/codex-ai-ci-summary.txt"; then
+  cat "${schema_error_output}/codex-ai-ci-summary.txt" >&2
+  exit 1
+fi
+grep -Fxq "test_execution_status: unavailable" \
+  "${schema_error_output}/codex-ai-ci-summary.txt"
+if ! grep -Fq "Codex 审查语义载荷未满足公开结构契约" \
+  "${schema_error_output}/codex-ai-comment.md"; then
+  cat "${schema_error_output}/codex-ai-comment.md" >&2
+  exit 1
+fi
+for heading in "验证内容与结果" "限制与未覆盖"; do
+  grep -Fq -- "- ${heading}：" "${schema_error_output}/codex-ai-comment.md"
+done
+if grep -Eq "Codex 对验证证据的判断|Runner 事实校验|Codex 说明：|Runner 校验：" \
+  "${schema_error_output}/codex-ai-comment.md"; then
+  echo "fallback PR 评论仍暴露内部验证状态或来源标签" >&2
+  exit 1
+fi
+if grep -Fq "schema、固定格式或中文内容校验" \
+  "${schema_error_output}/codex-ai-comment.md"; then
+  echo "公开失败说明仍使用含混的结构化报告校验文案" >&2
+  exit 1
+fi
+
+run_case malformed-analysis malformed_analysis 0 30 1
+malformed_output="${test_root}/malformed-analysis/output"
+grep -Fxq "failure_code: analysis_contract_failed" \
+  "${malformed_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_execution_status: unavailable" \
+  "${malformed_output}/codex-ai-ci-summary.txt"
+grep -Fq "Codex 审查语义载荷未满足公开结构契约" \
+  "${malformed_output}/codex-ai-comment.md"
+if grep -Fq "Expecting property name" "${malformed_output}/codex-ai-comment.md"; then
+  echo "JSON 解析内部错误细节泄漏到公开评论" >&2
+  exit 1
+fi
+
+run_case trusted-input-error trusted_input_error 0 30 1
+trusted_input_output="${test_root}/trusted-input-error/output"
+grep -Fxq "status: fail" "${trusted_input_output}/codex-ai-ci-summary.txt"
+grep -Fxq "failure_code: trusted_report_input_failed" \
+  "${trusted_input_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_execution_status: unavailable" \
+  "${trusted_input_output}/codex-ai-ci-summary.txt"
+grep -Fq "Runner 生成的可信报告输入校验失败" \
+  "${trusted_input_output}/codex-ai-comment.md"
+if grep -Fq "generated archive member" \
+  "${trusted_input_output}/codex-ai-comment.md"; then
+  echo "可信输入内部错误细节泄漏到公开评论" >&2
+  exit 1
+fi
 
 run_case timeout timeout 0 1 1
 timeout_output="${test_root}/timeout/output"

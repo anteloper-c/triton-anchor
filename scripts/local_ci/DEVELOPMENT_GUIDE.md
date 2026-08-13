@@ -438,26 +438,30 @@ Codex checkout 的行为：
 - `change_request_assessment`：贡献者目标、预期行为、实际实现情况、判断依据数组和一致性状态；`evidence` canonical 输出 1 至 8 条，renderer 兼容旧单字符串；
 - 完整且不重复的 `changed_files`；
 - `normal`、`boundary`、`error`、`compatibility`、`integration` 五类 `behavior_coverage`；
-- 可验证的 `findings`，ID 为 `AI-001` 形式；每项包含未删除变更文件、单行或最多 12 行的连续范围、`code_role`、证据、影响和修复方向；
+- 可验证的 `findings`，ID 为 `AI-001` 形式；每项包含未删除变更文件、单行或起止有序的连续范围、`code_role`、证据、影响和修复方向；prompt 要求范围尽可能窄，Runner 只把可信文件映射和真实行号边界作为有效性门槛；
+- `unlocated_findings`：文件或行号未通过可信定位校验、但严重度和完整问题语义仍需保留的 finding；可信文件仍明确时生成不带行锚点的文件链接，无法映射可信文件时不伪造链接；两种情况都不会从 verdict 计算或 PR comment 的核心证据中消失；
 - `suggested_tests`，ID 为 `TEST-001` 形式；
 - `residual_risks`；
-- `test_execution`，包含 status、生成测试文件和命令证据；
+- `test_execution`，包含 Codex 直接给出的 `evidence_level`、Runner 派生的 status、生成测试文件和命令证据；
 - `completion_marker=CODEX_AI_CI_COMPLETE`。
+
+`FILE`、`AI`、`TEST` 和 `RUN` 的数字部分至少三位、不设三位上限；producer、schema、renderer、bridge 和公开 ID 清理逻辑必须共同接受第 1000 项及之后的编号。
 
 报告规则：
 
-- HIGH finding -> `FAIL`；
-- 只有 MEDIUM/LOW finding -> `WARNING`；
-- 没有 finding，但测试状态为可稳定复现的失败、非确定性失败、基础设施失败、测试生成失败或证据不足 -> `WARNING`；
+- HIGH finding（包括定位待核对的问题）-> `FAIL`；
+- 只有 MEDIUM/LOW finding（包括定位待核对的问题）-> `WARNING`；
+- 没有 finding，但存在报告完整性提醒，或测试状态为可稳定复现的失败、非确定性失败、基础设施失败、测试生成失败或证据不足 -> `WARNING`；
 - 没有 finding，且测试状态为通过或合理的未执行 -> `PASS`；
+- Codex 审查未完成时，fallback 报告使用 `evidence_level=unavailable` 和 `status=unavailable`；PR comment 通过验证事实和限制说明审查未完成，不能伪装成模型给出的“证据不足”；
 - 说明性字段必须包含中文文本；
 - “贡献者目标与实现情况”中的判断依据始终按子项目展示，多条依据不得挤在同一行；
-- “验证情况”中的说明始终按子项目展示；`test_execution.summary` canonical 输出 1 至 8 条，renderer 兼容旧单字符串；
-- PR comment 使用“补充验证结果”描述 Codex 执行的测试和诊断，不使用可能被误解为 PR 审核结论的“状态：通过”；机器状态 `passed` 和报告 schema 保持不变；
+- 完整报告保留 `test_execution.summary`、Codex `evidence_level` 和 Runner 执行状态用于诊断；canonical summary 输出 1 至 10 条，renderer 兼容旧单字符串；
+- PR comment 的“验证情况”直接分为“验证内容与结果”“限制与未覆盖”：前者展示去除“Codex 说明”“Runner 校验”等来源前缀后的验证依据、已覆盖内容和观察结果，以及来自可信命令账本和任务级生成测试清单的测试产物与实际结果；命令用途直接与结果组合展示，没有新命令时明确说明未新增命令。未执行验证写入建议测试并进入“限制与未覆盖”，由验证缺口产生的具体行为影响才进入剩余风险；finding 定位和逐文件说明等报告完整性提醒只进入问题、剩余风险和合入建议，不得改写命令执行事实；
 - PR comment 展示结构化报告中的剩余风险；没有剩余风险时显示“未报告剩余风险。”；
 - PR comment 不展示 `AI-xxx`、`TEST-xxx`、`RUN-xxx` 或固定失败代码；renderer 和 bridge 将问题、建议测试转换为公共中文描述，将 `RUN-xxx` 替换为命令记录的中文 `purpose`，并将审查主体显示为“Codex AI 自动审查”、Local CI 显示为“本地确定性 CI 检查”；机器 ID 仍保留在 JSON、日志和完整报告中用于关联；
 - renderer 会拒绝 verdict 与 findings/测试状态不一致、命令状态与退出码不一致、manifest 不一致、字段缺失、中文缺失或额外字段；
-- renderer 使用 exact-SHA checkout 校验 finding 文件和行范围；finding 必须锚定本次 diff 中保留的文件，不能指向空行、越界行、已删除文件或未变更的历史代码；
+- renderer 使用 exact-SHA checkout 校验 finding 文件和行范围；定位有效时生成精确行链接，行号失效但文件可信时生成不带行锚点的文件链接，无法映射可信文件时不伪造链接；
 - bridge 读取 `codex-ai-report.json` 中通过基本安全校验的 finding 定位，生成固定到审查 SHA 的 GitHub 代码链接；fork PR 优先使用 head repository；
 - Local CI 失败诊断模式下，基础设施失败不能包装成产品 finding。
 
@@ -511,7 +515,7 @@ PYTHONPATH=python python -m pytest scripts/local_ci/tests scripts/local_ci/resul
 - 纯文档改动不要求生成测试；
 - failure diagnosis 模式不强制生成测试，允许 `not_run` 或 `insufficient_evidence`。
 
-当前 runner 主要从 Codex 结构化报告读取命令计数、duration、generated files 和 status，再检查报告是否满足预算。后续若修改此处，应优先考虑通过真实 command wrapper/日志独立记录，避免只信任模型自报数据。
+当前 runner 从 Codex JSONL 命令账本读取命令、退出码和 duration，从工作区归档识别 generated files，再由 canonical builder 派生 status；预算检查读取的是这份 Runner 生成的 canonical 报告，不信任模型自报执行事实。后续修改必须保持 JSONL 提取、canonical builder、预算检查和 renderer 的字段契约同步。
 
 ### 6.6 临时容器和凭据边界
 

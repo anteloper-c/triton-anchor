@@ -110,7 +110,7 @@ ${CHANGED_FILE_GROUPS_JSON}
    - 环境、权限、网络、容器、依赖、设备、后端服务、凭据、Gitee/GitHub API 或 runner 资源错误记录为基础设施失败，不能描述成产品代码缺陷；
    - 证据不足时使用 `insufficient_evidence`，不能猜测根因。
 8. `findings` 只记录证据充分且对合入有意义的问题；每项应具有可复现路径或充分静态证据。当前环境无法执行某条路径不自动排除可由代码、diff 和失败证据确认的问题，但必须如实说明未执行范围和证据边界。风险猜测、代码风格建议和未来优化方向不能作为 finding。
-9. 每个 finding 必须包含明确的 `file_id`、`line`、`code_role`、`evidence`、`impact` 和 `fix_direction`。`file_id` 必须对应本次 Git diff 中未删除的文件；`line` 必须是单个正整数或不超过 12 行的连续范围，并精确指向导致问题的语句、条件、调用或数据定义。不要定位到文件头、空行、纯注释、整段函数或无关上下文；若问题是“缺少逻辑”，定位到最近的变更调用点或决策点，并在证据中说明缺少什么。`code_role` 用简洁中文说明该行或范围实际负责的功能。如果诊断结果推翻初始判断，应删除或降低对应 finding。
+9. 每个 finding 必须包含明确的 `file_id`、`line`、`code_role`、`evidence`、`impact` 和 `fix_direction`。`file_id` 必须对应本次 Git diff 中未删除的文件；`line` 必须是单个正整数或起止有序的连续范围，优先使用单行或能够定位根因的最窄范围，并精确指向导致问题的语句、条件、调用或数据定义。不要定位到文件头、空行、纯注释、整段函数或无关上下文；若问题是“缺少逻辑”，定位到最近的变更调用点或决策点，并在证据中说明缺少什么。`code_role` 用简洁中文说明该行或范围实际负责的功能。如果诊断结果推翻初始判断，应删除或降低对应 finding。
 
 ## Finding 问题类型与严重度
 
@@ -142,7 +142,7 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 - 没有必要执行定向诊断时，将 `test_assessment.evidence_level` 设为 `not_needed`；需要验证但证据不足时使用 `insufficient`；测试生成过程失败时使用 `test_generation_error`。
 - 已执行或已复用的诊断足以支撑当前 AI 诊断结论时，`test_assessment.evidence_level` 必须使用 `sufficient`，即使本轮没有新增诊断测试文件；只有存在具体未关闭诊断缺口并写入 `suggested_tests` 时才使用 `insufficient`，相关风险边界可以同时写入 `residual_risks`。
 - 如果 artifact 缺失、路径不可读、产物与当前 checkout 不匹配，或需要全量测试/完整重编译才能完成归因但当前预算不允许执行，不得虚报为已归因或已验证通过，应写入 `residual_risks` 和 `suggested_tests`。
-- Runner 从容器工作区事实推导 `generated_test_files`，从 Codex JSONL 推导命令退出码与耗时，并确定最终 `test_execution.status`、`verdict`、所有 ID 和完成标记；不要输出这些 runner 字段。
+- 你的 `test_assessment.evidence_level` 和验证说明会作为 Codex 对证据的语义判断保留；PR comment 只按“验证内容与结果”“限制与未覆盖”展示具体事实。Runner 从容器工作区事实推导 `generated_test_files`，从 Codex JSONL 推导命令退出码与耗时，再独立确定 `test_execution.status`、`verdict`、所有 ID 和完成标记。Runner 会用失败、环境限制或结构化语义缺口保守校正矛盾，但不会仅因某条命令退出 0 就把你明确给出的 `insufficient` 提升为证据充分。不要输出这些 runner 字段。
 - `test_assessment.commands` 用于给本轮命令补充用途、证据和失败归因。Runner 以 JSONL 中实际执行的命令为准：漏报命令不会使报告失败；多报或写错的命令会被忽略。
 - `failure_classification` 不是退出状态：通过命令使用 `none`；产品失败使用 `product`；同命令至少一次通过且至少一次失败时使用 `flaky`；明确由环境、权限、网络、容器、设备或 runner 资源导致时使用 `infrastructure`；证据不足使用 `unknown`。Runner 会根据真实重复执行结果保守推导 stable/flaky/infrastructure，条件不足时使用 `insufficient_evidence`。
 - 计划但未执行的命令不要放入 `test_assessment.commands`，统一写入 `suggested_tests`。
@@ -156,7 +156,7 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 - `changed_files` 证明文件级覆盖，`behavior_coverage` 表达跨文件行为和失败传播，两者不能互相替代，也不能复制同一套泛化句子。
 - `residual_risks` 记录未完成归因、被失败阶段阻断或缺少证据的具体路径；不得把已经确认的产品缺陷只放在风险里而省略 finding。
 - `suggested_tests` 只记录尚未执行且能区分根因或关闭具体风险的验证；已经执行的诊断写入 `test_assessment`。
-- `test_assessment.summary` 应区分复用的失败日志/artifact、静态审查、实际诊断命令、复现结果和未覆盖边界。`evidence_level=sufficient` 表示证据足以支持当前 AI 诊断结论，不代表确定性 Local CI 已恢复；`not_needed` 仅表示无需额外动态诊断。
+- `test_assessment.summary` 应使用可直接公开的具体事实区分复用的失败日志/artifact、静态审查范围、已覆盖诊断路径和观察结果；不要把尚未执行的验证或未覆盖范围混入 summary，前者写入 `suggested_tests`，由证据缺口产生的具体行为风险写入 `residual_risks`。不要把 `sufficient`、`insufficient` 或其他内部枚举改写成抽象状态断言。实际诊断命令及其结果由 Runner 的可信账本补充。`evidence_level=sufficient` 表示证据足以支持当前 AI 诊断结论，不代表确定性 Local CI 已恢复；`not_needed` 仅表示无需额外动态诊断。
 
 ## 输出要求
 
@@ -167,6 +167,6 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 - `change_request_assessment.evidence` 和 `test_assessment.summary` 使用字符串数组；内容应简洁，避免重复。
 - `changed_files` 使用可信 `file_id` 覆盖全部变更文件，每项包含 `summary`、`impact` 和 `validation_strategy`。
 - `behavior_coverage` 完整包含 `normal`、`boundary`、`error`、`compatibility`、`integration`，每项包含 `scope`、`strategy`、`result`。
-- `test_assessment.summary` 必须是包含 1 至 8 条中文验证说明的数组。
+- `test_assessment.summary` 必须是包含 1 至 8 条中文验证依据、已覆盖内容或观察结果的数组，不要添加“Codex 说明”或“Runner 校验”等来源前缀，也不要在这里重复 `suggested_tests` 或 `residual_risks`。
 - 输出结构、字段类型、固定枚举和逐文件覆盖必须完整正确；每个 finding 的 `file_id` 和 `line` 还必须真实可定位。
 - 没有具体产品缺陷时 `findings` 必须为空数组，不得把基础设施失败包装成 finding。
