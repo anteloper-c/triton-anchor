@@ -460,6 +460,7 @@ run_once() {
         set +e
         LOCAL_CI_BASE_SHA="" LOCAL_CI_BASE_REF="" GITEE_BRANCH="${base_branch}" \
           LOCAL_CI_RUN_ID="${base_run_id}" FLAGGEMS_TEST_MODE="${flaggems_test_mode}" \
+          RUN_FLAGGEMS_TESTS=false \
           bash "${LOCAL_CI_RUNNER_DIR}/orchestration/run_deterministic_ci_in_container.sh" \
             "${base_sha}" "${base_branch}" 2>&1 |
           tee "${base_run_dir}/local-ci.log"

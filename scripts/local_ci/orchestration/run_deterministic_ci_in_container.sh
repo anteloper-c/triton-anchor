@@ -3,12 +3,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_CI_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+TASK_RUN_FLAGGEMS_TESTS="${RUN_FLAGGEMS_TESTS:-}"
 TASK_FLAGGEMS_TEST_MODE="${FLAGGEMS_TEST_MODE:-}"
 TASK_FRONTEND_BUILD_MODE="${FRONTEND_BUILD_MODE:-}"
 CONFIG_FILE="${LOCAL_CI_CONFIG:-${LOCAL_CI_ROOT}/config.env}"
 if [[ -f "${CONFIG_FILE}" ]]; then
   # shellcheck disable=SC1090
   source "${CONFIG_FILE}"
+fi
+if [[ -n "${TASK_RUN_FLAGGEMS_TESTS}" ]]; then
+  RUN_FLAGGEMS_TESTS="${TASK_RUN_FLAGGEMS_TESTS}"
 fi
 if [[ -n "${TASK_FLAGGEMS_TEST_MODE}" ]]; then
   FLAGGEMS_TEST_MODE="${TASK_FLAGGEMS_TEST_MODE}"
