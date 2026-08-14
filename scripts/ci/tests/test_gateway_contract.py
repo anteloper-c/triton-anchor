@@ -81,6 +81,15 @@ class GatewayV3ContractTests(unittest.TestCase):
         self.assertIn("TESTED_SHA_KIND=\"pr_merge\"", self.dispatcher)
         self.assertIn("refs/pull/${PR_NUMBER}/merge", self.dispatcher)
 
+    def test_dispatch_metadata_v2_records_text_truncation(self) -> None:
+        self.assertIn(
+            "title_truncated:(($title|length)>500)", self.dispatcher
+        )
+        self.assertIn(
+            "description_truncated:(($description|length)>8000)",
+            self.dispatcher,
+        )
+
     def test_external_fork_requires_live_maintainer_authorization(self) -> None:
         self.assertIn("getCollaboratorPermissionLevel", self.gateway)
         self.assertIn("write', 'maintain', 'admin", self.gateway)
