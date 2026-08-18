@@ -310,7 +310,7 @@ PR 性能比较使用 exact base SHA 的 compile-time、pass profile 和 IR seri
 | `results/` | Gitee 发布、`latest.txt`/manifest、cache/Dashboard 与 GitHub bridge |
 | `shared/` | 跨 shell/Python 的路径、metadata、finding、failure-IR 与临时目录协议 |
 
-任务临时目录由 `shared/task_tmp.py` 管理，带 ownership marker，只在安全边界内回收。失败 IR 仅收集本次失败命令生成的 `.ttir`、`.linalg`、`.pplir`，不会清理全局 Triton、pip、uv 或 FlagGems cache。
+任务临时目录由 `shared/task_tmp.py` 管理，带 ownership marker，只在安全边界内回收。失败 IR 用于在编译或后端阶段失败时保留当次的 IR 中间表示，便于后续复现和定位；它只收集本次失败命令生成的 `.ttir`、`.linalg`、`.pplir`，不会误收集或清理全局 Triton、pip、uv 或 FlagGems cache。
 
 ## 6. Codex AI CI
 
