@@ -474,6 +474,17 @@ def normalize_build_evidence(
     if not isinstance(components, list) or not components:
         issues.append("build evidence components must be a non-empty array")
         components = []
+    native = payload.get("native")
+    if isinstance(native, Mapping):
+        unmapped_sonames = native.get("unmapped_sonames", [])
+        if not isinstance(unmapped_sonames, list) or any(
+            not isinstance(soname, str) or not soname for soname in unmapped_sonames
+        ):
+            issues.append("build evidence unmapped_sonames must be an array of names")
+        elif unmapped_sonames:
+            issues.append(
+                "unmapped ELF dependencies: " + ", ".join(sorted(unmapped_sonames))
+            )
     for component in components:
         if not isinstance(component, Mapping):
             issues.append("build evidence component entries must be objects")

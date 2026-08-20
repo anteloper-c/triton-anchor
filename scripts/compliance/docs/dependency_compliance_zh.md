@@ -2,7 +2,7 @@
 
 > 文档定位：这是 T8.2 的唯一系统设计说明，用于解释需求边界、代码职责、输入输出、数据流、门禁语义和后续接入方式。组件事实以 `compliance/component-registry.json` 为准，许可证政策和风险接受分别以同目录对应 JSON 为准；本文件不复制第二份可执行规则。实现或接线发生变化时，必须在同一变更中更新本文件。
 
-当前状态是“合规核心已本地实现并通过测试，正式自动扫描链和 release 晋级接线尚未完成”。文中必须继续区分：已经实现的核心能力、使用真实 Wheel 得到的技术验证，以及仍需 T3.8/T4.1 或人工审批才能关闭的事项。
+当前状态是“合规核心已实现，anteloper fork 中已实现自动构建和候选门禁模拟并等待首次远端实跑；RACE 正式 release、定时审计和 PR 准入接线尚未完成”。文中必须继续区分：已经实现的核心能力、模拟流程得到的技术验证，以及仍需正式流程或人工审批才能关闭的事项。
 
 ## 这项工作解决什么问题
 
@@ -47,10 +47,12 @@ technical 仅报告结果；formal candidate 的非零退出码阻断晋级
 | `scripts/compliance/release.py` | 从同一组件模型确定性生成 CycloneDX、Notice 和产物关联文件 |
 | `scripts/compliance/core.py` | 编排一次产物评估，汇总相互独立的状态和最终阻断原因 |
 | `scripts/compliance/osv_runner.py` | 对有精确可查询身份的实际组件运行 OSV-Scanner，并保留原始结果和覆盖证据 |
+| `scripts/compliance/build_evidence.py` | 在同次 Wheel 构建后记录主要构建组件、Wheel SHA256 和 ELF 动态依赖 |
+| `scripts/compliance/bootstrap_tools.sh` | 下载并校验模拟流程使用的固定版本 ScanCode、Syft 和 OSV-Scanner |
 | `scripts/compliance/cli.py` | 提供 `admission`、`audit`、`artifact-evaluation`、`candidate` 和 Notice 入口 |
 | `compliance/*.json` | 保存组件事实、许可证决策状态和经批准的风险接受，不在 Python 中复制名单 |
 | `THIRD_PARTY_NOTICES.md` | 由登记表生成的规范归属声明；人工补证应先更新登记表再重新生成 |
-| `.github/workflows/dependency-compliance.yml` | 当前仅验证合规核心；未来调用扫描链和正式门禁时仍复用上述入口 |
+| `.github/workflows/dependency-compliance.yml` | 运行核心回归测试，并在 anteloper 专用分支自动构建、扫描和模拟候选门禁 |
 
 ## 产物来源与评估上下文
 
@@ -212,53 +214,53 @@ High/Critical 漏洞默认阻断。只有 [`compliance/risk-acceptances.json`](.
 
 | 原始要求 | 当前本地证据 | 尚未关闭 |
 |---|---|---|
-| 扫描 Python、C++、子模块和构建环境的直接及间接依赖 | 声明扫描、组件登记、源码/Wheel/ELF/构建证据归一化与依赖图已有测试；真实 Wheel 已发现 zstd 等系统依赖；可信 OSV runner 已完成本地实包验证 | CI 中固定版本的 ScanCode/Syft 和完整扫描链尚未接入；部分组件版本和来源未解析 |
-| 为发布产物生成 CycloneDX 或 SPDX SBOM | 任意具体 Wheel 可按文件名、版本、平台和 SHA256 生成独立 CycloneDX 1.7及 artifact-SBOM link；SBOM库存完整性已与合规/晋级状态解耦 | 当前只对一个 Linux x86_64 Wheel 做技术验证；正式候选集合尚未由 T3.8/T4.1 指定 |
+| 扫描 Python、C++、子模块和构建环境的直接及间接依赖 | 已实现的 anteloper 模拟 job 会递归拉取子模块，固定版本运行源码/Wheel ScanCode、Wheel Syft、OSV，并在同次构建读取主要构建组件和 ELF 依赖 | 首次远端完整运行尚待验证；该链仍是 fork 模拟而非 RACE 正式 CI；部分组件版本和来源未解析 |
+| 为发布产物生成 CycloneDX 或 SPDX SBOM | 任意具体 Wheel 可按文件名、版本、平台和 SHA256 生成独立 CycloneDX 1.7及 artifact-SBOM link；模拟 job 已接入自动构建 Wheel 与同一核心 | 首次远端完整运行尚待验证；正式候选集合和 release 入口尚未由 T3.8/T4.1 指定 |
 | CI 定期漏洞扫描并跟踪依赖更新 | `audit`、declaration delta/admission 和逐组件 OSV 查询核心已有负向测试与本地真实查询 | 定时入口、固定工具安装及认可候选证据保留尚未落地 |
 | 核对指定组件许可证及兼容性 | 已固定官方许可证证据并形成 [许可证核对记录](license_compatibility_review.md)；triton-linalg 另有 tree 对账 | concluded license、组合兼容性和分发义务仍待 leader/许可证审查人批准 |
 | 生成并维护 THIRD_PARTY_NOTICES.md | 根 Notice 由唯一登记表确定性生成，并有漂移测试 | 6 个分发/嵌入组件仍缺最终版本、许可文本或归属，当前文件不是 release-ready |
 | 新增依赖许可证和高风险漏洞准入 | `admission` 对未登记声明、未批准许可、无覆盖或严重漏洞失败关闭 | 尚未接入 CI Security Gate；间接依赖变化还需可信 scanner delta 输入 |
-| 每个候选关联对应版本 SBOM | 实包技术评估已生成 hash 绑定的一对一关联文件；同一核心支持正式 `candidate` 上下文 | T3.8/T4.1 的正式候选生产入口及晋级调用点尚未确认 |
-| 覆盖直接、可识别间接和主要构建组件 | 产品依赖图与 CycloneDX formulation 分离，Triton→f2reduce 等间接关系可表达 | 实际构建工具版本、LLVM/MLIR 与若干运行库仍缺同次构建证据 |
+| 每个候选关联对应版本 SBOM | 模拟 job 将冻结唯一 Wheel，以同一 SHA256 生成 SBOM 和一对一关联文件 | 首次远端完整运行尚待验证；T3.8/T4.1 的正式候选生产入口及晋级调用点尚未确认 |
+| 覆盖直接、可识别间接和主要构建组件 | 产品依赖图与 CycloneDX formulation 分离；同次构建证据记录 Python 构建包、CMake、Ninja、LLVM、pybind11、vendored 组件及实际 ELF 运行库 | 仍需依据真实结果补齐 unresolved 组件身份和许可证结论 |
 | 严重漏洞有处置或批准记录 | 修复/隔离/升级要求处置证据；风险接受有范围、审批人和有效期校验；真实 OSV 查询已证明两个 setuptools High 漏洞会阻断 | `PYSEC-2025-49`、`PYSEC-2026-1918` 尚需升级、修复、隔离或批准风险接受；当前无已批准风险接受；ABI-only 依赖仍需人工 reviewed coverage |
 | 所有分发第三方进入归属声明 | 候选必需集合与规范 Notice 做独立覆盖对账 | 当前 Notice 的未解决项仍会阻断 |
-| 不兼容许可证或未处置严重漏洞阻断晋级 | 技术评估输出 `promotion_status=not-applicable`；正式 candidate gate 才以 promotion 状态返回非零，策略 pending 也阻断 | 还未挂到 T3.8/T4.1 的正式 promotion job，不能宣称已形成发布闭环 |
+| 不兼容许可证或未处置严重漏洞阻断晋级 | anteloper 模拟 job 已接入真实 `candidate` 退出码，并只在 `promotion_status=pass` 时允许无副作用的模拟后续 job；当前 pending 策略应产生 blocked | 首次远端完整运行尚待验证；还未挂到 T3.8/T4.1 的正式 promotion job，不能宣称已形成发布闭环 |
 
 ## CI 接入边界
 
 核心逻辑、组件登记表、策略和规范 Notice 应在 `main` 维护唯一副本，其他流程只调用同一 CLI，不在 `scripts/ci` 或 `scripts/local_ci` 复制规则。当前 `CI_dev` 的正常 PR 重型构建主要由 `scripts/local_ci` 完成，它生成并安装一个测试 Wheel；`scripts/ci` 的完整 Delivery 构建主要是手工辅助链。两者都可以提供技术评估样本，但活跃程度或 Wheel 位于 `dist/` 都不能自动把它变成正式候选。
 
-正式候选 Wheel 预期由未来 T3.8/T4.1 的 tag/release 流程产生。其实现状态和最终入口尚未确认，因此本阶段不把 blocking `candidate` 门禁硬接到 Local CI 或手工 Delivery，也不把每个 PR Wheel冒充发布候选。将来发布流程必须在生成正式 Wheel 后传入同次构建 Wheel、`same-build` 证据和全部扫描报告，再依据同一 CLI 的退出码阻断晋级。
+正式候选 Wheel 预期由未来 T3.8/T4.1 的 tag/release 流程产生。其实现状态和最终入口尚未确认，因此本阶段不把每个 Local CI 或手工 Delivery Wheel冒充正式候选。为了不等待该流程即可验证技术链，`anteloper-c/triton-anchor:t82-dependency-compliance` 被明确当作实验目标仓库：它自动构建一份真实 Wheel，并以“候选门禁模拟”调用 `candidate`。该调用只验证数据流和阻断行为，不创建 tag、GitHub Release 或包仓库发布。
 
-当前的候选门禁预览放在能够实际读取 Wheel 和证据的本地或服务器流程中，不放入 GitHub 托管 runner。原因是 `workflow_dispatch` 只能传递路径字符串，不能把本机文件送入 runner；当前仓库也没有一个包含 Wheel 和全部扫描证据的可下载 artifact。为避免建立默认必失败的伪自动化入口，`.github/workflows/dependency-compliance.yml` 现阶段只运行合规核心测试。
+未来发布流程必须在生成正式 Wheel 后传入同次构建 Wheel、`same-build` 证据和全部扫描报告，再直接依据同一 CLI 的退出码阻断晋级；届时不需要保留 fork 专用的模拟包装，也不需要改写合规核心。
 
 ### 当前 `dependency-compliance.yml` 的执行流
 
-开发阶段向 `t82-dependency-compliance` 推送合规相关文件会触发该 workflow；未来变更进入 `main`/`CI_dev` 或以它们为 PR 基线时也会触发。路径过滤只关注 workflow 自身、`scripts/compliance/**`、`compliance/**` 和根 Notice。相同 ref 上的新运行会取消旧运行，避免重复消耗。分支名只用于当前 fork 验证，正式合入前应从 `push.branches` 删除，避免把个人开发分支固化到长期流程中。
+开发阶段向 `t82-dependency-compliance` 推送合规文件或会改变 Wheel 的源码/构建文件会触发该 workflow，也可以手工触发；未来合规变更进入 `main`/`CI_dev` 或以它们为 PR 基线时仍会运行核心测试。相同 ref 上的新运行会取消旧运行。fork 分支名和模拟 job 的仓库判断只用于当前实验，正式合入前应删除，避免把个人开发入口固化到长期流程中。
 
 ```text
 push / pull_request / workflow_dispatch
                 ↓
-checkout 当前提交（不拉子模块）
+core-test：checkout（不拉子模块）→ compileall → 全部 compliance 单元测试
                 ↓
-安装 Python 3.11
+仅 anteloper 的 t82-dependency-compliance push / 手工触发
                 ↓
-compileall scripts/compliance
+递归 checkout → 固定 LLVM 与扫描器 → 源码 ScanCode → 构建唯一 Wheel
                 ↓
-发现并运行 scripts/compliance/tests 下全部 test_*.py
+同次 build evidence → Wheel ScanCode → Wheel Syft → OSV
                 ↓
-任一编译或断言失败 → job 失败；全部通过 → core-test 通过
+candidate → SBOM / artifact link / Notice / compliance report
+                ↓
+上传 Wheel 和证据包；只有 gate pass 才进入无发布动作的模拟后续 job
 ```
 
-这条流用测试文件把 T8.2 核心拆开验证：Wheel 输入和配置契约；组件发现与对账；依赖声明变化和 admission；OSV 覆盖及严重漏洞；SBOM、Notice、产物关联和 CLI 门禁。它的通过只表示这些实现契约没有回归，不表示已经扫描了当前仓库或某个真实 Wheel。
+`core-test` 用小型夹具验证 Wheel 输入、组件对账、依赖准入、漏洞覆盖、SBOM、Notice 和 CLI 门禁，避免规则修改后错误放行；它本身不扫描真实项目。`candidate-simulation` 才负责真实数据流，而且只在 fork 专用分支 push 或手工触发时运行。它使用与 `triton/cmake/llvm-hash.txt` 匹配并校验 SHA256 的公开 LLVM 归档；三个扫描器也固定版本和摘要。扫描器、构建或对账执行失败会使模拟失败，不能用空报告替代。
 
-当前 workflow 没有下载或构建 Wheel，没有安装/运行 ScanCode、Syft、OSV-Scanner，没有调用 `admission`、`audit`、`artifact-evaluation` 或 `candidate`，也没有定时触发和报告上传。因此它是 T8.2 自动化的核心验证层，不是完整的 T8.2 执行流。后续应在证据生产和正式 release 入口明确后增加相应 job，而不是把占位报告塞进现有 `core-test`。
-
-候选预览暂定 Wheel 路径为 `dist/triton_anchor-0.2.0-cp312-cp312-linux_x86_64.whl`，调用时可以将 `--wheel` 替换成执行机器可见的任意路径。证据目录暂定为 `t82-evidence/`，包含 `scancode-source.json`、`scancode-wheel.json`、`syft-wheel.cdx.json`、`osv-results.json` 和 `build-evidence.json`。本地或服务器使用同一入口：
+模拟 job 从自己的构建步骤取得唯一 `dist/triton_anchor-*.whl`，而不是假定一个固定文件名。构建后立即调用 `build_evidence.py`，所以 `same-build` 声明与当前 Wheel SHA256 对应。核心仍保留任意路径接口；本地、服务器或未来 release job 可以使用同一命令，把 `--wheel` 换成该执行环境实际可见的路径：
 
 ```text
 python -m scripts.compliance.cli candidate \
-  --wheel <runner-visible-wheel-path> \
+  --wheel <exact-wheel-path> \
   --registry compliance/component-registry.json \
   --policy compliance/license-policy.json \
   --risk-acceptances compliance/risk-acceptances.json \
@@ -272,7 +274,9 @@ python -m scripts.compliance.cli candidate \
   --output-dir t82-output
 ```
 
-这次手工 `candidate` 调用只验证正式门禁的技术行为，不构成正式发布批准。缺少任一必要证据时必须失败关闭，不生成占位报告冒充扫描成功。未来只替换 Wheel 与证据的生产步骤，不修改核心的任意路径接口。
+fork 模拟和手工 `candidate` 调用都只验证正式门禁的技术行为，不构成正式发布批准。当前策略仍为 `pending`，因此预期结果是 `promotion_status=blocked`；模拟 workflow 本身可以因“正确观察到阻断”而显示成功，但 `simulation-result.json` 和报告必须继续保留原始 blocked 状态，模拟后续 job 也必须被跳过。
+
+该 fork 模拟从同一开发分支读取扫描对象和合规代码，因此只能验证数据流，不能验证候选代码与受信门禁代码的隔离；正式接入时该隔离由 T8.3 的 workflow 权限边界负责。
 
 原先放在普通 `ci.yml` 中的 `compliance-core` 已移到 `dependency-compliance.yml`，只在合规核心、策略、Notice 或对应测试变化时运行。它验证 Wheel-SBOM 一一关联、许可证和严重漏洞阻断、风险接受、Notice 对账及 CLI 退出码等 T8.2 判断逻辑。单元测试不是原任务单列的交付物或新任务节点，也不代替真实扫描；它是防止门禁代码修改后错误放行的最小实现保障。
 
@@ -285,7 +289,7 @@ python -m scripts.compliance.cli candidate \
 | `artifact-evaluation` | 对任意具体 Wheel 做来源渠道无关的技术评估 | 执行和合规均通过时返回 0，但 `promotion_status` 始终为 `not-applicable` |
 | `candidate` | 由受信 T3.8/T4.1 流程对正式候选做发布前门禁 | 全部技术检查通过、构建证据为 `same-build` 且绑定同一 SHA256，进程才返回 0 |
 
-当前阶段只建立 `main` 侧可复用的组件、策略、审批数据和唯一核心，并使用真实 Wheel 做技术重放；尚未因此宣称 T8.2 完成。`dependency-compliance.yml` 当前只自动运行核心测试；它还没有自动取得 Wheel，也没有运行 ScanCode/Syft、PR 新依赖准入或定期复扫。T3.8/T4.1 的正式候选入口确定后，必须把 blocking candidate 调用接到正式 release Wheel 的同次构建流程。当前 `scripts/ci` Delivery 原型仅保留为本地实验参考，不作为正式接线结论。自动化必须消费这些文件，不能把同一规则复制成脚本中的第二份常量表。
+当前阶段建立了唯一核心，并实现了真实自动构建/扫描和候选阻断模拟，首次 GitHub Hosted Runner 完整运行仍待验证，因此尚不能宣称 T8.2 完成。`dependency-compliance.yml` 仍没有 `schedule` 定期审计，也没有 PR 新依赖 `admission` 接线；模拟输出也不是正式 release asset。T3.8/T4.1 的正式候选入口确定后，必须把 blocking candidate 调用接到正式 release Wheel 的同次构建流程。当前 `scripts/ci` Delivery 原型仅保留为本地实验参考，不作为正式接线结论。自动化必须消费同一登记表、策略和核心，不能复制第二份规则。
 
 ## 重构不变量与恢复步骤
 

@@ -5,9 +5,19 @@ on:
     branches: [main, CI_dev, t82-dependency-compliance]
     paths:
       - ".github/workflows/dependency-compliance.yml"
+      - ".gitmodules"
+      - "CMakeLists.txt"
+      - "MANIFEST.in"
       - "compliance/**"
+      - "csrc/**"
+      - "envsetup.sh"
+      - "FlagGems"
+      - "pyproject.toml"
+      - "python/**"
       - "scripts/compliance/**"
+      - "setup.py"
       - "THIRD_PARTY_NOTICES.md"
+      - "triton/**"
   pull_request:
     branches: [main, CI_dev]
     paths:
@@ -41,3 +51,280 @@ jobs:
         run: |
           python -m compileall -q scripts/compliance
           python -B -m unittest discover -s scripts/compliance/tests -t . -p "test_*.py" -v
+
+  candidate-simulation:
+    name: "T8.2 Candidate Gate Simulation"
+    needs: core-test
+    if: >-
+      github.repository == 'anteloper-c/triton-anchor' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/t82-dependency-compliance'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      gate_pass: ${{ steps.candidate.outputs.gate_pass }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Initialize simulation paths
+        run: |
+          echo "EVIDENCE_DIR=${RUNNER_TEMP}/t82-evidence" >> "${GITHUB_ENV}"
+          echo "TOOLS_DIR=${RUNNER_TEMP}/t82-tools" >> "${GITHUB_ENV}"
+          echo "LLVM_BUILD_DIR=${RUNNER_TEMP}/llvm-release" >> "${GITHUB_ENV}"
+          echo "WORKSPACE=${RUNNER_TEMP}" >> "${GITHUB_ENV}"
+          mkdir -p "${RUNNER_TEMP}/t82-evidence"
+
+      - name: Install build and scan prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils build-essential cmake curl libgomp1 libxml2-dev libz-dev \
+            libzstd-dev ninja-build pkg-config python3-dev unzip xz-utils
+          python -m pip install --upgrade build pip pybind11 setuptools wheel
+          mkdir -p "${EVIDENCE_DIR}"
+
+      - name: Restore the matching LLVM build
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/llvm-release
+          key: llvm-10dc3a8e-ubuntu-x64-462b23d05829
+
+      - name: Download the matching LLVM build
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          archive="${RUNNER_TEMP}/llvm-10dc3a8e-ubuntu-x64.tar.gz"
+          curl -L --fail --retry 3 \
+            --output "${archive}" \
+            https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-10dc3a8e-ubuntu-x64.tar.gz
+          echo "462b23d05829f759aac6b07fb98cc863082bd925026fe99df3396d245677e80b  ${archive}" \
+            | sha256sum -c -
+          mkdir -p "${LLVM_BUILD_DIR}"
+          tar -xzf "${archive}" -C "${LLVM_BUILD_DIR}" --strip-components=1
+
+      - name: Verify the LLVM input and install scanners
+        run: |
+          set -o pipefail
+          test "$(tr -d '\r\n' < triton/cmake/llvm-hash.txt)" = \
+            "10dc3a8e916d73291269e5e2b82dd22681489aa1"
+          "${LLVM_BUILD_DIR}/bin/llvm-config" --version
+          bash scripts/compliance/bootstrap_tools.sh "${TOOLS_DIR}" \
+            | tee "${EVIDENCE_DIR}/tool-versions.txt"
+
+      - name: Scan the source tree
+        run: |
+          source "${TOOLS_DIR}/tools.env"
+          (
+            cd "$(dirname "${SCANCODE}")"
+            "${SCANCODE}" \
+              --license --copyright --package --processes 2 \
+              --ignore '.git/**' \
+              --json-pp "${EVIDENCE_DIR}/scancode-source.json" \
+              "${GITHUB_WORKSPACE}"
+          )
+
+      - name: Build exactly one Wheel and collect same-build evidence
+        id: wheel
+        run: |
+          source ./envsetup.sh
+          export MAX_JOBS=4
+          python -m build --wheel --no-isolation
+          mapfile -d '' -t wheels < <(
+            find dist -maxdepth 1 -type f -name 'triton_anchor-*.whl' -print0
+          )
+          if (( ${#wheels[@]} != 1 )); then
+            echo "Expected exactly one triton-anchor Wheel, found ${#wheels[@]}" >&2
+            exit 1
+          fi
+          wheel_path="$(realpath "${wheels[0]}")"
+          echo "WHEEL_PATH=${wheel_path}" >> "${GITHUB_ENV}"
+          echo "wheel_path=${wheel_path}" >> "${GITHUB_OUTPUT}"
+          python -B -m scripts.compliance.build_evidence \
+            --wheel "${wheel_path}" \
+            --source-root "${GITHUB_WORKSPACE}" \
+            --evidence-binding same-build \
+            --output "${EVIDENCE_DIR}/build-evidence.json"
+
+      - name: Scan the built Wheel
+        run: |
+          source "${TOOLS_DIR}/tools.env"
+          unpacked="${RUNNER_TEMP}/t82-wheel-unpacked"
+          mkdir -p "${unpacked}"
+          python -m zipfile -e "${WHEEL_PATH}" "${unpacked}"
+          (
+            cd "$(dirname "${SCANCODE}")"
+            "${SCANCODE}" \
+              --license --copyright --package --processes 2 \
+              --ignore '*libtriton.so' \
+              --json-pp "${EVIDENCE_DIR}/scancode-wheel.json" \
+              "${unpacked}"
+          )
+          SYFT_CHECK_FOR_APP_UPDATE=false "${SYFT}" scan "dir:${unpacked}" \
+            --quiet \
+            --output "cyclonedx-json=${EVIDENCE_DIR}/syft-wheel.cdx.json"
+
+      - name: Query current vulnerabilities
+        run: |
+          source "${TOOLS_DIR}/tools.env"
+          python -B -m scripts.compliance.osv_runner \
+            --scanner "${OSV_SCANNER}" \
+            --registry compliance/component-registry.json \
+            --build-evidence "${EVIDENCE_DIR}/build-evidence.json" \
+            --raw-output "${EVIDENCE_DIR}/osv-scanner.raw.json" \
+            --output "${EVIDENCE_DIR}/osv-results.json" \
+            --target core-wheel
+
+      - name: Evaluate the simulated candidate
+        id: candidate
+        run: |
+          set +e
+          python -B -m scripts.compliance.cli candidate \
+            --wheel "${WHEEL_PATH}" \
+            --registry compliance/component-registry.json \
+            --policy compliance/license-policy.json \
+            --risk-acceptances compliance/risk-acceptances.json \
+            --scancode-source "${EVIDENCE_DIR}/scancode-source.json" \
+            --scancode-wheel "${EVIDENCE_DIR}/scancode-wheel.json" \
+            --syft "${EVIDENCE_DIR}/syft-wheel.cdx.json" \
+            --osv "${EVIDENCE_DIR}/osv-results.json" \
+            --build-evidence "${EVIDENCE_DIR}/build-evidence.json" \
+            --notices THIRD_PARTY_NOTICES.md \
+            --target core-wheel \
+            --output-dir "${EVIDENCE_DIR}/candidate"
+          candidate_rc=$?
+          set -e
+          python - "${candidate_rc}" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          candidate_rc = int(sys.argv[1])
+          evidence = Path(os.environ["EVIDENCE_DIR"])
+          wheel = Path(os.environ["WHEEL_PATH"])
+          report = json.loads(
+              (evidence / "candidate" / "compliance-report.json").read_text()
+          )
+          policy = json.loads(Path("compliance/license-policy.json").read_text())
+          wheel_sha256 = hashlib.sha256(wheel.read_bytes()).hexdigest()
+          reported_sha256 = report.get("artifact", {}).get("sha256")
+          promotion = report.get("promotion_status")
+          coherent_exit = (
+              candidate_rc == 0 and promotion == "pass"
+          ) or (
+              candidate_rc == 1 and promotion == "blocked"
+          )
+          result = {
+              "simulation": True,
+              "not_a_release": True,
+              "repository": os.environ.get("GITHUB_REPOSITORY"),
+              "source_commit": os.environ.get("GITHUB_SHA"),
+              "wheel": wheel.name,
+              "wheel_sha256": wheel_sha256,
+              "candidate_exit_code": candidate_rc,
+              "execution_status": report.get("execution_status"),
+              "evidence_status": report.get("evidence_status"),
+              "compliance_status": report.get("compliance_status"),
+              "promotion_status": promotion,
+          }
+          (evidence / "simulation-result.json").write_text(
+              json.dumps(result, indent=2) + "\n", encoding="utf-8"
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"gate_pass={'true' if promotion == 'pass' else 'false'}\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## T8.2 candidate gate simulation\n\n")
+              summary.write(f"- Wheel: `{wheel.name}`\n")
+              summary.write(f"- SHA256: `{wheel_sha256}`\n")
+              summary.write(f"- Execution: `{report.get('execution_status')}`\n")
+              summary.write(f"- Evidence: `{report.get('evidence_status')}`\n")
+              summary.write(f"- Compliance: `{report.get('compliance_status')}`\n")
+              summary.write(f"- Simulated promotion: `{promotion}`\n")
+              summary.write("- This run does not publish or release the Wheel.\n")
+          if not coherent_exit:
+              raise SystemExit("candidate exit code and promotion status disagree")
+          if report.get("execution_status") != "pass":
+              raise SystemExit("the scanner/evidence execution did not complete")
+          if report.get("evidence_status") != "complete":
+              raise SystemExit("the simulated candidate evidence is incomplete")
+          if report.get("build_evidence_binding") != "same-build":
+              raise SystemExit("same-build binding was not established")
+          if reported_sha256 != wheel_sha256:
+              raise SystemExit("candidate report does not identify the built Wheel")
+          if policy.get("status") != "approved":
+              policy_blocked = any(
+                  blocker.get("reason")
+                  == "license and vulnerability policy is not approved"
+                  for blocker in report.get("compliance_blockers", [])
+              )
+              if promotion != "blocked" or not policy_blocked:
+                  raise SystemExit("the pending policy did not block promotion")
+          PY
+
+      - name: Write the evidence manifest
+        if: always()
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          evidence = Path(os.environ["EVIDENCE_DIR"])
+          reports = {}
+          if evidence.exists():
+              for path in sorted(evidence.rglob("*")):
+                  if path.is_file() and path.name != "evidence-manifest.json":
+                      reports[path.relative_to(evidence).as_posix()] = (
+                          hashlib.sha256(path.read_bytes()).hexdigest()
+                      )
+          manifest = {
+              "schema_version": 1,
+              "simulation": True,
+              "not_a_release": True,
+              "repository": os.environ.get("GITHUB_REPOSITORY"),
+              "source_commit": os.environ.get("GITHUB_SHA"),
+              "wheel": None,
+              "reports": reports,
+          }
+          wheel_value = os.environ.get("WHEEL_PATH")
+          if wheel_value and Path(wheel_value).is_file():
+              wheel = Path(wheel_value)
+              manifest["wheel"] = {
+                  "filename": wheel.name,
+                  "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+              }
+          evidence.mkdir(parents=True, exist_ok=True)
+          (evidence / "evidence-manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload simulation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t82-simulation-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            dist/triton_anchor-*.whl
+            ${{ runner.temp }}/t82-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+  simulated-promotion:
+    name: "T8.2 Simulated Promotion (no publish)"
+    needs: candidate-simulation
+    if: >-
+      needs.candidate-simulation.result == 'success' &&
+      needs.candidate-simulation.outputs.gate_pass == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "The simulated T8.2 gate passed; no release action is performed."
