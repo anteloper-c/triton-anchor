@@ -333,11 +333,10 @@ Backend 应在自身文档或变更日志中记录扩展命名空间、适用 Tr
 
 ## 7. 基础白名单变更日志
 
-基础白名单变更 PR 合入后，在表格顶部新增一行。同一 release 包含多项变更时，每项保留独立记录；PR 合入后、正式发布前，首次包含该变更的项目版本记为 `Unreleased`，发布时替换为实际项目 release；合入日期采用 `YYYY-MM-DD`；PR 使用可点击链接。
+基础白名单变更进入主线后，在表格顶部新增一行。同一 release 包含多项变更时，每项保留独立记录；正式发布前，首次包含该变更的项目版本记为 `Unreleased`，发布时替换为实际项目 release；PR/Commit 使用可点击链接。主线引入日期采用首次将该变更引入 `main` 历史的 Git `CommitDate`，统一按 `Asia/Shanghai` 记录为 `YYYY-MM-DD`。
 
-| 首次包含该变更的项目版本                                                          | 合入日期       | Track     | PR/Commit                                                                                              | 变更内容                                                                                                                                                    |
+| 首次包含该变更的项目版本                                                          | 主线引入日期      | Track     | PR/Commit                                                                                              | 变更内容                                                                                                                                                    |
 | --------------------------------------------------------------------- | ---------- | --------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`v0.1`](https://github.com/RACE-org/triton-anchor/releases/tag/v0.1) | 2026-05-08 | Linalg    | [`eb9bd80`](https://github.com/RACE-org/triton-anchor/commit/eb9bd80bdd0bd1a4a492576ba9aafcf1f2cf09d2) | 建立包含 15 个方言的初始基础白名单：`linalg`、`linalg_ext`、`tensor`、`memref`、`arith`、`math`、`math_ext`、`scf`、`func`、`cf`、`affine`、`aux`、`index`、`bufferization`、`vector` |
 | [`v0.1`](https://github.com/RACE-org/triton-anchor/releases/tag/v0.1) | 2026-05-08 | TritonGPU | [`eb9bd80`](https://github.com/RACE-org/triton-anchor/commit/eb9bd80bdd0bd1a4a492576ba9aafcf1f2cf09d2) | 建立包含 8 个方言的初始基础白名单：`triton_gpu`、`tt`、`arith`、`math`、`scf`、`func`、`gpu`、`nvgpu`                                                                          |
-
 
