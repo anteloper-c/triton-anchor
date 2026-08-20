@@ -125,6 +125,9 @@ jobs:
             "${SCANCODE}" \
               --license --copyright --package --processes 2 \
               --ignore '.git/**' \
+              --ignore '*/compliance/**' \
+              --ignore '*/scripts/compliance/**' \
+              --ignore '*/THIRD_PARTY_NOTICES.md' \
               --json-pp "${EVIDENCE_DIR}/scancode-source.json" \
               "${GITHUB_WORKSPACE}"
           )
@@ -132,6 +135,7 @@ jobs:
       - name: Build exactly one Wheel and collect same-build evidence
         id: wheel
         run: |
+          export CXX=/usr/bin/g++
           source ./envsetup.sh
           export MAX_JOBS=4
           python -m build --wheel --no-isolation
@@ -149,6 +153,7 @@ jobs:
             --wheel "${wheel_path}" \
             --source-root "${GITHUB_WORKSPACE}" \
             --evidence-binding same-build \
+            --cxx-compiler "${CXX}" \
             --output "${EVIDENCE_DIR}/build-evidence.json"
 
       - name: Scan the built Wheel
@@ -232,6 +237,7 @@ jobs:
               "execution_status": report.get("execution_status"),
               "evidence_status": report.get("evidence_status"),
               "compliance_status": report.get("compliance_status"),
+              "sbom_inventory_status": report.get("sbom_inventory_status"),
               "promotion_status": promotion,
           }
           (evidence / "simulation-result.json").write_text(
@@ -246,6 +252,7 @@ jobs:
               summary.write(f"- Execution: `{report.get('execution_status')}`\n")
               summary.write(f"- Evidence: `{report.get('evidence_status')}`\n")
               summary.write(f"- Compliance: `{report.get('compliance_status')}`\n")
+              summary.write(f"- SBOM inventory: `{report.get('sbom_inventory_status')}`\n")
               summary.write(f"- Simulated promotion: `{promotion}`\n")
               summary.write("- This run does not publish or release the Wheel.\n")
           if not coherent_exit:

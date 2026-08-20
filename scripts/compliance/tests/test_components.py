@@ -7,6 +7,7 @@ from scripts.compliance.core import (
     diff_components,
     evaluate_licenses,
     normalize_build_evidence,
+    normalize_cyclonedx,
     normalize_scancode,
     notice_entries,
     reconcile_discoveries,
@@ -77,6 +78,26 @@ class ComponentAndLicenseTests(unittest.TestCase):
         self.assertEqual("success", normalized["status"], normalized)
         self.assertEqual("triton/LICENSE", normalized["items"][0]["path"])
         self.assertEqual("artifact", normalized["items"][0]["path_scope"])
+
+    def test_empty_scanner_inventories_are_not_successful_evidence(self) -> None:
+        scancode = normalize_scancode(
+            {
+                "headers": [
+                    {"options": {"input": ["/workspace/source"]}, "errors": []}
+                ],
+                "files": [{"path": "source", "type": "directory"}],
+                "packages": [],
+            }
+        )
+        syft = normalize_cyclonedx(
+            {
+                "bomFormat": "CycloneDX",
+                "components": [{"type": "file", "name": "module.py"}],
+            }
+        )
+
+        self.assertEqual("failed", scancode["status"])
+        self.assertEqual("failed", syft["status"])
 
     def test_artifact_license_uses_artifact_ownership_patterns(self) -> None:
         dependency = component("triton", owned_paths=["source/triton/"])

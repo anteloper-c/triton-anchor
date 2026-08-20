@@ -145,8 +145,33 @@ def _component(
     }
 
 
+def _configured_cxx_compiler(command: str) -> dict[str, Any]:
+    executable = shutil.which(command)
+    if executable is None:
+        raise BuildEvidenceError(f"configured C++ compiler is unavailable: {command}")
+    compiler_name = Path(executable).name
+    if not re.fullmatch(r"g\+\+(?:-\d+)?", compiler_name):
+        raise BuildEvidenceError(
+            f"configured C++ compiler is not mapped to a component: {executable}"
+        )
+    version = _command_version([executable, "-dumpfullversion"])
+    if version is None:
+        raise BuildEvidenceError(
+            f"cannot determine the configured C++ compiler version: {executable}"
+        )
+    return _component(
+        "gcc-toolchain",
+        version,
+        ["build-only"],
+        {"source": "configured-cxx-compiler", "path": str(Path(executable).resolve())},
+    )
+
+
 def collect_build_evidence(
-    wheel: Path, source_root: Path, evidence_binding: str
+    wheel: Path,
+    source_root: Path,
+    evidence_binding: str,
+    cxx_compiler: str | None = None,
 ) -> dict[str, Any]:
     """Return core-consumable evidence for a Wheel built from ``source_root``."""
 
@@ -267,6 +292,9 @@ def collect_build_evidence(
         ),
     ]
 
+    if cxx_compiler:
+        components.append(_configured_cxx_compiler(cxx_compiler))
+
     if os.getenv("PACKAGE_TOOL") == "uv":
         components.append(
             _component(
@@ -328,12 +356,19 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         choices=sorted(BUILD_EVIDENCE_BINDINGS),
     )
+    parser.add_argument("--cxx-compiler")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
 
+    if args.evidence_binding == "same-build" and not args.cxx_compiler:
+        parser.error("--cxx-compiler is required for same-build evidence")
+
     try:
         evidence = collect_build_evidence(
-            Path(args.wheel), Path(args.source_root), args.evidence_binding
+            Path(args.wheel),
+            Path(args.source_root),
+            args.evidence_binding,
+            args.cxx_compiler,
         )
     except BuildEvidenceError as exc:
         parser.error(str(exc))

@@ -351,10 +351,16 @@ def normalize_scancode(
     if not isinstance(headers, list) or not headers:
         return {"source": source, "status": "failed", "items": [], "issues": ["missing ScanCode header"]}
     input_name = _scancode_input_name(report)
+    file_entries = report.get("files")
+    if not isinstance(file_entries, list) or not any(
+        isinstance(entry, Mapping) and entry.get("type") == "file"
+        for entry in file_entries
+    ):
+        issues.append("ScanCode report contains no scanned files")
     for header in headers:
         for error in header.get("errors", []) if isinstance(header, Mapping) else []:
             issues.append(str(error))
-    for file_entry in report.get("files", []):
+    for file_entry in file_entries if isinstance(file_entries, list) else []:
         if not isinstance(file_entry, Mapping):
             continue
         raw_path = file_entry.get("path")
@@ -417,6 +423,8 @@ def normalize_cyclonedx(report: Mapping[str, Any], source: str = "syft") -> dict
     for component in report["components"]:
         if not isinstance(component, Mapping):
             continue
+        if component.get("type") == "file":
+            continue
         expression = None
         licenses = component.get("licenses") or []
         expressions = [entry.get("expression") for entry in licenses if isinstance(entry, Mapping) and entry.get("expression")]
@@ -432,7 +440,13 @@ def normalize_cyclonedx(report: Mapping[str, Any], source: str = "syft") -> dict
         if expression:
             item["license_expression"] = expression
         items.append(item)
-    return {"source": source, "status": "success", "items": items, "issues": []}
+    issues = [] if items else ["CycloneDX report contains no package components"]
+    return {
+        "source": source,
+        "status": "failed" if issues else "success",
+        "items": items,
+        "issues": issues,
+    }
 
 
 def normalize_build_evidence(

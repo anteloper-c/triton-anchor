@@ -75,6 +75,19 @@ class BuildEvidenceTests(unittest.TestCase):
                 mock.patch.object(
                     build_evidence, "_llvm_version", return_value="19.1.7"
                 ),
+                mock.patch.object(
+                    build_evidence,
+                    "_configured_cxx_compiler",
+                    return_value=build_evidence._component(
+                        "gcc-toolchain",
+                        "13.3.0",
+                        ["build-only"],
+                        {
+                            "source": "configured-cxx-compiler",
+                            "path": "/usr/bin/g++",
+                        },
+                    ),
+                ),
                 mock.patch.dict("os.environ", {"TTGPU": "1"}),
             ):
                 result = build_evidence.main(
@@ -85,6 +98,8 @@ class BuildEvidenceTests(unittest.TestCase):
                         str(source_root),
                         "--evidence-binding",
                         "same-build",
+                        "--cxx-compiler",
+                        "/usr/bin/g++",
                         "--output",
                         str(output),
                     ]
@@ -101,6 +116,7 @@ class BuildEvidenceTests(unittest.TestCase):
             self.assertEqual("19.1.7", components["llvm-project"]["version"])
             self.assertEqual("7" * 40, components["triton"]["version"])
             self.assertEqual("9" * 40, components["f2reduce"]["version"])
+            self.assertEqual("13.3.0", components["gcc-toolchain"]["version"])
             self.assertEqual(
                 ["libzstd.so.1"], components["zstd"]["evidence"]["sonames"]
             )

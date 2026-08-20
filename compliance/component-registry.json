@@ -817,6 +817,48 @@
       ]
     },
     {
+      "id": "gcc-toolchain",
+      "name": "GNU Compiler Collection",
+      "aliases": [
+        "GCC",
+        "g++"
+      ],
+      "kind": "application",
+      "third_party": true,
+      "origin": {
+        "url": "https://gcc.gnu.org/git/gcc.git",
+        "status": "resolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "candidate-evidence-required",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-build-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "build-only",
+          "status": "candidate-evidence-required",
+          "condition": "the candidate build configures GCC as its C++ compiler",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            ".github/workflows/dependency-compliance.yml"
+          ],
+          "evidence_ids": []
+        }
+      ],
+      "evidence": [],
+      "notes": [
+        "Candidate build evidence must record the configured compiler path and version."
+      ]
+    },
+    {
       "id": "gcc-runtime",
       "name": "GCC runtime libraries",
       "aliases": [
