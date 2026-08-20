@@ -154,6 +154,7 @@ jobs:
             --source-root "${GITHUB_WORKSPACE}" \
             --evidence-binding same-build \
             --cxx-compiler "${CXX}" \
+            --package-tool pypa-build \
             --output "${EVIDENCE_DIR}/build-evidence.json"
 
       - name: Scan the built Wheel

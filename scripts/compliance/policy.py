@@ -838,7 +838,17 @@ def _component_resolution_findings(components: Sequence[Mapping[str, Any]], targ
             if "candidate-evidence-required"
             in _usage_statuses(component, target, category)
         }
-        if candidate_classifications and not (candidate_classifications & active):
+        classified_absent = {
+            str(category)
+            for observation in component.get("observations", [])
+            if observation.get("source") == "build-evidence"
+            and observation.get("kind") == "build-component"
+            and observation.get("presence") == "absent"
+            for category in observation.get("candidate_usages", [])
+        }
+        if candidate_classifications and not (
+            candidate_classifications & (active | classified_absent)
+        ):
             missing.append("candidate usage classification")
 
         optional_only = bool(active) and all(

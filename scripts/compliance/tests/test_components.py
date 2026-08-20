@@ -324,6 +324,19 @@ class ComponentAndLicenseTests(unittest.TestCase):
                 "evidence_binding": "same-build",
                 "components": [],
             },
+            {
+                "status": "success",
+                "artifact_sha256": "a" * 64,
+                "evidence_binding": "same-build",
+                "components": [
+                    {
+                        "id": "builder",
+                        "version": "1.0",
+                        "usages": ["build-only"],
+                        "presence": "unknown",
+                    }
+                ],
+            },
         )
 
         for payload in cases:

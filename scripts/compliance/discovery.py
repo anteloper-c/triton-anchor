@@ -69,7 +69,8 @@ def _usage_is_active(component: Mapping[str, Any], usage: Mapping[str, Any]) -> 
         if category == "runtime-external" and status == "confirmed-optional":
             return True
         return any(
-            category in observation.get("candidate_usages", [])
+            observation.get("presence", "present") == "present"
+            and category in observation.get("candidate_usages", [])
             for observation in observations
         )
     return False
@@ -522,12 +523,19 @@ def normalize_build_evidence(
                 f"build component {component.get('id')} has invalid usages: {invalid_usages}"
             )
             continue
+        presence = str(component.get("presence", "present"))
+        if presence not in {"present", "absent"}:
+            issues.append(
+                f"build component {component.get('id')} has invalid presence: {presence}"
+            )
+            continue
         item = {
             "kind": "build-component",
             "component_id": component["id"],
             "purl": component.get("purl"),
             "origin": component.get("origin"),
             "candidate_usages": sorted(set(str(item) for item in candidate_usages)),
+            "presence": presence,
             "source": "build-evidence",
             "evidence": component.get("evidence"),
         }

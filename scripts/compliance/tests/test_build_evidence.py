@@ -100,6 +100,8 @@ class BuildEvidenceTests(unittest.TestCase):
                         "same-build",
                         "--cxx-compiler",
                         "/usr/bin/g++",
+                        "--package-tool",
+                        "pypa-build",
                         "--output",
                         str(output),
                     ]
@@ -120,6 +122,8 @@ class BuildEvidenceTests(unittest.TestCase):
             self.assertEqual(
                 ["libzstd.so.1"], components["zstd"]["evidence"]["sonames"]
             )
+            self.assertEqual("present", components["zstd"]["presence"])
+            self.assertEqual("absent", components["uv"]["presence"])
             self.assertEqual(
                 ["embedded"], components["ttgpu-variant-sources"]["usages"]
             )

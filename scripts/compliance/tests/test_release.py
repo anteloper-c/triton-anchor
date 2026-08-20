@@ -243,6 +243,34 @@ class ReleaseEvidenceTests(unittest.TestCase):
         report, _, _, _ = evaluate_candidate(**blocked)
         self.assertEqual("blocked", report["promotion_status"], report)
 
+    def test_explicitly_absent_conditional_component_is_not_in_the_sbom(self) -> None:
+        inputs = self._candidate_gate_inputs()
+        conditional = component("zstd", distribution="runtime-external")
+        conditional["usages"][0]["status"] = "candidate-evidence-required"
+        inputs["registry"]["components"].append(conditional)
+
+        unclassified, _, _, _ = evaluate_candidate(**inputs)
+        self.assertEqual("blocked", unclassified["promotion_status"])
+
+        build = next(
+            report
+            for report in inputs["discovery_reports"]
+            if report["source"] == "build-evidence"
+        )
+        build["items"].append(
+            {
+                "kind": "build-component",
+                "component_id": "zstd",
+                "candidate_usages": ["runtime-external"],
+                "presence": "absent",
+                "source": "build-evidence",
+            }
+        )
+        report, sbom, _, _ = evaluate_candidate(**inputs)
+
+        self.assertEqual("pass", report["promotion_status"], report)
+        self.assertNotIn("zstd", {item["name"] for item in sbom["components"]})
+
     def test_technical_evaluation_and_candidate_share_the_same_sbom(self) -> None:
         inputs = self._candidate_gate_inputs()
 

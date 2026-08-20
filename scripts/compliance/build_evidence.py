@@ -136,11 +136,13 @@ def _component(
     version: str | None,
     usages: list[str],
     evidence: dict[str, Any],
+    presence: str = "present",
 ) -> dict[str, Any]:
     return {
         "id": component_id,
         "version": version,
         "usages": usages,
+        "presence": presence,
         "evidence": evidence,
     }
 
@@ -172,6 +174,7 @@ def collect_build_evidence(
     source_root: Path,
     evidence_binding: str,
     cxx_compiler: str | None = None,
+    package_tool: str | None = None,
 ) -> dict[str, Any]:
     """Return core-consumable evidence for a Wheel built from ``source_root``."""
 
@@ -295,13 +298,15 @@ def collect_build_evidence(
     if cxx_compiler:
         components.append(_configured_cxx_compiler(cxx_compiler))
 
-    if os.getenv("PACKAGE_TOOL") == "uv":
+    if package_tool:
+        uv_selected = package_tool == "uv"
         components.append(
             _component(
                 "uv",
-                _command_version(["uv", "--version"]),
+                _command_version(["uv", "--version"]) if uv_selected else None,
                 ["build-only"],
-                {"source": "build-tool", "command": "uv --version"},
+                {"source": "package-tool-selection", "selected": package_tool},
+                "present" if uv_selected else "absent",
             )
         )
     if "TTGPU" in os.environ:
@@ -317,8 +322,16 @@ def collect_build_evidence(
                 },
             )
         )
+    components.append(
+        _component(
+            "zstd",
+            None,
+            ["runtime-external"],
+            {**native_evidence, "sonames": zstd_sonames},
+            "present" if zstd_sonames else "absent",
+        )
+    )
     for component_id, sonames in (
-        ("zstd", zstd_sonames),
         ("glibc", glibc_sonames),
         ("gcc-runtime", gcc_sonames),
     ):
@@ -357,11 +370,16 @@ def main(argv: list[str] | None = None) -> int:
         choices=sorted(BUILD_EVIDENCE_BINDINGS),
     )
     parser.add_argument("--cxx-compiler")
+    parser.add_argument("--package-tool", choices=("pypa-build", "uv"))
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
 
-    if args.evidence_binding == "same-build" and not args.cxx_compiler:
-        parser.error("--cxx-compiler is required for same-build evidence")
+    if args.evidence_binding == "same-build" and (
+        not args.cxx_compiler or not args.package_tool
+    ):
+        parser.error(
+            "--cxx-compiler and --package-tool are required for same-build evidence"
+        )
 
     try:
         evidence = collect_build_evidence(
@@ -369,6 +387,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.source_root),
             args.evidence_binding,
             args.cxx_compiler,
+            args.package_tool,
         )
     except BuildEvidenceError as exc:
         parser.error(str(exc))
