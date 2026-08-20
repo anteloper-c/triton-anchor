@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "records": [],
+  "notes": [
+    "There are no accepted risk records at this baseline.",
+    "Adding a record is a human approval action, not an automatic scanner action.",
+    "Accepted records are validated by the versioned compliance code and require an id, exact component/version/vulnerability scope, a release_version or artifact_sha256 scope, reason, approver, approval date, and expiry date."
+  ]
+}

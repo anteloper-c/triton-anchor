@@ -1,0 +1,45 @@
+name: Dependency Compliance
+
+on:
+  push:
+    branches: [main, CI_dev]
+    paths:
+      - ".github/workflows/dependency-compliance.yml"
+      - "compliance/**"
+      - "scripts/compliance/**"
+      - "tests/compliance/**"
+      - "THIRD_PARTY_NOTICES.md"
+  pull_request:
+    branches: [main, CI_dev]
+    paths:
+      - ".github/workflows/dependency-compliance.yml"
+      - "compliance/**"
+      - "scripts/compliance/**"
+      - "tests/compliance/**"
+      - "THIRD_PARTY_NOTICES.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-test:
+    name: "T8.2 Compliance Core"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate compliance model, policy, and gates
+        run: |
+          python -m compileall -q scripts/compliance tests/compliance
+          python -B -m unittest discover -s tests/compliance -p "test_*.py" -v

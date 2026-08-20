@@ -1,0 +1,1583 @@
+{
+  "schema_version": 1,
+  "registry_status": "baseline-incomplete",
+  "scope_categories": [
+    "distributed",
+    "embedded",
+    "runtime-external",
+    "build-only",
+    "test-only",
+    "CI-only"
+  ],
+  "path_matching": {
+    "syntax": "python-fnmatch-on-posix-paths",
+    "precedence": "most-specific-pattern-wins",
+    "unmapped_discovery": "block-candidate"
+  },
+  "components": [
+    {
+      "id": "triton-anchor",
+      "name": "triton-anchor",
+      "kind": "application",
+      "third_party": false,
+      "origin": {
+        "url": "https://github.com/RACE-org/triton-anchor",
+        "status": "resolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "unresolved-conflict",
+        "evidence_ids": [
+          "anchor-setup-version",
+          "anchor-runtime-version"
+        ],
+        "observations": [
+          {
+            "value": "0.2.0",
+            "evidence_id": "anchor-setup-version"
+          },
+          {
+            "value": "0.1.3",
+            "evidence_id": "anchor-runtime-version"
+          }
+        ]
+      },
+      "license": {
+        "declared": "Apache-2.0",
+        "concluded": "Apache-2.0",
+        "status": "resolved",
+        "evidence_ids": [
+          "anchor-license"
+        ]
+      },
+      "usages": [
+        {
+          "category": "distributed",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "path_patterns": [
+            "python/triton_anchor/**",
+            "LICENSE",
+            "README.md",
+            "pyproject.toml",
+            "setup.py"
+          ],
+          "artifact_patterns": [
+            "triton_anchor/**",
+            "triton_anchor-*.dist-info/**"
+          ],
+          "evidence_ids": [
+            "anchor-packages"
+          ]
+        },
+        {
+          "category": "embedded",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "path_patterns": [
+            "csrc/bindings/**"
+          ],
+          "artifact_patterns": [
+            "triton/_C/libtriton.so"
+          ],
+          "evidence_ids": [
+            "anchor-native-binding"
+          ]
+        }
+      ],
+      "depends_on": [
+        "triton",
+        "triton-linalg",
+        "ttgpu-variant-sources",
+        "llvm-project",
+        "pybind11",
+        "zlib",
+        "zstd",
+        "glibc",
+        "gcc-runtime",
+        "cpython"
+      ],
+      "evidence": [
+        {
+          "id": "anchor-setup-version",
+          "kind": "package-definition",
+          "location": "setup.py",
+          "line_start": 194,
+          "value": "0.2.0"
+        },
+        {
+          "id": "anchor-runtime-version",
+          "kind": "source-version",
+          "location": "python/triton_anchor/__init__.py",
+          "line_start": 14,
+          "value": "0.1.3"
+        },
+        {
+          "id": "anchor-license",
+          "kind": "license-file",
+          "location": "LICENSE",
+          "value": "Apache-2.0"
+        },
+        {
+          "id": "anchor-packages",
+          "kind": "package-definition",
+          "location": "setup.py",
+          "line_start": 168,
+          "line_end": 211
+        },
+        {
+          "id": "anchor-native-binding",
+          "kind": "build-definition",
+          "location": "CMakeLists.txt",
+          "line_start": 186,
+          "line_end": 194
+        }
+      ],
+      "notes": [
+        "The candidate artifact metadata is authoritative only after the 0.2.0/0.1.3 conflict is resolved."
+      ]
+    },
+    {
+      "id": "triton",
+      "name": "Triton",
+      "kind": "framework",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/triton-lang/triton",
+        "status": "resolved"
+      },
+      "version": {
+        "value": "757b6a61e7df814ba806f498f8bb3160f84b120c",
+        "kind": "git-commit",
+        "status": "resolved",
+        "evidence_ids": [
+          "triton-vendor-marker"
+        ]
+      },
+      "license": {
+        "declared": "MIT",
+        "concluded": null,
+        "status": "official-upstream-declaration-confirmed-review-pending",
+        "evidence_ids": [
+          "triton-readme-license-claim",
+          "triton-upstream-license"
+        ]
+      },
+      "usages": [
+        {
+          "category": "distributed",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "path_patterns": [
+            "triton/**"
+          ],
+          "artifact_patterns": [
+            "triton/**"
+          ],
+          "evidence_ids": [
+            "triton-package-and-headers"
+          ]
+        },
+        {
+          "category": "embedded",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "path_patterns": [
+            "triton/include/**",
+            "triton/lib/**",
+            "triton/python/src/**"
+          ],
+          "container_artifact_patterns": [
+            "triton/_C/libtriton.so"
+          ],
+          "evidence_ids": [
+            "triton-native-build"
+          ]
+        }
+      ],
+      "depends_on": [
+        "f2reduce",
+        "setuptools",
+        "numpy",
+        "matplotlib",
+        "pandas",
+        "psutil",
+        "pytorch",
+        "redis-py"
+      ],
+      "evidence": [
+        {
+          "id": "triton-vendor-marker",
+          "kind": "vendor-marker",
+          "location": "triton/TRITON_VERSION",
+          "value": "757b6a61e7df814ba806f498f8bb3160f84b120c"
+        },
+        {
+          "id": "triton-readme-license-claim",
+          "kind": "documentation-claim",
+          "location": "README.md",
+          "line_start": 600,
+          "value": "MIT"
+        },
+        {
+          "id": "triton-upstream-license",
+          "kind": "upstream-license",
+          "location": "https://github.com/triton-lang/triton/blob/757b6a61e7df814ba806f498f8bb3160f84b120c/LICENSE",
+          "value": "MIT; sha256:92640fb97222fd0a698ff28ce0c3782c172623f8d6c609b557636a80f28fb946"
+        },
+        {
+          "id": "triton-package-and-headers",
+          "kind": "package-definition",
+          "location": "setup.py",
+          "line_start": 139,
+          "line_end": 208
+        },
+        {
+          "id": "triton-native-build",
+          "kind": "build-definition",
+          "location": "CMakeLists.txt",
+          "line_start": 121,
+          "line_end": 131
+        }
+      ],
+      "notes": [
+        "The exact upstream commit declares MIT, but the vendored tree does not carry that upstream license file and scanned file-level exceptions still require review before a concluded license is approved.",
+        "triton/third_party/f2reduce/** is owned by the more specific f2reduce registry entry."
+      ]
+    },
+    {
+      "id": "triton-linalg",
+      "name": "triton-linalg",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/Cambricon/triton-linalg",
+        "status": "resolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "local-derivative",
+        "status": "unresolved",
+        "evidence_ids": [
+          "triton-linalg-upstream-tree-audit"
+        ]
+      },
+      "upstream_baseline": {
+        "value": "00f51c2e48a943922f86f03d58e29f514def646d",
+        "kind": "git-commit",
+        "status": "confirmed-by-tree-comparison",
+        "evidence_ids": [
+          "triton-linalg-upstream-tree-audit"
+        ]
+      },
+      "license": {
+        "declared": "Apache-2.0",
+        "concluded": null,
+        "status": "official-upstream-declaration-confirmed-review-pending",
+        "evidence_ids": [
+          "triton-linalg-upstream-license",
+          "triton-linalg-upstream-acknowledgments",
+          "triton-linalg-copyright"
+        ]
+      },
+      "copyrights": [
+        "Copyright (C) [2022-2025] by Cambricon"
+      ],
+      "usages": [
+        {
+          "category": "distributed",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "path_patterns": [
+            "csrc/include/triton-linalg/**"
+          ],
+          "artifact_patterns": [
+            "triton_anchor/include/triton-linalg/**"
+          ],
+          "evidence_ids": [
+            "anchor-header-copy"
+          ]
+        },
+        {
+          "category": "embedded",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "path_patterns": [
+            "csrc/include/triton-linalg/**",
+            "csrc/lib/triton-linalg/**"
+          ],
+          "container_artifact_patterns": [
+            "triton/_C/libtriton.so"
+          ],
+          "evidence_ids": [
+            "triton-linalg-build"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "triton-linalg-readme-claim",
+          "kind": "documentation-claim",
+          "location": "README.md",
+          "line_start": 601,
+          "value": "Apache-2.0"
+        },
+        {
+          "id": "triton-linalg-copyright",
+          "kind": "source-copyright",
+          "location": "csrc/lib/triton-linalg/**",
+          "value": "Copyright (C) [2022-2025] by Cambricon"
+        },
+        {
+          "id": "triton-linalg-upstream-tree-audit",
+          "kind": "upstream-tree-comparison",
+          "location": "docs/triton_linalg_license_audit.md",
+          "value": "local derivative of Cambricon master@00f51c2e48a943922f86f03d58e29f514def646d: 114 mapped files content-identical, 4 content-modified, 117 file-mode changes"
+        },
+        {
+          "id": "triton-linalg-upstream-license",
+          "kind": "upstream-license-file",
+          "location": "https://github.com/Cambricon/triton-linalg/blob/00f51c2e48a943922f86f03d58e29f514def646d/LICENSE",
+          "value": "Apache-2.0; Git blob fe41bf739fd41c7e71c7e7b7ea7d7cda4256c5e2"
+        },
+        {
+          "id": "triton-linalg-upstream-acknowledgments",
+          "kind": "upstream-attribution-file",
+          "location": "https://github.com/Cambricon/triton-linalg/blob/00f51c2e48a943922f86f03d58e29f514def646d/ACKNOWLEDGMENTS",
+          "value": "project Apache-2.0 declaration with MIT attributions for Triton and triton-shared; Git blob 8f2098ad6bf57ff573c09c94c46a18ffeb121278"
+        },
+        {
+          "id": "anchor-header-copy",
+          "kind": "package-definition",
+          "location": "setup.py",
+          "line_start": 143,
+          "line_end": 164
+        },
+        {
+          "id": "triton-linalg-build",
+          "kind": "build-definition",
+          "location": "CMakeLists.txt",
+          "line_start": 134,
+          "line_end": 136
+        }
+      ],
+      "notes": [
+        "The vendored surface is a local derivative of the confirmed upstream baseline, not an exact checkout of that revision.",
+        "The upstream LICENSE and ACKNOWLEDGMENTS files are not present in the vendored subtree; redistribution obligations and compatibility remain pending human review."
+      ]
+    },
+    {
+      "id": "ttgpu-variant-sources",
+      "name": "TTGPU variant sources",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": null,
+        "status": "unresolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "git-commit",
+        "status": "unresolved",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "unresolved",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "distributed",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "path_patterns": [
+            "csrc/include/ttgpu/**/*.h",
+            "csrc/include/ttgpu/**/*.inc",
+            "csrc/include/ttgpu/**/*.def"
+          ],
+          "artifact_patterns": [
+            "triton_anchor/include/ttgpu/**"
+          ],
+          "evidence_ids": [
+            "ttgpu-header-copy"
+          ]
+        },
+        {
+          "category": "embedded",
+          "status": "conditional",
+          "condition": "TTGPU is present in the build environment",
+          "target": "core-wheel",
+          "path_patterns": [
+            "csrc/include/ttgpu/**",
+            "csrc/lib/ttgpu/**"
+          ],
+          "container_artifact_patterns": [
+            "triton/_C/libtriton.so"
+          ],
+          "evidence_ids": [
+            "ttgpu-build-switch"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "ttgpu-header-copy",
+          "kind": "package-definition",
+          "location": "setup.py",
+          "line_start": 143,
+          "line_end": 164
+        },
+        {
+          "id": "ttgpu-build-switch",
+          "kind": "build-definition",
+          "location": "CMakeLists.txt",
+          "line_start": 14,
+          "line_end": 18
+        }
+      ],
+      "notes": [
+        "Ownership and upstream provenance are not established by the current repository and must not be inferred."
+      ]
+    },
+    {
+      "id": "f2reduce",
+      "name": "f2reduce",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://gitlab.com/hatsya/open-source/f2reduce",
+        "status": "resolved"
+      },
+      "version": {
+        "value": "949b91d022c001bbce19157f806013d37f05fbf5",
+        "kind": "git-commit",
+        "status": "resolved",
+        "evidence_ids": [
+          "f2reduce-version"
+        ]
+      },
+      "license": {
+        "declared": "MIT",
+        "concluded": "MIT",
+        "status": "resolved",
+        "text_location": "triton/third_party/f2reduce/LICENCE.txt",
+        "evidence_ids": [
+          "f2reduce-license"
+        ]
+      },
+      "copyrights": [
+        "Copyright 2023 Adam P. Goucher, Hatsya Limited"
+      ],
+      "usages": [
+        {
+          "category": "embedded",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "path_patterns": [
+            "triton/third_party/f2reduce/**"
+          ],
+          "container_artifact_patterns": [
+            "triton/_C/libtriton.so"
+          ],
+          "evidence_ids": [
+            "f2reduce-build"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "f2reduce-version",
+          "kind": "vendor-marker",
+          "location": "triton/third_party/f2reduce/VERSION",
+          "value": "949b91d022c001bbce19157f806013d37f05fbf5"
+        },
+        {
+          "id": "f2reduce-license",
+          "kind": "license-file",
+          "location": "triton/third_party/f2reduce/LICENCE.txt",
+          "value": "MIT"
+        },
+        {
+          "id": "f2reduce-build",
+          "kind": "build-definition",
+          "location": "CMakeLists.txt",
+          "line_start": 127,
+          "line_end": 131
+        }
+      ],
+      "notes": []
+    },
+    {
+      "id": "llvm-project",
+      "name": "LLVM Project",
+      "aliases": [
+        "LLVM",
+        "MLIR"
+      ],
+      "modules": [
+        "LLVM",
+        "MLIR"
+      ],
+      "kind": "framework",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/llvm/llvm-project",
+        "status": "pending-build-evidence"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver-or-commit",
+        "status": "candidate-evidence-required",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": "Apache-2.0 WITH LLVM-exception",
+        "concluded": null,
+        "expected_expression": "Apache-2.0 WITH LLVM-exception",
+        "status": "official-project-declaration-confirmed-build-version-pending",
+        "evidence_ids": [
+          "llvm-upstream-license-review"
+        ]
+      },
+      "usages": [
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "CMakeLists.txt"
+          ],
+          "evidence_ids": [
+            "llvm-cmake-link"
+          ]
+        },
+        {
+          "category": "embedded",
+          "status": "candidate-evidence-required",
+          "condition": "selected LLVM/MLIR libraries are linked statically",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "CMakeLists.txt"
+          ],
+          "container_artifact_patterns": [
+            "triton/_C/libtriton.so"
+          ],
+          "evidence_ids": [
+            "llvm-cmake-link"
+          ]
+        },
+        {
+          "category": "runtime-external",
+          "status": "candidate-evidence-required",
+          "condition": "the native artifact retains dynamic LLVM/MLIR dependencies",
+          "target": "core-wheel",
+          "path_patterns": [],
+          "evidence_ids": []
+        }
+      ],
+      "evidence": [
+        {
+          "id": "llvm-cmake-link",
+          "kind": "build-definition",
+          "location": "CMakeLists.txt",
+          "line_start": 21,
+          "line_end": 35
+        },
+        {
+          "id": "llvm-upstream-license-review",
+          "kind": "upstream-license",
+          "location": "https://github.com/llvm/llvm-project/blob/159dcbfcba88c9d3c7760b804f9b916b2a6bc7ca/LICENSE.TXT",
+          "value": "Apache-2.0 WITH LLVM-exception; sha256:8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee"
+        }
+      ],
+      "notes": [
+        "LLVM and MLIR are one upstream release unit and are represented once; modules record the two project surfaces.",
+        "The candidate build manifest and native linkage evidence must resolve the two alternative artifact usages."
+      ]
+    },
+    {
+      "id": "pybind11",
+      "name": "pybind11",
+      "purl": "pkg:pypi/pybind11",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/pybind/pybind11",
+        "status": "pending-build-evidence"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "candidate-evidence-required",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "expected_expression": "BSD-3-Clause",
+        "status": "pending-build-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "pyproject.toml",
+            "CMakeLists.txt"
+          ],
+          "evidence_ids": [
+            "pybind-build-requirement"
+          ]
+        },
+        {
+          "category": "embedded",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "triton/python/src/**",
+            "csrc/bindings/**"
+          ],
+          "container_artifact_patterns": [
+            "triton/_C/libtriton.so"
+          ],
+          "evidence_ids": [
+            "pybind-header-link"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "pybind-build-requirement",
+          "kind": "build-requirement",
+          "location": "pyproject.toml",
+          "line_start": 2
+        },
+        {
+          "id": "pybind-header-link",
+          "kind": "build-definition",
+          "location": "CMakeLists.txt",
+          "line_start": 37,
+          "line_end": 43
+        }
+      ],
+      "notes": [
+        "Header-only template code is incorporated into the native module; it is not merely an excluded build tool."
+      ]
+    },
+    {
+      "id": "zlib",
+      "name": "zlib",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/madler/zlib",
+        "status": "pending-build-evidence"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver-or-system-abi",
+        "status": "candidate-evidence-required",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "expected_expression": "Zlib",
+        "status": "pending-build-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "CMakeLists.txt"
+          ],
+          "evidence_ids": [
+            "zlib-link"
+          ]
+        },
+        {
+          "category": "embedded",
+          "status": "candidate-evidence-required",
+          "condition": "zlib is linked statically",
+          "target": "core-wheel",
+          "path_patterns": [],
+          "container_artifact_patterns": [
+            "triton/_C/libtriton.so"
+          ],
+          "evidence_ids": []
+        },
+        {
+          "category": "runtime-external",
+          "status": "candidate-evidence-required",
+          "condition": "the native artifact has a zlib DT_NEEDED entry",
+          "target": "core-wheel",
+          "path_patterns": [],
+          "evidence_ids": []
+        }
+      ],
+      "evidence": [
+        {
+          "id": "zlib-link",
+          "kind": "build-definition",
+          "location": "CMakeLists.txt",
+          "line_start": 274,
+          "line_end": 278
+        }
+      ],
+      "notes": []
+    },
+    {
+      "id": "zstd",
+      "name": "Zstandard",
+      "aliases": [
+        "zstd",
+        "libzstd",
+        "libzstd.so.1"
+      ],
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": null,
+        "status": "pending-runtime-evidence"
+      },
+      "version": {
+        "value": null,
+        "kind": "system-abi",
+        "status": "candidate-evidence-required",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-runtime-evidence",
+        "evidence_ids": []
+      },
+      "runtime_constraint": "libzstd.so.1",
+      "usages": [
+        {
+          "category": "runtime-external",
+          "status": "candidate-evidence-required",
+          "condition": "the candidate native artifact has libzstd.so.1 in DT_NEEDED",
+          "target": "core-wheel",
+          "evidence_ids": []
+        }
+      ],
+      "evidence": [],
+      "notes": [
+        "A candidate ELF observation activates this component and records the SONAME constraint; it does not establish a package version, source origin, or reviewed license conclusion."
+      ]
+    },
+    {
+      "id": "glibc",
+      "name": "GNU C Library",
+      "aliases": [
+        "glibc",
+        "libc",
+        "libm",
+        "ld-linux"
+      ],
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://sourceware.org/git/glibc.git",
+        "status": "resolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "system-abi",
+        "status": "candidate-evidence-required",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-runtime-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "runtime-external",
+          "status": "candidate-evidence-required",
+          "condition": "the candidate ELF has a glibc-owned DT_NEEDED entry",
+          "target": "core-wheel",
+          "evidence_ids": []
+        }
+      ],
+      "evidence": [],
+      "notes": [
+        "Candidate evidence should record SONAME or ABI constraints instead of inventing a host patch version."
+      ]
+    },
+    {
+      "id": "gcc-runtime",
+      "name": "GCC runtime libraries",
+      "aliases": [
+        "libgcc_s",
+        "libstdc++"
+      ],
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://gcc.gnu.org/git/gcc.git",
+        "status": "resolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "system-abi",
+        "status": "candidate-evidence-required",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-runtime-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "runtime-external",
+          "status": "candidate-evidence-required",
+          "condition": "the candidate ELF has libgcc_s or libstdc++ in DT_NEEDED",
+          "target": "core-wheel",
+          "evidence_ids": []
+        }
+      ],
+      "evidence": [],
+      "notes": [
+        "The applicable runtime-library exception and attribution must be reviewed against the actual linked SONAMEs."
+      ]
+    },
+    {
+      "id": "cpython",
+      "name": "CPython",
+      "kind": "framework",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/python/cpython",
+        "status": "resolved"
+      },
+      "version": {
+        "value": ">=3.8",
+        "kind": "version-constraint",
+        "status": "constraint-only",
+        "evidence_ids": [
+          "python-requires"
+        ]
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "expected_expression": "Python-2.0",
+        "status": "pending-runtime-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "setup.py",
+            "CMakeLists.txt"
+          ],
+          "evidence_ids": [
+            "python-build"
+          ]
+        },
+        {
+          "category": "runtime-external",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "setup.py"
+          ],
+          "evidence_ids": [
+            "python-requires"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "python-requires",
+          "kind": "runtime-requirement",
+          "location": "setup.py",
+          "line_start": 230,
+          "value": ">=3.8"
+        },
+        {
+          "id": "python-build",
+          "kind": "build-definition",
+          "location": "CMakeLists.txt",
+          "line_start": 38,
+          "line_end": 39
+        }
+      ],
+      "notes": [
+        "A candidate wheel tag and build manifest must narrow the ABI and interpreter version without inventing an exact patch release."
+      ]
+    },
+    {
+      "id": "setuptools",
+      "name": "setuptools",
+      "purl": "pkg:pypi/setuptools",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/pypa/setuptools",
+        "status": "pending-candidate-evidence"
+      },
+      "version": {
+        "value": ">=64",
+        "kind": "version-constraint",
+        "status": "constraint-only",
+        "evidence_ids": [
+          "setuptools-build-requirement"
+        ]
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-candidate-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "pyproject.toml",
+            "setup.py"
+          ],
+          "evidence_ids": [
+            "setuptools-build-requirement"
+          ]
+        },
+        {
+          "category": "runtime-external",
+          "status": "confirmed-optional",
+          "condition": "Triton runtime JIT build helpers are used",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "triton/python/triton/runtime/build.py"
+          ],
+          "evidence_ids": [
+            "setuptools-runtime-import"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "setuptools-build-requirement",
+          "kind": "build-requirement",
+          "location": "pyproject.toml",
+          "line_start": 2,
+          "value": ">=64"
+        },
+        {
+          "id": "setuptools-runtime-import",
+          "kind": "python-import",
+          "location": "triton/python/triton/runtime/build.py",
+          "line_start": 8,
+          "value": "setuptools"
+        }
+      ],
+      "notes": [
+        "install_requires=[] does not remove this runtime import."
+      ]
+    },
+    {
+      "id": "wheel-build-package",
+      "name": "wheel",
+      "purl": "pkg:pypi/wheel",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/pypa/wheel",
+        "status": "pending-build-evidence"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "candidate-evidence-required",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-build-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "pyproject.toml"
+          ],
+          "evidence_ids": [
+            "wheel-build-requirement"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "wheel-build-requirement",
+          "kind": "build-requirement",
+          "location": "pyproject.toml",
+          "line_start": 2,
+          "value": "unconstrained"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "id": "pypa-build",
+      "name": "build",
+      "purl": "pkg:pypi/build",
+      "kind": "application",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/pypa/build",
+        "status": "resolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "candidate-evidence-required",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-build-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "CI_dev:scripts/ci/build_frontend.sh"
+          ],
+          "evidence_ids": [
+            "build-frontend-tool"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "build-frontend-tool",
+          "kind": "worker-build-requirement",
+          "location": "CI_dev:scripts/ci/build_frontend.sh",
+          "line_start": 32,
+          "line_end": 50
+        }
+      ],
+      "notes": [
+        "This component is supplied by the CI_dev delivery worker, not the main source tree."
+      ]
+    },
+    {
+      "id": "uv",
+      "name": "uv",
+      "kind": "application",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/astral-sh/uv",
+        "status": "resolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "candidate-evidence-required",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-build-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "build-only",
+          "status": "candidate-evidence-required",
+          "condition": "the delivery worker selects PACKAGE_TOOL=uv",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "CI_dev:scripts/ci/build_frontend.sh"
+          ],
+          "evidence_ids": [
+            "uv-build-tool"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "uv-build-tool",
+          "kind": "worker-build-requirement",
+          "location": "CI_dev:scripts/ci/build_frontend.sh",
+          "line_start": 17,
+          "line_end": 49
+        }
+      ],
+      "notes": [
+        "This component is active only when the CI_dev delivery worker uses uv."
+      ]
+    },
+    {
+      "id": "cmake",
+      "name": "CMake",
+      "kind": "application",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/Kitware/CMake",
+        "status": "pending-build-evidence"
+      },
+      "version": {
+        "value": ">=3.18",
+        "kind": "version-constraint",
+        "status": "constraint-only",
+        "evidence_ids": [
+          "cmake-minimum"
+        ]
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-build-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "CMakeLists.txt",
+            "setup.py"
+          ],
+          "evidence_ids": [
+            "cmake-minimum"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "cmake-minimum",
+          "kind": "build-requirement",
+          "location": "CMakeLists.txt",
+          "line_start": 1,
+          "value": ">=3.18"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "id": "ninja",
+      "name": "Ninja",
+      "kind": "application",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/ninja-build/ninja",
+        "status": "pending-build-evidence"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "candidate-evidence-required",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-build-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "setup.py"
+          ],
+          "evidence_ids": [
+            "ninja-generator"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "ninja-generator",
+          "kind": "build-requirement",
+          "location": "setup.py",
+          "line_start": 83,
+          "line_end": 98
+        }
+      ],
+      "notes": []
+    },
+    {
+      "id": "numpy",
+      "name": "NumPy",
+      "purl": "pkg:pypi/numpy",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/numpy/numpy",
+        "status": "pending-runtime-evidence"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "unresolved",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-runtime-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "runtime-external",
+          "status": "confirmed-optional",
+          "condition": "Triton interpreter or testing helpers are used",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "triton/python/triton/runtime/interpreter.py",
+            "triton/python/triton/testing.py"
+          ],
+          "evidence_ids": [
+            "numpy-import"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "numpy-import",
+          "kind": "python-import",
+          "location": "triton/python/triton/runtime/interpreter.py",
+          "line_start": 5,
+          "value": "numpy"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "id": "matplotlib",
+      "name": "matplotlib",
+      "purl": "pkg:pypi/matplotlib",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/matplotlib/matplotlib",
+        "status": "resolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "unresolved",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-runtime-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "runtime-external",
+          "status": "confirmed-optional",
+          "condition": "Triton testing plot helpers are used",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "triton/python/triton/testing.py"
+          ],
+          "evidence_ids": [
+            "matplotlib-import"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "matplotlib-import",
+          "kind": "python-import",
+          "location": "triton/python/triton/testing.py",
+          "line_start": 271,
+          "value": "matplotlib"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "id": "pandas",
+      "name": "pandas",
+      "purl": "pkg:pypi/pandas",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/pandas-dev/pandas",
+        "status": "resolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "unresolved",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-runtime-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "runtime-external",
+          "status": "confirmed-optional",
+          "condition": "Triton testing plot helpers are used",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "triton/python/triton/testing.py"
+          ],
+          "evidence_ids": [
+            "pandas-import"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "pandas-import",
+          "kind": "python-import",
+          "location": "triton/python/triton/testing.py",
+          "line_start": 272,
+          "value": "pandas"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "id": "psutil",
+      "name": "psutil",
+      "purl": "pkg:pypi/psutil",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/giampaolo/psutil",
+        "status": "resolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "unresolved",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-runtime-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "runtime-external",
+          "status": "confirmed-optional",
+          "condition": "Triton profiler process helpers are used",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "triton/python/triton/testing.py"
+          ],
+          "evidence_ids": [
+            "psutil-import"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "psutil-import",
+          "kind": "python-import",
+          "location": "triton/python/triton/testing.py",
+          "line_start": 419,
+          "value": "psutil"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "id": "pytorch",
+      "name": "PyTorch",
+      "purl": "pkg:pypi/torch",
+      "aliases": [
+        "torch"
+      ],
+      "kind": "framework",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/pytorch/pytorch",
+        "status": "pending-runtime-evidence"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "unresolved",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-runtime-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "runtime-external",
+          "status": "confirmed-optional",
+          "condition": "the PyTorch-backed driver, autotuner, or testing helpers are used",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "triton/python/triton/backends/driver.py",
+            "triton/python/triton/runtime/autotuner.py",
+            "triton/python/triton/testing.py"
+          ],
+          "evidence_ids": [
+            "torch-import"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "torch-import",
+          "kind": "python-import",
+          "location": "triton/python/triton/backends/driver.py",
+          "line_start": 22,
+          "value": "torch"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "id": "redis-py",
+      "name": "redis-py",
+      "purl": "pkg:pypi/redis",
+      "aliases": [
+        "redis"
+      ],
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/redis/redis-py",
+        "status": "pending-runtime-evidence"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "unresolved",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-runtime-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "runtime-external",
+          "status": "confirmed-optional",
+          "condition": "RedisRemoteCacheBackend is configured",
+          "target": "core-wheel",
+          "declaration_patterns": [
+            "triton/python/triton/runtime/cache.py"
+          ],
+          "evidence_ids": [
+            "redis-import"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "redis-import",
+          "kind": "python-import",
+          "location": "triton/python/triton/runtime/cache.py",
+          "line_start": 150,
+          "value": "redis"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "id": "flaggems",
+      "name": "FlagGems",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/RACE-org/FlagGems",
+        "status": "resolved"
+      },
+      "version": {
+        "value": "633d9111528d37e60d9804d2f4ac8d9e00c3af5c",
+        "kind": "git-commit",
+        "status": "resolved-gitlink",
+        "evidence_ids": [
+          "flaggems-gitlink"
+        ]
+      },
+      "license": {
+        "declared": "Apache-2.0",
+        "concluded": null,
+        "status": "official-upstream-declaration-confirmed-review-pending",
+        "evidence_ids": [
+          "flaggems-upstream-license"
+        ]
+      },
+      "usages": [
+        {
+          "category": "test-only",
+          "status": "confirmed",
+          "target": "*",
+          "path_patterns": [
+            "FlagGems/**"
+          ],
+          "declaration_patterns": [
+            ".gitmodules"
+          ],
+          "evidence_ids": [
+            "flaggems-gitlink"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "flaggems-gitlink",
+          "kind": "gitlink",
+          "location": ".gitmodules",
+          "value": "633d9111528d37e60d9804d2f4ac8d9e00c3af5c"
+        },
+        {
+          "id": "flaggems-upstream-license",
+          "kind": "upstream-license",
+          "location": "https://github.com/RACE-org/FlagGems/blob/633d9111528d37e60d9804d2f4ac8d9e00c3af5c/LICENSE",
+          "value": "Apache-2.0; sha256:3d96ddb29c3f72e59a4d50d17455e8d2989d603587bbbc88ec069641551b302a"
+        }
+      ],
+      "notes": [
+        "FlagGems is not copied or linked into the core wheel by setup.py or CMakeLists.txt; its exact gitlink declares Apache-2.0 upstream, while product compatibility remains not applicable unless its usage changes."
+      ]
+    }
+  ]
+}

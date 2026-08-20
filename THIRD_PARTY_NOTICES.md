@@ -1,0 +1,69 @@
+# Third-Party Notices
+
+This canonical file is generated from the component registry. Do not edit entries by hand.
+This file is complete only when every required attribution field is resolved.
+Artifact evaluation checks whether required third-party components are covered.
+Only a formal candidate invocation uses the T8.2 compliance result to block promotion.
+
+## f2reduce
+
+- Component ID: `f2reduce`
+- Version: `949b91d022c001bbce19157f806013d37f05fbf5`
+- Source: https://gitlab.com/hatsya/open-source/f2reduce
+- Concluded license: `MIT`
+- License text: `triton/third_party/f2reduce/LICENCE.txt`
+- Copyright: Copyright 2023 Adam P. Goucher, Hatsya Limited
+
+## LLVM Project
+
+- Component ID: `llvm-project`
+- Version: `UNRESOLVED`
+- Source: https://github.com/llvm/llvm-project
+- Concluded license: `UNRESOLVED`
+- License text: `UNRESOLVED`
+- Copyright: UNRESOLVED
+
+## pybind11
+
+- Component ID: `pybind11`
+- Version: `UNRESOLVED`
+- Source: https://github.com/pybind/pybind11
+- Concluded license: `UNRESOLVED`
+- License text: `UNRESOLVED`
+- Copyright: UNRESOLVED
+
+## Triton
+
+- Component ID: `triton`
+- Version: `757b6a61e7df814ba806f498f8bb3160f84b120c`
+- Source: https://github.com/triton-lang/triton
+- Concluded license: `UNRESOLVED`
+- License text: `UNRESOLVED`
+- Copyright: UNRESOLVED
+
+## triton-linalg
+
+- Component ID: `triton-linalg`
+- Version: `UNRESOLVED`
+- Source: https://github.com/Cambricon/triton-linalg
+- Concluded license: `UNRESOLVED`
+- License text: `UNRESOLVED`
+- Copyright: Copyright (C) [2022-2025] by Cambricon
+
+## TTGPU variant sources
+
+- Component ID: `ttgpu-variant-sources`
+- Version: `UNRESOLVED`
+- Source: UNRESOLVED
+- Concluded license: `UNRESOLVED`
+- License text: `UNRESOLVED`
+- Copyright: UNRESOLVED
+
+## zlib
+
+- Component ID: `zlib`
+- Version: `UNRESOLVED`
+- Source: https://github.com/madler/zlib
+- Concluded license: `UNRESOLVED`
+- License text: `UNRESOLVED`
+- Copyright: UNRESOLVED
