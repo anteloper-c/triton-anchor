@@ -9,7 +9,7 @@ from scripts.compliance.core import (
     evaluate_vulnerability_coverage,
 )
 
-from tests.compliance.helpers import component, scanned_coverage
+from scripts.compliance.tests.helpers import component, scanned_coverage
 
 
 ARTIFACT_SHA256 = "a" * 64

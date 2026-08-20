@@ -6,7 +6,7 @@ from pathlib import Path
 
 from scripts.compliance.wheel import inspect_wheel, validate_record
 
-from tests.compliance.helpers import DIST_INFO, make_wheel
+from scripts.compliance.tests.helpers import DIST_INFO, make_wheel
 
 
 class WheelValidationTests(unittest.TestCase):

@@ -15,7 +15,7 @@ from scripts.compliance.core import (
     write_json,
 )
 
-from tests.compliance.helpers import artifact, component, scanned_coverage
+from scripts.compliance.tests.helpers import artifact, component, scanned_coverage
 
 
 TODAY = date(2026, 8, 19)

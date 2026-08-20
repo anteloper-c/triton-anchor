@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from scripts.compliance.cli import build_parser, main
-from tests.compliance.helpers import component, make_wheel
+from scripts.compliance.tests.helpers import component, make_wheel
 
 
 class ComplianceCliTests(unittest.TestCase):

@@ -332,7 +332,7 @@
         {
           "id": "triton-linalg-upstream-tree-audit",
           "kind": "upstream-tree-comparison",
-          "location": "docs/triton_linalg_license_audit.md",
+          "location": "scripts/compliance/docs/triton_linalg_license_audit.md",
           "value": "local derivative of Cambricon master@00f51c2e48a943922f86f03d58e29f514def646d: 114 mapped files content-identical, 4 content-modified, 117 file-mode changes"
         },
         {

@@ -92,7 +92,7 @@ Wheel basename 不是父目录路径的一部分，而是 Wheel 格式的语义�
 
 ## 唯一组件证据模型
 
-[`compliance/component-registry.json`](../compliance/component-registry.json) 是组件身份、已知用途和仓库证据的唯一人工登记表。SBOM、Notice 和门禁都应由“登记表 + 实际受评估产物发现 + 实际构建清单”生成，不再分别维护组件名单。
+[`compliance/component-registry.json`](../../../compliance/component-registry.json) 是组件身份、已知用途和仓库证据的唯一人工登记表。SBOM、Notice 和门禁都应由“登记表 + 实际受评估产物发现 + 实际构建清单”生成，不再分别维护组件名单。
 
 分类发生在 `usages` 上，而不是组件本身上。同一组件可以有多个互不混淆的用途。例如 Triton 的 Python 文件和头文件是 `distributed`，其 C++ 对象又是 `embedded`。
 
@@ -180,13 +180,13 @@ CycloneDX composition 只表达组件库存和依赖图是否完整，不表达�
 
 ## 许可证与漏洞门禁
 
-[`compliance/license-policy.json`](../compliance/license-policy.json) 当前处于 `status=pending`，并要求 leader 与许可证审查人批准，因此所有 allow/deny 都只是待批准提案，不能用于正式放行。
+[`compliance/license-policy.json`](../../../compliance/license-policy.json) 当前处于 `status=pending`，并要求 leader 与许可证审查人批准，因此所有 allow/deny 都只是待批准提案，不能用于正式放行。
 
 许可证按**完整 SPDX expression 精确匹配**。未知、`NOASSERTION`、扫描器冲突、没有明确批准的 `OR`/`AND` 表达式均进入 review 并阻断；工具不能把表达式拆成若干 token 后自行推断兼容性。
 
 FlagGems 等 `test-only` 组件仍要出现在全量许可证审计中，满足任务描述中的“核对”；但在没有进入候选产物、运行依赖或构建链的证据时，不默认阻断核心 Wheel。纯上传、状态回写等 `CI-only` Action 由 T8.3/CI 供应链治理处理，不扩张为 T8.2 产品候选门禁。
 
-High/Critical 漏洞默认阻断。只有 [`compliance/risk-acceptances.json`](../compliance/risk-acceptances.json) 中状态为 `accepted`、与组件版本和漏洞编号匹配、限定到当前 release 版本或具体产物 SHA256、且未过期的人工批准记录可以放行。这样同一 release 的多个 ABI Wheel 不需要机械地重复审批；确实只影响某一产物时仍可用 SHA256 收窄范围。当前该文件没有任何接受记录。
+High/Critical 漏洞默认阻断。只有 [`compliance/risk-acceptances.json`](../../../compliance/risk-acceptances.json) 中状态为 `accepted`、与组件版本和漏洞编号匹配、限定到当前 release 版本或具体产物 SHA256、且未过期的人工批准记录可以放行。这样同一 release 的多个 ABI Wheel 不需要机械地重复审批；确实只影响某一产物时仍可用 SHA256 收窄范围。当前该文件没有任何接受记录。
 
 “扫描完成且零漏洞”还不够。每个实际产品组件和主要构建组件必须有对应版本的漏洞覆盖记录：机器扫描记录包含扫描器、版本、日期和结果证据；工具不支持其生态时则需要带审查人、日期和证据的人工复核。缺少覆盖不能被解释为“没有漏洞”，ABI-only SONAME 也不能伪装成有精确包版本的自动查询。
 
@@ -231,6 +231,28 @@ High/Critical 漏洞默认阻断。只有 [`compliance/risk-acceptances.json`](.
 正式候选 Wheel 预期由未来 T3.8/T4.1 的 tag/release 流程产生。其实现状态和最终入口尚未确认，因此本阶段不把 blocking `candidate` 门禁硬接到 Local CI 或手工 Delivery，也不把每个 PR Wheel冒充发布候选。将来发布流程必须在生成正式 Wheel 后传入同次构建 Wheel、`same-build` 证据和全部扫描报告，再依据同一 CLI 的退出码阻断晋级。
 
 当前的候选门禁预览放在能够实际读取 Wheel 和证据的本地或服务器流程中，不放入 GitHub 托管 runner。原因是 `workflow_dispatch` 只能传递路径字符串，不能把本机文件送入 runner；当前仓库也没有一个包含 Wheel 和全部扫描证据的可下载 artifact。为避免建立默认必失败的伪自动化入口，`.github/workflows/dependency-compliance.yml` 现阶段只运行合规核心测试。
+
+### 当前 `dependency-compliance.yml` 的执行流
+
+开发阶段向 `t82-dependency-compliance` 推送合规相关文件会触发该 workflow；未来变更进入 `main`/`CI_dev` 或以它们为 PR 基线时也会触发。路径过滤只关注 workflow 自身、`scripts/compliance/**`、`compliance/**` 和根 Notice。相同 ref 上的新运行会取消旧运行，避免重复消耗。分支名只用于当前 fork 验证，正式合入前应从 `push.branches` 删除，避免把个人开发分支固化到长期流程中。
+
+```text
+push / pull_request / workflow_dispatch
+                ↓
+checkout 当前提交（不拉子模块）
+                ↓
+安装 Python 3.11
+                ↓
+compileall scripts/compliance
+                ↓
+发现并运行 scripts/compliance/tests 下全部 test_*.py
+                ↓
+任一编译或断言失败 → job 失败；全部通过 → core-test 通过
+```
+
+这条流用测试文件把 T8.2 核心拆开验证：Wheel 输入和配置契约；组件发现与对账；依赖声明变化和 admission；OSV 覆盖及严重漏洞；SBOM、Notice、产物关联和 CLI 门禁。它的通过只表示这些实现契约没有回归，不表示已经扫描了当前仓库或某个真实 Wheel。
+
+当前 workflow 没有下载或构建 Wheel，没有安装/运行 ScanCode、Syft、OSV-Scanner，没有调用 `admission`、`audit`、`artifact-evaluation` 或 `candidate`，也没有定时触发和报告上传。因此它是 T8.2 自动化的核心验证层，不是完整的 T8.2 执行流。后续应在证据生产和正式 release 入口明确后增加相应 job，而不是把占位报告塞进现有 `core-test`。
 
 候选预览暂定 Wheel 路径为 `dist/triton_anchor-0.2.0-cp312-cp312-linux_x86_64.whl`，调用时可以将 `--wheel` 替换成执行机器可见的任意路径。证据目录暂定为 `t82-evidence/`，包含 `scancode-source.json`、`scancode-wheel.json`、`syft-wheel.cdx.json`、`osv-results.json` 和 `build-evidence.json`。本地或服务器使用同一入口：
 

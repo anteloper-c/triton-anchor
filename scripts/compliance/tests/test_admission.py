@@ -9,7 +9,7 @@ from scripts.compliance.core import (
     evaluate_dependency_admission,
     evaluate_inventory_audit,
 )
-from tests.compliance.helpers import component, scanned_coverage
+from scripts.compliance.tests.helpers import component, scanned_coverage
 
 
 TODAY = date(2026, 8, 20)

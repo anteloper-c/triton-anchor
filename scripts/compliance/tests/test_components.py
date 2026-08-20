@@ -14,7 +14,7 @@ from scripts.compliance.core import (
 )
 from scripts.compliance.model import _effective_version
 
-from tests.compliance.helpers import component
+from scripts.compliance.tests.helpers import component
 
 
 class ComponentAndLicenseTests(unittest.TestCase):

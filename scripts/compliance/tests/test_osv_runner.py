@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.compliance.osv_runner import _query_inventory, run_osv_scan
-from tests.compliance.helpers import component
+from scripts.compliance.tests.helpers import component
 
 
 def registry_and_build() -> tuple[dict, dict]:
