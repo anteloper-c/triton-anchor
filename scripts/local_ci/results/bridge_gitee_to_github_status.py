@@ -702,11 +702,27 @@ def read_local_ci_result(args: argparse.Namespace, target: Target, gitee_token: 
         validation_purposes_from_report(codex_report),
     )
     exit_code = parse_summary_status(summary)
+    execution_mode = parse_summary_value(summary, "execution_mode") or "full"
+    codex_only_pr = execution_mode == "codex_only" and bool(
+        re.fullmatch(r"ci/pr-[0-9]+/.+", target.task_ref)
+    )
+    required_stage_ids = (
+        tuple(stage_id for stage_id, _, _, _ in REPORTABLE_STAGES)
+        if codex_only_pr
+        else REQUIRED_STAGE_IDS
+    )
+    accepted_statuses = {"skipped"} if codex_only_pr else {"pass", "success"}
     missing_required = [
         stage_id
-        for stage_id in REQUIRED_STAGE_IDS
-        if stage_statuses.get(stage_id, "").strip().lower() not in {"pass", "success"}
+        for stage_id in required_stage_ids
+        if stage_statuses.get(stage_id, "").strip().lower() not in accepted_statuses
     ]
+    if execution_mode != "full" and not codex_only_pr:
+        missing_required.append("valid_execution_mode")
+    if not codex_only_pr:
+        for stage_id in REQUIRED_STAGE_IDS:
+            if stage_statuses.get(stage_id, "").strip().lower() == "skipped":
+                stage_statuses[stage_id] = "fail"
     if exit_code == 0 and missing_required:
         print(
             "Local CI summary claimed success but required stages did not pass: "

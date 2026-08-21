@@ -398,6 +398,7 @@ run_once() {
 
   local task_metadata_file=""
   local task_metadata_ref=""
+  local execution_mode="full"
   if task_metadata_ref="$(metadata_ref_for_task "${branch}")"; then
     task_metadata_file="${run_dir}/task-metadata.json"
     local task_metadata_message=""
@@ -419,12 +420,20 @@ run_once() {
       fi
     fi
   fi
+  if [[ -n "${task_metadata_file}" ]]; then
+    execution_mode="$(
+      "${PYTHON_BIN:-python3}" -c \
+        'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("execution_mode", "full"))' \
+        "${task_metadata_file}"
+    )"
+  fi
+  echo "Local CI execution mode: ${execution_mode}"
 
   local flaggems_test_mode
   flaggems_test_mode="$(flaggems_mode_for_branch "${branch}")"
   echo "FlagGems test mode: ${flaggems_test_mode}"
 
-  if [[ "${branch}" =~ ^ci/pr-[0-9]+/.+$ ]]; then
+  if [[ "${branch}" =~ ^ci/pr-[0-9]+/.+$ && "${execution_mode}" != "codex_only" ]]; then
     if [[ -z "${base_sha}" ]]; then
       echo "Skipping PR performance baseline because exact base SHA is unavailable." >&2
     else
@@ -480,18 +489,46 @@ run_once() {
     fi
   fi
 
-  prepare_trusted_envsetup "${LOCAL_CI_RUNNER_DIR}" "${branch}" \
-    "${base_branch}" "${base_sha}"
-
   local status=0
-  set +e
-  LOCAL_CI_BASE_SHA="${base_sha}" LOCAL_CI_BASE_REF="${base_branch}" GITEE_BRANCH="${branch}" \
-    LOCAL_CI_RUN_ID="${run_id}" FLAGGEMS_TEST_MODE="${flaggems_test_mode}" \
-    bash "${LOCAL_CI_RUNNER_DIR}/orchestration/run_deterministic_ci_in_container.sh" \
-      "${sha}" "${branch}" 2>&1 |
-    tee "${run_dir}/local-ci.log"
-  status=${PIPESTATUS[0]}
-  set -e
+  local docs_only_artifact_dir=""
+  if [[ "${execution_mode}" == "codex_only" ]]; then
+    docs_only_artifact_dir="$(
+      mktemp -d "/tmp/triton-anchor-docs-only.${sha:0:12}.XXXXXX"
+    )"
+    cat > "${docs_only_artifact_dir}/delivery-summary.txt" <<EOF
+schema: triton-anchor-local-ci/v3
+status: 0
+target_sha: ${sha}
+tested_sha: ${sha}
+tested_sha_kind: pr_merge
+actual_checkout_sha: not_run
+branch: ${branch}
+run_id: ${run_id}
+execution_mode: codex_only
+artifact_dir: ${docs_only_artifact_dir}
+frontend_build_status: skipped
+frontend_smoke_status: skipped
+backend_rebuild_status: skipped
+backend_smoke_jit_status: skipped
+flaggems_status: skipped
+compile_time_status: skipped
+pass_profile_status: skipped
+ir_serialization_status: skipped
+EOF
+    echo "Skipping deterministic Local CI for documentation-only PR." |
+      tee "${run_dir}/local-ci.log"
+  else
+    prepare_trusted_envsetup "${LOCAL_CI_RUNNER_DIR}" "${branch}" \
+      "${base_branch}" "${base_sha}"
+    set +e
+    LOCAL_CI_BASE_SHA="${base_sha}" LOCAL_CI_BASE_REF="${base_branch}" GITEE_BRANCH="${branch}" \
+      LOCAL_CI_RUN_ID="${run_id}" FLAGGEMS_TEST_MODE="${flaggems_test_mode}" \
+      bash "${LOCAL_CI_RUNNER_DIR}/orchestration/run_deterministic_ci_in_container.sh" \
+        "${sha}" "${branch}" 2>&1 |
+      tee "${run_dir}/local-ci.log"
+    status=${PIPESTATUS[0]}
+    set -e
+  fi
 
   local codex_ai_base_sha=""
   local codex_ai_base_ref=""
@@ -507,8 +544,9 @@ run_once() {
   local codex_ai_test_status="NOT_RUN"
   local codex_ai_failure_code=""
   local codex_ai_mode="not_run"
-  if [[ "${RUN_CODEX_AI_CI}" == "true" \
-    && (-z "${CODEX_AI_CI_BRANCH_REGEX}" || "${branch}" =~ ${CODEX_AI_CI_BRANCH_REGEX}) ]]; then
+  if [[ "${execution_mode}" == "codex_only" \
+    || ("${RUN_CODEX_AI_CI}" == "true" \
+      && (-z "${CODEX_AI_CI_BRANCH_REGEX}" || "${branch}" =~ ${CODEX_AI_CI_BRANCH_REGEX})) ]]; then
     codex_ai_ci_verdict="UNKNOWN"
     codex_ai_mode="full"
     if [[ ${status} -ne 0 ]]; then
@@ -593,11 +631,17 @@ if head_sha:
 output.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
 
+  if [[ -n "${docs_only_artifact_dir}" ]]; then
+    echo "Artifact dir: ${docs_only_artifact_dir}" >> "${run_dir}/local-ci.log"
+  fi
   local publish_status=0
   set +e
   publish_result "${sha}" "${status}" "${run_id}" "${run_dir}" "${branch}" "${head_sha}"
   publish_status=$?
   set -e
+  if [[ -n "${docs_only_artifact_dir}" ]]; then
+    rm -rf -- "${docs_only_artifact_dir}"
+  fi
 
   if [[ ${publish_status} -eq 0 ]]; then
     echo "${sha}" > "${last_file}"
