@@ -69,8 +69,8 @@ flowchart TB
 | 工作流 | 文件 | 作用 |
 | --- | --- | --- |
 | CI Gateway | `.github/workflows/ci-gateway.yml` | 统一授权、契约校验、跨分支路由及 Worker 模式分流 |
-| Worker manifest | `.github/ci-gateway-manifest.json` | 机器可解析地声明 Contract 版本、角色、Merge-Result 和能力 |
-| CI | `.github/workflows/ci.yml` | Ruff、格式检查、多 Python 版本单元测试和覆盖率 |
+| Worker manifest | `.github/ci-gateway-manifest.json` | 机器可解析地声明 Contract、角色、Merge-Result 和能力 |
+| Basic CI | `.github/workflows/ci_basic.yml` | Ruff、格式检查、多 Python 版本单元测试和覆盖率 |
 | Delivery CI | `.github/workflows/delivery-ci.yml` | CI 脚本预检、前端测试、性能契约测试、手动容器化 full smoke |
 | Public API Compatibility | `.github/workflows/api-compat.yml` | 比较基准提交与候选提交的稳定 Python API |
 | Public API Breaking Change Notification | `.github/workflows/api-breaking-notify.yml` | 对 Breaking Change 结果进行校验并通知提交者 |
@@ -78,16 +78,16 @@ flowchart TB
 | Receive Local CI Result | `.github/workflows/receive-local-ci-result.yml` | 等待本地结果、回写 GitHub 状态并刷新 Pages |
 | Backend Status Pages | `.github/workflows/backend-status-pages.yml` | 同步 Gitee 结果、校验数据并部署 GitHub Pages |
 
-### 2.4 多分支 Gateway v3
+### 2.4 多分支 Gateway
 
-默认分支只保留控制面：监听全仓库 PR、执行人工授权、校验目标 Worker 和路由精确版本。普通目标分支持有完整 Worker，实现 Security Gate、任务投递、结果接收、取消和 Pages。目标分支没有 manifest 时，可以由 `LOCAL_CI_FALLBACK_WORKER_BRANCH` 指定的 Worker 临时代管；`LOCAL_CI_FALLBACK_PR_ENABLED=false` 可关闭新的 PR 代管，`LOCAL_CI_FALLBACK_PUSH_ENABLED=false` 可关闭手动跨分支 push 代管。两个开关未配置时均默认为 `true`。manifest 已存在但损坏或版本不兼容时仍直接失败，不会静默回退。
+默认分支只保留控制面：监听全仓库 PR、执行人工授权、校验目标 Worker 和路由精确 revision。普通目标分支持有完整 Worker，实现 Security Gate、任务投递、结果接收、取消和 Pages。目标分支没有 manifest 时，可以由 `LOCAL_CI_FALLBACK_WORKER_BRANCH` 指定的 Worker 临时代管；`LOCAL_CI_FALLBACK_PR_ENABLED=false` 可关闭新的 PR 代管，`LOCAL_CI_FALLBACK_PUSH_ENABLED=false` 可关闭手动跨分支 push 代管。两个开关未配置时均默认为 `true`。manifest 已存在但损坏或 Contract 不兼容时仍直接失败，不会静默回退。
 
-`ci-gateway.yml` 是统一入口和契约实现，不直接执行本地测试。Contract v3 固定 `dispatch`、`push`、`receive`、`pages`、`cancel` 五种 mode，以及 head、base、Merge-Result、手动请求和 Worker 精确版本等 SHA 字段。PR 的实际被测对象始终是 GitHub `refs/pull/<PR号>/merge`：第二个 parent 必须等于当前 PR head，第一个 parent 作为该 Merge-Result 实际采用的 `comparison_base_sha`。
+`ci-gateway.yml` 是统一入口和契约实现，不直接执行本地测试。Gateway Contract 固定 `dispatch`、`push`、`receive`、`pages`、`cancel` 五种 mode，以及 head、base、Merge-Result、手动请求和 Worker 精确 revision 等 SHA 字段。PR 的实际被测对象始终是 GitHub `refs/pull/<PR号>/merge`：第二个 parent 必须等于当前 PR head，第一个 parent 作为该 Merge-Result 实际采用的 `comparison_base_sha`。
 
 ```mermaid
 flowchart LR
   R["默认分支 Gateway Router<br/>授权 / 状态 / Worker 选择"]
-  C["Gateway Contract v3<br/>固定 inputs / mode / ref / 权限边界"]
+  C["Gateway Contract<br/>固定 inputs / mode / ref / 权限边界"]
   W["普通目标分支 Gateway Worker<br/>validate / security / dispatch / receive / pages / cancel"]
   S["Security Gate<br/>可信 scanner + CodeQL"]
   G["Gitee 中转仓库"]
@@ -104,7 +104,7 @@ PR 页面只显示最新提交对应的 Checks。Gateway 的 Actions `run-name` 
 
 ### 3.1 基础 CI
 
-`.github/workflows/ci.yml` 在指定分支的 push 和 PR 上运行，包含两个主要 Job。
+`.github/workflows/ci_basic.yml` 在指定分支的 push 和 PR 上运行，包含两个主要 Job。
 
 `Lint & Style`：
 

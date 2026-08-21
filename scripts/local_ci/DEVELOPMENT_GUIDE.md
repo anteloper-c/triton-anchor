@@ -707,7 +707,7 @@ GitHub CI 额外运行 Python 3.9/3.10/3.11/3.12 矩阵；但 packaging metadata
 
 ### 9.2 Ruff
 
-仓库没有独立 Ruff 配置文件。当前 `.github/workflows/ci.yml` 安装固定版本 `ruff==0.15.22`：
+仓库没有独立 Ruff 配置文件。当前 `.github/workflows/ci_basic.yml` 安装固定版本 `ruff==0.15.22`：
 
 ```bash
 ruff check python/ tests/

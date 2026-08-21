@@ -1,4 +1,4 @@
-# 多分支 CI Gateway v3 架构与责任边界
+# 多分支 CI Gateway 架构与责任边界
 
 ## 目标
 
@@ -20,19 +20,19 @@
 | --- | --- | --- |
 | `.github/workflows/ci-gateway.yml` | router-only Gateway：授权、Worker 发现、生命周期处理、状态初始化与跨分支调度 | worker-capable Gateway：保留同一公共 Router，并实现 `dispatch`、`push`、`receive`、`pages`、`cancel` |
 | `.github/workflows/api-breaking-notify.yml` | 消费 Public API Compatibility 结果并通知或恢复已有评论 | 可以保留副本，但系统只依赖默认分支监听器 |
-| `.github/ci-gateway-manifest.json` | 不持有，只读取普通分支 manifest | 声明 Contract v3、Worker 角色、Merge-Result 和实际 capabilities |
+| `.github/ci-gateway-manifest.json` | 不持有，只读取普通分支 manifest | 声明 Gateway Contract、Worker 角色、Merge-Result 和实际 capabilities |
 | `.github/workflows/security-gate.yml` | 不持有、不执行候选代码扫描 | 使用精确 Worker revision 的 scanner 与 CodeQL 阻止不可信 dispatch |
 | `.github/workflows/dispatch-local-ci.yml` | 不持有 | 创建 Gitee task/base/head/metadata refs，写 pending 并启动 receiver |
 | `.github/workflows/receive-local-ci-result.yml` | 不持有 | 等待结果、校验 PR 新鲜度、写回 Merge-Result status，并按策略请求 Pages |
 | `.github/workflows/backend-status-pages.yml` | 不持有 | 同步结果、验证 Dashboard；只有配置分支可以部署 |
-| `.github/workflows/ci.yml`、`delivery-ci.yml`、`api-compat.yml` | router-only 形态不依赖 | 分支自有 GitHub CI，可随目标分支独立调整 |
+| `.github/workflows/ci_basic.yml`、`delivery-ci.yml`、`api-compat.yml` | router-only 形态不依赖 | 分支自有 GitHub CI，可随目标分支独立调整 |
 | `scripts/ci/`、`scripts/local_ci/`、`scripts/dashboard/` | 不持有 scanner、runner 或页面实现 | 提供可信扫描、本地执行、结果发布和页面数据转换 |
 
 普通目标分支启用自身 Worker 时，manifest、Gateway、Security Gate、dispatcher、receiver、Pages workflow 及其必要脚本必须成套存在。缺少 manifest 才允许 fallback；manifest 已存在但损坏或能力不足时明确失败。
 
-## Gateway Contract v3
+## Gateway Contract
 
-Contract 嵌入两侧的 `.github/workflows/ci-gateway.yml`。Router 与 Worker 必须保持相同事件、`workflow_dispatch.inputs`、公共路由 jobs 和版本号；Worker 是 Router 公共逻辑的严格超集。
+Contract 嵌入两侧的 `.github/workflows/ci-gateway.yml`。Router 与 Worker 必须保持相同事件、`workflow_dispatch.inputs`、公共路由 jobs 和调用约定；Worker 是 Router 公共逻辑的严格超集。
 
 固定 mode：
 
@@ -67,14 +67,14 @@ sequenceDiagram
 
   GH->>R: pull_request_target
   R->>R: 冻结 head/base/merge SHA<br/>选择目标或 fallback Worker
-  R->>W: mode=dispatch + Contract v3
+  R->>W: mode=dispatch + Gateway Contract
   W->>W: 重验 PR、Worker revision、merge parents
   W->>S: 可信 scanner + CodeQL
   S-->>W: 通过后继续
   W->>G: 推送 task/base/head/metadata refs
   G->>L: poller 发现精确 task
   L->>L: source base envsetup<br/>执行 Merge-Result
-  L->>G: 发布结果 v3
+  L->>G: 发布结果和 artifacts
   W->>W: mode=receive 重验 freshness
   W->>GH: commit status / 分阶段结果
   W->>W: mode=pages（仅指定分支部署）
@@ -96,7 +96,7 @@ PR 的 pending、success、failure 和 error Required status 均写入 `tested_s
 ## 接入新普通分支
 
 1. 从兼容 Worker 版本复制完整 `.github/workflows/ci-gateway.yml` 和必要 worker workflows。
-2. 提供 `.github/ci-gateway-manifest.json`，声明 Contract v3、`worker`、`merge-result` 和实际能力。
+2. 提供 `.github/ci-gateway-manifest.json`，声明 Gateway Contract、`worker`、`merge-result` 和实际能力。
 3. 保持公共 Router jobs 和 inputs 不变，只在 Worker 或普通 CI 实现内部做分支专用调整。
 4. 运行 actionlint、契约测试、scanner、Local CI 和 Dashboard 测试。
 5. manifest 合入后，默认分支会自动从 fallback 切换到该目标分支自身 Worker。
@@ -106,10 +106,10 @@ PR 的 pending、success、failure 和 error Required status 均写入 `tested_s
 测试 integration 分支时只设置仓库变量，不修改生产代码默认值：
 
 ```text
-LOCAL_CI_FALLBACK_WORKER_BRANCH=integration/ai-ci-gateway-workers-v3
-LOCAL_CI_PAGES_BRANCH=integration/ai-ci-gateway-workers-v3
-DASHBOARD_SOURCE_BRANCH=ci/push/integration/ai-ci-gateway-workers-v3
-DASHBOARD_FULL_TEST_SOURCE_BRANCH=ci/full/integration/ai-ci-gateway-workers-v3
+LOCAL_CI_FALLBACK_WORKER_BRANCH=<测试 Worker 分支>
+LOCAL_CI_PAGES_BRANCH=<测试 Worker 分支>
+DASHBOARD_SOURCE_BRANCH=ci/push/<测试 Worker 分支>
+DASHBOARD_FULL_TEST_SOURCE_BRANCH=ci/full/<测试 Worker 分支>
 ```
 
 生产默认 fallback 和 Pages 分支仍为 `CI_dev`，Gitee owner、仓库、URL、用户名和结果分支继续使用部署环境的现有配置。

@@ -39,13 +39,22 @@ GitHub 不主动连接本地服务器。GitHub 把经过校验的精确任务 re
 flowchart TB
   Event["PR / push / 手动任务"]
 
-  subgraph GH["GitHub"]
-    Router["默认分支 Router\n授权、路由、生命周期"]
-    Worker["目标分支或 fallback Worker\nSecurity Gate、dispatch、receive、pages"]
-    FastCI["分支自有 GitHub CI\nLint / Unit / Delivery / API"]
-    Status["Commit status / PR comment / Actions"]
-    Dashboard["GitHub Pages Dashboard"]
+  subgraph GH["GitHub workflows"]
+    Gateway["CI Gateway\nci-gateway.yml\n授权、路由和生命周期"]
+    Manifest["Worker manifest\nci-gateway-manifest.json\n声明角色、能力和任务约定"]
+    Security["Security Gate\nsecurity-gate.yml\n可信扫描与 CodeQL"]
+    Dispatch["Dispatch Local CI\ndispatch-local-ci.yml\n冻结 SHA、写 pending、投递 Gitee"]
+    Receive["Receive Local CI Result\nreceive-local-ci-result.yml\n读取结果、重验、回写状态"]
+    Pages["Backend Status Pages\nbackend-status-pages.yml\n同步数据、构建和指定分支部署"]
+    Basic["Basic CI\nci_basic.yml\nRuff 和纯 Python 单测"]
+    Delivery["Delivery CI\ndelivery-ci.yml\n脚本预检和手动 full smoke"]
+    API["Public API Compatibility\napi-compat.yml\nAPI 对比与 artifact"]
+    Notify["API Breaking Notification\napi-breaking-notify.yml\n更新或恢复 Breaking 通知"]
+    Contracts["Local CI Contracts\nlocal_ci.yml（手动）\n协议预检"]
   end
+
+  Status["Commit status / PR comment / Actions"]
+  Dashboard["GitHub Pages Dashboard"]
 
   subgraph Relay["Gitee 中转仓库"]
     Task["ci/* 任务 refs\nbase / head / metadata"]
@@ -58,12 +67,21 @@ flowchart TB
     Codex["Codex AI CI\n非阻塞审查与补充验证"]
   end
 
-  Event --> Router --> Worker --> Task
-  Event --> FastCI --> Status
+  Event --> Gateway
+  Gateway --> Manifest
+  Gateway --> Security --> Dispatch --> Task
   Task --> Poller --> Deterministic --> Codex --> Result
-  Result --> Worker --> Status
-  Worker --> Dashboard
+  Result --> Receive --> Status
+  Receive --> Gateway
+  Gateway --> Pages --> Dashboard
+
+  Event --> Basic --> Status
+  Event --> Delivery --> Status
+  Event --> API --> Notify --> Status
+  Event -. 手动维护检查 .-> Contracts
 ```
+
+图中的工作流节点与下一节的文件一览一一对应；箭头只表示主调用关系，并不表示所有工作流会在同一次 PR 或 push 中同时运行。
 
 ### 2.3 关键原则
 
@@ -80,9 +98,9 @@ flowchart TB
 | 工作流 | 文件 | 作用 |
 | --- | --- | --- |
 | CI Gateway | `.github/workflows/ci-gateway.yml` | Router/Worker 共同入口，负责契约校验、模式分流和跨分支路由 |
-| Worker manifest | `.github/ci-gateway-manifest.json` | 声明 Contract 版本、Worker 角色、Merge-Result 和可用能力 |
+| Worker manifest | `.github/ci-gateway-manifest.json` | 声明 Worker 角色、Merge-Result 和可用能力 |
 | Security Gate | `.github/workflows/security-gate.yml` | 可信 scanner、CodeQL 与风险构造检查 |
-| CI | `.github/workflows/ci.yml` | Ruff、格式检查和纯 Python 测试 |
+| Basic CI | `.github/workflows/ci_basic.yml` | Ruff、格式检查和纯 Python 测试 |
 | Delivery CI | `.github/workflows/delivery-ci.yml` | CI 脚本预检、性能协议检查和手动容器化 full smoke |
 | Public API Compatibility | `.github/workflows/api-compat.yml` | 比较稳定 Python API 并生成 artifact |
 | API Breaking Notification | `.github/workflows/api-breaking-notify.yml` | 消费兼容性 artifact，创建、更新或恢复通知 |
@@ -95,7 +113,7 @@ flowchart TB
 
 ### 3.1 Router、Worker 与 fallback
 
-CI Gateway 将系统拆为默认分支控制面和普通目标分支执行面。可以把 Router 理解为“只负责决定能否执行、交给谁执行的调度台”；Worker 则是“遵守同一调度协议并实际把任务跑完的执行台”。默认分支和 Worker 分支中的 `.github/workflows/ci-gateway.yml` 保持相同的事件、`workflow_dispatch.inputs`、公共 Router jobs 和 Contract 版本；Worker 版本在此基础上增加执行 jobs，是 Router 的严格超集。
+CI Gateway 将系统拆为默认分支控制面和普通目标分支执行面。可以把 Router 理解为“只负责决定能否执行、交给谁执行的调度台”；Worker 则是“遵守同一调度协议并实际把任务跑完的执行台”。默认分支和 Worker 分支中的 `.github/workflows/ci-gateway.yml` 保持相同的事件、`workflow_dispatch.inputs`、公共 Router jobs 和 Contract 定义；Worker 形态在此基础上增加执行 jobs，是 Router 的严格超集。
 
 | 角色 | 负责 | 不负责 |
 | --- | --- | --- |
@@ -107,20 +125,11 @@ CI Gateway 将系统拆为默认分支控制面和普通目标分支执行面。
 
 当前部署策略中，默认分支承担 Router，`CI_dev` 是首个完整 Worker 和 fallback Worker。`CI_dev` 是当前策略默认值，而不是 Gateway Contract 中必须写死的业务分支名。
 
-### 3.2 Gateway Contract v3
+### 3.2 Gateway Contract
 
-**当前基线：Gateway Contract v3。** Gateway Contract 是两侧 `ci-gateway.yml` 共同实现的调用协议，不是额外的独立 workflow。默认分支 Router 与目标分支 Worker 必须使用同一版本；Worker manifest 也会声明该版本，Router 在路由前进行校验。
+Gateway Contract 是默认分支 Router 与目标分支 Worker 共同遵守的调用约定，不是额外的独立 workflow。它固定了两侧 `ci-gateway.yml` 的 inputs、任务模式、SHA 含义、task ref 格式和权限边界；Worker manifest 用来声明一个分支是否按这套约定提供执行能力，Router 会在路由前检查它。
 
-为避免“所有 v3 都是同一协议”的误解，当前涉及的版本分别表示：
-
-| 对象 | 当前版本或形式 | 负责什么 |
-| --- | --- | --- |
-| Gateway Contract | v3 | Router 与 Worker 的 inputs、mode、SHA 语义、task ref 和权限边界 |
-| PR task metadata | v2 | PR 标题、描述、base/head/tested SHA 及文本是否被截断 |
-| Codex AI 报告 | `triton-anchor-codex-ai-report/v3` | AI 的语义分析、可信命令事实、finding 与评论渲染输入 |
-| 发布结果 | 独立 schema | `result.json`、`publish-manifest.json`、阶段摘要和性能产物的发布/消费协议 |
-
-Gateway Contract v3 固定以下模式：
+Gateway Contract 固定以下模式：
 
 | mode | 含义 |
 | --- | --- |
@@ -140,7 +149,7 @@ Gateway Contract v3 固定以下模式：
 
 PR 的 `refs/pull/<PR号>/merge` 必须存在，第二父提交必须等于 `expected_head_sha`；第一父提交即实际采用的 `comparison_base_sha`。这样测试对象始终是“当前 PR 与当前目标分支的可合并结果”。
 
-修改 Contract 的 inputs、mode、SHA 含义、ref 格式或 Secret 边界时，不能由单个分支直接改动。需要先部署兼容 Worker，再升级默认分支 Router；若无法兼容，应升级 Contract 版本并保留明确的迁移说明。
+修改 Contract 的 inputs、mode、SHA 含义、ref 格式或 Secret 边界时，不能由单个分支直接改动。需要先部署兼容 Worker，再升级默认分支 Router，并在变更说明中明确兼容范围与迁移步骤。
 
 ### 3.3 PR 自动链路
 
@@ -161,7 +170,7 @@ flowchart TB
   Security --> Dispatch["Dispatcher\n写 task/base/head/metadata\n写 pending"]
   Dispatch --> Relay["Gitee 中转仓库\nci/* task refs"]
   Relay --> Local["本地 poller + Docker\n执行 Merge-Result"]
-  Local --> Publish["发布 result v3\n和 artifacts"]
+  Local --> Publish["发布结果\n和 artifacts"]
   Publish --> Receiver["Worker receiver\n重验 PR 与 SHA 身份"]
   Receiver --> Status["GitHub tested SHA\n写最终状态"]
 ```
@@ -186,7 +195,7 @@ flowchart TB
 
 ### 4.1 基础 CI
 
-`.github/workflows/ci.yml` 在持有它的分支 push 和 PR 上运行：
+`.github/workflows/ci_basic.yml` 在持有它的分支 push 和 PR 上运行：
 
 - `Lint & Style`：Ruff 静态规则与格式检查；
 - `Unit Tests (pure Python)`：Python 3.9、3.10、3.11、3.12 矩阵，覆盖 `python/triton_anchor/tests/`；
@@ -224,12 +233,12 @@ Security Gate 通过不等于候选代码完全可信，而是满足“允许将
 | PR task | `ci/pr-<PR号>/<source-branch>` | 是 | 指向 GitHub test Merge-Result |
 | PR base | `ci/base/pr-<PR号>/<source-branch>` | 否 | 性能基线、可信 base 与 diff 身份 |
 | PR head | `ci/head/pr-<PR号>/<source-branch>` | 否 | 精确贡献者 head，供 metadata 和 Codex diff 使用 |
-| PR metadata | `ci/meta/pr-<PR号>/<source-branch>` | 否 | `task-metadata.json` v2 |
+| PR metadata | `ci/meta/pr-<PR号>/<source-branch>` | 否 | `task-metadata.json` |
 | push | `ci/push/<branch>` | 是 | 分支当前精确 push 提交 |
 | full | `ci/full/<branch>` | 是 | 手动完整 FlagGems 任务 |
 | 结果 | `local-ci-results` | 否 | 结果、产物、性能 cache 与 Dashboard 数据 |
 
-metadata v2 保存 PR 的 title、description、base/head/tested 身份。title 最多 500 字符、description 最多 8000 字符；`title_truncated` 与 `description_truncated` 明确表示是否被裁剪。metadata 缺失不会阻止确定性 CI，但会降低 Codex 对贡献者目标和 PR 描述的理解质量。
+metadata 保存 PR 的 title、description、base/head/tested 身份。title 最多 500 字符、description 最多 8000 字符；`title_truncated` 与 `description_truncated` 明确表示是否被裁剪。metadata 缺失不会阻止确定性 CI，但会降低 Codex 对贡献者目标和 PR 描述的理解质量。
 
 结果目录由 `scripts/local_ci/shared/result_paths.py` 固定：
 
@@ -329,13 +338,13 @@ Codex AI CI 是确定性 Local CI 之后的补充审查：确定性 CI 通过时
   -> review context profile
   -> 一次性 Codex 容器
   -> 语义分析 JSON + JSONL 命令账本
-  -> canonical v3 report builder
+  -> 结构化报告构建
   -> Markdown report / PR comment renderer
 ```
 
 PR 的执行 checkout 使用 tested Merge-Result；Codex 的代码审查 diff 使用冻结的 `base...head`，以准确表示贡献者改动。review profile 只改变阅读和验证优先级，不缩小 changed-files 覆盖范围。当前 profile 包括 `docs_only`、`local_ci_protocol`、`performance`、`local_ci_control`、`codex_ai_ci_maintenance`、`large_diff` 和 `general`。
 
-Codex 只输出符合 `codex_ai_analysis.schema.json` 的语义分析。runner 从 Git manifest、Codex JSONL、工作区 patch/archive 等可信事实构建 canonical `triton-anchor-codex-ai-report/v3`，再由 renderer 生成报告和评论。无法验证文件或行号的 finding 不会被静默丢弃，而会保留为 `unlocated_findings`，并把 verdict 至少降为 warning。
+Codex 只输出符合 `codex_ai_analysis.schema.json` 的语义分析。runner 从 Git manifest、Codex JSONL、工作区 patch/archive 等可信事实构建结构化审查报告，再由 renderer 生成报告和评论。无法验证文件或行号的 finding 不会被静默丢弃，而会保留为 `unlocated_findings`，并把 verdict 至少降为 warning。
 
 同一 tested SHA 的 Codex 重跑会更新同一条评论；不同 tested SHA 会保留各自评论。评论展示变更摘要、验证内容、限制、finding 和剩余风险，不展示内部 ID 或机器实现细节。
 
@@ -527,7 +536,7 @@ git diff --check
 | --- | --- |
 | Gateway 与 manifest | `.github/workflows/ci-gateway.yml`、`.github/ci-gateway-manifest.json` |
 | Worker workflows | `.github/workflows/security-gate.yml`、`dispatch-local-ci.yml`、`receive-local-ci-result.yml`、`backend-status-pages.yml` |
-| 普通 GitHub CI | `.github/workflows/ci.yml`、`delivery-ci.yml`、`api-compat.yml`、`api-breaking-notify.yml` |
+| 普通 GitHub CI | `.github/workflows/ci_basic.yml`、`delivery-ci.yml`、`api-compat.yml`、`api-breaking-notify.yml` |
 | Local CI 入口与模板 | `scripts/local_ci/poll_gitee_and_run.sh`、`scripts/local_ci/config.example.env` |
 | 容器编排与确定性 runner | `scripts/local_ci/orchestration/`、`scripts/local_ci/deterministic_ci/` |
 | Codex AI | `scripts/local_ci/codex_ai/` |
