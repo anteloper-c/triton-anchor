@@ -410,6 +410,8 @@ def generate_sbom(
 
 def artifact_sbom_link(artifact: Mapping[str, Any], sbom: Mapping[str, Any]) -> dict[str, Any]:
     metadata_component = sbom.get("metadata", {}).get("component", {})
+    if metadata_component.get("version") != artifact.get("version"):
+        raise ComplianceDataError("SBOM root version does not match the assessed artifact")
     hashes = {
         item.get("alg"): item.get("content")
         for item in metadata_component.get("hashes", [])
@@ -470,43 +472,3 @@ def artifact_sbom_link(artifact: Mapping[str, Any], sbom: Mapping[str, Any]) -> 
             "sha256": hashlib.sha256(sbom_bytes).hexdigest(),
         },
     }
-
-
-def artifact_links(
-    artifacts: Sequence[Mapping[str, Any]], sboms: Mapping[str, Mapping[str, Any]]
-) -> dict[str, Any]:
-    """Require a one-to-one artifact-to-SBOM mapping by stable artifact id."""
-
-    artifact_ids = {str(artifact.get("id")) for artifact in artifacts}
-    if artifact_ids != set(sboms):
-        raise ComplianceDataError("Every artifact must have exactly one matching SBOM")
-    links = []
-    for artifact in artifacts:
-        artifact_id = str(artifact.get("id"))
-        sbom = sboms[artifact_id]
-        link = artifact_sbom_link(artifact, sbom)
-        metadata = sbom.get("metadata", {}).get("component", {})
-        if metadata.get("version") != artifact.get("version"):
-            raise ComplianceDataError("SBOM root version does not match the artifact")
-        links.append({"artifact_id": artifact_id, **link})
-    return {"schema_version": 1, "artifacts": links}
-
-
-def evaluate_artifact_links(
-    artifacts: Sequence[Mapping[str, Any]], links: Sequence[Mapping[str, Any]]
-) -> list[dict[str, Any]]:
-    by_sha: dict[str, list[Mapping[str, Any]]] = {}
-    for link in links:
-        by_sha.setdefault(str(link.get("artifact", {}).get("sha256", "")), []).append(link)
-    findings = []
-    for artifact in artifacts:
-        matches = by_sha.get(str(artifact.get("sha256")), [])
-        valid = len(matches) == 1 and matches[0].get("artifact", {}).get("version") == artifact.get("version")
-        findings.append(
-            {
-                "artifact_sha256": artifact.get("sha256"),
-                "decision": "allow" if valid else "block",
-                "reason": "one matching versioned SBOM" if valid else "missing or ambiguous SBOM link",
-            }
-        )
-    return findings

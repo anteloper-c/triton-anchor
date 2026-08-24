@@ -52,9 +52,7 @@ from .policy import (
 )
 from .release import (
     NOTICE_USAGE,
-    artifact_links,
     artifact_sbom_link,
-    evaluate_artifact_links,
     evaluate_notice_coverage,
     generate_sbom,
     notice_entries,
@@ -71,10 +69,8 @@ __all__ = [
     "SUPPORTED_SCHEMA_VERSION",
     "USAGE_CATEGORIES",
     "ComplianceDataError",
-    "artifact_links",
     "artifact_sbom_link",
     "diff_components",
-    "evaluate_artifact_links",
     "evaluate_artifact",
     "evaluate_candidate",
     "evaluate_dependency_admission",

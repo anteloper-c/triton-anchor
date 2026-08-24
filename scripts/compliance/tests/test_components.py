@@ -143,12 +143,22 @@ class ComponentAndLicenseTests(unittest.TestCase):
         dependency["usages"][0]["artifact_patterns"] = ["triton/**"]
         normalized = normalize_scancode(
             {
-                "status": "ok",
-                "returncode": 0,
-                "scan_error_count": 0,
-                "scan_errors": [],
-                "license_files": [
-                    {"path": "triton/LICENSE", "expression": "MIT"}
+                "headers": [
+                    {
+                        "options": {"input": ["/workspace/wheel-unpacked"]},
+                        "errors": [],
+                    }
+                ],
+                "files": [
+                    {"path": "wheel-unpacked", "type": "directory"},
+                    {
+                        "path": "wheel-unpacked/triton/LICENSE",
+                        "type": "file",
+                        "scan_errors": [],
+                        "license_detections": [
+                            {"license_expression_spdx": "MIT"}
+                        ],
+                    },
                 ],
                 "packages": [],
             },
@@ -191,19 +201,29 @@ class ComponentAndLicenseTests(unittest.TestCase):
 
     def test_real_scancode_path_finding_reaches_license_gate(self) -> None:
         registry = [component("triton", owned_paths=["triton/"])]
-        discoveries = {
-            "scancode": {
-                "status": "ok",
-                "returncode": 0,
-                "scan_error_count": 0,
-                "scan_errors": [],
-                "license_files": [
-                    {"path": "triton/LICENSE", "expression": "AGPL-3.0-only"}
+        discoveries = normalize_scancode(
+            {
+                "headers": [
+                    {
+                        "options": {"input": ["/workspace/source"]},
+                        "errors": [],
+                    }
                 ],
+                "files": [
+                    {"path": "source", "type": "directory"},
+                    {
+                        "path": "source/triton/LICENSE",
+                        "type": "file",
+                        "scan_errors": [],
+                        "license_detections": [
+                            {"license_expression_spdx": "AGPL-3.0-only"}
+                        ],
+                    },
+                ],
+                "packages": [],
             },
-            "wheel": {"status": "ok", "files": [], "native_files": []},
-        }
-        reconciled = reconcile_discoveries(registry, discoveries)
+        )
+        reconciled = reconcile_discoveries(registry, [discoveries])
         triton = next(item for item in reconciled["components"] if item["id"] == "triton")
         self.assertIn(
             "AGPL-3.0-only",
@@ -236,36 +256,49 @@ class ComponentAndLicenseTests(unittest.TestCase):
         self.assertEqual("license-review-required", by_component["review"])
 
     def test_scanner_failure_is_an_execution_issue(self) -> None:
+        failed_scan = normalize_scancode(
+            {
+                "headers": [
+                    {
+                        "options": {"input": ["/workspace/source"]},
+                        "errors": ["report-missing"],
+                    }
+                ],
+                "files": [
+                    {"path": "source", "type": "directory"},
+                    {
+                        "path": "source/module.py",
+                        "type": "file",
+                        "scan_errors": [],
+                        "license_detections": [],
+                    },
+                ],
+                "packages": [],
+            }
+        )
         reconciled = reconcile_discoveries(
             [component("triton")],
-            {
-                "scancode": {
-                    "status": "error",
-                    "returncode": 1,
-                    "scan_error_count": 1,
-                    "scan_errors": [{"path": None, "errors": ["report-missing"]}],
-                    "license_files": [],
-                },
-                "wheel": {"status": "ok", "files": [], "native_files": []},
-            },
+            [failed_scan],
         )
         self.assertIn("scanner-failed", {issue["code"] for issue in reconciled["issues"]})
 
     def test_new_native_file_requires_component_ownership(self) -> None:
-        discoveries = {
-            "scancode": {
-                "status": "ok",
-                "returncode": 0,
-                "scan_error_count": 0,
-                "scan_errors": [],
-                "license_files": [],
-            },
-            "wheel": {
-                "status": "ok",
-                "files": [{"path": "plugins/new.so", "sha256": "a" * 64}],
-                "native_files": [{"path": "plugins/new.so", "sha256": "a" * 64}],
-            },
-        }
+        discoveries = [
+            {
+                "source": "wheel",
+                "status": "success",
+                "issues": [],
+                "items": [
+                    {
+                        "kind": "artifact-file",
+                        "path": "plugins/new.so",
+                        "path_scope": "artifact",
+                        "sha256": "a" * 64,
+                        "allow_multiple": True,
+                    }
+                ],
+            }
+        ]
         uncovered = reconcile_discoveries([component("triton")], discoveries)
         self.assertIn(
             "unmapped-distributed-file", {issue["code"] for issue in uncovered["issues"]}

@@ -366,7 +366,7 @@ Wheel fork `candidate` 模拟和手工候选调用都不构成正式发布批准
 | `artifact-evaluation` | 对任意具体 Wheel 或源码快照做来源渠道无关的技术评估 | 执行成功、证据完整且合规通过时返回 0，但 `promotion_status` 始终为 `not-applicable` |
 | `candidate` | 由受信 T3.8/T4.1 流程对正式候选做发布前门禁 | 除全部技术/合规检查外，Wheel 必须是 `same-build` 绑定；源码快照必须是 `verified-tag-commit`，进程才返回 0 |
 
-当前阶段建立了唯一多产物核心。Wheel 链已由 GitHub Hosted Runner 证明自动构建、三类扫描器、同次构建证据、SBOM/报告生成、候选阻断和证据上传能够执行；源码链已用真实 GitHub API 双归档完成本地 commit/Git 树重放，workflow 远端结果仍待本次分支运行验证。这仍不能宣称 T8.2 完成。`dependency-compliance.yml` 没有 `schedule` 定期审计，也没有 PR 新依赖 `admission` 接线；许可证政策、组件结论和部分漏洞覆盖仍未审批，模拟输出也不是正式 release asset。T3.8/T4.1 入口确定后，必须同时接入正式 Wheel 和 tag 源码快照的 blocking `candidate`。当前 `scripts/ci` Delivery 原型仅作参考；自动化必须消费同一登记表、策略和核心，不能复制第二份规则。
+当前阶段建立了唯一多产物核心。Wheel 链已由 GitHub Hosted Runner 证明自动构建、三类扫描器、同次构建证据、SBOM/报告生成、候选阻断和证据上传能够执行；源码链也已在 GitHub Hosted Runner 使用真实 GitHub API 双归档完成 commit/Git 树校验、扫描、SBOM/报告生成和证据上传。这仍不能宣称 T8.2 完成。`dependency-compliance.yml` 没有 `schedule` 定期审计，也没有 PR 新依赖 `admission` 接线；许可证政策、组件结论和部分漏洞覆盖仍未审批，模拟输出也不是正式 release asset。T3.8/T4.1 入口确定后，必须同时接入正式 Wheel 和 tag 源码快照的 blocking `candidate`。当前 `scripts/ci` Delivery 原型仅作参考；自动化必须消费同一登记表、策略和核心，不能复制第二份规则。
 
 ## 重构不变量与恢复步骤
 

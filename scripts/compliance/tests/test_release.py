@@ -8,7 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from scripts.compliance.core import (
-    artifact_links,
+    artifact_sbom_link,
     evaluate_artifact,
     evaluate_candidate,
     generate_sbom,
@@ -33,42 +33,41 @@ class ReleaseEvidenceTests(unittest.TestCase):
         sboms = {
             item["id"]: generate_sbom(item, self.components) for item in self.artifacts
         }
-        links = artifact_links(self.artifacts, sboms)
-        self.assertEqual(
-            {"cp311-x86_64", "cp312-x86_64"},
-            {entry["artifact_id"] for entry in links["artifacts"]},
-        )
+        links = {
+            item["id"]: artifact_sbom_link(item, sboms[item["id"]])
+            for item in self.artifacts
+        }
+        self.assertEqual({"cp311-x86_64", "cp312-x86_64"}, set(links))
         for item in self.artifacts:
             hashes = sboms[item["id"]]["metadata"]["component"]["hashes"]
             self.assertIn(
                 {"alg": "SHA-256", "content": item["sha256"]}, hashes
             )
 
-    def test_missing_or_mismatched_candidate_sbom_is_rejected(self) -> None:
+    def test_mismatched_candidate_sbom_is_rejected(self) -> None:
         sboms = {
             item["id"]: generate_sbom(item, self.components) for item in self.artifacts
         }
-        missing = dict(sboms)
-        missing.pop("cp312-x86_64")
-        with self.assertRaises(ValueError):
-            artifact_links(self.artifacts, missing)
-
         mismatched = copy.deepcopy(sboms)
         mismatched["cp312-x86_64"]["metadata"]["component"]["hashes"] = [
             {"alg": "SHA-256", "content": "f" * 64}
         ]
         with self.assertRaises(ValueError):
-            artifact_links(self.artifacts, mismatched)
+            artifact_sbom_link(
+                self.artifacts[1], mismatched[self.artifacts[1]["id"]]
+            )
 
         wrong_version = copy.deepcopy(sboms)
         wrong_version["cp312-x86_64"]["metadata"]["component"]["version"] = "9.9.9"
         with self.assertRaises(ValueError):
-            artifact_links(self.artifacts, wrong_version)
+            artifact_sbom_link(
+                self.artifacts[1], wrong_version[self.artifacts[1]["id"]]
+            )
 
     def test_declared_sbom_hash_matches_written_file_bytes(self) -> None:
         candidate = self.artifacts[0]
         sbom = generate_sbom(candidate, self.components)
-        link = artifact_links([candidate], {candidate["id"]: sbom})["artifacts"][0]
+        link = artifact_sbom_link(candidate, sbom)
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "candidate.cdx.json"
             write_json(output, sbom)

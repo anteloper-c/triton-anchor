@@ -198,43 +198,6 @@ def reconcile_discoveries(
     mapped: list[dict[str, Any]] = []
 
     items: list[dict[str, Any]] = []
-    # Scanner-name keyed input is accepted as a convenience for callers that
-    # have already normalized each scanner's small summary.
-    if len(reports) == 1 and isinstance(reports[0], Mapping) and "items" not in reports[0]:
-        keyed = reports[0]
-        if any(key in keyed for key in ("scancode", "wheel", "syft", "build-evidence")):
-            reports = []
-            for source, summary in keyed.items():
-                if not isinstance(summary, Mapping):
-                    continue
-                items_for_source: list[dict[str, Any]] = []
-                for finding in summary.get("license_files", []):
-                    items_for_source.append(
-                        {
-                            "kind": "license",
-                            "path": finding.get("path"),
-                            "license_expression": finding.get("expression"),
-                        }
-                    )
-                for native in summary.get("native_files", []):
-                    items_for_source.append(
-                        {
-                            "kind": "artifact-file",
-                            "path": native.get("path"),
-                            "sha256": native.get("sha256"),
-                            "allow_multiple": True,
-                        }
-                    )
-                scan_errors = summary.get("scan_errors", [])
-                reports.append(
-                    {
-                        "source": source,
-                        "status": "success" if summary.get("status") in {"ok", "success"} else "failed",
-                        "items": items_for_source,
-                        "issues": [str(error) for error in scan_errors],
-                    }
-                )
-
     for report in reports:
         if "items" in report:
             source = str(report.get("source", "unknown"))
@@ -446,49 +409,6 @@ def normalize_scancode(
         raise ValueError("ScanCode path_scope must be source or artifact")
     items: list[dict[str, Any]] = []
     issues: list[str] = []
-    if "license_files" in report and "status" in report:
-        for finding in report.get("license_files", []):
-            if not isinstance(finding, Mapping):
-                continue
-            path = _scancode_relative_path(finding.get("path"), None)
-            if not path:
-                issues.append(f"ScanCode path is not input-relative: {finding.get('path')!r}")
-                continue
-            items.append(
-                {
-                    "kind": "license",
-                    "path": path,
-                    "path_scope": path_scope,
-                    "license_expression": finding.get("expression"),
-                    "source": source,
-                }
-            )
-        for package in report.get("packages", []):
-            if not isinstance(package, Mapping):
-                continue
-            items.append(
-                {
-                    "kind": "package",
-                    "name": package.get("name"),
-                    "version": package.get("version"),
-                    "purl": package.get("purl"),
-                    "license_expression": package.get("declared_license"),
-                    "source": source,
-                }
-            )
-        for error in report.get("scan_errors", []):
-            issues.append(str(error))
-        succeeded = (
-            report.get("status") == "ok"
-            and report.get("returncode", 0) == 0
-            and report.get("scan_error_count", len(issues)) == 0
-        )
-        return {
-            "source": source,
-            "status": "success" if succeeded and not issues else "failed",
-            "items": items,
-            "issues": issues,
-        }
     headers = report.get("headers")
     if not isinstance(headers, list) or not headers:
         return {"source": source, "status": "failed", "items": [], "issues": ["missing ScanCode header"]}
