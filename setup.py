@@ -201,7 +201,7 @@ setup(
         "triton": "triton/python/triton",
     },
     packages=get_packages(),
-    install_requires=[],
+    install_requires=["packaging==24.1"],
     package_data={
         "triton.tools": ["compile.h", "compile.c"],
         "triton": ["include/**/*.h", "include/**/*.hpp", "include/**/*.inc", "include/**/*.def", "include/**/*.td"],
