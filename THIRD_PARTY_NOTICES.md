@@ -17,10 +17,10 @@ Only a formal candidate invocation uses the T8.2 compliance result to block prom
 ## LLVM Project
 
 - Component ID: `llvm-project`
-- Version: `UNRESOLVED`
+- Version: `10dc3a8e916d73291269e5e2b82dd22681489aa1`
 - Source: https://github.com/llvm/llvm-project
 - Concluded license: `UNRESOLVED`
-- License text: `UNRESOLVED`
+- License text: `https://github.com/llvm/llvm-project/blob/10dc3a8e916d73291269e5e2b82dd22681489aa1/LICENSE.TXT`
 - Copyright: UNRESOLVED
 
 ## pybind11
@@ -38,8 +38,8 @@ Only a formal candidate invocation uses the T8.2 compliance result to block prom
 - Version: `757b6a61e7df814ba806f498f8bb3160f84b120c`
 - Source: https://github.com/triton-lang/triton
 - Concluded license: `UNRESOLVED`
-- License text: `UNRESOLVED`
-- Copyright: UNRESOLVED
+- License text: `https://github.com/triton-lang/triton/blob/757b6a61e7df814ba806f498f8bb3160f84b120c/LICENSE`
+- Copyright: Copyright 2018-2020 Philippe Tillet; Copyright 2020-2022 OpenAI
 
 ## triton-linalg
 
@@ -47,7 +47,7 @@ Only a formal candidate invocation uses the T8.2 compliance result to block prom
 - Version: `UNRESOLVED`
 - Source: https://github.com/Cambricon/triton-linalg
 - Concluded license: `UNRESOLVED`
-- License text: `UNRESOLVED`
+- License text: `https://github.com/Cambricon/triton-linalg/blob/00f51c2e48a943922f86f03d58e29f514def646d/LICENSE`
 - Copyright: Copyright (C) [2022-2025] by Cambricon
 
 ## TTGPU variant sources

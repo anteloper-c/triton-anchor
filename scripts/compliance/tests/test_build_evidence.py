@@ -25,8 +25,12 @@ class BuildEvidenceTests(unittest.TestCase):
     def make_source_root(directory: Path) -> Path:
         root = directory / "source"
         (root / "triton" / "third_party" / "f2reduce").mkdir(parents=True)
+        (root / "triton" / "cmake").mkdir(parents=True)
         (root / "triton" / "TRITON_VERSION").write_text(
             "# Commit: " + "7" * 40 + "\n", encoding="utf-8"
+        )
+        (root / "triton" / "cmake" / "llvm-hash.txt").write_text(
+            "8" * 40 + "\n", encoding="utf-8"
         )
         (root / "triton" / "third_party" / "f2reduce" / "VERSION").write_text(
             "9" * 40 + ".\n", encoding="utf-8"
@@ -115,7 +119,10 @@ class BuildEvidenceTests(unittest.TestCase):
             self.assertEqual(wheel_hash, payload["artifact_sha256"])
             self.assertEqual(sonames, payload["native"]["dt_needed"])
             components = {item["id"]: item for item in payload["components"]}
-            self.assertEqual("19.1.7", components["llvm-project"]["version"])
+            self.assertEqual("8" * 40, components["llvm-project"]["version"])
+            self.assertEqual(
+                "19.1.7", components["llvm-project"]["evidence"]["tool_version"]
+            )
             self.assertEqual("7" * 40, components["triton"]["version"])
             self.assertEqual("9" * 40, components["f2reduce"]["version"])
             self.assertEqual("13.3.0", components["gcc-toolchain"]["version"])

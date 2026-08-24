@@ -197,11 +197,16 @@
         "declared": "MIT",
         "concluded": null,
         "status": "official-upstream-declaration-confirmed-review-pending",
+        "text_location": "https://github.com/triton-lang/triton/blob/757b6a61e7df814ba806f498f8bb3160f84b120c/LICENSE",
         "evidence_ids": [
           "triton-readme-license-claim",
           "triton-upstream-license"
         ]
       },
+      "copyrights": [
+        "Copyright 2018-2020 Philippe Tillet",
+        "Copyright 2020-2022 OpenAI"
+      ],
       "usages": [
         {
           "category": "distributed",
@@ -324,6 +329,7 @@
         "declared": "Apache-2.0",
         "concluded": null,
         "status": "official-upstream-declaration-confirmed-review-pending",
+        "text_location": "https://github.com/Cambricon/triton-linalg/blob/00f51c2e48a943922f86f03d58e29f514def646d/LICENSE",
         "evidence_ids": [
           "triton-linalg-upstream-license",
           "triton-linalg-upstream-acknowledgments",
@@ -609,19 +615,22 @@
       "third_party": true,
       "origin": {
         "url": "https://github.com/llvm/llvm-project",
-        "status": "pending-build-evidence"
+        "status": "resolved"
       },
       "version": {
-        "value": null,
-        "kind": "semver-or-commit",
-        "status": "candidate-evidence-required",
-        "evidence_ids": []
+        "value": "10dc3a8e916d73291269e5e2b82dd22681489aa1",
+        "kind": "git-commit",
+        "status": "resolved",
+        "evidence_ids": [
+          "llvm-source-pin"
+        ]
       },
       "license": {
         "declared": "Apache-2.0 WITH LLVM-exception",
         "concluded": null,
         "expected_expression": "Apache-2.0 WITH LLVM-exception",
-        "status": "official-project-declaration-confirmed-build-version-pending",
+        "status": "official-project-declaration-confirmed-review-pending",
+        "text_location": "https://github.com/llvm/llvm-project/blob/10dc3a8e916d73291269e5e2b82dd22681489aa1/LICENSE.TXT",
         "evidence_ids": [
           "llvm-upstream-license-review"
         ]
@@ -675,6 +684,12 @@
       ],
       "evidence": [
         {
+          "id": "llvm-source-pin",
+          "kind": "source-version-pin",
+          "location": "triton/cmake/llvm-hash.txt",
+          "value": "10dc3a8e916d73291269e5e2b82dd22681489aa1"
+        },
+        {
           "id": "llvm-cmake-link",
           "kind": "build-definition",
           "location": "CMakeLists.txt",
@@ -684,13 +699,13 @@
         {
           "id": "llvm-upstream-license-review",
           "kind": "upstream-license",
-          "location": "https://github.com/llvm/llvm-project/blob/159dcbfcba88c9d3c7760b804f9b916b2a6bc7ca/LICENSE.TXT",
+          "location": "https://github.com/llvm/llvm-project/blob/10dc3a8e916d73291269e5e2b82dd22681489aa1/LICENSE.TXT",
           "value": "Apache-2.0 WITH LLVM-exception; sha256:8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee"
         }
       ],
       "notes": [
         "LLVM and MLIR are one upstream release unit and are represented once; modules record the two project surfaces.",
-        "The candidate build manifest and native linkage evidence must resolve the two alternative artifact usages."
+        "The source revision is pinned by triton/cmake/llvm-hash.txt; candidate build and native linkage evidence must still resolve the actual embedded or runtime-external usage."
       ]
     },
     {

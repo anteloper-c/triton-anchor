@@ -387,7 +387,8 @@ class OsvRunnerTests(unittest.TestCase):
             output["coverage"][0]["evidence"],
         )
         scan_argv = calls[1].args[0]
-        self.assertIn("--all-packages", scan_argv)
+        self.assertIn("--lockfile", scan_argv)
+        self.assertNotIn("--all-packages", scan_argv)
         self.assertEqual(1, output["scanner_execution"]["exit_code"])
 
     def test_exit_zero_with_no_findings_still_proves_coverage(self) -> None:
@@ -471,11 +472,18 @@ class OsvRunnerTests(unittest.TestCase):
 
         self.assertEqual({"setuptools"}, set(index))
         self.assertEqual(
-            ["pkg:pypi/setuptools@68.1.2"],
-            [item["purl"] for item in query["components"]],
+            [("setuptools", "68.1.2", None)],
+            [
+                (
+                    item["package"]["name"],
+                    item["package"].get("version"),
+                    item["package"].get("commit"),
+                )
+                for item in query["results"][0]["packages"]
+            ],
         )
 
-    def test_query_inventory_excludes_unobserved_optional_component(self) -> None:
+    def test_query_inventory_includes_exact_optional_component(self) -> None:
         registry, build = registry_and_build()
         optional = component("numpy", version="2.2.0", distribution="runtime-external")
         optional["purl"] = "pkg:pypi/numpy"
@@ -484,55 +492,40 @@ class OsvRunnerTests(unittest.TestCase):
 
         query, index = _query_inventory(registry, build, "core-wheel")
 
-        self.assertEqual({"setuptools"}, set(index))
+        self.assertEqual({"numpy", "setuptools"}, set(index))
         self.assertEqual(
-            ["pkg:pypi/setuptools@68.1.2"],
-            [item["purl"] for item in query["components"]],
+            ["numpy", "setuptools"],
+            [item["package"]["name"] for item in query["results"][0]["packages"]],
         )
 
-    def test_query_inventory_excludes_observed_optional_component(self) -> None:
+    def test_query_inventory_includes_exact_declared_git_component(self) -> None:
         registry, build = registry_and_build()
-        optional = component("numpy", version="2.2.0", distribution="runtime-external")
-        optional["purl"] = "pkg:pypi/numpy"
-        optional["usages"][0]["status"] = "confirmed-optional"
-        registry["components"].append(optional)
-        build["compliance_build"]["components"].append(
-            {
-                "id": "numpy",
-                "version": "2.2.0",
-                "usages": ["runtime-external"],
-                "evidence": {"source": "python-distribution"},
-            }
+        git_dependency = component(
+            "triton", version="1" * 40, distribution="distributed"
         )
+        git_dependency["version"]["kind"] = "git-commit"
+        git_dependency["origin"] = {
+            "url": "https://github.com/triton-lang/triton",
+            "status": "resolved",
+        }
+        registry["components"].append(git_dependency)
 
         query, index = _query_inventory(registry, build, "core-wheel")
 
-        self.assertEqual({"setuptools"}, set(index))
+        self.assertEqual({"setuptools", "triton"}, set(index))
         self.assertEqual(
-            ["pkg:pypi/setuptools@68.1.2"],
-            [item["purl"] for item in query["components"]],
-        )
-
-    def test_query_inventory_requires_a_build_evidence_observation(self) -> None:
-        registry, build = registry_and_build()
-        unobserved = component("numpy", version="2.2.0", distribution="build-only")
-        unobserved["purl"] = "pkg:pypi/numpy"
-        unobserved["observations"] = [
             {
-                "kind": "package",
-                "source": "syft",
-                "name": "numpy",
-                "version": "2.2.0",
-            }
-        ]
-        registry["components"].append(unobserved)
-
-        query, index = _query_inventory(registry, build, "core-wheel")
-
-        self.assertEqual({"setuptools"}, set(index))
-        self.assertEqual(
-            ["pkg:pypi/setuptools@68.1.2"],
-            [item["purl"] for item in query["components"]],
+                ("setuptools", "68.1.2", None),
+                ("github.com/triton-lang/triton", None, "1" * 40),
+            },
+            {
+                (
+                    item["package"]["name"],
+                    item["package"].get("version"),
+                    item["package"].get("commit"),
+                )
+                for item in query["results"][0]["packages"]
+            },
         )
 
 

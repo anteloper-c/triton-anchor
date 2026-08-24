@@ -201,6 +201,11 @@ def collect_build_evidence(
     ]
     glibc_sonames = [name for name in needed if _is_glibc_soname(name)]
     gcc_sonames = [name for name in needed if _is_gcc_runtime_soname(name)]
+    llvm_source_commit = _source_commit(
+        source_root / "triton" / "cmake" / "llvm-hash.txt",
+        re.compile(r"^([0-9a-f]{40})$", re.MULTILINE),
+    )
+    llvm_tool_version = _llvm_version()
     mapped_sonames = set(
         llvm_sonames
         + zlib_sonames
@@ -249,9 +254,14 @@ def collect_build_evidence(
         ),
         _component(
             "llvm-project",
-            _llvm_version(),
+            llvm_source_commit,
             ["build-only", "runtime-external" if llvm_sonames else "embedded"],
-            {**native_evidence, "matching_sonames": llvm_sonames},
+            {
+                **native_evidence,
+                "matching_sonames": llvm_sonames,
+                "version_source": "triton/cmake/llvm-hash.txt",
+                "tool_version": llvm_tool_version,
+            },
         ),
         _component(
             "pybind11",

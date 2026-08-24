@@ -24,13 +24,12 @@ from .model import (
     ComplianceDataError,
     _effective_version,
     _usage_categories,
-    _usage_statuses,
     load_json,
     stable_json,
     validate_registry,
     write_json,
 )
-from .release import _EXACT_VERSION_STATUS, _sbom_purl
+from .release import _EXACT_VERSION_STATUS
 from .source_snapshot import source_snapshot_discoveries
 
 
@@ -58,47 +57,77 @@ def _package_name(value: Any, ecosystem: str | None) -> str:
     return name
 
 
-def _sbom_query_component(
+def _exact_query_package(
     component: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     version, version_status = _effective_version(component)
-    purl = _sbom_purl(component)
-    if (
-        not version
-        or version_status not in _EXACT_VERSION_STATUS
-        or not purl
-        or "@" not in purl.rsplit("/", 1)[-1]
-    ):
+    if not version or version_status not in _EXACT_VERSION_STATUS:
         return None
     component_id = _component_id(component)
-    expected_ecosystem = _purl_ecosystem(str(purl))
+    version_kind = component.get("version", {}).get("kind")
+    origin = component.get("origin", {})
+    repository_name = _repository_identity(
+        origin.get("url") if isinstance(origin, Mapping) else origin
+    )
+    if (
+        version_kind == "git-commit"
+        and repository_name
+        and re.fullmatch(r"[0-9a-fA-F]{40,64}", str(version))
+    ):
+        return (
+            {"package": {"name": repository_name, "commit": str(version)}},
+            {
+                "id": component_id,
+                "name": component.get("name", component_id),
+                "version": str(version),
+                "commit": str(version).casefold(),
+                "repository_name": repository_name,
+                "base_purl": component.get("purl"),
+                "aliases": set(),
+                "expected_ecosystem": None,
+            },
+        )
+
+    base_purl = component.get("purl")
+    expected_ecosystem = _purl_ecosystem(str(base_purl)) if base_purl else None
+    if not base_purl or not expected_ecosystem:
+        return None
+    package_name = str(base_purl).rsplit("/", 1)[-1].split("@", 1)[0]
     aliases = {
         _package_name(component_id, expected_ecosystem),
         _package_name(component.get("name", component_id), expected_ecosystem),
+        _package_name(package_name, expected_ecosystem),
         *(
             _package_name(alias, expected_ecosystem)
             for alias in component.get("aliases", [])
         ),
     }
-    query_component = {
-        "bom-ref": f"osv-query:{component_id}@{version}",
-        "type": component.get("type", component.get("kind", "library")),
-        "name": component.get("name", component_id),
-        "version": version,
-        "purl": purl,
-        "properties": [
-            {"name": "triton-anchor:component-id", "value": component_id}
-        ],
-    }
-    component_identity = {
-        "id": component_id,
-        "name": query_component["name"],
-        "version": str(version),
-        "base_purl": str(component["purl"]),
-        "aliases": aliases,
-        "expected_ecosystem": expected_ecosystem,
-    }
-    return query_component, component_identity
+    return (
+        {
+            "package": {
+                "name": package_name,
+                "version": str(version),
+                "ecosystem": expected_ecosystem,
+            }
+        },
+        {
+            "id": component_id,
+            "name": component.get("name", component_id),
+            "version": str(version),
+            "base_purl": str(base_purl),
+            "aliases": aliases,
+            "expected_ecosystem": expected_ecosystem,
+        },
+    )
+
+
+def _package_sort_key(item: Mapping[str, Any]) -> tuple[str, str, str]:
+    package = item["package"]
+    return (
+        str(package.get("name", "")),
+        str(package.get("version", "")),
+        str(package.get("commit", "")),
+    )
 
 
 def _query_inventory(
@@ -106,7 +135,7 @@ def _query_inventory(
     build_evidence: Mapping[str, Any],
     target: str,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
-    """Build a scanner-only CycloneDX inventory from exact build observations."""
+    """Build exact package and commit queries for the full audited inventory."""
 
     validate_registry(registry)
     build_report = normalize_build_evidence(build_evidence)
@@ -124,44 +153,23 @@ def _query_inventory(
         )
         raise OsvRunnerError("; ".join(reasons) or "build evidence reconciliation failed")
 
-    query_components: list[dict[str, Any]] = []
+    packages: list[dict[str, Any]] = []
     component_index: dict[str, dict[str, Any]] = {}
     for component in reconciliation["components"]:
         if not component.get("third_party", True):
             continue
-        active_usages = _usage_categories(component, target, active=True)
-        if not active_usages or active_usages <= {"CI-only"}:
+        if not (_usage_categories(component) & AUDITED_USAGE):
             continue
-        if not any(
-            isinstance(observation, Mapping)
-            and observation.get("source") == "build-evidence"
-            and observation.get("kind") == "build-component"
-            for observation in component.get("observations", [])
-        ):
-            continue
-        if all(
-            _usage_statuses(component, target, category) == {"confirmed-optional"}
-            for category in active_usages
-        ):
-            continue
-        prepared = _sbom_query_component(component)
+        prepared = _exact_query_package(component)
         if prepared is None:
             continue
-        query_component, component_identity = prepared
+        query_package, component_identity = prepared
         component_id = str(component_identity["id"])
-        query_components.append(query_component)
+        packages.append(query_package)
         component_index[component_id] = component_identity
 
-    query_components.sort(key=lambda item: str(item["bom-ref"]))
-    return (
-        {
-            "bomFormat": "CycloneDX",
-            "specVersion": "1.7",
-            "version": 1,
-            "components": query_components,
-        },
-        component_index,
-    )
+    packages.sort(key=_package_sort_key)
+    return {"results": [{"packages": packages}]}, component_index
 
 
 def _query_admission_inventory(
@@ -190,73 +198,14 @@ def _query_admission_inventory(
             continue
         if not _usage_categories(component, target, active=True):
             continue
-        version, version_status = _effective_version(component)
-        if not version or version_status not in _EXACT_VERSION_STATUS:
+        prepared = _exact_query_package(component)
+        if prepared is None:
             continue
-        version_kind = component.get("version", {}).get("kind")
-        origin = component.get("origin", {})
-        repository_name = _repository_identity(
-            origin.get("url") if isinstance(origin, Mapping) else origin
-        )
-        if (
-            version_kind == "git-commit"
-            and repository_name
-            and re.fullmatch(r"[0-9a-fA-F]{40,64}", str(version))
-        ):
-            packages.append(
-                {"package": {"name": repository_name, "commit": str(version)}}
-            )
-            component_index[component_id] = {
-                "id": component_id,
-                "name": component.get("name", component_id),
-                "version": str(version),
-                "commit": str(version).casefold(),
-                "repository_name": repository_name,
-                "base_purl": component.get("purl"),
-                "aliases": set(),
-                "expected_ecosystem": None,
-            }
-            continue
+        query_package, component_identity = prepared
+        packages.append(query_package)
+        component_index[component_id] = component_identity
 
-        base_purl = component.get("purl")
-        expected_ecosystem = _purl_ecosystem(str(base_purl)) if base_purl else None
-        if not base_purl or not expected_ecosystem:
-            continue
-        package_name = str(base_purl).rsplit("/", 1)[-1].split("@", 1)[0]
-        aliases = {
-            _package_name(component_id, expected_ecosystem),
-            _package_name(component.get("name", component_id), expected_ecosystem),
-            _package_name(package_name, expected_ecosystem),
-            *(
-                _package_name(alias, expected_ecosystem)
-                for alias in component.get("aliases", [])
-            ),
-        }
-        packages.append(
-            {
-                "package": {
-                    "name": package_name,
-                    "version": str(version),
-                    "ecosystem": expected_ecosystem,
-                }
-            }
-        )
-        component_index[component_id] = {
-            "id": component_id,
-            "name": component.get("name", component_id),
-            "version": str(version),
-            "base_purl": str(base_purl),
-            "aliases": aliases,
-            "expected_ecosystem": expected_ecosystem,
-        }
-
-    packages.sort(
-        key=lambda item: (
-            str(item["package"].get("name", "")),
-            str(item["package"].get("version", "")),
-            str(item["package"].get("commit", "")),
-        )
-    )
+    packages.sort(key=_package_sort_key)
     return {"results": [{"packages": packages}]}, component_index
 
 
@@ -295,40 +244,17 @@ def _query_source_inventory(
         active_usages = _usage_categories(component, target, active=True)
         if not active_usages & AUDITED_USAGE:
             continue
-        version, version_status = _effective_version(component)
         version_kind = component.get("version", {}).get("kind")
-        origin = component.get("origin", {})
-        repository_name = _repository_identity(
-            origin.get("url") if isinstance(origin, Mapping) else origin
-        )
-        if (
-            version_kind != "git-commit"
-            or version_status not in _EXACT_VERSION_STATUS
-            or not version
-            or not re.fullmatch(r"[0-9a-fA-F]{40,64}", version)
-            or not repository_name
-        ):
+        if version_kind != "git-commit":
             continue
-        component_id = _component_id(component)
-        packages.append(
-            {"package": {"name": repository_name, "commit": str(version)}}
-        )
-        component_index[component_id] = {
-            "id": component_id,
-            "name": component.get("name", component_id),
-            "version": str(version),
-            "commit": str(version).casefold(),
-            "repository_name": repository_name,
-            "base_purl": component.get("purl"),
-            "aliases": set(),
-            "expected_ecosystem": None,
-        }
-    packages.sort(
-        key=lambda item: (
-            str(item["package"]["name"]),
-            str(item["package"]["commit"]),
-        )
-    )
+        prepared = _exact_query_package(component)
+        if prepared is None:
+            continue
+        query_package, component_identity = prepared
+        component_id = str(component_identity["id"])
+        packages.append(query_package)
+        component_index[component_id] = component_identity
+    packages.sort(key=_package_sort_key)
     return {"results": [{"packages": packages}]}, component_index
 
 
@@ -597,7 +523,7 @@ def run_osv_scan(
     """Run OSV-Scanner and write immutable raw plus enriched gate input."""
 
     try:
-        query_sbom, component_index = _query_inventory(
+        query, component_index = _query_inventory(
             registry, build_evidence, target
         )
     except (ComplianceDataError, OsvRunnerError, OSError, ValueError) as exc:
@@ -605,8 +531,8 @@ def run_osv_scan(
         return 1
     return _run_osv_query(
         scanner=scanner,
-        query_document=query_sbom,
-        query_kind="sbom",
+        query_document=query,
+        query_kind="custom-lockfile",
         component_index=component_index,
         raw_output=raw_output,
         output=output,
