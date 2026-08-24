@@ -486,7 +486,8 @@ def _enrich_report(
                 package["purl"] = matched["base_purl"]
             component_id = str(matched["id"])
             package["component_id"] = component_id
-            package.setdefault("version", matched["version"])
+            if package.get("version") in (None, ""):
+                package["version"] = matched["version"]
     enriched["coverage"] = [coverage_by_id[key] for key in sorted(coverage_by_id)]
     enriched["scanner_execution"] = {
         "status": "success",

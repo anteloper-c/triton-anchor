@@ -609,9 +609,28 @@ class OsvRunnerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             output_path = Path(temporary) / "osv-results.json"
+            raw = json.dumps(
+                {
+                    "results": [
+                        {
+                            "packages": [
+                                {
+                                    "package": {
+                                        "name": "github.com/python/cpython",
+                                        "version": "",
+                                        "commit": "1" * 40,
+                                    },
+                                    "groups": [{"ids": ["CVE-TEST"]}],
+                                }
+                            ]
+                        }
+                    ]
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
             with patch(
                 "scripts.compliance.osv_runner.subprocess.run",
-                side_effect=completed_runs(0, b'{"results":[]}'),
+                side_effect=completed_runs(1, raw),
             ):
                 code = run_osv_scan(
                     scanner="osv-scanner",
@@ -631,6 +650,9 @@ class OsvRunnerTests(unittest.TestCase):
                 for item in output["coverage"]
             },
         )
+        package = output["results"][0]["packages"][0]["package"]
+        self.assertEqual("cpython", package["component_id"])
+        self.assertEqual("3.12.14", package["version"])
 
 
 if __name__ == "__main__":

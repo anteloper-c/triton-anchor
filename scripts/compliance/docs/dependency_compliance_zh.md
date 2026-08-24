@@ -242,7 +242,9 @@ High/Critical 漏洞默认阻断。只有 [`compliance/risk-acceptances.json`](.
 
 个人仓库 [PR #1](https://github.com/anteloper-c/triton-anchor/pull/1) 只向 `setup.py` 增加未登记的 `packaging==24.1`，其 [admission 运行](https://github.com/anteloper-c/triton-anchor/actions/runs/32723187417) 在两个 target 都记录 1 项 unmapped declaration 并非零阻断，证据上传成功；登记表没有语义新增/更新组件，因此 OSV 明确记录 `not-applicable`，没有伪造覆盖。PR 已关闭且未合并，测试分支已删除。该运行验证了声明差异和 admission 接线；已登记组件变更的 exact OSV 查询仍只有针对性测试证据。
 
-上述首次 audit 只查询到 4 个有精确 PyPI 身份的构建组件。当前实现改为复用 OSV 官方 custom lockfile 形式，在同一全量查询中同时携带精确 PyPI version 与 Git commit，并将 LLVM 组件身份与仓库 pin 对齐；本地用该次真实 build evidence 重放可形成 8 个精确查询组件。该增量尚未完成新的 Hosted Runner audit，不能把预期减少的覆盖缺口写成已验证结果。
+上述首次 audit 只查询到 4 个有精确 PyPI 身份的构建组件。后续实现复用 OSV 官方 custom lockfile 形式，在同一全量查询中同时携带精确 PyPI version 与 Git commit，并将 LLVM 组件身份与仓库 pin 对齐；提交 `1f1e372` 的 [手工 audit](https://github.com/anteloper-c/triton-anchor/actions/runs/32732894684) 已在 Hosted Runner 将精确查询扩大到 8 个组件，把漏洞覆盖缺口从 9 个降至 5 个。
+
+提交 `5e56f65` 的 [手工 audit](https://github.com/anteloper-c/triton-anchor/actions/runs/32738446964) 又从同次构建证据查询 Ubuntu CMake、GCC、Ninja 源包版本和 CPython release commit：源码扫描、Wheel 构建/扫描、OSV 查询和证据上传均成功，共记录 12 个扫描覆盖；该运行同时暴露出 OSV commit 结果的空 `version` 未回填，导致 CPython 两条发现被报告为 inventory mismatch，并确认当前 Wheel 不含 `libzstd.so.1`，不能用 runner 上偶然安装的 `libzstd1` 冒充候选运行时覆盖。后续实现只回填已验证的 CPython 候选版本，并保留 zstd ABI-only 的人工覆盖要求；每个新提交仍须由新的 Hosted Runner audit 验证，不能用本地重放替代远端结论。
 
 以下情况至少有一项出现时，候选不得晋级：
 
@@ -263,13 +265,13 @@ High/Critical 漏洞默认阻断。只有 [`compliance/risk-acceptances.json`](.
 |---|---|---|
 | 扫描 Python、C++、子模块和构建环境的直接及间接依赖 | Wheel fork 远端运行已递归拉取子模块并运行源码/Wheel ScanCode、Wheel Syft、OSV、同次构建组件、GNU C++ 与 ELF 采集；源码 fork 远端运行已扫描真实 GitHub 快照的文件、Python/CMake/vendored/子模块声明并完成对账 | 两条链仍是 fork 模拟而非 RACE 正式 CI；GitHub 自动归档不递归包含 FlagGems 子模块源码；部分组件版本、来源和人工漏洞覆盖未解析 |
 | 为发布产物生成 CycloneDX 或 SPDX SBOM | 远端 Wheel 已按文件名、版本、平台和 SHA256 生成独立 CycloneDX 1.7；源码核心已为真实 GitHub ZIP/TAR.GZ 建立一份以规范树 digest 为根、同时记录两种 representation 的独立 SBOM link | 当前库存因真实未解决组件事实保持 incomplete；正式 tag 候选和实际 release 入口尚未形成 |
-| CI 定期漏洞扫描并跟踪依赖更新 | 手工 `audit` 已在 Hosted Runner 真实构建/扫描 Wheel、生成 dependency inventory 并正确阻断；每周定时定义已接入；当前 HEAD 已远端验证精确 PyPI version 与 Git commit 的统一 custom lockfile | Ubuntu 源包版本和 CPython release commit 的新增查询仍待远端验证；`schedule` 尚未在默认分支周期触发；自动跨期比较、通知和正式保留期尚未落地 |
+| CI 定期漏洞扫描并跟踪依赖更新 | 手工 `audit` 已在 Hosted Runner 真实构建/扫描 Wheel、生成 dependency inventory 并正确阻断；每周定时定义已接入；精确 PyPI version、Git commit、Ubuntu 源包版本和 CPython release commit 查询均已有远端执行证据 | zstd ABI-only 仍需经审查的覆盖结论；`schedule` 尚未在默认分支周期触发；自动跨期比较、通知和正式保留期尚未落地 |
 | 核对指定组件许可证及兼容性 | 已固定官方许可证证据并形成 [许可证核对记录](license_compatibility_review.md)；triton-linalg 另有 tree 对账 | concluded license、组合兼容性和分发义务仍待 leader/许可证审查人批准 |
 | 生成并维护 THIRD_PARTY_NOTICES.md | 根 Notice 由唯一登记表确定性生成，并有漂移测试；源码候选还核对归档内实际 Notice 的字节摘要 | 6 个分发/嵌入组件仍缺最终版本、许可文本或归属，当前文件不是 release-ready |
 | 新增依赖许可证和高风险漏洞准入 | 个人 fork PR 已真实比较 base/merge-result 声明、对两个 target 调用 `admission` 并因未登记依赖正确阻断；登记表中新增/更新精确组件的 OSV 查询已有针对性测试 | 本次远端样例没有语义修改登记表，因此该 OSV 分支尚未远端执行；首次引入 T8.2 且 base 无登记表时只能记录不可适用；子模块内部及其他间接依赖仍需可信 scanner delta 输入 |
 | 每个候选关联对应版本 SBOM | Wheel、构建证据、报告与一对一 SBOM link 使用同一 SHA256；源码 ZIP/TAR.GZ 的外层 SHA 分别记录并共同关联一份对应 repository/ref/commit/tree digest 的源码 SBOM | 实际正式候选生产入口及晋级调用点尚未形成；接口/升级文档是 release collateral，不单独生成 SBOM |
 | 覆盖直接、可识别间接和主要构建组件 | 产品依赖图与 CycloneDX formulation 分离；Wheel 同次构建证据记录 Python 构建包、CMake、Ninja、LLVM、pybind11、vendored 组件及 ELF 运行库；源码快照从声明和实际路径激活 distributed/build-only/runtime-optional 组件 | 仍需依据真实结果补齐 unresolved 组件身份和许可证结论 |
-| 严重漏洞有处置或批准记录 | 修复/隔离/升级要求处置证据；风险接受有范围、审批人和有效期校验；此前 `setuptools 68.1.2` 样本中的两个 High 漏洞已证明会阻断，当前 OSV 结果没有具体漏洞发现 | 当前无已批准风险接受；最新 audit 仍有 5 个覆盖缺口；其中 Ubuntu 包和 CPython release commit 的自动查询已在本地补齐，尚待真实 Runner 证明覆盖结果 |
+| 严重漏洞有处置或批准记录 | 修复/隔离/升级要求处置证据；风险接受有范围、审批人和有效期校验；此前 `setuptools 68.1.2` 样本中的两个 High 漏洞已证明会阻断；`5e56f65` 的原始 OSV 证据发现 CPython 3.12.14 的一项 medium 和一项 low，修正后都能绑定到候选版本 | 当前无已批准风险接受；zstd 仍有 1 个 ABI-only 覆盖缺口，不能由 absent Wheel 或 runner 环境包自动关闭 |
 | 所有分发第三方进入归属声明 | 候选必需集合与规范 Notice 做独立覆盖对账；源码归档缺失或漂移的随包 Notice 会阻断 | 当前 Notice 的未解决项仍会阻断 |
 | 不兼容许可证或未处置严重漏洞阻断晋级 | 远端模拟在扫描与证据完整时仍保留 `candidate` 非零和 `promotion_status=blocked`，且没有发布动作 | 还未挂到实际正式 promotion 步骤，不能宣称已形成发布闭环 |
 
@@ -285,7 +287,7 @@ T8.2 不等待 T3.8/T4.1 形成新的 tag/release 流程，而是直接复用现
 
 开发阶段向 `t82-dependency-compliance` 推送合规文件或会改变 Wheel 的源码/构建文件会触发该 workflow；手工触发时可用 `run_audit=true` 复用同一 Wheel 构建/扫描链运行全量 `audit`，否则保持现有 Wheel 候选和 commit 源码快照模拟。手工 audit 已完成远端验证。每周一 03:17 UTC 的 `schedule` 只从仓库默认分支运行，因此当前分支尚不能证明周期执行。面向 `main`、`CI_dev` 或个人实验基线的依赖相关 PR 会运行独立 `dependency-admission`；普通 push 不借此获得候选身份。相同 ref 上的新运行会取消旧运行。fork 分支名和模拟 job 的仓库判断只用于当前实验，不能把个人开发入口固化到长期流程中。
 
-`audit` 的退出码不会被工作流改写。当前 HEAD `1f1e372` 的手工运行 [32732894684](https://github.com/anteloper-c/triton-anchor/actions/runs/32732894684) 中，源码扫描、Wheel 同次构建/扫描和精确 Git/PyPI OSV 查询均成功，`execution_status=pass`、无执行问题、无未映射发现；`audit` 因 `pending` 政策、组件事实和 5 个漏洞覆盖缺口返回非零，`always()` 步骤仍成功生成证据清单并上传报告。该结果验证的是扫描链、`compliance-audit.json`、依赖库存、阻断原因和证据上传，而不是绿色 CI；正确阻断也不代表 T8.2 已完成。
+`audit` 的退出码不会被工作流改写。提交 `5e56f65` 的手工运行 [32738446964](https://github.com/anteloper-c/triton-anchor/actions/runs/32738446964) 中，源码扫描、Wheel 同次构建/扫描、精确 OSV 查询和证据上传均成功；`audit` 因 2 项 CPython 版本对账问题、`pending` 政策、组件事实和 1 个 zstd 覆盖缺口返回非零。真实证据经空版本回填逻辑重放后为 `execution_status=pass`、无执行问题，CPython 两条发现绑定 `3.12.14`，覆盖缺口只剩 zstd；这只是修正行为的本地验证，后续提交仍需 Hosted Runner 复核。该结果验证的是扫描链、`compliance-audit.json`、依赖库存、阻断原因和证据上传，而不是绿色 CI；正确阻断也不代表 T8.2 已完成。
 
 PR job 使用 base commit 与 GitHub merge-result 的只读 Git 归档生成声明差异，并比较两端组件登记表。声明扫描、OSV 归一化、`admission` 逻辑、policy 和风险接受都取自 base；merge-result 只作为待审源码与 proposed registry 输入，不能通过同时修改自身门禁来放行。声明 delta 非空或登记表文件变化时才安装 base 固定的 OSV-Scanner；runner 只对登记表中语义新增/更新、属于当前 target 且身份精确的组件查询 PyPI version 或 Git commit，然后分别对 `core-wheel`、`source-snapshot` 调用 `admission`。不属于某 target 的变更明确记录 `scanner_execution.status=not-applicable`，不伪造覆盖。若 base 还没有组件登记表和合规核心（首次引入 T8.2），job 只在 step summary 标记 baseline registry unavailable 并跳过准入，不能把它算作通过；个人实验分支可作为已有登记表的验证基线。当前 base policy 为 `pending`，真正进入 admission 的 PR 预期非零阻断并上传报告。该接线覆盖可静态识别的 Python、pyproject、setup、CMake、vendored、`.gitmodules` 声明和登记表变化，不宣称已覆盖子模块内部或 scanner 才能识别的全部间接变化。
 
@@ -368,7 +370,7 @@ Wheel fork `candidate` 模拟和手工候选调用都不构成正式发布批准
 | `artifact-evaluation` | 对任意具体 Wheel 或源码快照做来源渠道无关的技术评估 | 执行成功、证据完整且合规通过时返回 0，但 `promotion_status` 始终为 `not-applicable` |
 | `candidate` | 由实际具有产物晋级语义的受信调用流程对正式候选做发布前门禁 | 除全部技术/合规检查外，Wheel 必须是 `same-build` 绑定；源码快照必须是 `verified-tag-commit`，进程才返回 0 |
 
-当前阶段建立了唯一多产物核心。Wheel、源码快照、手工 `audit`、PR `admission` 和非 audit 回归都已有 Hosted Runner 证据；当前 HEAD 的 PyPI version/Git commit 全量查询已经远端执行，本地又根据最新 audit 的 5 个覆盖缺口增加 Ubuntu 源包和 CPython release commit 查询。该增量尚未推送或远端验证。这仍不能宣称 T8.2 完成：默认分支周期审计、自动跨期跟踪、子模块内部和间接依赖 delta、许可证政策及组件结论尚未关闭，审计、准入和模拟输出也不是正式 release asset。T8.2 后续继续基于现有 CI 独立推进；若以后出现实际晋级步骤，再同时接入正式 Wheel 和 tag 源码快照的 blocking `candidate`。自动化必须消费同一登记表、策略和核心，不能复制第二份规则。
+当前阶段建立了唯一多产物核心。Wheel、源码快照、手工 `audit`、PR `admission` 和非 audit 回归都已有 Hosted Runner 证据；PyPI version、Git commit、Ubuntu 源包和 CPython release commit 的全量查询都已真实执行。最新证据证明 CMake、GCC、Ninja 和 CPython 可形成精确覆盖，也暴露并修正了 CPython commit 结果的空版本对账问题；zstd 因当前 Wheel absent 而不能靠环境包扫描自动关闭，仍保留 ABI-only 人工覆盖要求。这仍不能宣称 T8.2 完成：默认分支周期审计、自动跨期跟踪、子模块内部和间接依赖 delta、许可证政策及组件结论尚未关闭，审计、准入和模拟输出也不是正式 release asset。T8.2 后续继续基于现有 CI 独立推进；若以后出现实际晋级步骤，再同时接入正式 Wheel 和 tag 源码快照的 blocking `candidate`。自动化必须消费同一登记表、策略和核心，不能复制第二份规则。
 
 ## 重构不变量与恢复步骤
 

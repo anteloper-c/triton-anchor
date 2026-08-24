@@ -613,7 +613,6 @@ jobs:
             --evidence-binding same-build \
             --cxx-compiler "${CXX}" \
             --package-tool pypa-build \
-            --ubuntu-package zstd=libzstd1 \
             --ubuntu-package "gcc-toolchain=g++-${gcc_major}" \
             --ubuntu-package cmake=cmake \
             --ubuntu-package ninja=ninja-build \
