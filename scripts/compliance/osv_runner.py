@@ -1,4 +1,4 @@
-"""Run OSV-Scanner against exact, candidate-observed package identities."""
+"""Run OSV-Scanner against exact observed or dependency-admission identities."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 
 from .discovery import (
     _repository_identity,
+    diff_components,
     normalize_build_evidence,
     reconcile_discoveries,
 )
@@ -55,6 +56,49 @@ def _package_name(value: Any, ecosystem: str | None) -> str:
     if ecosystem and ecosystem.casefold() == "pypi":
         return _PYPI_NAME_SEPARATOR.sub("-", name)
     return name
+
+
+def _sbom_query_component(
+    component: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    version, version_status = _effective_version(component)
+    purl = _sbom_purl(component)
+    if (
+        not version
+        or version_status not in _EXACT_VERSION_STATUS
+        or not purl
+        or "@" not in purl.rsplit("/", 1)[-1]
+    ):
+        return None
+    component_id = _component_id(component)
+    expected_ecosystem = _purl_ecosystem(str(purl))
+    aliases = {
+        _package_name(component_id, expected_ecosystem),
+        _package_name(component.get("name", component_id), expected_ecosystem),
+        *(
+            _package_name(alias, expected_ecosystem)
+            for alias in component.get("aliases", [])
+        ),
+    }
+    query_component = {
+        "bom-ref": f"osv-query:{component_id}@{version}",
+        "type": component.get("type", component.get("kind", "library")),
+        "name": component.get("name", component_id),
+        "version": version,
+        "purl": purl,
+        "properties": [
+            {"name": "triton-anchor:component-id", "value": component_id}
+        ],
+    }
+    component_identity = {
+        "id": component_id,
+        "name": query_component["name"],
+        "version": str(version),
+        "base_purl": str(component["purl"]),
+        "aliases": aliases,
+        "expected_ecosystem": expected_ecosystem,
+    }
+    return query_component, component_identity
 
 
 def _query_inventory(
@@ -100,44 +144,13 @@ def _query_inventory(
             for category in active_usages
         ):
             continue
-        version, version_status = _effective_version(component)
-        purl = _sbom_purl(component)
-        if (
-            not version
-            or version_status not in _EXACT_VERSION_STATUS
-            or not purl
-            or "@" not in purl.rsplit("/", 1)[-1]
-        ):
+        prepared = _sbom_query_component(component)
+        if prepared is None:
             continue
-        component_id = _component_id(component)
-        expected_ecosystem = _purl_ecosystem(str(purl))
-        aliases = {
-            _package_name(component_id, expected_ecosystem),
-            _package_name(component.get("name", component_id), expected_ecosystem),
-            *(
-                _package_name(alias, expected_ecosystem)
-                for alias in component.get("aliases", [])
-            ),
-        }
-        query_component = {
-            "bom-ref": f"osv-query:{component_id}@{version}",
-            "type": component.get("type", component.get("kind", "library")),
-            "name": component.get("name", component_id),
-            "version": version,
-            "purl": purl,
-            "properties": [
-                {"name": "triton-anchor:component-id", "value": component_id}
-            ],
-        }
+        query_component, component_identity = prepared
+        component_id = str(component_identity["id"])
         query_components.append(query_component)
-        component_index[component_id] = {
-            "id": component_id,
-            "name": query_component["name"],
-            "version": str(version),
-            "base_purl": str(component["purl"]),
-            "aliases": aliases,
-            "expected_ecosystem": expected_ecosystem,
-        }
+        component_index[component_id] = component_identity
 
     query_components.sort(key=lambda item: str(item["bom-ref"]))
     return (
@@ -149,6 +162,102 @@ def _query_inventory(
         },
         component_index,
     )
+
+
+def _query_admission_inventory(
+    baseline_registry: Mapping[str, Any],
+    current_registry: Mapping[str, Any],
+    target: str,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Build exact package/commit queries for reviewed dependency changes."""
+
+    validate_registry(baseline_registry)
+    validate_registry(current_registry)
+    difference = diff_components(baseline_registry, current_registry)
+    changed_ids = {
+        str(component["id"]) for component in difference["added"]
+    } | {str(change["id"]) for change in difference["updated"]}
+    current_by_id = {
+        str(component["id"]): component
+        for component in current_registry.get("components", [])
+    }
+
+    packages: list[dict[str, Any]] = []
+    component_index: dict[str, dict[str, Any]] = {}
+    for component_id in sorted(changed_ids):
+        component = current_by_id[component_id]
+        if not component.get("third_party", True):
+            continue
+        if not _usage_categories(component, target, active=True):
+            continue
+        version, version_status = _effective_version(component)
+        if not version or version_status not in _EXACT_VERSION_STATUS:
+            continue
+        version_kind = component.get("version", {}).get("kind")
+        origin = component.get("origin", {})
+        repository_name = _repository_identity(
+            origin.get("url") if isinstance(origin, Mapping) else origin
+        )
+        if (
+            version_kind == "git-commit"
+            and repository_name
+            and re.fullmatch(r"[0-9a-fA-F]{40,64}", str(version))
+        ):
+            packages.append(
+                {"package": {"name": repository_name, "commit": str(version)}}
+            )
+            component_index[component_id] = {
+                "id": component_id,
+                "name": component.get("name", component_id),
+                "version": str(version),
+                "commit": str(version).casefold(),
+                "repository_name": repository_name,
+                "base_purl": component.get("purl"),
+                "aliases": set(),
+                "expected_ecosystem": None,
+            }
+            continue
+
+        base_purl = component.get("purl")
+        expected_ecosystem = _purl_ecosystem(str(base_purl)) if base_purl else None
+        if not base_purl or not expected_ecosystem:
+            continue
+        package_name = str(base_purl).rsplit("/", 1)[-1].split("@", 1)[0]
+        aliases = {
+            _package_name(component_id, expected_ecosystem),
+            _package_name(component.get("name", component_id), expected_ecosystem),
+            _package_name(package_name, expected_ecosystem),
+            *(
+                _package_name(alias, expected_ecosystem)
+                for alias in component.get("aliases", [])
+            ),
+        }
+        packages.append(
+            {
+                "package": {
+                    "name": package_name,
+                    "version": str(version),
+                    "ecosystem": expected_ecosystem,
+                }
+            }
+        )
+        component_index[component_id] = {
+            "id": component_id,
+            "name": component.get("name", component_id),
+            "version": str(version),
+            "base_purl": str(base_purl),
+            "aliases": aliases,
+            "expected_ecosystem": expected_ecosystem,
+        }
+
+    packages.sort(
+        key=lambda item: (
+            str(item["package"].get("name", "")),
+            str(item["package"].get("version", "")),
+            str(item["package"].get("commit", "")),
+        )
+    )
+    return {"results": [{"packages": packages}]}, component_index
 
 
 def _query_source_inventory(
@@ -505,6 +614,54 @@ def run_osv_scan(
     )
 
 
+def run_osv_admission_scan(
+    *,
+    scanner: str | Path,
+    baseline_registry: Mapping[str, Any],
+    current_registry: Mapping[str, Any],
+    raw_output: str | Path,
+    output: str | Path,
+    target: str = "core-wheel",
+    scanned_on: str | None = None,
+) -> int:
+    """Run exact OSV queries for components changed by a dependency PR."""
+
+    try:
+        query, component_index = _query_admission_inventory(
+            baseline_registry, current_registry, target
+        )
+    except (ComplianceDataError, OsvRunnerError, OSError, ValueError) as exc:
+        write_json(output, _failure_report(str(exc)))
+        return 1
+    if not component_index:
+        write_json(
+            output,
+            {
+                "results": [],
+                "coverage": [],
+                "scanner_execution": {
+                    "status": "not-applicable",
+                    "scanner": "osv-scanner",
+                    "scanner_version": None,
+                    "scanned_on": scanned_on
+                    or datetime.now(timezone.utc).date().isoformat(),
+                    "query_component_count": 0,
+                    "reason": "no exact changed component is active for this target",
+                },
+            },
+        )
+        return 0
+    return _run_osv_query(
+        scanner=scanner,
+        query_document=query,
+        query_kind="custom-lockfile",
+        component_index=component_index,
+        raw_output=raw_output,
+        output=output,
+        scanned_on=scanned_on,
+    )
+
+
 def run_osv_source_scan(
     *,
     scanner: str | Path,
@@ -543,6 +700,7 @@ def build_parser() -> argparse.ArgumentParser:
     inventory = parser.add_mutually_exclusive_group(required=True)
     inventory.add_argument("--build-evidence")
     inventory.add_argument("--source-artifact")
+    inventory.add_argument("--baseline-registry")
     parser.add_argument("--dependency-inventory")
     parser.add_argument("--raw-output", required=True)
     parser.add_argument("--output", required=True)
@@ -555,7 +713,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         registry = load_json(args.registry)
-        if args.source_artifact:
+        if args.baseline_registry:
+            baseline_registry = load_json(args.baseline_registry)
+        elif args.source_artifact:
             if not args.dependency_inventory:
                 raise ComplianceDataError(
                     "--dependency-inventory is required with --source-artifact"
@@ -567,6 +727,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ComplianceDataError, OSError, ValueError) as exc:
         write_json(args.output, _failure_report(f"cannot read runner input: {exc}"))
         return 1
+    if args.baseline_registry:
+        return run_osv_admission_scan(
+            scanner=args.scanner,
+            baseline_registry=baseline_registry,
+            current_registry=registry,
+            raw_output=args.raw_output,
+            output=args.output,
+            target=args.target or "core-wheel",
+            scanned_on=args.scanned_on,
+        )
     if args.source_artifact:
         return run_osv_source_scan(
             scanner=args.scanner,

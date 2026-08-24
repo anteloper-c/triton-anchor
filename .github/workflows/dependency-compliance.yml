@@ -27,13 +27,31 @@ on:
       - "tests/**"
       - "triton/**"
   pull_request:
-    branches: [main, CI_dev]
+    branches: [main, CI_dev, t82-dependency-compliance]
     paths:
+      - ".gitmodules"
       - ".github/workflows/dependency-compliance.yml"
+      - "**/CMakeLists.txt"
+      - "**/*.cmake"
+      - "**/third_party/**"
+      - "FlagGems"
       - "compliance/**"
+      - "pyproject.toml"
+      - "python/**/*.py"
       - "scripts/compliance/**"
+      - "setup.py"
       - "THIRD_PARTY_NOTICES.md"
+      - "triton/cmake/llvm-hash.txt"
+      - "triton/python/**/*.py"
+  schedule:
+    - cron: "17 3 * * 1"
   workflow_dispatch:
+    inputs:
+      run_audit:
+        description: "Run the full dependency audit instead of candidate simulations"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -60,12 +78,150 @@ jobs:
           python -m compileall -q scripts/compliance
           python -B -m unittest discover -s scripts/compliance/tests -t . -p "test_*.py" -v
 
+  dependency-admission:
+    name: "T8.2 Dependency Admission"
+    needs: core-test
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Initialize admission evidence paths
+        run: |
+          echo "EVIDENCE_DIR=${RUNNER_TEMP}/t82-admission-evidence" >> "${GITHUB_ENV}"
+          echo "TOOLS_DIR=${RUNNER_TEMP}/t82-admission-tools" >> "${GITHUB_ENV}"
+          echo "BASELINE_ROOT=${RUNNER_TEMP}/t82-admission-baseline" >> "${GITHUB_ENV}"
+          echo "CURRENT_ROOT=${RUNNER_TEMP}/t82-admission-current" >> "${GITHUB_ENV}"
+          mkdir -p \
+            "${RUNNER_TEMP}/t82-admission-evidence" \
+            "${RUNNER_TEMP}/t82-admission-baseline" \
+            "${RUNNER_TEMP}/t82-admission-current"
+
+      - name: Generate the dependency declaration and registry delta
+        id: admission-inputs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          git archive "${BASE_SHA}" | tar -x -C "${BASELINE_ROOT}"
+          git archive "${CURRENT_SHA}" | tar -x -C "${CURRENT_ROOT}"
+          cp "${CURRENT_ROOT}/compliance/component-registry.json" \
+            "${EVIDENCE_DIR}/proposed-component-registry.json"
+          if [[ ! -f "${BASELINE_ROOT}/compliance/component-registry.json" || \
+                ! -f "${BASELINE_ROOT}/scripts/compliance/cli.py" ]]; then
+            echo "required=false" >> "${GITHUB_OUTPUT}"
+            {
+              echo "## T8.2 dependency admission scope"
+              echo
+              echo "- Baseline registry available: \`false\`"
+              echo "- Admission required: \`false\`"
+              echo "- Result: \`not-applicable\` (initial T8.2 bootstrap)"
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          (
+            cd "${BASELINE_ROOT}"
+            python -B -m scripts.compliance.declarations \
+              --baseline-root "${BASELINE_ROOT}" \
+              --current-root "${CURRENT_ROOT}" \
+              --output "${EVIDENCE_DIR}/declaration-delta.json"
+          )
+          cp "${BASELINE_ROOT}/compliance/component-registry.json" \
+            "${EVIDENCE_DIR}/baseline-component-registry.json"
+          delta_count="$(python -c \
+            'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8")).get("items", [])))' \
+            "${EVIDENCE_DIR}/declaration-delta.json")"
+          registry_changed=false
+          if ! cmp -s \
+            "${EVIDENCE_DIR}/baseline-component-registry.json" \
+            "${EVIDENCE_DIR}/proposed-component-registry.json"; then
+            registry_changed=true
+          fi
+          required=false
+          if (( delta_count > 0 )) || [[ "${registry_changed}" == "true" ]]; then
+            required=true
+          fi
+          echo "required=${required}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## T8.2 dependency admission scope"
+            echo
+            echo "- Baseline registry available: \`true\`"
+            echo "- Admission required: \`${required}\`"
+            echo "- Declaration delta items: \`${delta_count}\`"
+            echo "- Registry file changed: \`${registry_changed}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Install the pinned vulnerability scanner
+        if: steps.admission-inputs.outputs.required == 'true'
+        run: |
+          bash "${BASELINE_ROOT}/scripts/compliance/bootstrap_tools.sh" \
+            "${TOOLS_DIR}" osv \
+            | tee "${EVIDENCE_DIR}/tool-versions.txt"
+
+      - name: Evaluate dependency admission for both product targets
+        if: steps.admission-inputs.outputs.required == 'true'
+        run: |
+          source "${TOOLS_DIR}/tools.env"
+          overall_status=0
+          for target in core-wheel source-snapshot; do
+            set +e
+            (
+              cd "${BASELINE_ROOT}"
+              python -B -m scripts.compliance.osv_runner \
+                --scanner "${OSV_SCANNER}" \
+                --baseline-registry "${EVIDENCE_DIR}/baseline-component-registry.json" \
+                --registry "${EVIDENCE_DIR}/proposed-component-registry.json" \
+                --raw-output "${EVIDENCE_DIR}/osv-${target}.raw.json" \
+                --output "${EVIDENCE_DIR}/osv-${target}.json" \
+                --target "${target}"
+            )
+            osv_status=$?
+            (
+              cd "${BASELINE_ROOT}"
+              python -B -m scripts.compliance.cli admission \
+                --baseline-registry "${EVIDENCE_DIR}/baseline-component-registry.json" \
+                --registry "${EVIDENCE_DIR}/proposed-component-registry.json" \
+                --policy "${BASELINE_ROOT}/compliance/license-policy.json" \
+                --risk-acceptances "${BASELINE_ROOT}/compliance/risk-acceptances.json" \
+                --declaration-delta "${EVIDENCE_DIR}/declaration-delta.json" \
+                --osv "${EVIDENCE_DIR}/osv-${target}.json" \
+                --target "${target}" \
+                --output "${EVIDENCE_DIR}/admission-${target}.json"
+            )
+            admission_status=$?
+            set -e
+            if (( osv_status != 0 || admission_status != 0 )); then
+              overall_status=1
+            fi
+          done
+          exit "${overall_status}"
+
+      - name: Upload dependency admission evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t82-admission-pr-${{ github.event.pull_request.number }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/t82-admission-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
   source-snapshot-simulation:
     name: "T8.2 Source Snapshot Technical Simulation"
     needs: core-test
     if: >-
       github.repository == 'anteloper-c/triton-anchor' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (
+        github.event_name == 'push' ||
+        (github.event_name == 'workflow_dispatch' && inputs.run_audit != true)
+      ) &&
       github.ref == 'refs/heads/t82-dependency-compliance'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -320,14 +476,23 @@ jobs:
           retention-days: 14
 
   candidate-simulation:
-    name: "T8.2 Candidate Gate Simulation"
+    name: >-
+      ${{ (github.event_name == 'schedule' || inputs.run_audit == true)
+          && 'T8.2 Dependency Audit'
+          || 'T8.2 Candidate Gate Simulation' }}
     needs: core-test
     if: >-
-      github.repository == 'anteloper-c/triton-anchor' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      github.ref == 'refs/heads/t82-dependency-compliance'
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_audit == true) ||
+      (
+        github.repository == 'anteloper-c/triton-anchor' &&
+        (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+        github.ref == 'refs/heads/t82-dependency-compliance'
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    env:
+      AUDIT_MODE: ${{ github.event_name == 'schedule' || inputs.run_audit == true }}
     outputs:
       gate_pass: ${{ steps.candidate.outputs.gate_pass }}
     steps:
@@ -339,7 +504,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Initialize simulation paths
+      - name: Initialize compliance paths
         run: |
           echo "EVIDENCE_DIR=${RUNNER_TEMP}/t82-evidence" >> "${GITHUB_ENV}"
           echo "TOOLS_DIR=${RUNNER_TEMP}/t82-tools" >> "${GITHUB_ENV}"
@@ -453,8 +618,27 @@ jobs:
             --output "${EVIDENCE_DIR}/osv-results.json" \
             --target core-wheel
 
+      - name: Run the full dependency audit
+        if: github.event_name == 'schedule' || inputs.run_audit == true
+        run: |
+          mkdir -p "${EVIDENCE_DIR}/audit"
+          python -B -m scripts.compliance.declarations \
+            --root "${GITHUB_WORKSPACE}" \
+            --output "${EVIDENCE_DIR}/dependency-inventory.json"
+          python -B -m scripts.compliance.cli audit \
+            --registry compliance/component-registry.json \
+            --policy compliance/license-policy.json \
+            --risk-acceptances compliance/risk-acceptances.json \
+            --scancode "${EVIDENCE_DIR}/scancode-source.json" \
+            --syft "${EVIDENCE_DIR}/syft-wheel.cdx.json" \
+            --osv "${EVIDENCE_DIR}/osv-results.json" \
+            --build-evidence "${EVIDENCE_DIR}/build-evidence.json" \
+            --target core-wheel \
+            --output "${EVIDENCE_DIR}/audit/compliance-audit.json"
+
       - name: Evaluate the simulated candidate
         id: candidate
+        if: github.event_name != 'schedule' && inputs.run_audit != true
         run: |
           set +e
           python -B -m scripts.compliance.cli candidate \
@@ -553,6 +737,7 @@ jobs:
           from pathlib import Path
 
           evidence = Path(os.environ["EVIDENCE_DIR"])
+          audit_mode = os.environ.get("AUDIT_MODE", "").lower() == "true"
           reports = {}
           if evidence.exists():
               for path in sorted(evidence.rglob("*")):
@@ -562,7 +747,8 @@ jobs:
                       )
           manifest = {
               "schema_version": 1,
-              "simulation": True,
+              "audit_run": audit_mode,
+              "simulation": not audit_mode,
               "not_a_release": True,
               "repository": os.environ.get("GITHUB_REPOSITORY"),
               "source_commit": os.environ.get("GITHUB_SHA"),
@@ -583,11 +769,14 @@ jobs:
           )
           PY
 
-      - name: Upload simulation evidence
+      - name: Upload Wheel compliance evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: t82-simulation-${{ github.sha }}-${{ github.run_attempt }}
+          name: >-
+            ${{ (github.event_name == 'schedule' || inputs.run_audit == true)
+                && 't82-audit'
+                || 't82-simulation' }}-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             dist/triton_anchor-*.whl
             ${{ runner.temp }}/t82-evidence/

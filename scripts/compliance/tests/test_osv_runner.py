@@ -10,8 +10,10 @@ from unittest.mock import patch
 
 from scripts.compliance.core import normalize_osv
 from scripts.compliance.osv_runner import (
+    _query_admission_inventory,
     _query_inventory,
     _query_source_inventory,
+    run_osv_admission_scan,
     run_osv_scan,
     run_osv_source_scan,
 )
@@ -64,6 +66,43 @@ def raw_report(*, ecosystem: str = "PyPI", groups: list[dict] | None = None) -> 
     return json.dumps(value, separators=(",", ":")).encode("utf-8")
 
 
+def admission_registries() -> tuple[dict, dict]:
+    baseline_dependency = component(
+        "setuptools", version="67.0.0", distribution="build-only"
+    )
+    baseline_dependency["purl"] = "pkg:pypi/setuptools"
+    current_dependency = component(
+        "setuptools", version="68.1.2", distribution="build-only"
+    )
+    current_dependency["purl"] = "pkg:pypi/setuptools"
+    baseline_unchanged = component("numpy", version="2.2.0")
+    baseline_unchanged["purl"] = "pkg:pypi/numpy"
+    current_unchanged = component("numpy", version="2.2.0")
+    current_unchanged["purl"] = "pkg:pypi/numpy"
+    baseline_git = component("triton", version="1" * 40)
+    baseline_git["version"]["kind"] = "git-commit"
+    baseline_git["origin"] = {
+        "url": "https://github.com/triton-lang/triton",
+        "status": "confirmed",
+    }
+    current_git = component("triton", version="2" * 40)
+    current_git["version"]["kind"] = "git-commit"
+    current_git["origin"] = {
+        "url": "https://github.com/triton-lang/triton",
+        "status": "confirmed",
+    }
+    return (
+        {
+            "schema_version": 1,
+            "components": [baseline_dependency, baseline_unchanged, baseline_git],
+        },
+        {
+            "schema_version": 1,
+            "components": [current_dependency, current_unchanged, current_git],
+        },
+    )
+
+
 def completed_runs(scan_exit: int, stdout: bytes) -> list[subprocess.CompletedProcess]:
     return [
         subprocess.CompletedProcess(
@@ -79,6 +118,76 @@ def completed_runs(scan_exit: int, stdout: bytes) -> list[subprocess.CompletedPr
 
 
 class OsvRunnerTests(unittest.TestCase):
+    def test_admission_query_contains_only_exact_changed_components(self) -> None:
+        baseline, current = admission_registries()
+
+        query, index = _query_admission_inventory(
+            baseline, current, "core-wheel"
+        )
+
+        self.assertEqual({"setuptools", "triton"}, set(index))
+        self.assertEqual(
+            {
+                ("setuptools", "68.1.2", None),
+                ("github.com/triton-lang/triton", None, "2" * 40),
+            },
+            {
+                (
+                    item["package"]["name"],
+                    item["package"].get("version"),
+                    item["package"].get("commit"),
+                )
+                for item in query["results"][0]["packages"]
+            },
+        )
+
+    def test_admission_scan_records_changed_component_coverage(self) -> None:
+        baseline, current = admission_registries()
+        with tempfile.TemporaryDirectory() as temporary:
+            raw_path = Path(temporary) / "admission.raw.json"
+            output_path = Path(temporary) / "admission.json"
+            with patch(
+                "scripts.compliance.osv_runner.subprocess.run",
+                side_effect=completed_runs(0, raw_report()),
+            ) as mocked:
+                code = run_osv_admission_scan(
+                    scanner="osv-scanner",
+                    baseline_registry=baseline,
+                    current_registry=current,
+                    raw_output=raw_path,
+                    output=output_path,
+                    scanned_on="2026-08-24",
+                )
+            output = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(0, code)
+        coverage = {
+            item["component_id"]: item["component_version"]
+            for item in output["coverage"]
+        }
+        self.assertEqual({"setuptools", "triton"}, set(coverage))
+        self.assertEqual("68.1.2", coverage["setuptools"])
+        self.assertEqual("2" * 40, coverage["triton"])
+        self.assertIn("--lockfile", mocked.call_args_list[1].args[0])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output_path = Path(temporary) / "not-applicable.json"
+            with patch("scripts.compliance.osv_runner.subprocess.run") as unused:
+                code = run_osv_admission_scan(
+                    scanner="osv-scanner",
+                    baseline_registry=baseline,
+                    current_registry=current,
+                    raw_output=Path(temporary) / "not-applicable.raw.json",
+                    output=output_path,
+                    target="source-snapshot",
+                    scanned_on="2026-08-24",
+                )
+            not_applicable = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(0, code)
+        self.assertEqual("not-applicable", not_applicable["scanner_execution"]["status"])
+        unused.assert_not_called()
+
     def _source_inputs(self) -> tuple[dict, dict, dict]:
         root = component("triton-anchor")
         root["third_party"] = False
