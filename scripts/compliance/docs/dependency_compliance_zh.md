@@ -2,7 +2,7 @@
 
 > 文档定位：这是 T8.2 的唯一系统设计说明，用于解释需求边界、代码职责、输入输出、数据流、门禁语义和后续接入方式。组件事实以 `compliance/component-registry.json` 为准，许可证政策和风险接受分别以同目录对应 JSON 为准；本文件不复制第二份可执行规则。实现或接线发生变化时，必须在同一变更中更新本文件。
 
-当前状态是“Wheel 合规核心及 anteloper fork 自动构建/扫描链已完成远端验证；GitHub 源码快照核心已用 fork 当前 commit 的真实 GitHub ZIP/TAR.GZ 完成本地临时实验，专用 Hosted Runner 模拟 workflow 已接线但尚未远端验证；真实 tag 候选仍因未完成的许可证、漏洞覆盖和政策审批而阻断；RACE 正式 release、定时审计和 PR 准入接线尚未完成”。文中必须继续区分：已经实现的核心能力、本地或远端模拟得到的技术验证，以及仍需正式流程或人工审批才能关闭的事项。
+当前状态是“Wheel 合规核心及 anteloper fork 自动构建/扫描链已完成远端验证；GitHub 源码快照核心也已在 anteloper fork 使用当前 commit 的真实 GitHub ZIP/TAR.GZ 完成 Hosted Runner 技术验证；按当前未解决事实，未来正式 tag 候选仍会被许可证、漏洞覆盖和政策审批阻断；RACE 正式 release、定时审计和 PR 准入接线尚未完成”。文中必须继续区分：已经实现的核心能力、本地或远端模拟得到的技术验证，以及仍需正式流程或人工审批才能关闭的事项。
 
 ## 这项工作解决什么问题
 
@@ -236,6 +236,8 @@ High/Critical 漏洞默认阻断。只有 [`compliance/risk-acceptances.json`](.
 
 [修正后的第二次 Hosted Runner 模拟](https://github.com/anteloper-c/triton-anchor/actions/runs/32359594017) 自动构建 `triton_anchor-0.2.0-cp312-cp312-linux_x86_64.whl`（SHA256 `ef3a1a3aeb78d826cca079925f628f8d2969590f7f508dd805716abc3da5c8bd`）。Wheel、build evidence、SBOM link 和报告中的 SHA256 一致；`execution_status=pass`、`evidence_status=complete`、未映射项和执行问题均为 0。真实 `candidate` 仍返回 1，`compliance_status=fail`、`sbom_inventory_status=incomplete`、`promotion_status=blocked`，无发布动作的模拟晋级 job 被跳过。证据还发现本次 ELF 无 zstd、构建未选 uv 时仍会产生“用途未分类”误阻断；当前同次构建证据因此显式记录条件用途的 `present` 或 `absent`，缺少分类仍保持阻断，明确 absent 的组件不会进入 SBOM、Notice 或漏洞范围。
 
+2026-08-24 的 [双产物 Hosted Runner 验证](https://github.com/anteloper-c/triton-anchor/actions/runs/32705703743) 针对提交 `ee258be` 同时通过 109 项核心测试、源码快照技术模拟和 Wheel 候选模拟。源码 job 从 GitHub API 重新下载该 commit 的 ZIP/TAR.GZ，验证双表示与 Git tree，运行固定版本 ScanCode、Syft、依赖声明 inventory 和 OSV，再生成并上传源码 SBOM、Notice、关联文件、报告和原始证据；约 3.2 MB 的源码证据包与约 141.8 MB 的 Wheel/候选证据包均已留存 14 天。源码调用保持 `promotion_status=not-applicable`；Wheel 调用正确观察到真实合规阻断，所以无发布动作的模拟晋级仍被跳过。整个 run 成功表示技术链按预期执行和阻断，不表示候选已通过合规或正式 release 已获批准。
+
 以下情况至少有一项出现时，候选不得晋级：
 
 - 合规策略仍未批准；
@@ -251,9 +253,9 @@ High/Critical 漏洞默认阻断。只有 [`compliance/risk-acceptances.json`](.
 
 下表只描述当前本地实现，不代表任务已经验收：
 
-| 原始要求 | 当前本地证据 | 尚未关闭 |
+| 原始要求 | 当前实现与验证证据 | 尚未关闭 |
 |---|---|---|
-| 扫描 Python、C++、子模块和构建环境的直接及间接依赖 | Wheel fork 远端运行已递归拉取子模块并运行源码/Wheel ScanCode、Wheel Syft、OSV、同次构建组件、GNU C++ 与 ELF 采集；本地临时实验已观察到源码快照文件及 Python/CMake/vendored/子模块声明可全部映射到同一登记表 | 本地临时实验不是验收证据；源码 Hosted Runner job 尚未远端验证；两条链仍是 fork 模拟而非 RACE 正式 CI；部分组件版本、来源和人工漏洞覆盖未解析 |
+| 扫描 Python、C++、子模块和构建环境的直接及间接依赖 | Wheel fork 远端运行已递归拉取子模块并运行源码/Wheel ScanCode、Wheel Syft、OSV、同次构建组件、GNU C++ 与 ELF 采集；源码 fork 远端运行已扫描真实 GitHub 快照的文件、Python/CMake/vendored/子模块声明并完成对账 | 两条链仍是 fork 模拟而非 RACE 正式 CI；GitHub 自动归档不递归包含 FlagGems 子模块源码；部分组件版本、来源和人工漏洞覆盖未解析 |
 | 为发布产物生成 CycloneDX 或 SPDX SBOM | 远端 Wheel 已按文件名、版本、平台和 SHA256 生成独立 CycloneDX 1.7；源码核心已为真实 GitHub ZIP/TAR.GZ 建立一份以规范树 digest 为根、同时记录两种 representation 的独立 SBOM link | 当前库存因真实未解决组件事实保持 incomplete；正式 tag 候选和 release 入口尚未由 T3.8/T4.1 指定 |
 | CI 定期漏洞扫描并跟踪依赖更新 | `audit`、declaration delta/admission 和逐组件 OSV 查询核心已有负向测试与本地真实查询 | 定时入口、固定工具安装及认可候选证据保留尚未落地 |
 | 核对指定组件许可证及兼容性 | 已固定官方许可证证据并形成 [许可证核对记录](license_compatibility_review.md)；triton-linalg 另有 tree 对账 | concluded license、组合兼容性和分发义务仍待 leader/许可证审查人批准 |
@@ -303,7 +305,7 @@ candidate → SBOM / artifact link / Notice / compliance report
                                                        上传双归档、源码 SBOM 和证据
 ```
 
-`core-test` 用小型夹具验证 Wheel、源码双归档、target 隔离、组件对账、OSV exact-commit 输入、SBOM/Notice 和 CLI 门禁；它本身不扫描真实项目。`candidate-simulation` 负责 Wheel 真实数据流，并使用与 `triton/cmake/llvm-hash.txt` 匹配的公开 LLVM 归档。`source-snapshot-simulation` 不构建 Wheel或 LLVM：它下载当前 `GITHUB_SHA` 的 GitHub API zipball/tarball，与 checkout commit 树对照，只解包一份等价表示后运行独立的 ScanCode、Syft、dependency inventory 和 OSV。固定扫描器、任一证据或对账失败都会使相应模拟失败，不能用另一产物报告或空报告替代。源码 job 已写入 workflow，但在本次变更推送并完成 Hosted Runner 前只能称为“已接线、尚未远端验证”。
+`core-test` 用小型夹具验证 Wheel、源码双归档、target 隔离、组件对账、OSV exact-commit 输入、SBOM/Notice 和 CLI 门禁；它本身不扫描真实项目。`candidate-simulation` 负责 Wheel 真实数据流，并使用与 `triton/cmake/llvm-hash.txt` 匹配的公开 LLVM 归档。`source-snapshot-simulation` 不构建 Wheel或 LLVM：它下载当前 `GITHUB_SHA` 的 GitHub API zipball/tarball，与 checkout commit 树对照，只解包一份等价表示后运行独立的 ScanCode、Syft、dependency inventory 和 OSV。固定扫描器、任一证据或对账失败都会使相应模拟失败，不能用另一产物报告或空报告替代。源码 job 已在 anteloper fork 的 Hosted Runner 完成技术验证；它仍是 commit 模拟，不是 RACE tag/release 验收。
 
 模拟 job 从自己的构建步骤取得唯一 `dist/triton_anchor-*.whl`，而不是假定一个固定文件名。构建后立即调用 `build_evidence.py`，所以 `same-build` 声明与当前 Wheel SHA256 对应；实际 package tool 和 ELF 条件依赖也在同一时点分类。`present` 才激活组件，`absent` 只证明条件已经检查，缺少分类继续阻断。核心仍保留任意路径接口；本地、服务器或未来 release job 可以使用同一命令，把 `--wheel` 换成该执行环境实际可见的路径：
 
