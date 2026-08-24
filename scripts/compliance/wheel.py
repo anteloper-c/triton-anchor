@@ -302,6 +302,7 @@ def inspect_wheel(path: str | Path) -> dict[str, object]:
 
     return {
         "schema_version": 1,
+        "artifact_kind": "wheel",
         "filename": wheel_path.name,
         "name": project_name,
         "version": version,

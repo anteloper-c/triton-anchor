@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import configparser
 import re
 import shlex
 import sys
@@ -82,6 +83,19 @@ def _requirement_name(value: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _literal_string_list(node: ast.AST) -> list[str] | None:
+    if not isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return None
+    values: list[str] = []
+    for element in node.elts:
+        if not isinstance(element, ast.Constant) or not isinstance(
+            element.value, str
+        ):
+            return None
+        values.append(element.value)
+    return values
+
+
 def _python_declarations(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
     declarations: list[dict[str, Any]] = []
     issues: list[str] = []
@@ -126,20 +140,168 @@ def _pyproject_declarations(root: Path) -> tuple[list[dict[str, Any]], list[str]
         document = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
         return [], [f"cannot parse pyproject.toml: {exc}"]
-    declarations = []
-    for requirement in document.get("build-system", {}).get("requires", []):
-        name = _requirement_name(str(requirement))
-        if name:
-            declarations.append(
-                _declaration(
-                    name,
-                    "pyproject.toml",
-                    "build-only",
-                    "pyproject-build-system",
-                    re.sub(r"\s+", "", str(requirement)),
+    declarations: list[dict[str, Any]] = []
+    issues: list[str] = []
+
+    def add_requirements(
+        raw: Any, usage: str, source_kind: str, field: str
+    ) -> None:
+        if raw is None:
+            return
+        if not isinstance(raw, list) or any(
+            not isinstance(requirement, str) for requirement in raw
+        ):
+            issues.append(f"{field} must be an array of requirement strings")
+            return
+        for requirement in raw:
+            name = _requirement_name(requirement)
+            if name:
+                declarations.append(
+                    _declaration(
+                        name,
+                        "pyproject.toml",
+                        usage,
+                        source_kind,
+                        re.sub(r"\s+", "", requirement),
+                    )
                 )
-            )
-    return declarations, []
+
+    build_system = document.get("build-system")
+    if isinstance(build_system, Mapping):
+        add_requirements(
+            build_system.get("requires"),
+            "build-only",
+            "pyproject-build-system",
+            "pyproject.toml build-system.requires",
+        )
+    project = document.get("project")
+    if isinstance(project, Mapping):
+        dynamic = project.get("dynamic", [])
+        if isinstance(dynamic, list) and any(
+            field in dynamic for field in ("dependencies", "optional-dependencies")
+        ):
+            issues.append("pyproject.toml runtime dependencies are dynamic")
+        add_requirements(
+            project.get("dependencies"),
+            "runtime-external",
+            "pyproject-project-dependency",
+            "pyproject.toml project.dependencies",
+        )
+        optional = project.get("optional-dependencies")
+        if optional is not None:
+            if not isinstance(optional, Mapping):
+                issues.append(
+                    "pyproject.toml project.optional-dependencies must be a table"
+                )
+            else:
+                for group, requirements in optional.items():
+                    add_requirements(
+                        requirements,
+                        "runtime-external",
+                        "pyproject-optional-dependency",
+                        f"pyproject.toml project.optional-dependencies.{group}",
+                    )
+    return declarations, issues
+
+
+def _setup_declarations(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    path = root / "setup.py"
+    if not path.exists():
+        return [], []
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename="setup.py")
+    except (OSError, SyntaxError, UnicodeError) as exc:
+        return [], [f"cannot parse setup.py declarations: {exc}"]
+
+    declarations: list[dict[str, Any]] = []
+    issues: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            function_name = None
+            if isinstance(node.func, ast.Name):
+                function_name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                function_name = node.func.attr
+            if function_name == "setup":
+                for keyword in node.keywords:
+                    if (
+                        keyword.arg == "python_requires"
+                        and isinstance(keyword.value, ast.Constant)
+                        and isinstance(keyword.value.value, str)
+                    ):
+                        declarations.append(
+                            _declaration(
+                                "Python3",
+                                "setup.py",
+                                "runtime-external",
+                                "setup-python-requires",
+                                keyword.value.value,
+                            )
+                        )
+                    if keyword.arg == "install_requires":
+                        requirements = _literal_string_list(keyword.value)
+                        if requirements is None:
+                            issues.append(
+                                "setup.py install_requires must be a literal string array"
+                            )
+                        else:
+                            for requirement in requirements:
+                                name = _requirement_name(requirement)
+                                if name:
+                                    declarations.append(
+                                        _declaration(
+                                            name,
+                                            "setup.py",
+                                            "runtime-external",
+                                            "setup-install-requirement",
+                                            re.sub(r"\s+", "", requirement),
+                                        )
+                                    )
+                    if keyword.arg == "extras_require":
+                        if not isinstance(keyword.value, ast.Dict):
+                            issues.append(
+                                "setup.py extras_require must be a literal requirement table"
+                            )
+                            continue
+                        for group, value in zip(
+                            keyword.value.keys, keyword.value.values
+                        ):
+                            requirements = _literal_string_list(value)
+                            if (
+                                not isinstance(group, ast.Constant)
+                                or not isinstance(group.value, str)
+                                or requirements is None
+                            ):
+                                issues.append(
+                                    "setup.py extras_require must be a literal requirement table"
+                                )
+                                continue
+                            for requirement in requirements:
+                                name = _requirement_name(requirement)
+                                if name:
+                                    declarations.append(
+                                        _declaration(
+                                            name,
+                                            "setup.py",
+                                            "runtime-external",
+                                            "setup-extra-requirement",
+                                            re.sub(r"\s+", "", requirement),
+                                        )
+                                    )
+        if isinstance(node, (ast.List, ast.Tuple)):
+            values = [
+                element.value
+                for element in node.elts
+                if isinstance(element, ast.Constant)
+                and isinstance(element.value, str)
+            ]
+            if "-G" in values and "Ninja" in values:
+                declarations.append(
+                    _declaration(
+                        "Ninja", "setup.py", "build-only", "setup-cmake-generator"
+                    )
+                )
+    return declarations, issues
 
 
 def _normalize_cmake_name(name: str) -> str | None:
@@ -207,7 +369,19 @@ def _cmake_declarations(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
         for command, body in calls:
             tokens = _cmake_tokens(body)
             names: Iterable[str] = ()
-            if command == "find_package" and tokens:
+            if command == "cmake_minimum_required" and "VERSION" in tokens:
+                version_index = tokens.index("VERSION") + 1
+                if version_index < len(tokens):
+                    declarations.append(
+                        _declaration(
+                            "CMake",
+                            relative,
+                            "build-only",
+                            "cmake-minimum-required",
+                            f">={tokens[version_index]}",
+                        )
+                    )
+            elif command == "find_package" and tokens:
                 names = tokens[:1]
             elif command == "fetchcontent_declare" and tokens:
                 names = tokens[:1]
@@ -245,14 +419,39 @@ def _gitmodule_declarations(root: Path) -> tuple[list[dict[str, Any]], list[str]
     path = root / ".gitmodules"
     if not path.exists():
         return [], []
-    declarations = []
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         return [], [f"cannot read .gitmodules: {exc}"]
-    for name in re.findall(r'(?m)^\s*\[submodule\s+"([^"]+)"\]\s*$', text):
-        declarations.append(_declaration(name, ".gitmodules", "test-only", "git-submodule"))
-    return declarations, []
+    parser = configparser.ConfigParser(interpolation=None, strict=True)
+    try:
+        parser.read_string(text)
+    except configparser.Error as exc:
+        return [], [f"cannot parse .gitmodules: {exc}"]
+
+    declarations: list[dict[str, Any]] = []
+    issues: list[str] = []
+    for section in parser.sections():
+        match = re.fullmatch(r'submodule\s+"([^"]+)"', section)
+        if not match:
+            continue
+        name = match.group(1)
+        submodule_path = parser.get(section, "path", fallback="").strip()
+        origin_url = parser.get(section, "url", fallback="").strip()
+        if not submodule_path or not origin_url:
+            issues.append(f"submodule {name!r} must declare path and url")
+            continue
+        declaration = _declaration(
+            name,
+            ".gitmodules",
+            "test-only",
+            "git-submodule",
+            origin_url,
+        )
+        declaration["submodule_path"] = PurePosixPath(submodule_path).as_posix()
+        declaration["origin_url"] = origin_url
+        declarations.append(declaration)
+    return declarations, issues
 
 
 def scan_declarations(root: str | Path) -> dict[str, Any]:
@@ -262,6 +461,7 @@ def scan_declarations(root: str | Path) -> dict[str, Any]:
     for scanner in (
         _python_declarations,
         _pyproject_declarations,
+        _setup_declarations,
         _cmake_declarations,
         _gitmodule_declarations,
         _vendored_declarations,
@@ -291,11 +491,15 @@ def scan_declarations(root: str | Path) -> dict[str, Any]:
 def declaration_delta(
     baseline: Mapping[str, Any], current: Mapping[str, Any]
 ) -> dict[str, Any]:
-    def identity(item: Mapping[str, Any]) -> tuple[str, tuple[str, ...], str]:
+    def identity(
+        item: Mapping[str, Any],
+    ) -> tuple[str, tuple[str, ...], str, str, str]:
         return (
             str(item.get("name", "")).casefold(),
             tuple(sorted(str(value) for value in item.get("candidate_usages", []))),
             str(item.get("declaration_value", "")),
+            str(item.get("submodule_path", "")),
+            str(item.get("origin_url", "")),
         )
 
     baseline_identities = {identity(item) for item in baseline.get("items", [])}
@@ -328,14 +532,27 @@ def declaration_delta(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline-root", required=True)
-    parser.add_argument("--current-root", required=True)
+    parser.add_argument(
+        "--root", help="write the full dependency inventory for one source tree"
+    )
+    parser.add_argument("--baseline-root")
+    parser.add_argument("--current-root")
     parser.add_argument("--output", required=True)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.root:
+        if args.baseline_root or args.current_root:
+            raise SystemExit("--root cannot be combined with delta inputs")
+        inventory = scan_declarations(args.root)
+        write_json(args.output, inventory)
+        return 0 if inventory["status"] == "success" else 1
+    if not args.baseline_root or not args.current_root:
+        raise SystemExit(
+            "either --root or both --baseline-root and --current-root are required"
+        )
     baseline = scan_declarations(args.baseline_root)
     current = scan_declarations(args.current_root)
     delta = declaration_delta(baseline, current)

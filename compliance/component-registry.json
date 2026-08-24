@@ -84,6 +84,38 @@
           "evidence_ids": [
             "anchor-native-binding"
           ]
+        },
+        {
+          "category": "distributed",
+          "status": "confirmed",
+          "target": "source-snapshot",
+          "path_patterns": [
+            ".github/**",
+            ".gitignore",
+            ".gitmodules",
+            "CMakeLists.txt",
+            "LICENSE",
+            "MANIFEST.in",
+            "README.md",
+            "ROADMAP.md",
+            "SECURITY.md",
+            "THIRD_PARTY_NOTICES.md",
+            "assets/logo.png",
+            "compliance/**",
+            "csrc/CMakeLists.txt",
+            "csrc/bindings/**",
+            "docs/**",
+            "envsetup.sh",
+            "pyproject.toml",
+            "python/triton_anchor/**",
+            "scripts/__init__.py",
+            "scripts/compliance/**",
+            "setup.py",
+            "tests/**"
+          ],
+          "evidence_ids": [
+            "github-source-snapshot"
+          ]
         }
       ],
       "depends_on": [
@@ -132,6 +164,12 @@
           "location": "CMakeLists.txt",
           "line_start": 186,
           "line_end": 194
+        },
+        {
+          "id": "github-source-snapshot",
+          "kind": "release-archive-definition",
+          "location": "https://github.com/RACE-org/triton-anchor/releases",
+          "value": "GitHub-generated tag source ZIP and tar.gz"
         }
       ],
       "notes": [
@@ -193,6 +231,17 @@
           ],
           "evidence_ids": [
             "triton-native-build"
+          ]
+        },
+        {
+          "category": "distributed",
+          "status": "confirmed",
+          "target": "source-snapshot",
+          "path_patterns": [
+            "triton/**"
+          ],
+          "evidence_ids": [
+            "triton-package-and-headers"
           ]
         }
       ],
@@ -313,6 +362,18 @@
           "evidence_ids": [
             "triton-linalg-build"
           ]
+        },
+        {
+          "category": "distributed",
+          "status": "confirmed",
+          "target": "source-snapshot",
+          "path_patterns": [
+            "csrc/include/triton-linalg/**",
+            "csrc/lib/triton-linalg/**"
+          ],
+          "evidence_ids": [
+            "triton-linalg-build"
+          ]
         }
       ],
       "evidence": [
@@ -420,6 +481,18 @@
           "evidence_ids": [
             "ttgpu-build-switch"
           ]
+        },
+        {
+          "category": "distributed",
+          "status": "confirmed",
+          "target": "source-snapshot",
+          "path_patterns": [
+            "csrc/include/ttgpu/**",
+            "csrc/lib/ttgpu/**"
+          ],
+          "evidence_ids": [
+            "ttgpu-build-switch"
+          ]
         }
       ],
       "evidence": [
@@ -481,6 +554,17 @@
           ],
           "container_artifact_patterns": [
             "triton/_C/libtriton.so"
+          ],
+          "evidence_ids": [
+            "f2reduce-build"
+          ]
+        },
+        {
+          "category": "distributed",
+          "status": "confirmed",
+          "target": "source-snapshot",
+          "path_patterns": [
+            "triton/third_party/f2reduce/**"
           ],
           "evidence_ids": [
             "f2reduce-build"
@@ -576,6 +660,17 @@
           "target": "core-wheel",
           "path_patterns": [],
           "evidence_ids": []
+        },
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "source-snapshot",
+          "declaration_patterns": [
+            "CMakeLists.txt"
+          ],
+          "evidence_ids": [
+            "llvm-cmake-link"
+          ]
         }
       ],
       "evidence": [
@@ -647,6 +742,18 @@
           ],
           "evidence_ids": [
             "pybind-header-link"
+          ]
+        },
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "source-snapshot",
+          "declaration_patterns": [
+            "pyproject.toml",
+            "CMakeLists.txt"
+          ],
+          "evidence_ids": [
+            "pybind-build-requirement"
           ]
         }
       ],
@@ -721,6 +828,17 @@
           "target": "core-wheel",
           "path_patterns": [],
           "evidence_ids": []
+        },
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "source-snapshot",
+          "declaration_patterns": [
+            "CMakeLists.txt"
+          ],
+          "evidence_ids": [
+            "zlib-link"
+          ]
         }
       ],
       "evidence": [
@@ -900,6 +1018,9 @@
     {
       "id": "cpython",
       "name": "CPython",
+      "aliases": [
+        "Python3"
+      ],
       "kind": "framework",
       "third_party": true,
       "origin": {
@@ -938,6 +1059,29 @@
           "category": "runtime-external",
           "status": "confirmed",
           "target": "core-wheel",
+          "declaration_patterns": [
+            "setup.py"
+          ],
+          "evidence_ids": [
+            "python-requires"
+          ]
+        },
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "source-snapshot",
+          "declaration_patterns": [
+            "setup.py",
+            "CMakeLists.txt"
+          ],
+          "evidence_ids": [
+            "python-build"
+          ]
+        },
+        {
+          "category": "runtime-external",
+          "status": "confirmed",
+          "target": "source-snapshot",
           "declaration_patterns": [
             "setup.py"
           ],
@@ -1014,6 +1158,30 @@
           "evidence_ids": [
             "setuptools-runtime-import"
           ]
+        },
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "source-snapshot",
+          "declaration_patterns": [
+            "pyproject.toml",
+            "setup.py"
+          ],
+          "evidence_ids": [
+            "setuptools-build-requirement"
+          ]
+        },
+        {
+          "category": "runtime-external",
+          "status": "confirmed-optional",
+          "condition": "Triton runtime JIT build helpers are used",
+          "target": "source-snapshot",
+          "declaration_patterns": [
+            "triton/python/triton/runtime/build.py"
+          ],
+          "evidence_ids": [
+            "setuptools-runtime-import"
+          ]
         }
       ],
       "evidence": [
@@ -1063,6 +1231,17 @@
           "category": "build-only",
           "status": "confirmed",
           "target": "core-wheel",
+          "declaration_patterns": [
+            "pyproject.toml"
+          ],
+          "evidence_ids": [
+            "wheel-build-requirement"
+          ]
+        },
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "source-snapshot",
           "declaration_patterns": [
             "pyproject.toml"
           ],
@@ -1213,6 +1392,18 @@
           "evidence_ids": [
             "cmake-minimum"
           ]
+        },
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "source-snapshot",
+          "declaration_patterns": [
+            "CMakeLists.txt",
+            "setup.py"
+          ],
+          "evidence_ids": [
+            "cmake-minimum"
+          ]
         }
       ],
       "evidence": [
@@ -1252,6 +1443,17 @@
           "category": "build-only",
           "status": "confirmed",
           "target": "core-wheel",
+          "declaration_patterns": [
+            "setup.py"
+          ],
+          "evidence_ids": [
+            "ninja-generator"
+          ]
+        },
+        {
+          "category": "build-only",
+          "status": "confirmed",
+          "target": "source-snapshot",
           "declaration_patterns": [
             "setup.py"
           ],
@@ -1306,6 +1508,19 @@
           "evidence_ids": [
             "numpy-import"
           ]
+        },
+        {
+          "category": "runtime-external",
+          "status": "confirmed-optional",
+          "condition": "Triton interpreter or testing helpers are used",
+          "target": "source-snapshot",
+          "declaration_patterns": [
+            "triton/python/triton/runtime/interpreter.py",
+            "triton/python/triton/testing.py"
+          ],
+          "evidence_ids": [
+            "numpy-import"
+          ]
         }
       ],
       "evidence": [
@@ -1347,6 +1562,18 @@
           "status": "confirmed-optional",
           "condition": "Triton testing plot helpers are used",
           "target": "core-wheel",
+          "declaration_patterns": [
+            "triton/python/triton/testing.py"
+          ],
+          "evidence_ids": [
+            "matplotlib-import"
+          ]
+        },
+        {
+          "category": "runtime-external",
+          "status": "confirmed-optional",
+          "condition": "Triton testing plot helpers are used",
+          "target": "source-snapshot",
           "declaration_patterns": [
             "triton/python/triton/testing.py"
           ],
@@ -1400,6 +1627,18 @@
           "evidence_ids": [
             "pandas-import"
           ]
+        },
+        {
+          "category": "runtime-external",
+          "status": "confirmed-optional",
+          "condition": "Triton testing plot helpers are used",
+          "target": "source-snapshot",
+          "declaration_patterns": [
+            "triton/python/triton/testing.py"
+          ],
+          "evidence_ids": [
+            "pandas-import"
+          ]
         }
       ],
       "evidence": [
@@ -1441,6 +1680,18 @@
           "status": "confirmed-optional",
           "condition": "Triton profiler process helpers are used",
           "target": "core-wheel",
+          "declaration_patterns": [
+            "triton/python/triton/testing.py"
+          ],
+          "evidence_ids": [
+            "psutil-import"
+          ]
+        },
+        {
+          "category": "runtime-external",
+          "status": "confirmed-optional",
+          "condition": "Triton profiler process helpers are used",
+          "target": "source-snapshot",
           "declaration_patterns": [
             "triton/python/triton/testing.py"
           ],
@@ -1499,6 +1750,20 @@
           "evidence_ids": [
             "torch-import"
           ]
+        },
+        {
+          "category": "runtime-external",
+          "status": "confirmed-optional",
+          "condition": "the PyTorch-backed driver, autotuner, or testing helpers are used",
+          "target": "source-snapshot",
+          "declaration_patterns": [
+            "triton/python/triton/backends/driver.py",
+            "triton/python/triton/runtime/autotuner.py",
+            "triton/python/triton/testing.py"
+          ],
+          "evidence_ids": [
+            "torch-import"
+          ]
         }
       ],
       "evidence": [
@@ -1549,6 +1814,18 @@
           "evidence_ids": [
             "redis-import"
           ]
+        },
+        {
+          "category": "runtime-external",
+          "status": "confirmed-optional",
+          "condition": "RedisRemoteCacheBackend is configured",
+          "target": "source-snapshot",
+          "declaration_patterns": [
+            "triton/python/triton/runtime/cache.py"
+          ],
+          "evidence_ids": [
+            "redis-import"
+          ]
         }
       ],
       "evidence": [
@@ -1558,6 +1835,51 @@
           "location": "triton/python/triton/runtime/cache.py",
           "line_start": 150,
           "value": "redis"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "id": "pytest",
+      "name": "pytest",
+      "purl": "pkg:pypi/pytest",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/pytest-dev/pytest",
+        "status": "resolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "unresolved",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": "MIT",
+        "concluded": null,
+        "status": "review-pending",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "test-only",
+          "status": "confirmed",
+          "target": "*",
+          "declaration_patterns": [
+            "python/triton_anchor/tests/**"
+          ],
+          "evidence_ids": [
+            "pytest-import"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "pytest-import",
+          "kind": "python-import",
+          "location": "python/triton_anchor/tests/test_anchor_ir.py",
+          "value": "pytest"
         }
       ],
       "notes": []

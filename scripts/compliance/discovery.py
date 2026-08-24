@@ -12,8 +12,26 @@ from .model import BUILD_EVIDENCE_BINDINGS, _component_list, _version_value
 
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 
+
+def _repository_identity(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = re.sub(
+        r"^[a-z][a-z0-9+.-]*://", "", value.strip(), flags=re.IGNORECASE
+    )
+    normalized = normalized.removeprefix("git@").replace(":", "/", 1)
+    return normalized.removesuffix(".git").rstrip("/").casefold()
+
+
+def _constraint_identity(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value))
+
+
 def _component_patterns(
-    component: Mapping[str, Any], kind: str, path_scope: str = "source"
+    component: Mapping[str, Any],
+    kind: str,
+    path_scope: str = "source",
+    target: str | None = None,
 ) -> list[str]:
     patterns: list[str] = []
     usage_key = {
@@ -24,6 +42,8 @@ def _component_patterns(
         usage_key = "artifact_patterns"
     for usage in component.get("usages", []):
         if isinstance(usage, Mapping):
+            if target and usage.get("target", "*") not in ("*", target):
+                continue
             raw = usage.get(usage_key, [])
             if isinstance(raw, str):
                 patterns.append(raw)
@@ -44,18 +64,28 @@ def _component_patterns(
     return sorted(set(patterns))
 
 
-def _usage_is_active(component: Mapping[str, Any], usage: Mapping[str, Any]) -> bool:
+def _usage_is_active(
+    component: Mapping[str, Any],
+    usage: Mapping[str, Any],
+    target: str | None = None,
+) -> bool:
+    if target and usage.get("target", "*") not in ("*", target):
+        return False
     category = str(usage.get("category", ""))
     status = str(usage.get("status", ""))
     observations = component.get("observations", [])
     if category == "distributed":
-        patterns = usage.get("artifact_patterns", [])
         return any(
-            observation.get("kind") == "artifact-file"
+            observation.get("kind") in {"artifact-file", "source-snapshot-file"}
             and isinstance(observation.get("path"), str)
             and any(
                 _path_matches(str(pattern), str(observation["path"]))
-                for pattern in patterns
+                for pattern in usage.get(
+                    "artifact_patterns"
+                    if observation.get("kind") == "artifact-file"
+                    else "path_patterns",
+                    [],
+                )
             )
             for observation in observations
         )
@@ -103,8 +133,20 @@ def _identity_matches(component: Mapping[str, Any], discovery: Mapping[str, Any]
 
 
 def _match_discovery(
-    components: Sequence[Mapping[str, Any]], discovery: Mapping[str, Any]
+    components: Sequence[Mapping[str, Any]],
+    discovery: Mapping[str, Any],
+    target: str | None = None,
 ) -> list[str]:
+    if target:
+        components = [
+            component
+            for component in components
+            if any(
+                isinstance(usage, Mapping)
+                and usage.get("target", "*") in ("*", target)
+                for usage in component.get("usages", [])
+            )
+        ]
     explicit = discovery.get("component_id")
     if explicit:
         return [str(explicit)] if any(component["id"] == explicit for component in components) else []
@@ -122,6 +164,7 @@ def _match_discovery(
             component,
             str(discovery.get("kind", "source-file")),
             str(discovery.get("path_scope", "source")),
+            target,
         ):
             if _path_matches(pattern, path):
                 specificity = len(pattern.replace("*", "").replace("?", ""))
@@ -138,6 +181,7 @@ def _match_discovery(
 def reconcile_discoveries(
     registry: Mapping[str, Any] | Sequence[Mapping[str, Any]],
     discoveries: Sequence[Mapping[str, Any]] | Mapping[str, Any],
+    target: str | None = None,
 ) -> dict[str, Any]:
     """Attach every machine finding to the canonical component model.
 
@@ -215,16 +259,112 @@ def reconcile_discoveries(
             else:
                 excluded.append(item)
             continue
-        component_ids = _match_discovery(components, item)
+        component_ids = _match_discovery(components, item, target)
         if not component_ids:
             unmapped.append({**item, "mapping_reason": "no unique component match"})
             continue
         attached = {**item, "component_ids": component_ids}
         mapped.append(attached)
         for component_id in component_ids:
-            by_id[component_id]["observations"].append(attached)
+            component = by_id[component_id]
+            component["observations"].append(attached)
+            if item.get("declaration_source") == "gitlink":
+                declared_version = _version_value(component)
+                observed_version = item.get("version")
+                if (
+                    not declared_version
+                    or not isinstance(observed_version, str)
+                    or declared_version.casefold() != observed_version.casefold()
+                ):
+                    execution_issues.append(
+                        {
+                            "source": str(item.get("source", "source-snapshot")),
+                            "code": "gitlink-version-mismatch",
+                            "component_id": component_id,
+                            "reason": (
+                                "observed gitlink commit does not match the reviewed "
+                                "component version"
+                            ),
+                        }
+                    )
+            if item.get("declaration_source") == "git-submodule":
+                origin = component.get("origin")
+                declared_origin = (
+                    origin.get("url") if isinstance(origin, Mapping) else origin
+                )
+                if _repository_identity(item.get("origin_url")) != (
+                    _repository_identity(declared_origin)
+                ):
+                    execution_issues.append(
+                        {
+                            "source": str(item.get("source", "dependency-inventory")),
+                            "code": "submodule-origin-mismatch",
+                            "component_id": component_id,
+                            "reason": (
+                                "observed submodule URL does not match the reviewed "
+                                "component origin"
+                            ),
+                        }
+                    )
+            if item.get("declaration_source") in {
+                "cmake-minimum-required",
+                "setup-python-requires",
+            }:
+                declared_constraint = _version_value(component)
+                observed_constraint = item.get("declaration_value")
+                if (
+                    not declared_constraint
+                    or not observed_constraint
+                    or _constraint_identity(declared_constraint)
+                    != _constraint_identity(observed_constraint)
+                ):
+                    execution_issues.append(
+                        {
+                            "source": str(item.get("source", "dependency-inventory")),
+                            "code": "declaration-constraint-mismatch",
+                            "component_id": component_id,
+                            "reason": (
+                                "observed dependency constraint does not match the "
+                                "reviewed component constraint"
+                            ),
+                        }
+                    )
 
+    report_sources = {
+        str(report.get("source")) for report in reports if isinstance(report, Mapping)
+    }
+    compare_submodule_paths = {
+        "source-snapshot",
+        "dependency-inventory",
+    } <= report_sources
     for component in components:
+        if compare_submodule_paths:
+            configured_paths = {
+                str(observation["submodule_path"])
+                for observation in component.get("observations", [])
+                if observation.get("declaration_source") == "git-submodule"
+                and observation.get("submodule_path")
+            }
+            gitlink_paths = {
+                str(observation["path"])
+                for observation in component.get("observations", [])
+                if observation.get("declaration_source") == "gitlink"
+                and observation.get("path")
+            }
+            if configured_paths != gitlink_paths and (
+                configured_paths or gitlink_paths
+            ):
+                execution_issues.append(
+                    {
+                        "source": "dependency-inventory",
+                        "code": "submodule-path-mismatch",
+                        "component_id": component["id"],
+                        "reason": (
+                            ".gitmodules path does not match the verified Git tree "
+                            "gitlink path"
+                        ),
+                    }
+                )
         component["observations"] = sorted(
             component["observations"],
             key=lambda item: (
@@ -238,7 +378,8 @@ def reconcile_discoveries(
             {
                 str(usage["category"])
                 for usage in component.get("usages", [])
-                if isinstance(usage, Mapping) and _usage_is_active(component, usage)
+                if isinstance(usage, Mapping)
+                and _usage_is_active(component, usage, target)
             }
         )
     issues: list[dict[str, Any]] = [
@@ -247,7 +388,7 @@ def reconcile_discoveries(
     issues.extend(
         {
             "code": "unmapped-distributed-file"
-            if item.get("kind") == "artifact-file"
+            if item.get("kind") in {"artifact-file", "source-snapshot-file"}
             else "unmapped-discovery",
             **item,
         }
@@ -438,6 +579,14 @@ def normalize_cyclonedx(report: Mapping[str, Any], source: str = "syft") -> dict
             "purl": component.get("purl"),
             "source": source,
         }
+        purl = item.get("purl")
+        if isinstance(purl, str) and purl.casefold().startswith("pkg:github/actions/"):
+            item.update(
+                {
+                    "excluded": True,
+                    "reason": "GitHub Action is CI-only and outside the product artifact scope",
+                }
+            )
         if expression:
             item["license_expression"] = expression
         items.append(item)
@@ -655,8 +804,12 @@ def normalize_osv(report: Mapping[str, Any], components: Sequence[Mapping[str, A
     for result in report["results"]:
         for package_entry in result.get("packages", []) if isinstance(result, Mapping) else []:
             package = package_entry.get("package", {})
-            identity = {"name": package.get("name"), "purl": package.get("purl")}
-            matched = [component["id"] for component in canonical if _identity_matches(component, identity)]
+            explicit = package.get("component_id")
+            if explicit and any(component["id"] == explicit for component in canonical):
+                matched = [explicit]
+            else:
+                identity = {"name": package.get("name"), "purl": package.get("purl")}
+                matched = [component["id"] for component in canonical if _identity_matches(component, identity)]
             component_id = matched[0] if len(matched) == 1 else None
             if component_id is None:
                 issues.append(f"OSV package is not mapped: {package.get('name')}")

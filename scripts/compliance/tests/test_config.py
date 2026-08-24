@@ -8,12 +8,14 @@ from scripts.compliance.core import (
     ComplianceDataError,
     load_json,
     notice_entries,
+    reconcile_discoveries,
     render_notices,
     validate_policy,
     validate_registry,
     validate_risk_acceptances,
     validate_target,
 )
+from scripts.compliance.source_snapshot import source_snapshot_discoveries
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -99,11 +101,30 @@ class CheckedInConfigurationTests(unittest.TestCase):
         )
 
     def test_canonical_notice_matches_the_component_registry(self) -> None:
-        expected = render_notices(notice_entries(self.registry, "core-wheel"))
+        expected = render_notices(notice_entries(self.registry, None))
         committed = (REPOSITORY_ROOT / "THIRD_PARTY_NOTICES.md").read_text(
             encoding="utf-8"
         )
         self.assertEqual(expected, committed.replace("\r\n", "\n"))
+
+    def test_unknown_vendored_source_is_not_claimed_as_first_party(self) -> None:
+        discoveries = source_snapshot_discoveries(
+            {
+                "files": [
+                    {
+                        "path": "csrc/third_party/unregistered/LICENSE",
+                        "size": 1,
+                        "sha256": "1" * 64,
+                    }
+                ]
+            }
+        )
+
+        reconciliation = reconcile_discoveries(
+            self.registry, [discoveries], target="source-snapshot"
+        )
+
+        self.assertEqual(1, len(reconciliation["unmapped"]))
 
     def test_accepted_risk_record_needs_an_id_and_explicit_scope(self) -> None:
         record = {

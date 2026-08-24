@@ -30,7 +30,8 @@ from .core import (
     wheel_discoveries,
     write_json,
 )
-from .wheel import WheelValidationError, inspect_wheel
+from .source_snapshot import inspect_source_snapshot, source_snapshot_discoveries
+from .wheel import inspect_wheel
 
 
 def _failed_artifact_report(
@@ -42,6 +43,7 @@ def _failed_artifact_report(
         "schema_version": 1,
         "artifact": None,
         "evaluation_context": evaluation_context,
+        "artifact_evidence_binding": "unknown",
         "build_evidence_binding": "unknown",
         "execution_status": "fail",
         "evidence_status": "incomplete",
@@ -90,22 +92,88 @@ def _normalize_optional(
         }
 
 
+def _normalize_dependency_inventory(report: Mapping[str, Any]) -> dict[str, Any]:
+    raw_items = report.get("items")
+    raw_issues = report.get("issues")
+    issues: list[str] = []
+    if not isinstance(raw_items, list):
+        issues.append("dependency inventory items must be an array")
+        raw_items = []
+    if not isinstance(raw_issues, list):
+        issues.append("dependency inventory issues must be an array")
+        raw_issues = []
+    items = [dict(item) for item in raw_items if isinstance(item, Mapping)]
+    if len(items) != len(raw_items):
+        issues.append("dependency inventory entries must be objects")
+    if not items:
+        issues.append("dependency inventory contains no declarations")
+    issues.extend(str(issue) for issue in raw_issues)
+    if report.get("status") != "success" and not raw_issues:
+        issues.append("dependency inventory did not succeed")
+    return {
+        "source": "dependency-inventory",
+        "status": "failed" if issues else "success",
+        "items": items,
+        "issues": issues,
+    }
+
+
 def _artifact_command(
     args: argparse.Namespace, evaluation_context: str
 ) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
-        artifact = inspect_wheel(args.wheel)
+        source_options = (
+            args.source_zip,
+            args.source_tar,
+            args.source_repository,
+            args.source_reference_kind,
+            args.source_reference,
+            args.source_commit,
+            args.source_version,
+            args.source_repository_root,
+        )
+        if args.wheel and any(value is not None for value in source_options):
+            raise ValueError("Wheel and source snapshot inputs cannot be combined")
+        if args.wheel:
+            artifact = inspect_wheel(args.wheel)
+            target = args.target or "core-wheel"
+        else:
+            required_source = {
+                "--source-zip": args.source_zip,
+                "--source-tar": args.source_tar,
+                "--source-repository": args.source_repository,
+                "--source-reference-kind": args.source_reference_kind,
+                "--source-reference": args.source_reference,
+                "--source-commit": args.source_commit,
+                "--source-version": args.source_version,
+            }
+            missing = [name for name, value in required_source.items() if not value]
+            if missing:
+                raise ValueError(
+                    f"source snapshot input is missing: {', '.join(missing)}"
+                )
+            artifact = inspect_source_snapshot(
+                args.source_zip,
+                args.source_tar,
+                repository=args.source_repository,
+                reference_kind=args.source_reference_kind,
+                reference=args.source_reference,
+                commit_sha=args.source_commit,
+                version=args.source_version,
+                repository_root=args.source_repository_root,
+            )
+            target = args.target or "source-snapshot"
         registry = load_json(args.registry)
         policy = load_json(args.policy)
         risk_acceptances = load_json(args.risk_acceptances)
         validate_registry(registry)
-        validate_target(registry, args.target)
+        validate_target(registry, target)
         validate_policy(policy)
         validate_risk_acceptances(risk_acceptances)
         as_of = date.fromisoformat(args.as_of) if args.as_of else date.today()
-    except (OSError, ValueError, WheelValidationError) as exc:
+    except (OSError, ValueError) as exc:
         report = _failed_artifact_report(evaluation_context, str(exc))
         write_json(output_dir / "compliance-report.json", report)
         return 1
@@ -115,20 +183,10 @@ def _artifact_command(
         "scancode-source",
         lambda report: normalize_scancode(report, "scancode-source", "source"),
     )
-    scancode_wheel = _normalize_optional(
-        args.scancode_wheel,
-        "scancode-wheel",
-        lambda report: normalize_scancode(report, "scancode-wheel", "artifact"),
-    )
     syft = _normalize_optional(
         args.syft,
         "syft",
         lambda report: normalize_cyclonedx(report, "syft"),
-    )
-    build = _normalize_optional(
-        args.build_evidence,
-        "build-evidence",
-        lambda report: normalize_build_evidence(report, str(artifact["sha256"])),
     )
     osv_result = _normalize_optional(
         args.osv,
@@ -141,14 +199,42 @@ def _artifact_command(
     )
     vulnerabilities = osv_result.pop("vulnerabilities", [])
     vulnerability_coverage = osv_result.pop("coverage", [])
-    discovery_reports = [
-        wheel_discoveries(artifact),
-        scancode_source,
-        scancode_wheel,
-        syft,
-        build,
-        osv_result,
-    ]
+    if artifact["artifact_kind"] == "wheel":
+        scancode_wheel = _normalize_optional(
+            args.scancode_wheel,
+            "scancode-wheel",
+            lambda report: normalize_scancode(
+                report, "scancode-wheel", "artifact"
+            ),
+        )
+        build = _normalize_optional(
+            args.build_evidence,
+            "build-evidence",
+            lambda report: normalize_build_evidence(
+                report, str(artifact["sha256"])
+            ),
+        )
+        discovery_reports = [
+            wheel_discoveries(artifact),
+            scancode_source,
+            scancode_wheel,
+            syft,
+            build,
+            osv_result,
+        ]
+    else:
+        dependency_inventory = _normalize_optional(
+            args.dependency_inventory,
+            "dependency-inventory",
+            _normalize_dependency_inventory,
+        )
+        discovery_reports = [
+            source_snapshot_discoveries(artifact),
+            scancode_source,
+            syft,
+            dependency_inventory,
+            osv_result,
+        ]
     evaluation_inputs = {
         "artifact": artifact,
         "registry": registry,
@@ -158,7 +244,7 @@ def _artifact_command(
         "vulnerabilities": vulnerabilities,
         "today": as_of,
         "vulnerability_coverage": vulnerability_coverage,
-        "target": args.target,
+        "target": target,
     }
     if evaluation_context == "formal-candidate":
         report, sbom, link, canonical_notices = evaluate_candidate(
@@ -201,6 +287,7 @@ def _artifact_command(
         return 0 if report["promotion_status"] == "pass" else 1
     return 0 if (
         report["execution_status"] == "pass"
+        and report["evidence_status"] == "complete"
         and report["compliance_status"] == "pass"
     ) else 1
 
@@ -216,7 +303,8 @@ def _candidate_command(args: argparse.Namespace) -> int:
 def _render_notices_command(args: argparse.Namespace) -> int:
     registry = load_json(args.registry)
     validate_registry(registry)
-    validate_target(registry, args.target)
+    if args.target is not None:
+        validate_target(registry, args.target)
     entries = notice_entries(registry, args.target)
     findings = validate_notice_coverage(registry, entries, args.target)
     text = render_notices(entries)
@@ -307,7 +395,21 @@ def _audit_command(args: argparse.Namespace) -> int:
 
 
 def _add_artifact_arguments(command: argparse.ArgumentParser) -> None:
-    command.add_argument("--wheel", required=True)
+    artifact_input = command.add_mutually_exclusive_group(required=True)
+    artifact_input.add_argument("--wheel")
+    artifact_input.add_argument("--source-zip")
+    command.add_argument("--source-tar")
+    command.add_argument("--source-repository")
+    command.add_argument(
+        "--source-reference-kind", choices=("commit", "tag")
+    )
+    command.add_argument("--source-reference")
+    command.add_argument("--source-commit")
+    command.add_argument("--source-version")
+    command.add_argument(
+        "--source-repository-root",
+        help="Git checkout used to verify the archive tree and tag/commit binding",
+    )
     command.add_argument("--registry", required=True)
     command.add_argument("--policy", required=True)
     command.add_argument("--risk-acceptances", required=True)
@@ -323,13 +425,14 @@ def _add_artifact_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--syft")
     command.add_argument("--osv")
     command.add_argument("--build-evidence")
+    command.add_argument("--dependency-inventory")
     command.add_argument("--notices")
     command.add_argument(
         "--target",
-        default="core-wheel",
+        default=None,
         help=(
-            "logical artifact target declared by a first-party product component "
-            "(not an ABI/platform tag)"
+            "logical artifact target (defaults to core-wheel for a Wheel and "
+            "source-snapshot for GitHub source archives)"
         ),
     )
     command.add_argument(
@@ -344,21 +447,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     artifact_evaluation = subparsers.add_parser(
         "artifact-evaluation",
-        help="technically evaluate one concrete Wheel without promotion semantics",
+        help="technically evaluate one concrete artifact without promotion semantics",
     )
     _add_artifact_arguments(artifact_evaluation)
     artifact_evaluation.set_defaults(handler=_artifact_evaluation_command)
 
     candidate = subparsers.add_parser(
         "candidate",
-        help="gate a Wheel formally designated by the trusted release workflow",
+        help="gate an artifact formally designated by the trusted release workflow",
     )
     _add_artifact_arguments(candidate)
     candidate.set_defaults(handler=_candidate_command)
 
     notices = subparsers.add_parser("render-notices", help="render the reviewed Notice registry")
     notices.add_argument("--registry", required=True)
-    notices.add_argument("--target", default="core-wheel")
+    notices.add_argument(
+        "--target",
+        help="optional single target; omit it to render the canonical all-target Notice",
+    )
     notices.add_argument("--output", required=True)
     notices.set_defaults(handler=_render_notices_command)
 

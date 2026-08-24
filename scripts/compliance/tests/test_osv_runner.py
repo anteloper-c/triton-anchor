@@ -8,7 +8,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.compliance.osv_runner import _query_inventory, run_osv_scan
+from scripts.compliance.core import normalize_osv
+from scripts.compliance.osv_runner import (
+    _query_inventory,
+    _query_source_inventory,
+    run_osv_scan,
+    run_osv_source_scan,
+)
 from scripts.compliance.tests.helpers import component
 
 
@@ -73,6 +79,157 @@ def completed_runs(scan_exit: int, stdout: bytes) -> list[subprocess.CompletedPr
 
 
 class OsvRunnerTests(unittest.TestCase):
+    def _source_inputs(self) -> tuple[dict, dict, dict]:
+        root = component("triton-anchor")
+        root["third_party"] = False
+        root["usages"] = [
+            {
+                "category": "distributed",
+                "status": "confirmed",
+                "target": "source-snapshot",
+                "path_patterns": ["README.md"],
+                "evidence_ids": [],
+            }
+        ]
+        dependency = component("triton", distribution="distributed")
+        dependency["origin"] = {
+            "url": "https://github.com/triton-lang/triton",
+            "status": "resolved",
+        }
+        dependency["version"] = {
+            "value": "1" * 40,
+            "kind": "git-commit",
+            "status": "resolved",
+        }
+        dependency["usages"] = [
+            {
+                "category": "distributed",
+                "status": "confirmed",
+                "target": "source-snapshot",
+                "path_patterns": ["triton/**"],
+                "evidence_ids": [],
+            }
+        ]
+        submodule = component("flaggems", distribution="test-only")
+        submodule["name"] = "FlagGems"
+        submodule["origin"] = {
+            "url": "https://github.com/RACE-org/FlagGems",
+            "status": "resolved",
+        }
+        submodule["version"] = {
+            "value": "3" * 40,
+            "kind": "git-commit",
+            "status": "resolved-gitlink",
+        }
+        submodule["usages"][0]["target"] = "*"
+        ci_only = component("workflow-action", distribution="CI-only")
+        ci_only["version"] = {
+            "value": "4" * 40,
+            "kind": "git-commit",
+            "status": "resolved",
+        }
+        ci_only["usages"][0].update(
+            {"target": "*", "path_patterns": [".github/**"]}
+        )
+        root["usages"][0]["path_patterns"].append(".gitmodules")
+        registry = {
+            "schema_version": 1,
+            "components": [root, dependency, submodule, ci_only],
+        }
+        source_artifact = {
+            "artifact_kind": "github-source-snapshot",
+            "files": [
+                {"path": "README.md", "size": 1, "sha256": "2" * 64},
+                {"path": "triton/a.cc", "size": 1, "sha256": "3" * 64},
+                {"path": ".gitmodules", "size": 1, "sha256": "4" * 64},
+                {
+                    "path": ".github/workflows/ci.yml",
+                    "size": 1,
+                    "sha256": "5" * 64,
+                },
+            ],
+            "gitlinks": [
+                {
+                    "path": "FlagGems",
+                    "mode": "160000",
+                    "object_type": "commit",
+                    "commit": "3" * 40,
+                }
+            ],
+        }
+        inventory = {
+            "source": "dependency-inventory",
+            "status": "success",
+            "issues": [],
+            "items": [
+                {
+                    "kind": "dependency-declaration",
+                    "name": "FlagGems",
+                    "path": ".gitmodules",
+                    "candidate_usages": ["test-only"],
+                    "declaration_source": "git-submodule",
+                    "declaration_value": "https://github.com/RACE-org/FlagGems",
+                    "submodule_path": "FlagGems",
+                    "origin_url": "https://github.com/RACE-org/FlagGems",
+                }
+            ],
+        }
+        return registry, source_artifact, inventory
+
+    def test_source_query_uses_observed_exact_git_commit(self) -> None:
+        registry, source_artifact, inventory = self._source_inputs()
+
+        query, index = _query_source_inventory(
+            registry, source_artifact, inventory, "source-snapshot"
+        )
+
+        self.assertEqual({"flaggems", "triton"}, set(index))
+        self.assertEqual(
+            {
+                ("github.com/race-org/flaggems", "3" * 40),
+                ("github.com/triton-lang/triton", "1" * 40),
+            },
+            {
+                (item["package"]["name"], item["package"]["commit"])
+                for item in query["results"][0]["packages"]
+            },
+        )
+
+    def test_source_scan_records_commit_coverage(self) -> None:
+        registry, source_artifact, inventory = self._source_inputs()
+        raw = b'{"results":[]}'
+        with tempfile.TemporaryDirectory() as temporary:
+            raw_path = Path(temporary) / "source.raw.json"
+            output_path = Path(temporary) / "source.json"
+            with patch(
+                "scripts.compliance.osv_runner.subprocess.run",
+                side_effect=completed_runs(0, raw),
+            ) as mocked:
+                code = run_osv_source_scan(
+                    scanner="osv-scanner",
+                    registry=registry,
+                    source_artifact=source_artifact,
+                    dependency_inventory=inventory,
+                    raw_output=raw_path,
+                    output=output_path,
+                    scanned_on="2026-08-24",
+                )
+            output = json.loads(output_path.read_text(encoding="utf-8"))
+            normalized = normalize_osv(output, registry["components"])
+
+        self.assertEqual(0, code)
+        coverage = {
+            item["component_id"]: item["component_version"]
+            for item in output["coverage"]
+        }
+        self.assertEqual({"flaggems", "triton"}, set(coverage))
+        self.assertEqual("1" * 40, coverage["triton"])
+        self.assertEqual("3" * 40, coverage["flaggems"])
+        self.assertEqual("success", normalized["status"], normalized)
+        scan_argv = mocked.call_args_list[1].args[0]
+        self.assertIn("--lockfile", scan_argv)
+        self.assertNotIn("--all-packages", scan_argv)
+
     def _run(
         self, scan_exit: int, stdout: bytes
     ) -> tuple[int, bytes, dict, list]:
@@ -148,23 +305,19 @@ class OsvRunnerTests(unittest.TestCase):
         self.assertIsNone(output["results"])
         self.assertEqual([], output["coverage"])
 
-    def test_empty_ecosystem_is_not_automatic_coverage(self) -> None:
+    def test_empty_ecosystem_fails_exact_query_validation(self) -> None:
         code, _, output, _ = self._run(0, raw_report(ecosystem=""))
 
-        self.assertEqual(0, code)
+        self.assertEqual(1, code)
         self.assertEqual([], output["coverage"])
-        self.assertNotIn(
-            "purl", output["results"][0]["packages"][0]["package"]
-        )
+        self.assertIsNone(output["results"])
 
-    def test_wrong_ecosystem_is_not_automatic_coverage(self) -> None:
+    def test_wrong_ecosystem_fails_exact_query_validation(self) -> None:
         code, _, output, _ = self._run(0, raw_report(ecosystem="npm"))
 
-        self.assertEqual(0, code)
+        self.assertEqual(1, code)
         self.assertEqual([], output["coverage"])
-        self.assertNotIn(
-            "purl", output["results"][0]["packages"][0]["package"]
-        )
+        self.assertIsNone(output["results"])
 
     def test_exit_one_without_a_vulnerability_fails(self) -> None:
         code, _, output, _ = self._run(1, raw_report())

@@ -7,6 +7,7 @@ scripts.compliance.core.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date
 from typing import Any, Mapping, Sequence
 
@@ -60,8 +61,6 @@ from .release import (
     render_notices,
     validate_notice_coverage,
 )
-
-
 __all__ = [
     "AUDITED_USAGE",
     "NOTICE_USAGE",
@@ -106,15 +105,64 @@ __all__ = [
 
 
 EVALUATION_CONTEXTS = {"technical-artifact", "formal-candidate"}
-REQUIRED_ARTIFACT_EVIDENCE = {
-    "wheel",
-    "scancode-source",
-    "scancode-wheel",
-    "syft",
-    "osv",
-    "build-evidence",
+REQUIRED_EVIDENCE_BY_KIND = {
+    "wheel": {
+        "wheel",
+        "scancode-source",
+        "scancode-wheel",
+        "syft",
+        "osv",
+        "build-evidence",
+    },
+    "github-source-snapshot": {
+        "source-snapshot",
+        "scancode-source",
+        "syft",
+        "dependency-inventory",
+        "osv",
+    },
 }
-SBOM_INVENTORY_EVIDENCE = REQUIRED_ARTIFACT_EVIDENCE - {"osv"}
+SBOM_INVENTORY_EVIDENCE_BY_KIND = {
+    kind: sources - {"osv"} for kind, sources in REQUIRED_EVIDENCE_BY_KIND.items()
+}
+
+
+def _source_notice_findings(
+    artifact: Mapping[str, Any], canonical_notice: str
+) -> list[dict[str, str]]:
+    members = [
+        member
+        for member in artifact.get("files", [])
+        if isinstance(member, Mapping)
+        and member.get("path") == "THIRD_PARTY_NOTICES.md"
+    ]
+    if len(members) != 1:
+        return [
+            {
+                "code": "source-notice-missing",
+                "decision": "block",
+                "reason": (
+                    "source snapshot must distribute one root "
+                    "THIRD_PARTY_NOTICES.md"
+                ),
+            }
+        ]
+    expected = canonical_notice.encode("utf-8")
+    member = members[0]
+    if member.get("size") != len(expected) or member.get("sha256") != (
+        hashlib.sha256(expected).hexdigest()
+    ):
+        return [
+            {
+                "code": "source-notice-drift",
+                "decision": "block",
+                "reason": (
+                    "source snapshot THIRD_PARTY_NOTICES.md does not match the "
+                    "canonical component registry"
+                ),
+            }
+        ]
+    return []
 
 
 def _evaluate_artifact(
@@ -130,18 +178,25 @@ def _evaluate_artifact(
     vulnerability_coverage: Sequence[Mapping[str, Any]] = (),
     target: str = "core-wheel",
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
-    """Evaluate one concrete Wheel without inferring its release designation."""
+    """Evaluate one concrete artifact without inferring release designation."""
 
     if evaluation_context not in EVALUATION_CONTEXTS:
         raise ComplianceDataError(
             f"evaluation_context must be one of {sorted(EVALUATION_CONTEXTS)}"
         )
+    artifact_kind = str(artifact.get("artifact_kind", "wheel"))
+    if artifact_kind not in REQUIRED_EVIDENCE_BY_KIND:
+        raise ComplianceDataError(f"unsupported artifact kind: {artifact_kind}")
+    required_evidence = REQUIRED_EVIDENCE_BY_KIND[artifact_kind]
+    sbom_inventory_evidence = SBOM_INVENTORY_EVIDENCE_BY_KIND[artifact_kind]
     validate_registry(registry)
     validate_target(registry, target)
     validate_policy(policy)
     if isinstance(risk_acceptances, Mapping):
         validate_risk_acceptances(risk_acceptances)
-    reconciliation = reconcile_discoveries(registry, discovery_reports)
+    reconciliation = reconcile_discoveries(
+        registry, discovery_reports, target=target
+    )
     reports_by_source: dict[str, Mapping[str, Any]] = {}
     duplicate_sources: set[str] = set()
     for report in discovery_reports:
@@ -154,10 +209,10 @@ def _evaluate_artifact(
         for source, report in reports_by_source.items()
         if report.get("status", "success") == "success"
     }
-    missing_sources = sorted(REQUIRED_ARTIFACT_EVIDENCE - set(reports_by_source))
+    missing_sources = sorted(required_evidence - set(reports_by_source))
     failed_sources = sorted(
         source
-        for source in REQUIRED_ARTIFACT_EVIDENCE & set(reports_by_source)
+        for source in required_evidence & set(reports_by_source)
         if source not in successful_sources
     )
     evidence_gaps = [
@@ -172,8 +227,49 @@ def _evaluate_artifact(
         {"source": source, "reason": "required evidence source is duplicated"}
         for source in sorted(duplicate_sources)
     )
+    source_representation_gap: dict[str, str] | None = None
+    if artifact_kind == "github-source-snapshot":
+        representations = artifact.get("representations")
+        valid_representations = (
+            isinstance(representations, list)
+            and len(representations) == 2
+            and {
+                item.get("format")
+                for item in representations
+                if isinstance(item, Mapping)
+            }
+            == {"zip", "tar.gz"}
+            and all(
+                isinstance(item, Mapping)
+                and isinstance(item.get("filename"), str)
+                and bool(item["filename"])
+                and isinstance(item.get("sha256"), str)
+                and len(item["sha256"]) == 64
+                and isinstance(item.get("size"), int)
+                and item["size"] > 0
+                for item in representations
+            )
+        )
+        if not valid_representations:
+            source_representation_gap = {
+                "source": "source-snapshot",
+                "reason": "source snapshot must identify its ZIP and tar.gz representations",
+            }
+            evidence_gaps.append(source_representation_gap)
+        if artifact.get("source_identity_binding") not in {
+            "verified-commit",
+            "verified-tag-commit",
+        }:
+            evidence_gaps.append(
+                {
+                    "source": "source-snapshot",
+                    "reason": "source snapshot is not bound to a verified Git tree",
+                }
+            )
     execution_issues = list(reconciliation["execution_issues"])
     execution_issues.extend(evidence_gaps[: len(missing_sources)])
+    if source_representation_gap:
+        execution_issues.append(source_representation_gap)
     execution_issues.extend(
         {
             "source": source,
@@ -193,8 +289,15 @@ def _evaluate_artifact(
         )
 
     build_report = reports_by_source.get("build-evidence", {})
-    build_evidence_binding = str(build_report.get("evidence_binding", "unknown"))
-    if build_evidence_binding not in BUILD_EVIDENCE_BINDINGS:
+    build_evidence_binding = (
+        str(build_report.get("evidence_binding", "unknown"))
+        if artifact_kind == "wheel"
+        else "not-applicable"
+    )
+    if (
+        artifact_kind == "wheel"
+        and build_evidence_binding not in BUILD_EVIDENCE_BINDINGS
+    ):
         evidence_gaps.append(
             {
                 "source": "build-evidence",
@@ -211,9 +314,13 @@ def _evaluate_artifact(
     build_items = build_report.get("items", [])
     if not isinstance(build_items, list):
         build_items = []
-    if build_report.get("status") == "success" and not any(
-        isinstance(item, Mapping) and item.get("kind") == "build-component"
-        for item in build_items
+    if (
+        artifact_kind == "wheel"
+        and build_report.get("status") == "success"
+        and not any(
+            isinstance(item, Mapping) and item.get("kind") == "build-component"
+            for item in build_items
+        )
     ):
         evidence_gaps.append(
             {
@@ -229,7 +336,8 @@ def _evaluate_artifact(
             }
         )
     if (
-        build_report.get("status") == "success"
+        artifact_kind == "wheel"
+        and build_report.get("status") == "success"
         and build_report.get("artifact_sha256") != artifact.get("sha256")
     ):
         evidence_gaps.append(
@@ -288,13 +396,16 @@ def _evaluate_artifact(
     vulnerability_coverage_findings = evaluate_vulnerability_coverage(
         components, vulnerability_coverage, target
     )
-    canonical_notices = notice_entries(registry, target)
+    canonical_notices = notice_entries(registry, None)
+    canonical_notice = render_notices(canonical_notices)
     notice_findings = validate_notice_coverage(
         components,
         canonical_notices,
         target,
         allow_extra=True,
     )
+    if artifact_kind == "github-source-snapshot":
+        notice_findings.extend(_source_notice_findings(artifact, canonical_notice))
     component_findings = _component_resolution_findings(components, target)
     dependency_findings = evaluate_dependency_relationships(components, target)
     policy_ready = policy.get("status") == "approved"
@@ -315,17 +426,28 @@ def _evaluate_artifact(
     evidence_status = "complete" if not evidence_gaps else "incomplete"
     compliance_status = "pass" if not compliance_blockers else "fail"
     promotion_findings = []
-    if (
-        evaluation_context == "formal-candidate"
-        and build_evidence_binding != "same-build"
-    ):
-        promotion_findings.append(
-            {
-                "code": "candidate-build-binding-not-established",
-                "decision": "block-promotion",
-                "reason": "formal candidate build evidence must declare same-build binding",
-            }
-        )
+    if evaluation_context == "formal-candidate":
+        if artifact_kind == "wheel" and build_evidence_binding != "same-build":
+            promotion_findings.append(
+                {
+                    "code": "candidate-build-binding-not-established",
+                    "decision": "block-promotion",
+                    "reason": "formal candidate build evidence must declare same-build binding",
+                }
+            )
+        if artifact_kind == "github-source-snapshot" and (
+            artifact.get("reference_kind") != "tag"
+            or artifact.get("source_identity_binding") != "verified-tag-commit"
+        ):
+            promotion_findings.append(
+                {
+                    "code": "candidate-source-tag-binding-not-established",
+                    "decision": "block-promotion",
+                    "reason": (
+                        "formal source candidate must be a locally verified tag-to-commit snapshot"
+                    ),
+                }
+            )
     if evaluation_context == "technical-artifact":
         promotion_status = "not-applicable"
     else:
@@ -343,12 +465,18 @@ def _evaluate_artifact(
         ],
         *dependency_findings,
     ]
+    inventory_execution_issues = [
+        issue
+        for issue in reconciliation["execution_issues"]
+        if issue.get("source") in sbom_inventory_evidence
+    ]
     sbom_inventory_complete = (
-        SBOM_INVENTORY_EVIDENCE <= successful_sources
+        sbom_inventory_evidence <= successful_sources
         and not any(
-            gap["source"] in SBOM_INVENTORY_EVIDENCE
+            gap["source"] in sbom_inventory_evidence
             for gap in evidence_gaps
         )
+        and not inventory_execution_issues
         and not reconciliation["unmapped"]
         and not sbom_inventory_blockers
     )
@@ -363,6 +491,11 @@ def _evaluate_artifact(
         "schema_version": 1,
         "artifact": link["artifact"],
         "evaluation_context": evaluation_context,
+        "artifact_evidence_binding": (
+            build_evidence_binding
+            if artifact_kind == "wheel"
+            else artifact.get("source_identity_binding", "unverified")
+        ),
         "build_evidence_binding": build_evidence_binding,
         "execution_status": execution_status,
         "evidence_status": evidence_status,
@@ -384,7 +517,7 @@ def _evaluate_artifact(
         "compliance_blockers": compliance_blockers,
         "promotion_findings": promotion_findings,
     }
-    return report, sbom, link, render_notices(canonical_notices)
+    return report, sbom, link, canonical_notice
 
 
 def evaluate_artifact(

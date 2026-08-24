@@ -49,6 +49,26 @@ class ComponentAndLicenseTests(unittest.TestCase):
             {"test-only"},
             _usage_categories(dependency, "compatibility-tests", active=True),
         )
+        discovery = {
+            "source": "fixture",
+            "status": "success",
+            "issues": [],
+            "items": [
+                {"kind": "source-snapshot-file", "path": "flaggems/module.py"}
+            ],
+        }
+        core_result = reconcile_discoveries(
+            {"schema_version": 1, "components": [dependency]},
+            [discovery],
+            target="core-wheel",
+        )
+        compatibility_result = reconcile_discoveries(
+            {"schema_version": 1, "components": [dependency]},
+            [discovery],
+            target="compatibility-tests",
+        )
+        self.assertEqual(1, len(core_result["unmapped"]))
+        self.assertEqual(1, len(compatibility_result["mapped"]))
 
     def test_raw_scancode_paths_are_relative_to_the_selected_input(self) -> None:
         report = {
@@ -98,6 +118,25 @@ class ComponentAndLicenseTests(unittest.TestCase):
 
         self.assertEqual("failed", scancode["status"])
         self.assertEqual("failed", syft["status"])
+
+    def test_syft_github_actions_are_retained_as_ci_only_exclusions(self) -> None:
+        syft = normalize_cyclonedx(
+            {
+                "bomFormat": "CycloneDX",
+                "components": [
+                    {
+                        "type": "library",
+                        "name": "actions/checkout",
+                        "version": "v4",
+                        "purl": "pkg:github/actions/checkout@v4",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual("success", syft["status"], syft)
+        self.assertTrue(syft["items"][0]["excluded"])
+        self.assertIn("CI-only", syft["items"][0]["reason"])
 
     def test_artifact_license_uses_artifact_ownership_patterns(self) -> None:
         dependency = component("triton", owned_paths=["source/triton/"])

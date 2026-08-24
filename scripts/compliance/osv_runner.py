@@ -13,8 +13,13 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .discovery import normalize_build_evidence, reconcile_discoveries
+from .discovery import (
+    _repository_identity,
+    normalize_build_evidence,
+    reconcile_discoveries,
+)
 from .model import (
+    AUDITED_USAGE,
     ComplianceDataError,
     _effective_version,
     _usage_categories,
@@ -25,6 +30,7 @@ from .model import (
     write_json,
 )
 from .release import _EXACT_VERSION_STATUS, _sbom_purl
+from .source_snapshot import source_snapshot_discoveries
 
 
 _VERSION_PATTERN = re.compile(r"osv-scanner version:\s*([^\s]+)", re.IGNORECASE)
@@ -60,7 +66,9 @@ def _query_inventory(
 
     validate_registry(registry)
     build_report = normalize_build_evidence(build_evidence)
-    reconciliation = reconcile_discoveries(registry, [build_report])
+    reconciliation = reconcile_discoveries(
+        registry, [build_report], target=target
+    )
     if reconciliation["execution_issues"] or reconciliation["unmapped"]:
         reasons = [
             str(issue.get("reason", issue))
@@ -80,9 +88,6 @@ def _query_inventory(
         active_usages = _usage_categories(component, target, active=True)
         if not active_usages or active_usages <= {"CI-only"}:
             continue
-        # This runner answers candidate/build coverage questions.  A declared
-        # optional dependency is not part of that inventory until the supplied
-        # build evidence actually observes it.
         if not any(
             isinstance(observation, Mapping)
             and observation.get("source") == "build-evidence"
@@ -146,6 +151,78 @@ def _query_inventory(
     )
 
 
+def _query_source_inventory(
+    registry: Mapping[str, Any],
+    source_artifact: Mapping[str, Any],
+    dependency_inventory: Mapping[str, Any],
+    target: str,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Build exact commit queries for components present in a source snapshot."""
+
+    validate_registry(registry)
+    reconciliation = reconcile_discoveries(
+        registry,
+        [source_snapshot_discoveries(source_artifact), dependency_inventory],
+        target=target,
+    )
+    if reconciliation["execution_issues"] or reconciliation["unmapped"]:
+        reasons = [
+            str(issue.get("reason", issue))
+            for issue in reconciliation["execution_issues"]
+        ]
+        reasons.extend(
+            f"unmapped source discovery: {item.get('name') or item.get('path')}"
+            for item in reconciliation["unmapped"]
+        )
+        raise OsvRunnerError(
+            "; ".join(reasons) or "source snapshot reconciliation failed"
+        )
+
+    packages: list[dict[str, Any]] = []
+    component_index: dict[str, dict[str, Any]] = {}
+    for component in reconciliation["components"]:
+        if not component.get("third_party", True):
+            continue
+        active_usages = _usage_categories(component, target, active=True)
+        if not active_usages & AUDITED_USAGE:
+            continue
+        version, version_status = _effective_version(component)
+        version_kind = component.get("version", {}).get("kind")
+        origin = component.get("origin", {})
+        repository_name = _repository_identity(
+            origin.get("url") if isinstance(origin, Mapping) else origin
+        )
+        if (
+            version_kind != "git-commit"
+            or version_status not in _EXACT_VERSION_STATUS
+            or not version
+            or not re.fullmatch(r"[0-9a-fA-F]{40,64}", version)
+            or not repository_name
+        ):
+            continue
+        component_id = _component_id(component)
+        packages.append(
+            {"package": {"name": repository_name, "commit": str(version)}}
+        )
+        component_index[component_id] = {
+            "id": component_id,
+            "name": component.get("name", component_id),
+            "version": str(version),
+            "commit": str(version).casefold(),
+            "repository_name": repository_name,
+            "base_purl": component.get("purl"),
+            "aliases": set(),
+            "expected_ecosystem": None,
+        }
+    packages.sort(
+        key=lambda item: (
+            str(item["package"]["name"]),
+            str(item["package"]["commit"]),
+        )
+    )
+    return {"results": [{"packages": packages}]}, component_index
+
+
 def _scanner_version(scanner: Path) -> str:
     try:
         result = subprocess.run(
@@ -165,6 +242,16 @@ def _scanner_version(scanner: Path) -> str:
 def _unique_component_for_package(
     package: Mapping[str, Any], component_index: Mapping[str, Mapping[str, Any]]
 ) -> Mapping[str, Any] | None:
+    commit = package.get("commit")
+    repository_name = _repository_identity(package.get("name"))
+    if commit not in (None, "") and repository_name:
+        matches = [
+            component
+            for component in component_index.values()
+            if component.get("commit") == str(commit).casefold()
+            and component.get("repository_name") == repository_name
+        ]
+        return matches[0] if len(matches) == 1 else None
     ecosystem = str(package.get("ecosystem", "")).strip()
     version = package.get("version")
     if not ecosystem or version in (None, ""):
@@ -228,7 +315,18 @@ def _enrich_report(
         raise OsvRunnerError("OSV-Scanner JSON does not contain a results array")
 
     enriched = copy.deepcopy(dict(report))
-    coverage_by_id: dict[str, dict[str, Any]] = {}
+    coverage_by_id: dict[str, dict[str, Any]] = {
+        str(component["id"]): {
+            "component_id": str(component["id"]),
+            "component_version": component["version"],
+            "status": "scanned",
+            "scanner": "osv-scanner",
+            "scanner_version": scanner_version,
+            "scanned_on": scanned_on,
+            "evidence": f"{raw_name}#sha256:{raw_sha256}",
+        }
+        for component in component_index.values()
+    }
     for result in enriched["results"]:
         if not isinstance(result, Mapping):
             continue
@@ -243,20 +341,15 @@ def _enrich_report(
                 continue
             matched = _unique_component_for_package(package, component_index)
             ecosystem = str(package.get("ecosystem", "")).strip()
-            if matched is None or not ecosystem:
-                continue
-            package["purl"] = matched["base_purl"]
+            if matched is None:
+                raise OsvRunnerError(
+                    f"OSV-Scanner returned a package outside the exact query: {package.get('name')}"
+                )
+            if ecosystem and matched.get("base_purl"):
+                package["purl"] = matched["base_purl"]
             component_id = str(matched["id"])
-            coverage_by_id[component_id] = {
-                "component_id": component_id,
-                "component_version": matched["version"],
-                "status": "scanned",
-                "scanner": "osv-scanner",
-                "scanner_version": scanner_version,
-                "scanned_on": scanned_on,
-                "evidence": f"{raw_name}#sha256:{raw_sha256}",
-            }
-
+            package["component_id"] = component_id
+            package.setdefault("version", matched["version"])
     enriched["coverage"] = [coverage_by_id[key] for key in sorted(coverage_by_id)]
     enriched["scanner_execution"] = {
         "status": "success",
@@ -284,18 +377,16 @@ def _failure_report(reason: str, scanner_version: str | None = None) -> dict[str
     }
 
 
-def run_osv_scan(
+def _run_osv_query(
     *,
     scanner: str | Path,
-    registry: Mapping[str, Any],
-    build_evidence: Mapping[str, Any],
+    query_document: Mapping[str, Any],
+    query_kind: str,
+    component_index: Mapping[str, Mapping[str, Any]],
     raw_output: str | Path,
     output: str | Path,
-    target: str = "core-wheel",
-    scanned_on: str | None = None,
+    scanned_on: str | None,
 ) -> int:
-    """Run OSV-Scanner and write immutable raw plus enriched gate input."""
-
     scanner_path = Path(scanner)
     raw_path = Path(raw_output)
     output_path = Path(output)
@@ -309,26 +400,31 @@ def run_osv_scan(
 
     scanner_version: str | None = None
     try:
-        query_sbom, component_index = _query_inventory(
-            registry, build_evidence, target
-        )
         if not component_index:
-            raise OsvRunnerError("no exact PURL component is available for OSV query")
+            raise OsvRunnerError("no exact component is available for OSV query")
         scanner_version = _scanner_version(scanner_path)
         with tempfile.TemporaryDirectory(prefix="triton-anchor-osv-") as temporary:
-            query_path = Path(temporary) / "query.cdx.json"
-            query_path.write_text(stable_json(query_sbom), encoding="utf-8", newline="\n")
+            query_name = (
+                "query.cdx.json" if query_kind == "sbom" else "osv-scanner.json"
+            )
+            query_path = Path(temporary) / query_name
+            query_path.write_text(
+                stable_json(query_document), encoding="utf-8", newline="\n"
+            )
+            query_arguments = (
+                ["--sbom", str(query_path), "--all-packages"]
+                if query_kind == "sbom"
+                else ["--lockfile", f"osv-scanner:{query_path}"]
+            )
             try:
                 result = subprocess.run(
                     [
                         str(scanner_path),
                         "scan",
                         "source",
-                        "--sbom",
-                        str(query_path),
+                        *query_arguments,
                         "--format",
                         "json",
-                        "--all-packages",
                         "--verbosity",
                         "error",
                     ],
@@ -348,7 +444,9 @@ def run_osv_scan(
         try:
             raw_report = json.loads(raw_bytes.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise OsvRunnerError("OSV-Scanner did not produce valid UTF-8 JSON") from exc
+            raise OsvRunnerError(
+                "OSV-Scanner did not produce valid UTF-8 JSON"
+            ) from exc
         if not isinstance(raw_report, Mapping):
             raise OsvRunnerError("OSV-Scanner JSON root must be an object")
         finding_count = _vulnerability_group_count(raw_report)
@@ -377,14 +475,78 @@ def run_osv_scan(
         return 1
 
 
+def run_osv_scan(
+    *,
+    scanner: str | Path,
+    registry: Mapping[str, Any],
+    build_evidence: Mapping[str, Any],
+    raw_output: str | Path,
+    output: str | Path,
+    target: str = "core-wheel",
+    scanned_on: str | None = None,
+) -> int:
+    """Run OSV-Scanner and write immutable raw plus enriched gate input."""
+
+    try:
+        query_sbom, component_index = _query_inventory(
+            registry, build_evidence, target
+        )
+    except (ComplianceDataError, OsvRunnerError, OSError, ValueError) as exc:
+        write_json(output, _failure_report(str(exc)))
+        return 1
+    return _run_osv_query(
+        scanner=scanner,
+        query_document=query_sbom,
+        query_kind="sbom",
+        component_index=component_index,
+        raw_output=raw_output,
+        output=output,
+        scanned_on=scanned_on,
+    )
+
+
+def run_osv_source_scan(
+    *,
+    scanner: str | Path,
+    registry: Mapping[str, Any],
+    source_artifact: Mapping[str, Any],
+    dependency_inventory: Mapping[str, Any],
+    raw_output: str | Path,
+    output: str | Path,
+    target: str = "source-snapshot",
+    scanned_on: str | None = None,
+) -> int:
+    """Run exact Git commit queries for a verified source snapshot inventory."""
+
+    try:
+        query, component_index = _query_source_inventory(
+            registry, source_artifact, dependency_inventory, target
+        )
+    except (ComplianceDataError, OsvRunnerError, OSError, ValueError) as exc:
+        write_json(output, _failure_report(str(exc)))
+        return 1
+    return _run_osv_query(
+        scanner=scanner,
+        query_document=query,
+        query_kind="custom-lockfile",
+        component_index=component_index,
+        raw_output=raw_output,
+        output=output,
+        scanned_on=scanned_on,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scanner", required=True)
     parser.add_argument("--registry", required=True)
-    parser.add_argument("--build-evidence", required=True)
+    inventory = parser.add_mutually_exclusive_group(required=True)
+    inventory.add_argument("--build-evidence")
+    inventory.add_argument("--source-artifact")
+    parser.add_argument("--dependency-inventory")
     parser.add_argument("--raw-output", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--target", default="core-wheel")
+    parser.add_argument("--target")
     parser.add_argument("--scanned-on")
     return parser
 
@@ -393,17 +555,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         registry = load_json(args.registry)
-        build_evidence = load_json(args.build_evidence)
+        if args.source_artifact:
+            if not args.dependency_inventory:
+                raise ComplianceDataError(
+                    "--dependency-inventory is required with --source-artifact"
+                )
+            source_artifact = load_json(args.source_artifact)
+            dependency_inventory = load_json(args.dependency_inventory)
+        else:
+            build_evidence = load_json(args.build_evidence)
     except (ComplianceDataError, OSError, ValueError) as exc:
         write_json(args.output, _failure_report(f"cannot read runner input: {exc}"))
         return 1
+    if args.source_artifact:
+        return run_osv_source_scan(
+            scanner=args.scanner,
+            registry=registry,
+            source_artifact=source_artifact,
+            dependency_inventory=dependency_inventory,
+            raw_output=args.raw_output,
+            output=args.output,
+            target=args.target or "source-snapshot",
+            scanned_on=args.scanned_on,
+        )
     return run_osv_scan(
         scanner=args.scanner,
         registry=registry,
         build_evidence=build_evidence,
         raw_output=args.raw_output,
         output=args.output,
-        target=args.target,
+        target=args.target or "core-wheel",
         scanned_on=args.scanned_on,
     )
 

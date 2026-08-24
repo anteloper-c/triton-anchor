@@ -4,7 +4,8 @@ on:
   push:
     branches: [main, CI_dev, t82-dependency-compliance]
     paths:
-      - ".github/workflows/dependency-compliance.yml"
+      - ".github/**"
+      - ".gitignore"
       - ".gitmodules"
       - "CMakeLists.txt"
       - "MANIFEST.in"
@@ -12,11 +13,18 @@ on:
       - "csrc/**"
       - "envsetup.sh"
       - "FlagGems"
+      - "LICENSE"
       - "pyproject.toml"
+      - "README.md"
+      - "ROADMAP.md"
       - "python/**"
-      - "scripts/compliance/**"
+      - "scripts/**"
+      - "SECURITY.md"
       - "setup.py"
       - "THIRD_PARTY_NOTICES.md"
+      - "assets/**"
+      - "docs/**"
+      - "tests/**"
       - "triton/**"
   pull_request:
     branches: [main, CI_dev]
@@ -51,6 +59,265 @@ jobs:
         run: |
           python -m compileall -q scripts/compliance
           python -B -m unittest discover -s scripts/compliance/tests -t . -p "test_*.py" -v
+
+  source-snapshot-simulation:
+    name: "T8.2 Source Snapshot Technical Simulation"
+    needs: core-test
+    if: >-
+      github.repository == 'anteloper-c/triton-anchor' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/t82-dependency-compliance'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          submodules: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Initialize source snapshot paths
+        run: |
+          echo "SOURCE_EVIDENCE_DIR=${RUNNER_TEMP}/t82-source-evidence" >> "${GITHUB_ENV}"
+          echo "SOURCE_TOOLS_DIR=${RUNNER_TEMP}/t82-source-tools" >> "${GITHUB_ENV}"
+          echo "SOURCE_ZIP=${RUNNER_TEMP}/source-snapshot.zip" >> "${GITHUB_ENV}"
+          echo "SOURCE_TAR=${RUNNER_TEMP}/source-snapshot.tar.gz" >> "${GITHUB_ENV}"
+          echo "SOURCE_EXTRACT_DIR=${RUNNER_TEMP}/source-snapshot-extracted" >> "${GITHUB_ENV}"
+          mkdir -p "${RUNNER_TEMP}/t82-source-evidence"
+
+      - name: Install source scanning prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl libgomp1 libxml2-dev libz-dev xz-utils
+          bash scripts/compliance/bootstrap_tools.sh "${SOURCE_TOOLS_DIR}" \
+            | tee "${SOURCE_EVIDENCE_DIR}/tool-versions.txt"
+
+      - name: Download and verify both commit archive representations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          archive_api="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}"
+          curl -L --fail --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            --output "${SOURCE_ZIP}" \
+            "${archive_api}/zipball/${GITHUB_SHA}"
+          curl -L --fail --retry 3 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            --output "${SOURCE_TAR}" \
+            "${archive_api}/tarball/${GITHUB_SHA}"
+          python -B -m scripts.compliance.source_snapshot \
+            --source-zip "${SOURCE_ZIP}" \
+            --source-tar "${SOURCE_TAR}" \
+            --repository "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --reference-kind commit \
+            --reference "${GITHUB_SHA}" \
+            --commit "${GITHUB_SHA}" \
+            --version "${GITHUB_SHA}" \
+            --repository-root "${GITHUB_WORKSPACE}" \
+            --output "${SOURCE_EVIDENCE_DIR}/source-snapshot-artifact.json"
+
+      - name: Extract one verified representation
+        run: |
+          mkdir -p "${SOURCE_EXTRACT_DIR}"
+          tar -xzf "${SOURCE_TAR}" -C "${SOURCE_EXTRACT_DIR}"
+          mapfile -d '' -t roots < <(
+            find "${SOURCE_EXTRACT_DIR}" -mindepth 1 -maxdepth 1 -type d -print0
+          )
+          if (( ${#roots[@]} != 1 )); then
+            echo "Expected one source archive root, found ${#roots[@]}" >&2
+            exit 1
+          fi
+          echo "SOURCE_ROOT=${roots[0]}" >> "${GITHUB_ENV}"
+
+      - name: Scan the verified source snapshot
+        run: |
+          source "${SOURCE_TOOLS_DIR}/tools.env"
+          (
+            cd "$(dirname "${SCANCODE}")"
+            "${SCANCODE}" \
+              --license --copyright --package --processes 2 \
+              --json-pp "${SOURCE_EVIDENCE_DIR}/scancode-source.json" \
+              "${SOURCE_ROOT}"
+          )
+          SYFT_CHECK_FOR_APP_UPDATE=false "${SYFT}" scan "dir:${SOURCE_ROOT}" \
+            --quiet \
+            --output "cyclonedx-json=${SOURCE_EVIDENCE_DIR}/syft-source.cdx.json"
+          python -B -m scripts.compliance.declarations \
+            --root "${SOURCE_ROOT}" \
+            --output "${SOURCE_EVIDENCE_DIR}/dependency-inventory.json"
+
+      - name: Query source snapshot vulnerabilities
+        run: |
+          source "${SOURCE_TOOLS_DIR}/tools.env"
+          python -B -m scripts.compliance.osv_runner \
+            --scanner "${OSV_SCANNER}" \
+            --registry compliance/component-registry.json \
+            --source-artifact "${SOURCE_EVIDENCE_DIR}/source-snapshot-artifact.json" \
+            --dependency-inventory "${SOURCE_EVIDENCE_DIR}/dependency-inventory.json" \
+            --raw-output "${SOURCE_EVIDENCE_DIR}/osv-scanner.raw.json" \
+            --output "${SOURCE_EVIDENCE_DIR}/osv-results.json" \
+            --target source-snapshot
+
+      - name: Evaluate the commit source snapshot
+        run: |
+          set +e
+          python -B -m scripts.compliance.cli artifact-evaluation \
+            --source-zip "${SOURCE_ZIP}" \
+            --source-tar "${SOURCE_TAR}" \
+            --source-repository "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --source-reference-kind commit \
+            --source-reference "${GITHUB_SHA}" \
+            --source-commit "${GITHUB_SHA}" \
+            --source-version "${GITHUB_SHA}" \
+            --source-repository-root "${GITHUB_WORKSPACE}" \
+            --registry compliance/component-registry.json \
+            --policy compliance/license-policy.json \
+            --risk-acceptances compliance/risk-acceptances.json \
+            --scancode-source "${SOURCE_EVIDENCE_DIR}/scancode-source.json" \
+            --syft "${SOURCE_EVIDENCE_DIR}/syft-source.cdx.json" \
+            --osv "${SOURCE_EVIDENCE_DIR}/osv-results.json" \
+            --dependency-inventory "${SOURCE_EVIDENCE_DIR}/dependency-inventory.json" \
+            --notices THIRD_PARTY_NOTICES.md \
+            --target source-snapshot \
+            --output-dir "${SOURCE_EVIDENCE_DIR}/evaluation"
+          evaluation_rc=$?
+          set -e
+          python - "${evaluation_rc}" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          evaluation_rc = int(sys.argv[1])
+          evidence = Path(os.environ["SOURCE_EVIDENCE_DIR"])
+          artifact = json.loads(
+              (evidence / "source-snapshot-artifact.json").read_text()
+          )
+          report = json.loads(
+              (evidence / "evaluation" / "compliance-report.json").read_text()
+          )
+          link = json.loads(
+              (evidence / "evaluation" / "artifact-sbom-link.json").read_text()
+          )
+          coherent_exit = (
+              evaluation_rc == 0
+              and report.get("execution_status") == "pass"
+              and report.get("compliance_status") == "pass"
+          ) or (
+              evaluation_rc == 1
+              and (
+                  report.get("execution_status") != "pass"
+                  or report.get("compliance_status") != "pass"
+              )
+          )
+          result = {
+              "simulation": True,
+              "not_a_release": True,
+              "repository": os.environ.get("GITHUB_REPOSITORY"),
+              "source_commit": os.environ.get("GITHUB_SHA"),
+              "reference_kind": "commit",
+              "formal_tag_binding": False,
+              "evaluation_exit_code": evaluation_rc,
+              "execution_status": report.get("execution_status"),
+              "evidence_status": report.get("evidence_status"),
+              "compliance_status": report.get("compliance_status"),
+              "sbom_inventory_status": report.get("sbom_inventory_status"),
+              "promotion_status": report.get("promotion_status"),
+          }
+          (evidence / "source-simulation-result.json").write_text(
+              json.dumps(result, indent=2) + "\n", encoding="utf-8"
+          )
+          if not coherent_exit:
+              raise SystemExit("evaluation exit code and technical status disagree")
+          if report.get("execution_status") != "pass":
+              raise SystemExit("source scanners or component reconciliation failed")
+          if report.get("evidence_status") != "complete":
+              raise SystemExit("source snapshot evidence is incomplete")
+          if report.get("promotion_status") != "not-applicable":
+              raise SystemExit("commit simulation acquired promotion semantics")
+          if report.get("artifact_evidence_binding") != "verified-commit":
+              raise SystemExit("commit archive binding was not established")
+          if artifact.get("sha256") != report.get("artifact", {}).get("sha256"):
+              raise SystemExit("report does not identify the verified source tree")
+          if link.get("artifact", {}).get("sha256") != artifact.get("sha256"):
+              raise SystemExit("SBOM link does not identify the verified source tree")
+          if {item.get("format") for item in link["artifact"]["representations"]} != {"zip", "tar.gz"}:
+              raise SystemExit("SBOM link does not cover both source representations")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## T8.2 source snapshot technical simulation\n\n")
+              summary.write(f"- Commit: `{os.environ.get('GITHUB_SHA')}`\n")
+              summary.write(f"- Tree SHA256: `{artifact.get('sha256')}`\n")
+              summary.write(f"- Execution: `{report.get('execution_status')}`\n")
+              summary.write(f"- Evidence: `{report.get('evidence_status')}`\n")
+              summary.write(f"- Compliance: `{report.get('compliance_status')}`\n")
+              summary.write(f"- SBOM inventory: `{report.get('sbom_inventory_status')}`\n")
+              summary.write("- This commit simulation is not a tag, candidate, or release.\n")
+          PY
+
+      - name: Write source evidence manifest
+        if: always()
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          evidence = Path(os.environ["SOURCE_EVIDENCE_DIR"])
+          reports = {}
+          if evidence.exists():
+              for path in sorted(evidence.rglob("*")):
+                  if path.is_file() and path.name != "evidence-manifest.json":
+                      reports[path.relative_to(evidence).as_posix()] = (
+                          hashlib.sha256(path.read_bytes()).hexdigest()
+                      )
+          archives = []
+          for variable, archive_format in (("SOURCE_ZIP", "zip"), ("SOURCE_TAR", "tar.gz")):
+              path = Path(os.environ[variable])
+              if path.is_file():
+                  archives.append(
+                      {
+                          "filename": path.name,
+                          "format": archive_format,
+                          "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                      }
+                  )
+          manifest = {
+              "schema_version": 1,
+              "simulation": True,
+              "not_a_release": True,
+              "repository": os.environ.get("GITHUB_REPOSITORY"),
+              "source_commit": os.environ.get("GITHUB_SHA"),
+              "reference_kind": "commit",
+              "formal_tag_binding": False,
+              "archives": archives,
+              "reports": reports,
+          }
+          evidence.mkdir(parents=True, exist_ok=True)
+          (evidence / "evidence-manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload source snapshot simulation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t82-source-snapshot-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/source-snapshot.zip
+            ${{ runner.temp }}/source-snapshot.tar.gz
+            ${{ runner.temp }}/t82-source-evidence/
+          if-no-files-found: warn
+          retention-days: 14
 
   candidate-simulation:
     name: "T8.2 Candidate Gate Simulation"

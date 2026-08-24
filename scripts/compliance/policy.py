@@ -125,7 +125,9 @@ def evaluate_dependency_admission(
     if isinstance(risk_acceptances, Mapping):
         validate_risk_acceptances(risk_acceptances)
     difference = diff_components(baseline_registry, current_registry)
-    reconciliation = reconcile_discoveries(current_registry, declaration_delta_reports)
+    reconciliation = reconcile_discoveries(
+        current_registry, declaration_delta_reports, target=target
+    )
     changed_ids = {
         str(component["id"]) for component in difference["added"]
     } | {str(change["id"]) for change in difference["updated"]}
@@ -286,7 +288,9 @@ def evaluate_inventory_audit(
     validate_policy(policy)
     if isinstance(risk_acceptances, Mapping):
         validate_risk_acceptances(risk_acceptances)
-    reconciliation = reconcile_discoveries(registry, discovery_reports)
+    reconciliation = reconcile_discoveries(
+        registry, discovery_reports, target=target
+    )
     components = reconciliation["components"]
     audit_inventory_components = [
         component

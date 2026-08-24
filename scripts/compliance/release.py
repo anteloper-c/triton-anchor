@@ -28,7 +28,10 @@ _EXACT_VERSION_STATUS = {
 }
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._:-]+")
 
-def notice_entries(components: Sequence[Mapping[str, Any]] | Mapping[str, Any], target: str = "core-wheel") -> list[dict[str, Any]]:
+def notice_entries(
+    components: Sequence[Mapping[str, Any]] | Mapping[str, Any],
+    target: str | None = "core-wheel",
+) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     for component in _component_list(components):
         if not component.get("third_party", True):
@@ -103,7 +106,7 @@ def evaluate_notice_coverage(entries: Sequence[Mapping[str, Any]]) -> list[dict[
 def validate_notice_coverage(
     components: Sequence[Mapping[str, Any]] | Mapping[str, Any],
     entries: Sequence[Mapping[str, Any]],
-    target: str = "core-wheel",
+    target: str | None = "core-wheel",
     *,
     allow_extra: bool = False,
 ) -> list[dict[str, Any]]:
@@ -116,7 +119,11 @@ def validate_notice_coverage(
         findings.append(
             {"code": "missing-notice", "component_id": component_id, "decision": "block"}
         )
-    for finding in evaluate_notice_coverage(entries):
+    required_entries = [
+        supplied[component_id]
+        for component_id in sorted(required.keys() & supplied.keys())
+    ]
+    for finding in evaluate_notice_coverage(required_entries):
         if finding["decision"] != "allow":
             findings.append({"code": "incomplete-notice", **finding})
     if not allow_extra:
@@ -283,7 +290,83 @@ def generate_sbom(
             _bom_ref(candidate) for candidate in product if candidate["id"] in child_ids
         )
         dependencies.append({"ref": ref, "dependsOn": child_refs})
-    serial = uuid.uuid5(uuid.NAMESPACE_URL, f"triton-anchor:{artifact['sha256']}")
+    artifact_kind = str(artifact.get("artifact_kind", "wheel"))
+    if artifact_kind == "github-source-snapshot":
+        serial_identity = stable_json(
+            {
+                "artifact_kind": artifact_kind,
+                "repository": artifact.get("repository"),
+                "reference_kind": artifact.get("reference_kind"),
+                "source_reference": artifact.get("source_reference"),
+                "source_commit": artifact.get("source_commit"),
+                "version": artifact.get("version"),
+                "tree_sha256": artifact.get("sha256"),
+            }
+        )
+    else:
+        serial_identity = str(artifact["sha256"])
+    serial = uuid.uuid5(uuid.NAMESPACE_URL, f"triton-anchor:{serial_identity}")
+    properties = [
+        {"name": "triton-anchor:artifact-kind", "value": artifact_kind},
+        {
+            "name": "triton-anchor:artifact-filename",
+            "value": str(artifact["filename"]),
+        },
+    ]
+    if artifact_kind == "github-source-snapshot":
+        properties.extend(
+            [
+                {
+                    "name": "triton-anchor:hash-scope",
+                    "value": str(
+                        artifact.get("hash_scope", "normalized-archive-content-tree")
+                    ),
+                },
+                {
+                    "name": "triton-anchor:source-repository",
+                    "value": str(artifact["repository"]),
+                },
+                {
+                    "name": "triton-anchor:source-reference-kind",
+                    "value": str(artifact["reference_kind"]),
+                },
+                {
+                    "name": "triton-anchor:source-reference",
+                    "value": str(artifact["source_reference"]),
+                },
+                {
+                    "name": "triton-anchor:source-commit",
+                    "value": str(artifact["source_commit"]),
+                },
+                {
+                    "name": "triton-anchor:source-identity-binding",
+                    "value": str(
+                        artifact.get("source_identity_binding", "unverified")
+                    ),
+                },
+            ]
+        )
+    else:
+        properties.extend(
+            [
+                {
+                    "name": "triton-anchor:python-tag",
+                    "value": str(
+                        artifact.get("python_tag", artifact.get("tag", "unknown"))
+                    ),
+                },
+                {
+                    "name": "triton-anchor:abi-tag",
+                    "value": str(artifact.get("abi_tag", "unknown")),
+                },
+                {
+                    "name": "triton-anchor:platform-tag",
+                    "value": str(
+                        artifact.get("platform_tag", artifact.get("tag", "unknown"))
+                    ),
+                },
+            ]
+        )
     bom: dict[str, Any] = {
         "$schema": "http://cyclonedx.org/schema/bom-1.7.schema.json",
         "bomFormat": "CycloneDX",
@@ -297,12 +380,7 @@ def generate_sbom(
                 "name": artifact.get("name", "triton-anchor"),
                 "version": artifact["version"],
                 "hashes": [{"alg": "SHA-256", "content": artifact["sha256"]}],
-                "properties": [
-                    {"name": "triton-anchor:artifact-filename", "value": artifact["filename"]},
-                    {"name": "triton-anchor:python-tag", "value": artifact.get("python_tag", artifact.get("tag", "unknown"))},
-                    {"name": "triton-anchor:abi-tag", "value": artifact.get("abi_tag", "unknown")},
-                    {"name": "triton-anchor:platform-tag", "value": artifact.get("platform_tag", artifact.get("tag", "unknown"))},
-                ],
+                "properties": properties,
             }
         },
         "components": [
@@ -340,17 +418,51 @@ def artifact_sbom_link(artifact: Mapping[str, Any], sbom: Mapping[str, Any]) -> 
     if hashes.get("SHA-256") != artifact.get("sha256"):
         raise ComplianceDataError("SBOM root hash does not identify the assessed artifact")
     sbom_bytes = stable_json(sbom).encode("utf-8")
+    artifact_kind = str(artifact.get("artifact_kind", "wheel"))
+    artifact_identity: dict[str, Any] = {
+        "artifact_kind": artifact_kind,
+        "filename": artifact["filename"],
+        "name": artifact.get("name", "triton-anchor"),
+        "version": artifact["version"],
+        "sha256": artifact["sha256"],
+    }
+    if artifact_kind == "github-source-snapshot":
+        artifact_identity.update(
+            {
+                "hash_scope": artifact.get(
+                    "hash_scope", "normalized-archive-content-tree"
+                ),
+                "repository": artifact["repository"],
+                "reference_kind": artifact["reference_kind"],
+                "source_reference": artifact["source_reference"],
+                "source_commit": artifact["source_commit"],
+                "source_identity_binding": artifact.get(
+                    "source_identity_binding", "unverified"
+                ),
+                "representations": [
+                    dict(representation)
+                    for representation in artifact.get("representations", [])
+                ],
+                "gitlinks": [
+                    dict(gitlink) for gitlink in artifact.get("gitlinks", [])
+                ],
+            }
+        )
+    else:
+        artifact_identity.update(
+            {
+                "python_tag": artifact.get(
+                    "python_tag", artifact.get("tag", "unknown")
+                ),
+                "abi_tag": artifact.get("abi_tag", "unknown"),
+                "platform_tag": artifact.get(
+                    "platform_tag", artifact.get("tag", "unknown")
+                ),
+            }
+        )
     return {
         "schema_version": 1,
-        "artifact": {
-            "filename": artifact["filename"],
-            "name": artifact.get("name", "triton-anchor"),
-            "version": artifact["version"],
-            "python_tag": artifact.get("python_tag", artifact.get("tag", "unknown")),
-            "abi_tag": artifact.get("abi_tag", "unknown"),
-            "platform_tag": artifact.get("platform_tag", artifact.get("tag", "unknown")),
-            "sha256": artifact["sha256"],
-        },
+        "artifact": artifact_identity,
         "sbom": {
             "format": "CycloneDX",
             "spec_version": sbom["specVersion"],

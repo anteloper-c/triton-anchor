@@ -5,11 +5,27 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.compliance.cli import build_parser, main
+from scripts.compliance.cli import (
+    _normalize_dependency_inventory,
+    build_parser,
+    main,
+)
 from scripts.compliance.tests.helpers import component, make_wheel
 
 
 class ComplianceCliTests(unittest.TestCase):
+    def test_empty_dependency_inventory_is_not_complete_evidence(self) -> None:
+        report = _normalize_dependency_inventory(
+            {
+                "source": "dependency-inventory",
+                "status": "success",
+                "items": [],
+                "issues": [],
+            }
+        )
+
+        self.assertEqual("failed", report["status"])
+
     def test_artifact_evaluation_and_candidate_use_distinct_handlers(self) -> None:
         parser = build_parser()
         shared = [
@@ -166,6 +182,7 @@ class ComplianceCliTests(unittest.TestCase):
             self.assertEqual(
                 {
                     "artifact",
+                    "artifact_evidence_binding",
                     "build_evidence_binding",
                     "compliance_blockers",
                     "compliance_status",
