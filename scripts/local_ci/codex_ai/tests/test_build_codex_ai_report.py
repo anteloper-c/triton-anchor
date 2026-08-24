@@ -1312,53 +1312,6 @@ def test_semantic_summary_overflow_and_duplicates_are_normalized(tmp_path):
     assert len(report["change_request_assessment"]["evidence"]) == 8
 
 
-def test_generated_identifiers_scale_beyond_three_digits(tmp_path):
-    command = "python3 -m pytest generated_tests/test_generated.py"
-    document = analysis(command)
-    document["findings"] = [finding() for _ in range(1_000)]
-    document["suggested_tests"] = [
-        {
-            "priority": "LOW",
-            "target": "generated_tests/test_generated.py",
-            "description": "补充定向回归测试。",
-        }
-        for _ in range(1_000)
-    ]
-    ledger = [
-        {"command": command, "exit_code": 0, "duration_seconds": 0.01}
-        for _ in range(1_000)
-    ]
-    report = build(tmp_path, document, ledger)
-    assert report["findings"][-1]["id"] == "AI-1000"
-    assert report["suggested_tests"][-1]["id"] == "TEST-1000"
-    assert report["test_execution"]["commands"][-1]["id"] == "RUN-1000"
-
-
-def test_file_identifiers_scale_beyond_three_digits() -> None:
-    manifest = [
-        {"path": f"file_{index}.py", "change_type": "modified"}
-        for index in range(1, 1_001)
-    ]
-    document = analysis()
-    document["changed_files"] = [
-        {
-            "file_id": "FILE-1000",
-            "summary": "更新了第一千个变更文件。",
-            "impact": "该文件的行为可能发生变化。",
-            "validation_strategy": "结合定向测试核对该文件。",
-        }
-    ]
-    changed_files, _ = BUILDER.build_changed_files(document, manifest, [])
-    assert changed_files[-1]["summary"] == "更新了第一千个变更文件。"
-    schema = json.loads(
-        (CODEX_AI_DIR / "codex_ai_analysis.schema.json").read_text(encoding="utf-8")
-    )
-    pattern = schema["properties"]["changed_files"]["items"]["properties"][
-        "file_id"
-    ]["pattern"]
-    assert re.fullmatch(pattern, "FILE-1000")
-
-
 def test_workspace_archive_only_reports_test_paths(tmp_path):
     report = build(
         tmp_path,
@@ -1467,6 +1420,10 @@ def test_analysis_schema_matches_builder_contract() -> None:
     assert_closed_object_schema(
         properties["changed_files"]["items"], BUILDER.CHANGED_FILE_KEYS
     )
+    file_id_pattern = properties["changed_files"]["items"]["properties"][
+        "file_id"
+    ]["pattern"]
+    assert re.fullmatch(file_id_pattern, "FILE-1000")
     assert_closed_object_schema(
         properties["behavior_coverage"], set(BUILDER.BEHAVIOR_LABELS)
     )

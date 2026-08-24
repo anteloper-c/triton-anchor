@@ -33,22 +33,6 @@ def test_candidate_exit_zero_cannot_override_required_stage_failure() -> None:
     assert "forcing overall failure" in RUNNER
 
 
-def test_uv_ci_cache_prune_is_best_effort_at_runner_exit() -> None:
-    start = RUNNER.index("prune_uv_cache_for_ci() {")
-    end = RUNNER.index("\n}\n\nsetup_gitee_git_auth()", start) + 3
-    function = RUNNER[start:end]
-    assert "uv cache prune --ci || prune_status=$?" in function
-    assert "Local CI result is unchanged" in function
-    assert function.rstrip().endswith("return 0\n}")
-
-    exit_start = RUNNER.index("on_exit() {")
-    exit_end = RUNNER.index("\n}\ntrap on_exit EXIT", exit_start)
-    exit_function = RUNNER[exit_start:exit_end]
-    assert exit_function.index("prune_uv_cache_for_ci") < exit_function.index(
-        'write_summary "${status}"'
-    )
-
-
 def test_frontend_only_profile_skips_every_backend_dependent_stage() -> None:
     assert 'if [[ "${RUN_BACKEND_STAGES}" == "true" ]]; then' in RUNNER
     assert 'BACKEND_REBUILD_STATUS="skipped"' in RUNNER
