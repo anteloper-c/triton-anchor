@@ -250,17 +250,6 @@ def _validate_record_in_archive(
     }
 
 
-def validate_record(path: str | Path) -> dict[str, object]:
-    """Validate the archive/RECORD relationship without extracting the Wheel."""
-
-    wheel_path = Path(path).resolve()
-    archive, files = _read_archive(wheel_path)
-    try:
-        return _validate_record_in_archive(archive, files)
-    finally:
-        archive.close()
-
-
 def inspect_wheel(path: str | Path) -> dict[str, object]:
     """Return artifact identity and file evidence without importing its code."""
 

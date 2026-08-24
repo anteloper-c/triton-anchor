@@ -147,8 +147,6 @@ def render_notices(entries: Sequence[Mapping[str, Any]]) -> str:
         "",
         "This canonical file is generated from the component registry. Do not edit entries by hand.",
         "This file is complete only when every required attribution field is resolved.",
-        "Artifact evaluation checks whether required third-party components are covered.",
-        "Only a formal candidate invocation uses the T8.2 compliance result to block promotion.",
         "",
     ]
     for entry in sorted(entries, key=lambda item: str(item.get("component_id", ""))):

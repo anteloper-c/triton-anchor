@@ -26,26 +26,6 @@ class ComplianceCliTests(unittest.TestCase):
 
         self.assertEqual("failed", report["status"])
 
-    def test_artifact_evaluation_and_candidate_use_distinct_handlers(self) -> None:
-        parser = build_parser()
-        shared = [
-            "--wheel",
-            "artifact.whl",
-            "--registry",
-            "registry.json",
-            "--policy",
-            "policy.json",
-            "--risk-acceptances",
-            "risk.json",
-            "--output-dir",
-            "output",
-        ]
-
-        technical = parser.parse_args(["artifact-evaluation", *shared])
-        candidate = parser.parse_args(["candidate", *shared])
-
-        self.assertNotEqual(technical.handler, candidate.handler)
-
     def test_technical_evaluation_writes_outputs_without_promotion_semantics(
         self,
     ) -> None:

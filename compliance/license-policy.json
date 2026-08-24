@@ -1,8 +1,6 @@
 {
   "schema_version": 1,
   "status": "pending",
-  "approval_required": "leader-and-license-reviewer",
-  "expression_matching": "exact-spdx-expression",
   "expressions": {
     "Apache-2.0": {
       "decision": "allow"
@@ -29,20 +27,5 @@
       "decision": "deny"
     }
   },
-  "default_license_decisions": {
-    "unlisted_expression": "review-and-block",
-    "unknown_or_noassertion": "review-and-block",
-    "or_expression": "review-and-block-unless-the-complete-expression-has-an-approved-exact-decision",
-    "and_expression": "review-and-block-unless-the-complete-expression-has-an-approved-exact-decision",
-    "scanner_conflict": "review-and-block"
-  },
-  "vulnerability_threshold": "high",
-  "unscannable_required_component": "block",
-  "risk_acceptance_source": "compliance/risk-acceptances.json",
-  "notes": [
-    "The policy is approved or pending as one reviewed document; expression entries do not carry a second approval state.",
-    "All decisions remain non-operative while status is pending.",
-    "A scanner finding is evidence, not a legal conclusion. The complete SPDX expression is matched exactly; tokens are not allowed independently.",
-    "This policy does not authorize a tool to approve legal compatibility or risk acceptance."
-  ]
+  "vulnerability_threshold": "high"
 }

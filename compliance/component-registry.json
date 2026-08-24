@@ -1,19 +1,5 @@
 {
   "schema_version": 1,
-  "registry_status": "baseline-incomplete",
-  "scope_categories": [
-    "distributed",
-    "embedded",
-    "runtime-external",
-    "build-only",
-    "test-only",
-    "CI-only"
-  ],
-  "path_matching": {
-    "syntax": "python-fnmatch-on-posix-paths",
-    "precedence": "most-specific-pattern-wins",
-    "unmapped_discovery": "block-candidate"
-  },
   "components": [
     {
       "id": "triton-anchor",

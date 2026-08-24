@@ -415,9 +415,7 @@ def _add_artifact_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--risk-acceptances", required=True)
     command.add_argument(
         "--scancode-source",
-        "--scancode",
-        dest="scancode_source",
-        help="ScanCode report for the source tree (--scancode is a compatibility alias)",
+        help="ScanCode report for the source tree",
     )
     command.add_argument(
         "--scancode-wheel", help="ScanCode report for the unpacked Wheel"

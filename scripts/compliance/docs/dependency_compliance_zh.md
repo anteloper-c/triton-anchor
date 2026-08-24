@@ -271,7 +271,7 @@ High/Critical 漏洞默认阻断。只有 [`compliance/risk-acceptances.json`](.
 | 覆盖直接、可识别间接和主要构建组件 | 产品依赖图与 CycloneDX formulation 分离；Wheel 同次构建证据记录 Python 构建包、CMake、Ninja、LLVM、pybind11、vendored 组件及 ELF 运行库；源码快照从声明和实际路径激活 distributed/build-only/runtime-optional 组件 | 仍需依据真实结果补齐 unresolved 组件身份和许可证结论 |
 | 严重漏洞有处置或批准记录 | 修复/隔离/升级要求处置证据；风险接受有范围、审批人和有效期校验；此前 `setuptools 68.1.2` 样本中的两个 High 漏洞已证明会阻断，首次 Hosted Runner 当前版本查询无漏洞发现 | 当前无已批准风险接受；未来候选若有 High/Critical 发现仍须处置；ABI-only 依赖仍需人工 reviewed coverage |
 | 所有分发第三方进入归属声明 | 候选必需集合与规范 Notice 做独立覆盖对账；源码归档缺失或漂移的随包 Notice 会阻断 | 当前 Notice 的未解决项仍会阻断 |
-| 不兼容许可证或未处置严重漏洞阻断晋级 | 第二次远端模拟在扫描与证据完整时仍保留 `candidate` 非零和 `promotion_status=blocked`，无副作用的模拟后续 job 被跳过 | 还未挂到实际正式 promotion 步骤，不能宣称已形成发布闭环 |
+| 不兼容许可证或未处置严重漏洞阻断晋级 | 远端模拟在扫描与证据完整时仍保留 `candidate` 非零和 `promotion_status=blocked`，且没有发布动作 | 还未挂到实际正式 promotion 步骤，不能宣称已形成发布闭环 |
 
 ## CI 接入边界
 
@@ -304,7 +304,7 @@ registry delta          模拟仍限实验分支          └─ commit 源码�
 两 target admission     audit 或 candidate       artifact-evaluation
        └────────────上传各自证据──────────────────┘
                               ↓
-              只有 candidate gate pass 才进入无发布动作的模拟后续 job
+              candidate 只记录门禁结果，不执行发布动作
 ```
 
 `core-test` 用小型夹具验证 Wheel、源码双归档、target 隔离、组件对账、OSV exact-commit/变更组件输入、SBOM/Notice 和 CLI 门禁；它本身不扫描真实项目。`dependency-admission` 只在 PR 上比较受信 base 与 merge-result，并按需要安装 OSV；`candidate-simulation` 这个历史 job id 复用同一 Wheel 真实数据流：定时或手工审计时调用 `audit`，个人实验分支的普通触发才调用模拟 `candidate`；两种模式都使用与 `triton/cmake/llvm-hash.txt` 匹配的公开 LLVM 归档。`source-snapshot-simulation` 不构建 Wheel或 LLVM：它下载当前 `GITHUB_SHA` 的 GitHub API zipball/tarball，与 checkout commit 树对照，只解包一份等价表示后运行独立的 ScanCode、Syft、dependency inventory 和 OSV。固定扫描器、任一证据或对账失败都会使相应执行失败，不能用另一产物报告或空报告替代。源码、手工 audit、声明差异/admission 和非 audit 回归都已在 anteloper fork 运行；它们仍是 commit 或 fork 验证，不是 RACE tag/release 验收。当前 Git commit 全量查询增量仍待新一轮远端验证。
@@ -353,7 +353,7 @@ python -m scripts.compliance.cli candidate \
 
 当前 CLI 只记录调用者传入的 repository 和 `source-version`；tag 到 release 版本的映射、Wheel/源码/文档的统一版本来源及 repository 规范表示，必须由实际具有候选指定权的受信调用流程校验后再调用，不能仅凭上述命令的退出码宣称版本发布闭环。
 
-Wheel fork `candidate` 模拟和手工候选调用都不构成正式发布批准。当前策略仍为 `pending`，所以 Wheel 模拟预期 `promotion_status=blocked`；workflow 可以因“正确观察到阻断”显示成功，但结果文件必须保留 blocked。源码 commit job只运行 `artifact-evaluation`，必须保持 `promotion_status=not-applicable`、`formal_tag_binding=false`；即使技术证据完整，也不能进入模拟 promotion。
+Wheel fork `candidate` 模拟和手工候选调用都不构成正式发布批准。当前策略仍为 `pending`，所以 Wheel 模拟预期 `promotion_status=blocked`；workflow 可以因“正确观察到阻断”显示成功，但结果文件必须保留 blocked。源码 commit job只运行 `artifact-evaluation`，必须保持 `promotion_status=not-applicable`、`formal_tag_binding=false`；两条实验路径都不执行发布动作。
 
 该 fork 模拟从同一开发分支读取扫描对象和合规代码，因此只能验证数据流，不能验证候选代码与受信门禁代码的隔离；正式接入时该隔离由 T8.3 的 workflow 权限边界负责。
 
@@ -384,15 +384,6 @@ Wheel fork `candidate` 模拟和手工候选调用都不构成正式发布批准
 8. 不加载或 import 候选 Wheel/源码归档中的代码；原生依赖通过文件、ELF、声明和构建证据读取。
 9. 每个逻辑候选产物独立生成 SBOM 和关联文件；源码 ZIP/TAR.GZ 只有在规范树相同后才视为同一逻辑产物，不能复用另一架构、ABI、插件或不同源码树的结果。
 10. 自动化接入只能调用受信版本的核心和策略，候选代码不能修改自身门禁后放行。
-
-如果以后需要从本说明重新搭建 T8.2，按以下顺序恢复即可：
-
-1. 恢复 `compliance/*.json`、规范 Notice 和 `scripts/compliance/` 唯一核心，并先运行核心测试；
-2. 由产物生产流程给出确切 Wheel 路径，或确切 tag ZIP/TAR.GZ、resolved commit 和受信 Git checkout；不在核心中寻找“最新文件”；
-3. 按产物类型生成必需证据：Wheel 六类，源码快照五类；保留工具版本和原始报告；
-4. 先运行 `artifact-evaluation` 验证对账、SBOM 和政策结果；
-5. 只有实际受信调用流程明确指定正式候选后，才在同一链路改用 `candidate` 并以退出码阻断晋级；
-6. 将 SBOM、关联文件、报告和原始证据随对应软件产物留存，并用一个故意违规样例确认门禁确实会失败。
 
 ## 尚需上报的决策
 

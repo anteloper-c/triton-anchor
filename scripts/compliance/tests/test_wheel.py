@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.compliance.wheel import inspect_wheel, validate_record
+from scripts.compliance.wheel import inspect_wheel
 
 from scripts.compliance.tests.helpers import DIST_INFO, make_wheel
 
@@ -15,8 +15,12 @@ class WheelValidationTests(unittest.TestCase):
             root = Path(temporary)
             for algorithm in ("sha256", "sha512"):
                 with self.subTest(algorithm=algorithm):
-                    wheel = make_wheel(root, filename=f"demo-{algorithm}.whl", algorithm=algorithm)
-                    report = validate_record(wheel)
+                    wheel = make_wheel(
+                        root,
+                        filename=f"demo_{algorithm}-1.0-py3-none-any.whl",
+                        algorithm=algorithm,
+                    )
+                    report = inspect_wheel(wheel)["record"]
                     self.assertEqual("pass", report["status"])
                     self.assertGreaterEqual(report["verified_entry_count"], 3)
 
@@ -58,7 +62,7 @@ class WheelValidationTests(unittest.TestCase):
                 record_extra_rows=[("..\\outside.py", "sha256=AAAA", "1")],
             )
             with self.assertRaises(ValueError):
-                validate_record(wheel)
+                inspect_wheel(wheel)
 
     def test_record_must_cover_archive_in_both_directions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -92,7 +96,7 @@ class WheelValidationTests(unittest.TestCase):
             }
             for name, wheel in cases.items():
                 with self.subTest(case=name), self.assertRaises(ValueError):
-                    validate_record(wheel)
+                    inspect_wheel(wheel)
 
     def test_native_member_is_inventoried_without_loading_it(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

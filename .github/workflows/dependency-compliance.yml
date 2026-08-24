@@ -493,8 +493,6 @@ jobs:
     timeout-minutes: 180
     env:
       AUDIT_MODE: ${{ github.event_name == 'schedule' || inputs.run_audit == true }}
-    outputs:
-      gate_pass: ${{ steps.candidate.outputs.gate_pass }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -637,7 +635,6 @@ jobs:
             --output "${EVIDENCE_DIR}/audit/compliance-audit.json"
 
       - name: Evaluate the simulated candidate
-        id: candidate
         if: github.event_name != 'schedule' && inputs.run_audit != true
         run: |
           set +e
@@ -695,8 +692,6 @@ jobs:
           (evidence / "simulation-result.json").write_text(
               json.dumps(result, indent=2) + "\n", encoding="utf-8"
           )
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-              out.write(f"gate_pass={'true' if promotion == 'pass' else 'false'}\n")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
               summary.write("## T8.2 candidate gate simulation\n\n")
               summary.write(f"- Wheel: `{wheel.name}`\n")
@@ -782,13 +777,3 @@ jobs:
             ${{ runner.temp }}/t82-evidence/
           if-no-files-found: warn
           retention-days: 14
-
-  simulated-promotion:
-    name: "T8.2 Simulated Promotion (no publish)"
-    needs: candidate-simulation
-    if: >-
-      needs.candidate-simulation.result == 'success' &&
-      needs.candidate-simulation.outputs.gate_pass == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - run: echo "The simulated T8.2 gate passed; no release action is performed."
