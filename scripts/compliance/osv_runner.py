@@ -121,6 +121,97 @@ def _exact_query_package(
     )
 
 
+def _build_query_package(
+    component: Mapping[str, Any], build_component: Mapping[str, Any] | None
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    if (
+        not isinstance(build_component, Mapping)
+        or "osv_query" not in build_component
+    ):
+        return None
+    query = build_component.get("osv_query")
+    if not isinstance(query, Mapping):
+        raise OsvRunnerError("build evidence osv_query must be an object")
+    component_id = _component_id(component)
+    name = str(query.get("name", "")).strip()
+    version, version_status = _effective_version(component)
+    if not name or not version or version_status not in _EXACT_VERSION_STATUS:
+        raise OsvRunnerError(
+            f"build evidence OSV query for {component_id} lacks an exact component identity"
+        )
+
+    commit = query.get("commit")
+    if commit not in (None, ""):
+        if query.get("version") not in (None, "") or query.get("ecosystem") not in (
+            None,
+            "",
+        ):
+            raise OsvRunnerError(
+                f"build evidence OSV commit query for {component_id} mixes identities"
+            )
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", str(commit)):
+            raise OsvRunnerError(
+                f"build evidence OSV commit query for {component_id} is invalid"
+            )
+        repository_name = _repository_identity(name)
+        origin = component.get("origin", {})
+        expected_repository = _repository_identity(
+            origin.get("url") if isinstance(origin, Mapping) else origin
+        )
+        if not repository_name or (
+            expected_repository and repository_name != expected_repository
+        ):
+            raise OsvRunnerError(
+                f"build evidence OSV repository for {component_id} does not match the registry"
+            )
+        return (
+            {"package": {"name": name, "commit": str(commit).casefold()}},
+            {
+                "id": component_id,
+                "name": component.get("name", component_id),
+                "version": str(version),
+                "commit": str(commit).casefold(),
+                "repository_name": repository_name,
+                "base_purl": component.get("purl"),
+                "aliases": set(),
+                "expected_ecosystem": None,
+            },
+        )
+
+    query_version = str(query.get("version", "")).strip()
+    ecosystem = str(query.get("ecosystem", "")).strip()
+    if not query_version or not ecosystem or query_version != str(version):
+        raise OsvRunnerError(
+            f"build evidence OSV package query for {component_id} does not match the observed version"
+        )
+    aliases = {
+        _package_name(component_id, ecosystem),
+        _package_name(component.get("name", component_id), ecosystem),
+        _package_name(name, ecosystem),
+        *(
+            _package_name(alias, ecosystem)
+            for alias in component.get("aliases", [])
+        ),
+    }
+    return (
+        {
+            "package": {
+                "name": name,
+                "version": query_version,
+                "ecosystem": ecosystem,
+            }
+        },
+        {
+            "id": component_id,
+            "name": component.get("name", component_id),
+            "version": str(version),
+            "base_purl": component.get("purl"),
+            "aliases": aliases,
+            "expected_ecosystem": ecosystem,
+        },
+    )
+
+
 def _package_sort_key(item: Mapping[str, Any]) -> tuple[str, str, str]:
     package = item["package"]
     return (
@@ -138,6 +229,14 @@ def _query_inventory(
     """Build exact package and commit queries for the full audited inventory."""
 
     validate_registry(registry)
+    build_payload = build_evidence.get("compliance_build", build_evidence)
+    build_components: dict[str, Mapping[str, Any]] = {}
+    if isinstance(build_payload, Mapping):
+        build_components = {
+            str(component.get("id")): component
+            for component in build_payload.get("components", [])
+            if isinstance(component, Mapping) and component.get("id")
+        }
     build_report = normalize_build_evidence(build_evidence)
     reconciliation = reconcile_discoveries(
         registry, [build_report], target=target
@@ -160,7 +259,10 @@ def _query_inventory(
             continue
         if not (_usage_categories(component) & AUDITED_USAGE):
             continue
-        prepared = _exact_query_package(component)
+        component_id = _component_id(component)
+        prepared = _build_query_package(
+            component, build_components.get(component_id)
+        ) or _exact_query_package(component)
         if prepared is None:
             continue
         query_package, component_identity = prepared

@@ -864,8 +864,8 @@
       "kind": "library",
       "third_party": true,
       "origin": {
-        "url": null,
-        "status": "pending-runtime-evidence"
+        "url": "https://github.com/facebook/zstd",
+        "status": "resolved"
       },
       "version": {
         "value": null,
@@ -891,7 +891,7 @@
       ],
       "evidence": [],
       "notes": [
-        "A candidate ELF observation activates this component and records the SONAME constraint; it does not establish a package version, source origin, or reviewed license conclusion."
+        "A candidate ELF observation activates this component and records the SONAME constraint. Same-build Ubuntu package evidence can narrow the source package and version for vulnerability queries; it does not approve the license conclusion."
       ]
     },
     {
@@ -1365,7 +1365,7 @@
       "third_party": true,
       "origin": {
         "url": "https://github.com/Kitware/CMake",
-        "status": "pending-build-evidence"
+        "status": "resolved"
       },
       "version": {
         "value": ">=3.18",
@@ -1416,7 +1416,9 @@
           "value": ">=3.18"
         }
       ],
-      "notes": []
+      "notes": [
+        "The upstream repository is resolved; same-build evidence must still record the actual Ubuntu source package and version."
+      ]
     },
     {
       "id": "ninja",
@@ -1425,7 +1427,7 @@
       "third_party": true,
       "origin": {
         "url": "https://github.com/ninja-build/ninja",
-        "status": "pending-build-evidence"
+        "status": "resolved"
       },
       "version": {
         "value": null,
@@ -1472,7 +1474,9 @@
           "line_end": 98
         }
       ],
-      "notes": []
+      "notes": [
+        "The upstream repository is resolved; same-build evidence must still record the actual Ubuntu source package and version."
+      ]
     },
     {
       "id": "numpy",

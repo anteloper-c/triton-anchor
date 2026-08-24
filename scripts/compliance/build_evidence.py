@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .model import BUILD_EVIDENCE_BINDINGS
 
@@ -169,12 +169,138 @@ def _configured_cxx_compiler(command: str) -> dict[str, Any]:
     )
 
 
+def _ubuntu_ecosystem() -> str:
+    try:
+        lines = Path("/etc/os-release").read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise BuildEvidenceError("cannot read /etc/os-release") from exc
+    release: dict[str, str] = {}
+    for line in lines:
+        key, separator, value = line.partition("=")
+        if separator and key:
+            release[key] = value.strip().strip('"').strip("'")
+    if release.get("ID") != "ubuntu" or not re.fullmatch(
+        r"\d+\.\d+", release.get("VERSION_ID", "")
+    ):
+        raise BuildEvidenceError("Ubuntu package evidence requires Ubuntu VERSION_ID")
+    suffix = ":LTS" if "LTS" in release.get("PRETTY_NAME", "").upper() else ""
+    return f"Ubuntu:{release['VERSION_ID']}{suffix}"
+
+
+def _ubuntu_package_query(
+    binary_package: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    dpkg_query = shutil.which("dpkg-query")
+    if dpkg_query is None:
+        raise BuildEvidenceError("dpkg-query is required for Ubuntu package evidence")
+    fields = (
+        "${source:Package}\t${source:Version}\t${binary:Package}\t"
+        "${Version}\t${Architecture}"
+    )
+    try:
+        result = subprocess.run(
+            [dpkg_query, "-W", f"-f={fields}", binary_package],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise BuildEvidenceError(
+            f"cannot resolve Ubuntu package evidence for {binary_package}"
+        ) from exc
+    values = result.stdout.strip().split("\t")
+    if len(values) != 5 or any(not value for value in values):
+        raise BuildEvidenceError(
+            f"dpkg-query returned incomplete package evidence for {binary_package}"
+        )
+    source_name, source_version, observed_binary, binary_version, architecture = values
+    query = {
+        "name": source_name,
+        "version": source_version,
+        "ecosystem": _ubuntu_ecosystem(),
+    }
+    evidence = {
+        "source": "dpkg-query",
+        "source_package": source_name,
+        "source_version": source_version,
+        "binary_package": observed_binary,
+        "binary_version": binary_version,
+        "architecture": architecture,
+    }
+    return query, evidence
+
+
+def _parse_ubuntu_packages(values: list[str]) -> dict[str, str]:
+    packages: dict[str, str] = {}
+    for value in values:
+        component_id, separator, binary_package = value.partition("=")
+        if (
+            not separator
+            or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", component_id)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9+.-]*(?::[a-z0-9]+)?", binary_package)
+        ):
+            raise BuildEvidenceError(
+                "--ubuntu-package must use component-id=binary-package"
+            )
+        if component_id in packages:
+            raise BuildEvidenceError(
+                f"duplicate Ubuntu package mapping for {component_id}"
+            )
+        packages[component_id] = binary_package
+    return packages
+
+
+def _attach_vulnerability_queries(
+    components: list[dict[str, Any]],
+    ubuntu_packages: Mapping[str, str],
+    cpython_source_commit: str | None,
+) -> None:
+    by_id = {str(component["id"]): component for component in components}
+    unknown = sorted(set(ubuntu_packages) - set(by_id))
+    if unknown:
+        raise BuildEvidenceError(
+            "Ubuntu package mapping names unknown components: " + ", ".join(unknown)
+        )
+    for component_id, binary_package in sorted(ubuntu_packages.items()):
+        component = by_id[component_id]
+        if component.get("presence", "present") == "absent":
+            continue
+        query, package_evidence = _ubuntu_package_query(binary_package)
+        tool_version = component.get("version")
+        component["version"] = query["version"]
+        component["osv_query"] = query
+        evidence = dict(component.get("evidence") or {})
+        if tool_version not in (None, ""):
+            evidence["tool_version"] = str(tool_version)
+        evidence["ubuntu_package"] = package_evidence
+        component["evidence"] = evidence
+
+    if cpython_source_commit is None:
+        return
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", cpython_source_commit):
+        raise BuildEvidenceError("CPython source commit must be a 40-character Git SHA")
+    cpython = by_id["cpython"]
+    cpython["osv_query"] = {
+        "name": "github.com/python/cpython",
+        "commit": cpython_source_commit.casefold(),
+    }
+    evidence = dict(cpython.get("evidence") or {})
+    evidence["upstream_release"] = {
+        "source": "python-cpython-release-tag",
+        "tag": f"v{cpython['version']}",
+        "commit": cpython_source_commit.casefold(),
+    }
+    cpython["evidence"] = evidence
+
+
 def collect_build_evidence(
     wheel: Path,
     source_root: Path,
     evidence_binding: str,
     cxx_compiler: str | None = None,
     package_tool: str | None = None,
+    ubuntu_packages: Mapping[str, str] | None = None,
+    cpython_source_commit: str | None = None,
 ) -> dict[str, Any]:
     """Return core-consumable evidence for a Wheel built from ``source_root``."""
 
@@ -355,6 +481,12 @@ def collect_build_evidence(
                 )
             )
 
+    _attach_vulnerability_queries(
+        components,
+        ubuntu_packages or {},
+        cpython_source_commit,
+    )
+
     return {
         "compliance_build": {
             "status": "success",
@@ -381,6 +513,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--cxx-compiler")
     parser.add_argument("--package-tool", choices=("pypa-build", "uv"))
+    parser.add_argument(
+        "--ubuntu-package",
+        action="append",
+        default=[],
+        metavar="COMPONENT=PACKAGE",
+    )
+    parser.add_argument("--cpython-source-commit")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
 
@@ -392,12 +531,15 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     try:
+        ubuntu_packages = _parse_ubuntu_packages(args.ubuntu_package)
         evidence = collect_build_evidence(
             Path(args.wheel),
             Path(args.source_root),
             args.evidence_binding,
             args.cxx_compiler,
             args.package_tool,
+            ubuntu_packages,
+            args.cpython_source_commit,
         )
     except BuildEvidenceError as exc:
         parser.error(str(exc))

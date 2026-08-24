@@ -45,6 +45,12 @@ class BuildEvidenceTests(unittest.TestCase):
             "pybind11": "2.13.6",
         }
         tool_versions = {"cmake": "3.30.4", "ninja": "1.12.1"}
+        ubuntu_queries = {
+            "cmake": "3.30.4-1ubuntu1",
+            "g++-13": "13.3.0-6ubuntu2~24.04",
+            "libzstd1": "1.5.5+dfsg2-2build1.1",
+            "ninja-build": "1.12.1-1",
+        }
         sonames = [
             "libLLVM.so.19.1",
             "libz.so.1",
@@ -92,6 +98,25 @@ class BuildEvidenceTests(unittest.TestCase):
                         },
                     ),
                 ),
+                mock.patch.object(
+                    build_evidence,
+                    "_ubuntu_package_query",
+                    side_effect=lambda package: (
+                        {
+                            "name": package,
+                            "version": ubuntu_queries[package],
+                            "ecosystem": "Ubuntu:24.04:LTS",
+                        },
+                        {
+                            "source": "dpkg-query",
+                            "source_package": package,
+                            "source_version": ubuntu_queries[package],
+                            "binary_package": package,
+                            "binary_version": ubuntu_queries[package],
+                            "architecture": "amd64",
+                        },
+                    ),
+                ),
                 mock.patch.dict("os.environ", {"TTGPU": "1"}),
             ):
                 result = build_evidence.main(
@@ -106,6 +131,16 @@ class BuildEvidenceTests(unittest.TestCase):
                         "/usr/bin/g++",
                         "--package-tool",
                         "pypa-build",
+                        "--ubuntu-package",
+                        "zstd=libzstd1",
+                        "--ubuntu-package",
+                        "gcc-toolchain=g++-13",
+                        "--ubuntu-package",
+                        "cmake=cmake",
+                        "--ubuntu-package",
+                        "ninja=ninja-build",
+                        "--cpython-source-commit",
+                        "a" * 40,
                         "--output",
                         str(output),
                     ]
@@ -125,9 +160,30 @@ class BuildEvidenceTests(unittest.TestCase):
             )
             self.assertEqual("7" * 40, components["triton"]["version"])
             self.assertEqual("9" * 40, components["f2reduce"]["version"])
-            self.assertEqual("13.3.0", components["gcc-toolchain"]["version"])
+            self.assertEqual(
+                "13.3.0-6ubuntu2~24.04",
+                components["gcc-toolchain"]["version"],
+            )
+            self.assertEqual(
+                "13.3.0",
+                components["gcc-toolchain"]["evidence"]["tool_version"],
+            )
+            self.assertEqual(
+                {
+                    "name": "github.com/python/cpython",
+                    "commit": "a" * 40,
+                },
+                components["cpython"]["osv_query"],
+            )
+            self.assertEqual(
+                "Ubuntu:24.04:LTS",
+                components["cmake"]["osv_query"]["ecosystem"],
+            )
             self.assertEqual(
                 ["libzstd.so.1"], components["zstd"]["evidence"]["sonames"]
+            )
+            self.assertEqual(
+                "1.5.5+dfsg2-2build1.1", components["zstd"]["version"]
             )
             self.assertEqual("present", components["zstd"]["presence"])
             self.assertEqual("absent", components["uv"]["presence"])
@@ -142,6 +198,42 @@ class BuildEvidenceTests(unittest.TestCase):
             normalized = normalize_build_evidence(report, wheel_hash)
             self.assertEqual("failed", normalized["status"])
             self.assertIn("libcrypto.so.3", normalized["issues"][0])
+
+    def test_ubuntu_package_query_uses_source_package_identity(self) -> None:
+        completed = subprocess.CompletedProcess(
+            ["dpkg-query"],
+            0,
+            stdout=(
+                "gcc-13\t13.3.0-6ubuntu2~24.04\tg++-13\t"
+                "13.3.0-6ubuntu2~24.04\tamd64"
+            ),
+            stderr="",
+        )
+        with (
+            mock.patch.object(
+                build_evidence.shutil, "which", return_value="/usr/bin/dpkg-query"
+            ),
+            mock.patch.object(
+                build_evidence.subprocess, "run", return_value=completed
+            ) as invoked,
+            mock.patch.object(
+                build_evidence,
+                "_ubuntu_ecosystem",
+                return_value="Ubuntu:24.04:LTS",
+            ),
+        ):
+            query, evidence = build_evidence._ubuntu_package_query("g++-13")
+
+        self.assertEqual(
+            {
+                "name": "gcc-13",
+                "version": "13.3.0-6ubuntu2~24.04",
+                "ecosystem": "Ubuntu:24.04:LTS",
+            },
+            query,
+        )
+        self.assertEqual("g++-13", evidence["binary_package"])
+        self.assertIn("${source:Version}", invoked.call_args.args[0][2])
 
     def test_native_inspection_reads_only_libtriton(self) -> None:
         native = b"only libtriton reaches readelf"

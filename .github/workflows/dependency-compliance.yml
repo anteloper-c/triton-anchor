@@ -566,8 +566,36 @@ jobs:
         id: wheel
         run: |
           export CXX=/usr/bin/g++
+          build_tools="${RUNNER_TEMP}/t82-build-tools"
+          mkdir -p "${build_tools}"
+          ln -s /usr/bin/cmake "${build_tools}/cmake"
+          ln -s /usr/bin/ninja "${build_tools}/ninja"
+          export PATH="${build_tools}:${PATH}"
           source ./envsetup.sh
           export MAX_JOBS=4
+          cpython_version="$(python -c 'import platform; print(platform.python_version())')"
+          cpython_tag="refs/tags/v${cpython_version}"
+          cpython_refs="$(
+            git ls-remote https://github.com/python/cpython.git \
+              "${cpython_tag}" "${cpython_tag}^{}"
+          )"
+          cpython_source_commit="$(
+            printf '%s\n' "${cpython_refs}" |
+              awk -v exact="${cpython_tag}" -v peeled="${cpython_tag}^{}" '
+                $2 == peeled { print $1; found = 1; exit }
+                $2 == exact { fallback = $1 }
+                END { if (!found && fallback) print fallback }
+              '
+          )"
+          if [[ ! "${cpython_source_commit}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Cannot resolve CPython ${cpython_version} release tag" >&2
+            exit 1
+          fi
+          gcc_major="$("${CXX}" -dumpversion | cut -d. -f1)"
+          if [[ ! "${gcc_major}" =~ ^[0-9]+$ ]]; then
+            echo "Cannot determine the configured GCC package" >&2
+            exit 1
+          fi
           python -m build --wheel --no-isolation
           mapfile -d '' -t wheels < <(
             find dist -maxdepth 1 -type f -name 'triton_anchor-*.whl' -print0
@@ -585,6 +613,11 @@ jobs:
             --evidence-binding same-build \
             --cxx-compiler "${CXX}" \
             --package-tool pypa-build \
+            --ubuntu-package zstd=libzstd1 \
+            --ubuntu-package "gcc-toolchain=g++-${gcc_major}" \
+            --ubuntu-package cmake=cmake \
+            --ubuntu-package ninja=ninja-build \
+            --cpython-source-commit "${cpython_source_commit}" \
             --output "${EVIDENCE_DIR}/build-evidence.json"
 
       - name: Scan the built Wheel

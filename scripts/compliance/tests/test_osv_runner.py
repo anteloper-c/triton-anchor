@@ -528,6 +528,110 @@ class OsvRunnerTests(unittest.TestCase):
             },
         )
 
+    def test_build_queries_cover_ubuntu_package_and_cpython_release(self) -> None:
+        cmake = component("cmake", version=">=3.18", distribution="build-only")
+        cmake["version"] = {
+            "value": ">=3.18",
+            "kind": "version-constraint",
+            "status": "constraint-only",
+        }
+        cpython = component(
+            "cpython", version=">=3.8", distribution="runtime-external"
+        )
+        cpython["version"] = {
+            "value": ">=3.8",
+            "kind": "version-constraint",
+            "status": "constraint-only",
+        }
+        cpython["origin"] = {
+            "url": "https://github.com/python/cpython",
+            "status": "resolved",
+        }
+        registry = {"schema_version": 1, "components": [cmake, cpython]}
+        build = {
+            "compliance_build": {
+                "status": "success",
+                "artifact_sha256": "a" * 64,
+                "components": [
+                    {
+                        "id": "cmake",
+                        "version": "3.30.4-1ubuntu1",
+                        "usages": ["build-only"],
+                        "evidence": {"source": "dpkg-query"},
+                        "osv_query": {
+                            "name": "cmake",
+                            "version": "3.30.4-1ubuntu1",
+                            "ecosystem": "Ubuntu:24.04:LTS",
+                        },
+                    },
+                    {
+                        "id": "cpython",
+                        "version": "3.12.14",
+                        "usages": ["runtime-external"],
+                        "evidence": {"source": "build-interpreter"},
+                        "osv_query": {
+                            "name": "github.com/python/cpython",
+                            "commit": "1" * 40,
+                        },
+                    },
+                ],
+            }
+        }
+
+        query, index = _query_inventory(registry, build, "core-wheel")
+
+        self.assertEqual({"cmake", "cpython"}, set(index))
+        self.assertEqual(
+            {
+                (
+                    "cmake",
+                    "3.30.4-1ubuntu1",
+                    "Ubuntu:24.04:LTS",
+                    None,
+                ),
+                (
+                    "github.com/python/cpython",
+                    None,
+                    None,
+                    "1" * 40,
+                ),
+            },
+            {
+                (
+                    item["package"]["name"],
+                    item["package"].get("version"),
+                    item["package"].get("ecosystem"),
+                    item["package"].get("commit"),
+                )
+                for item in query["results"][0]["packages"]
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output_path = Path(temporary) / "osv-results.json"
+            with patch(
+                "scripts.compliance.osv_runner.subprocess.run",
+                side_effect=completed_runs(0, b'{"results":[]}'),
+            ):
+                code = run_osv_scan(
+                    scanner="osv-scanner",
+                    registry=registry,
+                    build_evidence=build,
+                    raw_output=Path(temporary) / "osv.raw.json",
+                    output=output_path,
+                    scanned_on="2026-08-24",
+                )
+            output = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(0, code)
+        self.assertEqual(
+            {"cmake": "3.30.4-1ubuntu1", "cpython": "3.12.14"},
+            {
+                item["component_id"]: item["component_version"]
+                for item in output["coverage"]
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
