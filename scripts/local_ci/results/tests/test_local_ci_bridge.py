@@ -707,6 +707,53 @@ class CodexCommentTests(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.exit_code, 1)
 
+    @mock.patch.object(bridge, "gitee_content")
+    def test_codex_only_pr_accepts_explicitly_skipped_stages(
+        self,
+        gitee_content: mock.Mock,
+    ) -> None:
+        def content(*_args: object) -> str | None:
+            path = str(_args[2])
+            if path.endswith("latest.txt"):
+                return "run-3\n"
+            if path.endswith("delivery-summary.txt"):
+                return (
+                    "status: 0\n"
+                    "execution_mode: codex_only\n"
+                    f"target_sha: {self.target.sha}\n"
+                    "run_id: run-3\n"
+                    "frontend_build_status: skipped\n"
+                    "frontend_smoke_status: skipped\n"
+                    "backend_rebuild_status: skipped\n"
+                    "backend_smoke_jit_status: skipped\n"
+                    "flaggems_status: skipped\n"
+                    "compile_time_status: skipped\n"
+                    "pass_profile_status: skipped\n"
+                    "ir_serialization_status: skipped\n"
+                )
+            return None
+
+        gitee_content.side_effect = content
+        args = SimpleNamespace(
+            gitee_owner="owner",
+            gitee_repo="results",
+            gitee_results_branch="local-ci-results",
+            gitee_web_url="https://gitee.example/results",
+        )
+        result = bridge.read_local_ci_result(args, self.target, "token")
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.exit_code, 0)
+
+        push_target = bridge.Target(
+            "feature", "ci/push/feature", self.target.sha, "feature"
+        )
+        push_result = bridge.read_local_ci_result(args, push_target, "token")
+        self.assertIsNotNone(push_result)
+        assert push_result is not None
+        self.assertEqual(push_result.exit_code, 1)
+        self.assertEqual(push_result.stage_statuses["frontend_build"], "fail")
+
 
 if __name__ == "__main__":
     unittest.main()
