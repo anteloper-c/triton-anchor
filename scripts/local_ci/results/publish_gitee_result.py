@@ -48,6 +48,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--exit-code", required=True, type=int)
     parser.add_argument("--results-branch", default="local-ci-results")
     parser.add_argument("--context", default="local-ci/sophgo-cmodel")
+    parser.add_argument("--execution-mode", default="full")
+    parser.add_argument("--ci-profile", default="unavailable")
+    parser.add_argument("--llvm-hash", default="unavailable")
+    parser.add_argument(
+        "--backend-stages-enabled", choices=("true", "false"), default="true"
+    )
+    parser.add_argument("--backend-skip-reason", default="")
     return parser.parse_args()
 
 
@@ -505,6 +512,15 @@ def write_fallback_results(run_dir: Path, target_dir: Path, args: argparse.Names
 
     artifact_dir_text = discover_artifact_dir(run_dir / "local-ci.log") or "unavailable"
     tested_sha_kind = "pr_merge" if args.source_branch.startswith("ci/pr-") else "commit"
+    backend_stages_enabled = args.backend_stages_enabled == "true"
+    deterministic_stages_skipped = args.execution_mode == "codex_only"
+    frontend_status = "skipped" if deterministic_stages_skipped else "unavailable"
+    backend_status = (
+        "skipped"
+        if deterministic_stages_skipped or not backend_stages_enabled
+        else "unavailable"
+    )
+    backend_skip_reason = " ".join(args.backend_skip_reason.split())
     summary_lines = [
         "schema: triton-anchor-local-ci/v3",
         f"status: {args.exit_code}",
@@ -514,7 +530,20 @@ def write_fallback_results(run_dir: Path, target_dir: Path, args: argparse.Names
         f"actual_checkout_sha: unavailable",
         f"branch: {args.source_branch}",
         f"run_id: {args.run_id}",
+        f"execution_mode: {args.execution_mode}",
+        f"ci_profile: {args.ci_profile or 'unavailable'}",
+        f"llvm_hash: {args.llvm_hash or 'unavailable'}",
+        f"backend_stages_enabled: {args.backend_stages_enabled}",
+        f"backend_skip_reason: {backend_skip_reason}",
         f"artifact_dir: {artifact_dir_text}",
+        f"frontend_build_status: {frontend_status}",
+        f"frontend_smoke_status: {frontend_status}",
+        f"backend_rebuild_status: {backend_status}",
+        f"backend_smoke_jit_status: {backend_status}",
+        f"flaggems_status: {backend_status}",
+        f"compile_time_status: {backend_status}",
+        f"pass_profile_status: {backend_status}",
+        f"ir_serialization_status: {backend_status}",
         "note: artifact directory was unavailable; published host-side local-ci logs.",
         f"copied_files: {', '.join(copied) if copied else 'none'}",
     ]

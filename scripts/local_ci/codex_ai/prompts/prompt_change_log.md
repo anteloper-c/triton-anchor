@@ -1,3 +1,27 @@
+## 2026-08-24：多版本 profile、失败事实保留与公开状态语义
+
+### 修改原因
+
+Local CI 原先默认绑定单一 Sophgo 容器，无法按 Triton 分支的 LLVM hash 选择 3.0、3.3 或 3.6 环境。Codex 失败 fallback 还可能丢失已经执行的命令事实，PR comment 对确定性门禁、AI 执行状态、混合命令结果和无 finding 场景的固定文案也可能引起误解。实践同时表明 30 条命令和 600 秒单条建议不足以覆盖较复杂的定向构建与诊断。
+
+### 修改内容
+
+- Local CI 按可信 `llvm-hash.txt` 选择服务器 `<llvm-hash>.env` profile；3.0 继续执行现有 Sophgo 完整阶段，3.3/3.6 当前执行现有前端 build/install/import 和 smoke；
+- Codex 临时容器跟随当前 profile，frontend-only 环境不 source 或回退到 Sophgo backend；
+- 失败 fallback 从可信命令账本保留命令、退出码和耗时，并安全读取已收集测试文件；空账本、账本不可读和已有命令分别表达；
+- PR comment 分开展示确定性门禁和 Codex 执行状态，只在审查完成时展示建议性 verdict；同一验证用途保留成功与各类失败的数量和影响，不让单条失败覆盖其他结果；
+- `test_assessment.summary` 继续承载可公开的证据、覆盖、观察结果和已知限制，不输出内部状态标签，也不收缩审查宽度、逐文件说明、行为覆盖或 finding 证据要求；
+- 默认命令数提高到 50，单条命令建议提高到 900 秒；2700 秒累计预算、3600 秒 hard timeout 和 450 秒报告预留保持不变。
+
+### 兼容性与风险
+
+- 不修改 GitHub required context、一个任务仍只运行一个 Triton 版本，也不新增确定性测试 stage；
+- 3.3/3.6 当前绿色结果只表示已部署的前端范围通过，公开评论和 summary 会明确后端、JIT、FlagGems 与性能未覆盖；
+- 完整 JSON 和 Markdown 报告继续保留详细内部状态，公开 PR comment 隐藏内部实现术语；
+- 命令数与单条耗时仍是 advisory constraint，累计预算和总执行边界不变。
+
+---
+
 ## 2026-08-13：PR comment 按验证事实分组展示
 
 ### 修改原因

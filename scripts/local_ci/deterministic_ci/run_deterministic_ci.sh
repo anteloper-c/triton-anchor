@@ -66,12 +66,50 @@ LOCAL_CI_BASE_SHA="${LOCAL_CI_BASE_SHA:-}"
 LOCAL_CI_BASE_REF="${LOCAL_CI_BASE_REF:-}"
 TRUSTED_ANCHOR_ENVSETUP="${TRUSTED_ANCHOR_ENVSETUP:-${RUNNER_ROOT}/trusted/envsetup.sh}"
 LOCAL_CI_GIT_ASKPASS=""
-BACKEND_PROFILE="${BACKEND_PROFILE:-sophgo-cmodel}"
-EXPECTED_TRITON_BACKEND="${EXPECTED_TRITON_BACKEND:-sophgo}"
-BACKEND_PATH="${BACKEND_PATH:-${WORKSPACE}/triton-sophgo-backend}"
-BACKEND_ENVSETUP="${BACKEND_ENVSETUP:-envsetup.sh}"
-BACKEND_ENVSETUP_ARGS="${BACKEND_ENVSETUP_ARGS:-PIO_CMODEL}"
-BACKEND_TEST_COMMAND="${BACKEND_TEST_COMMAND:-python3 tests/test_smoke.py && python3 tests/test_jit.py}"
+LOCAL_CI_PROFILE_NAME="${LOCAL_CI_PROFILE_NAME:-${BACKEND_PROFILE:-sophgo-cmodel}}"
+LOCAL_CI_LLVM_HASH="${LOCAL_CI_LLVM_HASH:-unknown}"
+RUN_BACKEND_STAGES="${RUN_BACKEND_STAGES:-true}"
+BACKEND_SKIP_REASON="${BACKEND_SKIP_REASON:-}"
+FRONTEND_ONLY_BACKEND_SKIP_REASON="当前没有部署可供测试的厂商后端，未执行后端构建、JIT、FlagGems 和性能验证。"
+if [[ ! "${LOCAL_CI_LLVM_HASH}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "LOCAL_CI_LLVM_HASH must be selected by the Local CI poller." >&2
+  exit 2
+fi
+case "${RUN_BACKEND_STAGES}" in
+  true)
+    BACKEND_PROFILE="${BACKEND_PROFILE:-}"
+    EXPECTED_TRITON_BACKEND="${EXPECTED_TRITON_BACKEND:-}"
+    BACKEND_PATH="${BACKEND_PATH:-}"
+    BACKEND_ENVSETUP="${BACKEND_ENVSETUP:-}"
+    BACKEND_ENVSETUP_ARGS="${BACKEND_ENVSETUP_ARGS:-}"
+    BACKEND_TEST_COMMAND="${BACKEND_TEST_COMMAND:-}"
+    BACKEND_UNINSTALL_PACKAGES="${BACKEND_UNINSTALL_PACKAGES:-}"
+    BACKEND_WHEEL_PATTERN="${BACKEND_WHEEL_PATTERN:-}"
+    for required_backend_value in \
+      BACKEND_PROFILE EXPECTED_TRITON_BACKEND BACKEND_PATH \
+      BACKEND_TEST_COMMAND BACKEND_WHEEL_PATTERN; do
+      if [[ -z "${!required_backend_value}" ]]; then
+        echo "RUN_BACKEND_STAGES=true requires ${required_backend_value} from the selected profile." >&2
+        exit 2
+      fi
+    done
+    ;;
+  false)
+    BACKEND_SKIP_REASON="${FRONTEND_ONLY_BACKEND_SKIP_REASON}"
+    BACKEND_PROFILE="${BACKEND_PROFILE:-${LOCAL_CI_PROFILE_NAME}}"
+    EXPECTED_TRITON_BACKEND="${EXPECTED_TRITON_BACKEND-}"
+    BACKEND_PATH="${BACKEND_PATH-}"
+    BACKEND_ENVSETUP="${BACKEND_ENVSETUP-}"
+    BACKEND_ENVSETUP_ARGS="${BACKEND_ENVSETUP_ARGS-}"
+    BACKEND_TEST_COMMAND="${BACKEND_TEST_COMMAND-}"
+    BACKEND_UNINSTALL_PACKAGES="${BACKEND_UNINSTALL_PACKAGES-}"
+    BACKEND_WHEEL_PATTERN="${BACKEND_WHEEL_PATTERN-}"
+    ;;
+  *)
+    echo "RUN_BACKEND_STAGES must be true or false." >&2
+    exit 2
+    ;;
+esac
 RUN_FLAGGEMS_TESTS="${RUN_FLAGGEMS_TESTS:-false}"
 FLAGGEMS_CLONE_DIR="${FLAGGEMS_CLONE_DIR:-${WORKSPACE}/FlagGems}"
 FLAGGEMS_REF="${FLAGGEMS_REF:-}"
@@ -135,6 +173,19 @@ FLAGGEMS_STATUS="disabled"
 if [[ "${RUN_FLAGGEMS_TESTS}" == "true" ]]; then
   FLAGGEMS_STATUS="not_run"
 fi
+if [[ "${RUN_BACKEND_STAGES}" == "false" ]]; then
+  RUN_FLAGGEMS_TESTS="false"
+  RUN_COMPILE_BENCHMARK="false"
+  RUN_PASS_PROFILE="false"
+  RUN_IR_SERIALIZATION_BENCHMARK="false"
+  INSTALL_FLAGGEMS_PACKAGES="0"
+  BACKEND_REBUILD_STATUS="skipped"
+  BACKEND_SMOKE_JIT_STATUS="skipped"
+  FLAGGEMS_STATUS="skipped"
+  COMPILE_TIME_STATUS="skipped"
+  PASS_PROFILE_STATUS="skipped"
+  IR_SERIALIZATION_STATUS="skipped"
+fi
 LOCAL_CI_RESULT_STATUS=0
 TRITON_DUMP_CLEANUP_STATUS="not_run"
 MAX_JOBS="${MAX_JOBS:-1}"
@@ -156,9 +207,11 @@ FAILURE_IR_ARTIFACT_DIR="${DELIVERY_ARTIFACT_DIR}/failure-ir"
 
 export WORKSPACE ANCHOR_DIR BACKEND_PROFILE EXPECTED_TRITON_BACKEND BACKEND_PATH
 export BACKEND_ENVSETUP BACKEND_ENVSETUP_ARGS BACKEND_TEST_COMMAND
+export BACKEND_UNINSTALL_PACKAGES BACKEND_WHEEL_PATTERN
 export RUN_FLAGGEMS_TESTS FLAGGEMS_CLONE_DIR FLAGGEMS_REF FLAGGEMS_PIP_PACKAGES FLAGGEMS_TEST_MODE FLAGGEMS_SAMPLE_SIZE FLAGGEMS_RANDOM_SEED FLAGGEMS_TEST_OP FLAGGEMS_TEST_COMMAND FLAGGEMS_PYTEST_ARGS FLAGGEMS_IDLE_TIMEOUT_SECONDS FLAGGEMS_TOTAL_TIMEOUT_SECONDS FLAGGEMS_FULL_TIMEOUT_EXTENSION_SECONDS FLAGGEMS_FULL_HARD_TIMEOUT_SECONDS FLAGGEMS_CLEAR_CACHE FLAGGEMS_WHITELIST FLAGGEMS_FULL_LIST FLAGGEMS_SELECTED_FILE
 export LLVM_BUILD_DIR PPL_ROOT PYTHON_BIN PYTHON_VENV_ACTIVATE FRONTEND_BUILD_MODE GITHUB_SHA="${target_sha}" GITHUB_REF="refs/heads/${GITEE_BRANCH}"
 export BACKEND_PROFILE MAX_JOBS CMAKE_BUILD_PARALLEL_LEVEL NINJAFLAGS UV_LINK_MODE
+export LOCAL_CI_PROFILE_NAME LOCAL_CI_LLVM_HASH RUN_BACKEND_STAGES BACKEND_SKIP_REASON
 export LOCAL_CI_TASK_TMP_ROOT TMPDIR
 
 if [[ ! -r "${TASK_TMP_TOOL}" ]]; then
@@ -179,6 +232,20 @@ mkdir -p "${DELIVERY_ARTIFACT_DIR}"
 
 use_uv() {
   [[ "${PACKAGE_TOOL}" == "uv" ]] || { [[ "${PACKAGE_TOOL}" == "auto" ]] && command -v uv >/dev/null 2>&1; }
+}
+
+prune_uv_cache_for_ci() {
+  local prune_status=0
+  if ! command -v uv >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "Pruning unused uv CI cache entries."
+  uv cache prune --ci || prune_status=$?
+  if [[ ${prune_status} -ne 0 ]]; then
+    echo "Warning: uv cache prune --ci failed with exit code ${prune_status}; Local CI result is unchanged." >&2
+  fi
+  return 0
 }
 
 setup_gitee_git_auth() {
@@ -233,6 +300,7 @@ validated_anchor_checkout_path() {
     "${LLVM_BUILD_DIR}" \
     "${PPL_ROOT}" \
     "${LOCAL_CI_ARTIFACT_ROOT}"; do
+    [[ -n "${protected}" ]] || continue
     protected_path="$(realpath -m -- "${protected}")"
     if [[ "${anchor_path}" == "${protected_path}" \
       || "${anchor_path}" == "${protected_path}"/* \
@@ -523,25 +591,40 @@ rebuild_backend() {
 
 rebuild_backend_command() {
   set -euo pipefail
+  local backend_wheel=""
   if use_uv; then
     uv pip install scikit-build-core pybind11
-    uv pip uninstall triton-sophgo-backend triton_sophgo_backend || true
+    if [[ -n "${BACKEND_UNINSTALL_PACKAGES}" ]]; then
+      # shellcheck disable=SC2086
+      uv pip uninstall ${BACKEND_UNINSTALL_PACKAGES} || true
+    fi
     rm -rf build dist *.egg-info
     uv build --wheel --no-build-isolation
-    uv pip install --force-reinstall dist/triton_sophgo_backend-*.whl
   else
     "${PYTHON_BIN}" -m pip install scikit-build-core pybind11 build
-    "${PYTHON_BIN}" -m pip uninstall -y triton-sophgo-backend triton_sophgo_backend || true
+    if [[ -n "${BACKEND_UNINSTALL_PACKAGES}" ]]; then
+      # shellcheck disable=SC2086
+      "${PYTHON_BIN}" -m pip uninstall -y ${BACKEND_UNINSTALL_PACKAGES} || true
+    fi
     rm -rf build dist *.egg-info
     "${PYTHON_BIN}" -m build --wheel --no-isolation
-    "${PYTHON_BIN}" -m pip install --force-reinstall dist/triton_sophgo_backend-*.whl
   fi
 
-  backend_wheel="$(find dist -maxdepth 1 -name 'triton_sophgo_backend-*.whl' -printf '%T@ %p\n' | sort -nr | awk 'NR==1 {print $2}')"
-  if [[ -n "${backend_wheel}" ]]; then
-    cp "${backend_wheel}" "${DELIVERY_ARTIFACT_DIR}/"
-    ls -lh "${backend_wheel}" "${DELIVERY_ARTIFACT_DIR}/$(basename "${backend_wheel}")"
+  backend_wheel="$(
+    find dist -maxdepth 1 -type f -name "${BACKEND_WHEEL_PATTERN}" \
+      -printf '%T@ %p\n' | sort -nr | awk 'NR==1 {print $2}'
+  )"
+  if [[ -z "${backend_wheel}" ]]; then
+    echo "Backend build did not produce a wheel matching ${BACKEND_WHEEL_PATTERN}." >&2
+    return 1
   fi
+  if use_uv; then
+    uv pip install --force-reinstall "${backend_wheel}"
+  else
+    "${PYTHON_BIN}" -m pip install --force-reinstall "${backend_wheel}"
+  fi
+  cp "${backend_wheel}" "${DELIVERY_ARTIFACT_DIR}/"
+  ls -lh "${backend_wheel}" "${DELIVERY_ARTIFACT_DIR}/$(basename "${backend_wheel}")"
 }
 
 source_python_venv() {
@@ -702,8 +785,8 @@ run_compile_benchmark() {
   fi
   if ! run_logged compile-benchmark timeout "${COMPILE_BENCHMARK_TIMEOUT}" \
     "${PYTHON_BIN}" "${PERFORMANCE_SCRIPT_DIR}/compile_benchmark.py" \
-      --backend "${EXPECTED_TRITON_BACKEND:-sophgo}" \
-      --vendor "${EXPECTED_TRITON_BACKEND:-sophgo}" \
+      --backend "${EXPECTED_TRITON_BACKEND}" \
+      --vendor "${EXPECTED_TRITON_BACKEND}" \
       --flaggems-root "${FLAGGEMS_CLONE_DIR}" \
       --kernels "${COMPILE_BENCHMARK_KERNELS}" \
       --repeat "${COMPILE_BENCHMARK_REPEAT}" \
@@ -774,8 +857,8 @@ run_pass_profile() {
   fi
   if ! run_logged pass-profile timeout "${PASS_PROFILE_TIMEOUT}" \
     "${PYTHON_BIN}" "${PERFORMANCE_SCRIPT_DIR}/pass_profile_benchmark.py" \
-      --backend "${EXPECTED_TRITON_BACKEND:-sophgo}" \
-      --vendor "${EXPECTED_TRITON_BACKEND:-sophgo}" \
+      --backend "${EXPECTED_TRITON_BACKEND}" \
+      --vendor "${EXPECTED_TRITON_BACKEND}" \
       --flaggems-root "${FLAGGEMS_CLONE_DIR}" \
       --kernels "${PASS_PROFILE_KERNELS}" \
       --repeat "${PASS_PROFILE_REPEAT}" \
@@ -850,8 +933,8 @@ run_ir_serialization_benchmark() {
   fi
   if ! run_logged ir-serialization timeout "${IR_SERIALIZATION_TIMEOUT}" \
     "${PYTHON_BIN}" "${PERFORMANCE_SCRIPT_DIR}/ir_serialization_benchmark.py" \
-      --backend "${EXPECTED_TRITON_BACKEND:-sophgo}" \
-      --vendor "${EXPECTED_TRITON_BACKEND:-sophgo}" \
+      --backend "${EXPECTED_TRITON_BACKEND}" \
+      --vendor "${EXPECTED_TRITON_BACKEND}" \
       --flaggems-root "${FLAGGEMS_CLONE_DIR}" \
       --kernels "${IR_SERIALIZATION_KERNELS}" \
       --repeat "${IR_SERIALIZATION_REPEAT}" \
@@ -900,6 +983,9 @@ run_ir_serialization_benchmark() {
 
 git_commit() {
   local repo="$1"
+  if [[ -z "${repo}" ]]; then
+    return 0
+  fi
   git -C "${repo}" rev-parse HEAD 2>/dev/null || true
 }
 
@@ -936,6 +1022,10 @@ write_summary() {
     echo "frontend_checkout_mode: ${FRONTEND_CHECKOUT_MODE}"
     echo "frontend_build_cache_preserved: ${FRONTEND_BUILD_CACHE_PRESERVED}"
     echo "frontend_uninstall_before_build: true"
+    echo "ci_profile: ${LOCAL_CI_PROFILE_NAME}"
+    echo "llvm_hash: ${LOCAL_CI_LLVM_HASH}"
+    echo "backend_stages_enabled: ${RUN_BACKEND_STAGES}"
+    echo "backend_skip_reason: ${BACKEND_SKIP_REASON}"
     echo "backend_profile: ${BACKEND_PROFILE}"
     echo "expected_backend: ${EXPECTED_TRITON_BACKEND}"
     echo "backend_path: ${BACKEND_PATH}"
@@ -990,11 +1080,17 @@ finalize_running_statuses() {
 
 required_stages_passed() {
   local status
-  for status in \
-    "${FRONTEND_BUILD_STATUS}" \
-    "${FRONTEND_SMOKE_STATUS}" \
-    "${BACKEND_REBUILD_STATUS}" \
-    "${BACKEND_SMOKE_JIT_STATUS}"; do
+  local required_statuses=(
+    "${FRONTEND_BUILD_STATUS}"
+    "${FRONTEND_SMOKE_STATUS}"
+  )
+  if [[ "${RUN_BACKEND_STAGES}" == "true" ]]; then
+    required_statuses+=(
+      "${BACKEND_REBUILD_STATUS}"
+      "${BACKEND_SMOKE_JIT_STATUS}"
+    )
+  fi
+  for status in "${required_statuses[@]}"; do
     case "${status}" in
       pass|success) ;;
       *) return 1 ;;
@@ -1029,6 +1125,7 @@ on_exit() {
       status="${dump_cleanup_status}"
     fi
   fi
+  prune_uv_cache_for_ci
   write_summary "${status}"
   exit "${status}"
 }
@@ -1150,6 +1247,7 @@ FRONTEND_BUILD_STATUS="pass"
 run_recorded_stage_in_dir FRONTEND_SMOKE_STATUS "Frontend smoke" \
   "${ANCHOR_DIR}" frontend-smoke "${PYTHON_BIN}" tests/test_smoke.py
 
+if [[ "${RUN_BACKEND_STAGES}" == "true" ]]; then
 BACKEND_REBUILD_STATUS="running"
 source_backend_env
 rebuild_backend
@@ -1237,6 +1335,9 @@ fi
 run_recorded_stage COMPILE_TIME_STATUS "Compile-time benchmark" run_compile_benchmark
 run_recorded_stage PASS_PROFILE_STATUS "Pass profile" run_pass_profile
 run_recorded_stage IR_SERIALIZATION_STATUS "IR serialization" run_ir_serialization_benchmark
+else
+  echo "Skipping backend-dependent stages: ${BACKEND_SKIP_REASON}"
+fi
 
 if [[ ${LOCAL_CI_RESULT_STATUS} -ne 0 ]]; then
   echo "Local CI finished with one or more failed stages. Artifacts are in ${DELIVERY_ARTIFACT_DIR}" >&2

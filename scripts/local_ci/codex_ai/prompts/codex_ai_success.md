@@ -168,7 +168,7 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 - `changed_files` 证明文件级覆盖，`behavior_coverage` 表达跨文件行为推理，两者不能互相替代，也不能复制同一套泛化句子。
 - `residual_risks` 记录已识别但当前证据无法关闭的具体风险；没有剩余风险时使用空数组，不要制造免责声明。
 - `suggested_tests` 只记录尚未执行且能关闭具体风险的验证，目标和预期覆盖必须明确；已经执行的工作写入 `test_assessment`。
-- `test_assessment.summary` 应使用可直接公开的具体事实说明复用的确定性 CI 证据、静态审查范围、已覆盖路径和观察结果；不要把尚未执行的验证或未覆盖范围混入 summary，前者写入 `suggested_tests`，由证据缺口产生的具体行为风险写入 `residual_risks`。不要把 `sufficient`、`insufficient` 或其他内部枚举改写成抽象状态断言。实际命令及其结果由 Runner 的可信账本补充。`evidence_level=sufficient` 表示这些证据足以支持当前 AI 审查结论，不代表确定性 Local CI 门禁；`not_needed` 仅表示本次不需要额外动态测试或诊断。
+- `test_assessment.summary` 应使用可直接公开的具体事实说明复用的确定性 CI 证据、静态审查范围、已覆盖路径、观察结果，以及已知验证限制或未覆盖边界。需要后续执行的具体验证仍写入 `suggested_tests`，由证据缺口产生的具体行为风险仍写入 `residual_risks`，不要在三个字段间机械重复同一句话。不要把 `sufficient`、`insufficient` 或其他内部枚举改写成抽象状态断言。实际命令及其结果由 Runner 的可信账本补充。`evidence_level=sufficient` 表示这些证据足以支持当前 AI 审查结论，不代表确定性 Local CI 门禁；`not_needed` 仅表示本次不需要额外动态测试或诊断。
 
 ## 输出要求
 
@@ -179,6 +179,6 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 - `change_request_assessment.evidence` 和 `test_assessment.summary` 使用字符串数组；内容应简洁，避免重复。
 - `changed_files` 使用可信 `file_id` 覆盖全部变更文件，每项包含 `summary`、`impact` 和 `validation_strategy`。
 - `behavior_coverage` 完整包含 `normal`、`boundary`、`error`、`compatibility`、`integration`，每项包含 `scope`、`strategy`、`result`。
-- `test_assessment.summary` 必须是包含 1 至 8 条中文验证依据、已覆盖内容或观察结果的数组，不要添加“Codex 说明”或“Runner 校验”等来源前缀，也不要在这里重复 `suggested_tests` 或 `residual_risks`。
+- `test_assessment.summary` 必须是包含 1 至 8 条中文验证依据、已覆盖内容、观察结果或已知验证限制的数组，不要添加“Codex 说明”或“Runner 校验”等来源前缀，也不要机械重复 `suggested_tests` 或 `residual_risks`。
 - 输出结构、字段类型、固定枚举和逐文件覆盖必须完整正确；每个 finding 的 `file_id` 和 `line` 还必须真实可定位。
 - 没有具体缺陷时 `findings` 必须为空数组，不得为了填充报告而编造问题。

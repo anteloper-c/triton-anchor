@@ -36,6 +36,13 @@ GITEE_RESULTS_WEB_URL="${GITEE_RESULTS_WEB_URL:-https://gitee.com/${GITEE_RESULT
 LOCAL_CI_CONTAINER="${LOCAL_CI_CONTAINER:-triton-anchor-dev}"
 LOCAL_CI_WORKSPACE_HOST="${LOCAL_CI_WORKSPACE_HOST:-/root/projects/test/workspace}"
 BACKEND_PROFILE="${BACKEND_PROFILE:-sophgo-cmodel}"
+LOCAL_CI_PROFILE_DIR="${LOCAL_CI_PROFILE_DIR:-}"
+LOCAL_CI_PROFILE_NAME="${LOCAL_CI_PROFILE_NAME:-${BACKEND_PROFILE}}"
+LOCAL_CI_LLVM_HASH="${LOCAL_CI_LLVM_HASH:-}"
+LOCAL_CI_PROFILE_FILE="${LOCAL_CI_PROFILE_FILE:-}"
+RUN_BACKEND_STAGES="${RUN_BACKEND_STAGES:-true}"
+BACKEND_SKIP_REASON="${BACKEND_SKIP_REASON:-}"
+FRONTEND_ONLY_BACKEND_SKIP_REASON="当前没有部署可供测试的厂商后端，未执行后端构建、JIT、FlagGems 和性能验证。"
 RUN_COMPILE_BENCHMARK="${RUN_COMPILE_BENCHMARK:-true}"
 RUN_PASS_PROFILE="${RUN_PASS_PROFILE:-true}"
 RUN_IR_SERIALIZATION_BENCHMARK="${RUN_IR_SERIALIZATION_BENCHMARK:-true}"
@@ -51,8 +58,8 @@ CODEX_AI_CI_REASONING_EFFORT="${CODEX_AI_CI_REASONING_EFFORT:-medium}"
 CODEX_AI_CI_MIN_GENERATED_TEST_CASES="${CODEX_AI_CI_MIN_GENERATED_TEST_CASES:-1}"
 CODEX_AI_CI_MAX_GENERATED_TEST_CASES="${CODEX_AI_CI_MAX_GENERATED_TEST_CASES:-15}"
 CODEX_AI_CI_MAX_GENERATED_TEST_FILES="${CODEX_AI_CI_MAX_GENERATED_TEST_FILES:-5}"
-CODEX_AI_CI_MAX_TEST_COMMANDS="${CODEX_AI_CI_MAX_TEST_COMMANDS:-30}"
-CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS="${CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS:-600}"
+CODEX_AI_CI_MAX_TEST_COMMANDS="${CODEX_AI_CI_MAX_TEST_COMMANDS:-50}"
+CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS="${CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS:-900}"
 CODEX_AI_CI_TEST_BUDGET_SECONDS="${CODEX_AI_CI_TEST_BUDGET_SECONDS:-2700}"
 CODEX_AI_CI_REPORT_RESERVE_SECONDS="${CODEX_AI_CI_REPORT_RESERVE_SECONDS:-450}"
 export GITEE_TOKEN GITEE_USERNAME GITEE_WEB_URL GITEE_RESULTS_WEB_URL WORKSPACE LOCAL_CI_WORKSPACE_HOST LOCAL_CI_CONFIG LOCAL_CI_CONTAINER
@@ -126,6 +133,204 @@ metadata_ref_for_task() {
   return 1
 }
 
+read_verified_llvm_hash() {
+  local branch="$1"
+  local expected_sha="$2"
+  local checkout_dir=""
+  local actual_sha=""
+  local llvm_hash=""
+
+  if [[ ! "${expected_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Cannot read LLVM hash without an exact task commit." >&2
+    return 1
+  fi
+  checkout_dir="$(mktemp -d "${LOCAL_CI_STATE_DIR}/llvm-hash.XXXXXX")"
+  git -C "${checkout_dir}" init -q
+  git -C "${checkout_dir}" remote add origin "${GITEE_REPO_URL}"
+  if ! git -C "${checkout_dir}" fetch -q --depth=1 origin \
+    "+refs/heads/${branch}:refs/local-ci/llvm-hash"; then
+    rm -rf -- "${checkout_dir}"
+    echo "Unable to fetch ${branch} while resolving the Local CI profile." >&2
+    return 1
+  fi
+  actual_sha="$(git -C "${checkout_dir}" rev-parse refs/local-ci/llvm-hash)"
+  if [[ "${actual_sha}" != "${expected_sha}" ]]; then
+    rm -rf -- "${checkout_dir}"
+    echo "Task ref ${branch} moved while resolving the Local CI profile." >&2
+    return 1
+  fi
+  if ! git -C "${checkout_dir}" cat-file -e \
+    "${expected_sha}:triton/cmake/llvm-hash.txt" 2>/dev/null; then
+    rm -rf -- "${checkout_dir}"
+    echo "Commit ${expected_sha} has no triton/cmake/llvm-hash.txt." >&2
+    return 1
+  fi
+  if ! llvm_hash="$(
+    git -C "${checkout_dir}" show \
+      "${expected_sha}:triton/cmake/llvm-hash.txt"
+  )"; then
+    rm -rf -- "${checkout_dir}"
+    echo "Unable to read the LLVM hash from commit ${expected_sha}." >&2
+    return 1
+  fi
+  rm -rf -- "${checkout_dir}"
+  if [[ ! "${llvm_hash}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Commit ${expected_sha} contains an invalid LLVM hash." >&2
+    return 1
+  fi
+  printf '%s' "${llvm_hash}"
+}
+
+select_task_profile() {
+  local task_branch="$1"
+  local task_sha="$2"
+  local base_branch="$3"
+  local base_sha="$4"
+  local selected_hash=""
+  local candidate_hash=""
+  local resolution=""
+  local configured_profile_dir="${LOCAL_CI_PROFILE_DIR}"
+
+  PROFILE_SELECTION_ERROR=""
+  if [[ "${task_branch}" =~ ^ci/pr-[0-9]+/.+$ ]]; then
+    if ! selected_hash="$(read_verified_llvm_hash "${base_branch}" "${base_sha}")"; then
+      PROFILE_SELECTION_ERROR="Unable to read the trusted PR base LLVM hash."
+      return 1
+    fi
+    if ! candidate_hash="$(read_verified_llvm_hash "${task_branch}" "${task_sha}")"; then
+      PROFILE_SELECTION_ERROR="Unable to read the tested PR LLVM hash."
+      return 1
+    fi
+    if [[ "${candidate_hash}" != "${selected_hash}" ]]; then
+      PROFILE_SELECTION_ERROR="The tested PR changes triton/cmake/llvm-hash.txt relative to its trusted base."
+      echo "${PROFILE_SELECTION_ERROR}" >&2
+      return 1
+    fi
+  else
+    if ! selected_hash="$(read_verified_llvm_hash "${task_branch}" "${task_sha}")"; then
+      PROFILE_SELECTION_ERROR="Unable to read the tested commit LLVM hash."
+      return 1
+    fi
+  fi
+  LOCAL_CI_LLVM_HASH="${selected_hash}"
+
+  if ! resolution="$(
+    "${PYTHON_BIN:-python3}" \
+      "${LOCAL_CI_RUNNER_DIR}/shared/resolve_ci_profile.py" \
+      --profile-dir "${configured_profile_dir}" \
+      --llvm-hash "${selected_hash}"
+  )"; then
+    PROFILE_SELECTION_ERROR="No trusted Local CI profile is available for LLVM hash ${selected_hash}."
+    return 1
+  fi
+
+  LOCAL_CI_PROFILE_FILE="${resolution}"
+  LOCAL_CI_PROFILE_NAME=""
+  LOCAL_CI_CONTAINER=""
+  LOCAL_CI_WORKSPACE_HOST=""
+  LLVM_BUILD_DIR=""
+  PYTHON_VENV_ACTIVATE=""
+  BACKEND_PROFILE=""
+  RUN_BACKEND_STAGES=""
+  BACKEND_SKIP_REASON=""
+  EXPECTED_TRITON_BACKEND=""
+  BACKEND_PATH=""
+  BACKEND_ENVSETUP=""
+  BACKEND_ENVSETUP_ARGS=""
+  BACKEND_TEST_COMMAND=""
+  BACKEND_UNINSTALL_PACKAGES=""
+  BACKEND_WHEEL_PATTERN=""
+  RUN_FLAGGEMS_TESTS=""
+  RUN_COMPILE_BENCHMARK=""
+  RUN_PASS_PROFILE=""
+  RUN_IR_SERIALIZATION_BENCHMARK=""
+  # Profile files live outside the task checkout and are controlled by the server.
+  # shellcheck disable=SC1090
+  source "${LOCAL_CI_PROFILE_FILE}"
+  LOCAL_CI_PROFILE_DIR="${configured_profile_dir}"
+  LOCAL_CI_PROFILE_FILE="${resolution}"
+  LOCAL_CI_LLVM_HASH="${selected_hash}"
+
+  if [[ ! "${LOCAL_CI_PROFILE_NAME:-}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    PROFILE_SELECTION_ERROR="The selected Local CI profile has an invalid LOCAL_CI_PROFILE_NAME."
+    echo "${PROFILE_SELECTION_ERROR}" >&2
+    return 1
+  fi
+  if [[ ! "${LOCAL_CI_CONTAINER:-}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    PROFILE_SELECTION_ERROR="The selected Local CI profile has an invalid LOCAL_CI_CONTAINER."
+    echo "${PROFILE_SELECTION_ERROR}" >&2
+    return 1
+  fi
+  if [[ "${LOCAL_CI_WORKSPACE_HOST:-}" != /* ]]; then
+    PROFILE_SELECTION_ERROR="The selected Local CI profile must use an absolute LOCAL_CI_WORKSPACE_HOST."
+    echo "${PROFILE_SELECTION_ERROR}" >&2
+    return 1
+  fi
+  if [[ "${LLVM_BUILD_DIR:-}" != /* ]]; then
+    PROFILE_SELECTION_ERROR="The selected Local CI profile must use an absolute LLVM_BUILD_DIR."
+    echo "${PROFILE_SELECTION_ERROR}" >&2
+    return 1
+  fi
+  if [[ "${PYTHON_VENV_ACTIVATE:-}" != /* ]]; then
+    PROFILE_SELECTION_ERROR="The selected Local CI profile must use an absolute PYTHON_VENV_ACTIVATE."
+    echo "${PROFILE_SELECTION_ERROR}" >&2
+    return 1
+  fi
+  for profile_switch in \
+    RUN_FLAGGEMS_TESTS RUN_COMPILE_BENCHMARK RUN_PASS_PROFILE \
+    RUN_IR_SERIALIZATION_BENCHMARK; do
+    if [[ "${!profile_switch:-}" != "true" && "${!profile_switch:-}" != "false" ]]; then
+      PROFILE_SELECTION_ERROR="The selected Local CI profile must set ${profile_switch} to true or false."
+      echo "${PROFILE_SELECTION_ERROR}" >&2
+      return 1
+    fi
+  done
+  case "${RUN_BACKEND_STAGES:-}" in
+    true)
+      BACKEND_SKIP_REASON=""
+      for required_backend_value in \
+        BACKEND_PROFILE EXPECTED_TRITON_BACKEND BACKEND_PATH BACKEND_TEST_COMMAND \
+        BACKEND_WHEEL_PATTERN; do
+        if [[ -z "${!required_backend_value:-}" ]]; then
+          PROFILE_SELECTION_ERROR="A backend-enabled Local CI profile must provide ${required_backend_value}."
+          echo "${PROFILE_SELECTION_ERROR}" >&2
+          return 1
+        fi
+      done
+      if [[ "${BACKEND_PATH}" != /* ]]; then
+        PROFILE_SELECTION_ERROR="A backend-enabled Local CI profile must use an absolute BACKEND_PATH."
+        echo "${PROFILE_SELECTION_ERROR}" >&2
+        return 1
+      fi
+      ;;
+    false)
+      BACKEND_SKIP_REASON="${FRONTEND_ONLY_BACKEND_SKIP_REASON}"
+      RUN_FLAGGEMS_TESTS="false"
+      RUN_COMPILE_BENCHMARK="false"
+      RUN_PASS_PROFILE="false"
+      RUN_IR_SERIALIZATION_BENCHMARK="false"
+      INSTALL_FLAGGEMS_PACKAGES="0"
+      EXPECTED_TRITON_BACKEND=""
+      BACKEND_PATH=""
+      BACKEND_ENVSETUP=""
+      BACKEND_ENVSETUP_ARGS=""
+      BACKEND_TEST_COMMAND=""
+      BACKEND_UNINSTALL_PACKAGES=""
+      BACKEND_WHEEL_PATTERN=""
+      ;;
+    *)
+      PROFILE_SELECTION_ERROR="The selected Local CI profile must set RUN_BACKEND_STAGES to true or false."
+      echo "${PROFILE_SELECTION_ERROR}" >&2
+      return 1
+      ;;
+  esac
+
+  export LOCAL_CI_PROFILE_FILE LOCAL_CI_PROFILE_NAME LOCAL_CI_LLVM_HASH
+  export RUN_BACKEND_STAGES BACKEND_SKIP_REASON LOCAL_CI_CONTAINER LLVM_BUILD_DIR
+  export LOCAL_CI_WORKSPACE_HOST PYTHON_VENV_ACTIVATE
+  echo "Selected Local CI profile ${LOCAL_CI_PROFILE_NAME} for LLVM ${LOCAL_CI_LLVM_HASH}."
+}
+
 flaggems_mode_for_branch() {
   local branch="$1"
   case "${branch}" in
@@ -161,12 +366,20 @@ run_codex_ai_ci_for_run() {
     CODEX_AI_CI_REPORT_RESERVE_SECONDS="${CODEX_AI_CI_REPORT_RESERVE_SECONDS}" \
     LOCAL_CI_CONTAINER="${LOCAL_CI_CONTAINER}" \
     LOCAL_CI_ARTIFACT_ROOT="${LOCAL_CI_ARTIFACT_ROOT:-/workspace/local-ci-artifacts}" \
+    LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-}" \
     PYTHON_VENV_ACTIVATE="${PYTHON_VENV_ACTIVATE:-}" \
     SOURCE_ENVSETUP="${SOURCE_ENVSETUP:-1}" \
     ANCHOR_DIR="${ANCHOR_DIR:-}" \
     BACKEND_PATH="${BACKEND_PATH:-}" \
     BACKEND_ENVSETUP="${BACKEND_ENVSETUP:-}" \
     BACKEND_ENVSETUP_ARGS="${BACKEND_ENVSETUP_ARGS:-}" \
+    BACKEND_UNINSTALL_PACKAGES="${BACKEND_UNINSTALL_PACKAGES:-}" \
+    BACKEND_WHEEL_PATTERN="${BACKEND_WHEEL_PATTERN:-}" \
+    LOCAL_CI_PROFILE_NAME="${LOCAL_CI_PROFILE_NAME}" \
+    LOCAL_CI_LLVM_HASH="${LOCAL_CI_LLVM_HASH}" \
+    RUN_BACKEND_STAGES="${RUN_BACKEND_STAGES}" \
+    BACKEND_SKIP_REASON="${BACKEND_SKIP_REASON}" \
+    LOCAL_CI_EXECUTION_MODE="${LOCAL_CI_EXECUTION_MODE:-full}" \
     bash "${LOCAL_CI_RUNNER_DIR}/codex_ai/run_codex_ai_ci.sh" \
     "${GITEE_REPO_URL}" "${run_dir}" "${sha}" "${base_sha}" "${base_ref}" \
     "${branch}" "${local_ci_status}" "${task_metadata_file}" "${head_sha}" "${head_ref}"
@@ -198,6 +411,11 @@ publish_result() {
     --exit-code "${status}"
     --results-branch "${GITEE_RESULTS_BRANCH}"
     --context "${GITEE_RESULT_CONTEXT}"
+    --execution-mode "${LOCAL_CI_EXECUTION_MODE:-full}"
+    --ci-profile "${LOCAL_CI_PROFILE_NAME:-unavailable}"
+    --llvm-hash "${LOCAL_CI_LLVM_HASH:-unavailable}"
+    --backend-stages-enabled "${RUN_BACKEND_STAGES:-false}"
+    --backend-skip-reason "${BACKEND_SKIP_REASON:-}"
   )
   if [[ -n "${head_sha}" ]]; then
     args+=(--head-sha "${head_sha}")
@@ -248,6 +466,7 @@ stage_runner_scripts() {
     shared/task_tmp.py \
     shared/result_paths.py \
     shared/path_utils.sh \
+    shared/resolve_ci_profile.py \
     shared/validate_task_metadata.py; do
     if [[ ! -f "${LOCAL_CI_SCRIPT_DIR}/${required_path}" ]]; then
       echo "LOCAL_CI_SCRIPT_DIR is not a complete Local CI root; missing ${required_path}" >&2
@@ -343,7 +562,7 @@ ir_serialization_baseline_exists() {
   cached_benchmark_exists "ir-serialization" "$1"
 }
 
-run_once() {
+run_once() (
   local branch="$1"
   local sha
   sha="$(latest_sha "${branch}")"
@@ -428,12 +647,24 @@ run_once() {
     )"
   fi
   echo "Local CI execution mode: ${execution_mode}"
+  LOCAL_CI_EXECUTION_MODE="${execution_mode}"
+
+  local PROFILE_SELECTION_ERROR=""
+  local profile_selection_status=0
+  if select_task_profile "${branch}" "${sha}" "${base_branch}" "${base_sha}"; then
+    :
+  else
+    profile_selection_status=$?
+    echo "Local CI profile selection failed: ${PROFILE_SELECTION_ERROR}" >&2
+  fi
 
   local flaggems_test_mode
   flaggems_test_mode="$(flaggems_mode_for_branch "${branch}")"
   echo "FlagGems test mode: ${flaggems_test_mode}"
 
-  if [[ "${branch}" =~ ^ci/pr-[0-9]+/.+$ && "${execution_mode}" != "codex_only" ]]; then
+  if [[ ${profile_selection_status} -eq 0 \
+    && "${branch}" =~ ^ci/pr-[0-9]+/.+$ \
+    && "${execution_mode}" != "codex_only" ]]; then
     if [[ -z "${base_sha}" ]]; then
       echo "Skipping PR performance baseline because exact base SHA is unavailable." >&2
     else
@@ -490,12 +721,49 @@ run_once() {
   fi
 
   local status=0
-  local docs_only_artifact_dir=""
-  if [[ "${execution_mode}" == "codex_only" ]]; then
-    docs_only_artifact_dir="$(
+  local nonexecuted_artifact_dir=""
+  if [[ ${profile_selection_status} -ne 0 ]]; then
+    status=1
+    LOCAL_CI_PROFILE_NAME="unavailable"
+    RUN_BACKEND_STAGES="false"
+    BACKEND_SKIP_REASON="${PROFILE_SELECTION_ERROR}"
+    nonexecuted_artifact_dir="$(
+      mktemp -d "/tmp/triton-anchor-profile-error.${sha:0:12}.XXXXXX"
+    )"
+    cat > "${nonexecuted_artifact_dir}/delivery-summary.txt" <<EOF
+schema: triton-anchor-local-ci/v3
+status: 1
+target_sha: ${sha}
+tested_sha: ${sha}
+tested_sha_kind: $([[ "${branch}" =~ ^ci/pr-[0-9]+/.+$ ]] && printf 'pr_merge' || printf 'commit')
+actual_checkout_sha: not_run
+branch: ${branch}
+run_id: ${run_id}
+execution_mode: ${execution_mode}
+ci_profile: unavailable
+llvm_hash: ${LOCAL_CI_LLVM_HASH:-unavailable}
+backend_stages_enabled: false
+backend_skip_reason: ${PROFILE_SELECTION_ERROR}
+artifact_dir: ${nonexecuted_artifact_dir}
+frontend_build_status: skipped
+frontend_smoke_status: skipped
+backend_rebuild_status: skipped
+backend_smoke_jit_status: skipped
+flaggems_status: skipped
+compile_time_status: skipped
+pass_profile_status: skipped
+ir_serialization_status: skipped
+EOF
+    {
+      echo "Local CI did not start because no trusted execution profile was selected."
+      echo "${PROFILE_SELECTION_ERROR}"
+      echo "Artifact dir: ${nonexecuted_artifact_dir}"
+    } | tee "${run_dir}/local-ci.log"
+  elif [[ "${execution_mode}" == "codex_only" ]]; then
+    nonexecuted_artifact_dir="$(
       mktemp -d "/tmp/triton-anchor-docs-only.${sha:0:12}.XXXXXX"
     )"
-    cat > "${docs_only_artifact_dir}/delivery-summary.txt" <<EOF
+    cat > "${nonexecuted_artifact_dir}/delivery-summary.txt" <<EOF
 schema: triton-anchor-local-ci/v3
 status: 0
 target_sha: ${sha}
@@ -505,7 +773,11 @@ actual_checkout_sha: not_run
 branch: ${branch}
 run_id: ${run_id}
 execution_mode: codex_only
-artifact_dir: ${docs_only_artifact_dir}
+ci_profile: ${LOCAL_CI_PROFILE_NAME}
+llvm_hash: ${LOCAL_CI_LLVM_HASH}
+backend_stages_enabled: ${RUN_BACKEND_STAGES}
+backend_skip_reason: ${BACKEND_SKIP_REASON}
+artifact_dir: ${nonexecuted_artifact_dir}
 frontend_build_status: skipped
 frontend_smoke_status: skipped
 backend_rebuild_status: skipped
@@ -544,9 +816,10 @@ EOF
   local codex_ai_test_status="NOT_RUN"
   local codex_ai_failure_code=""
   local codex_ai_mode="not_run"
-  if [[ "${execution_mode}" == "codex_only" \
-    || ("${RUN_CODEX_AI_CI}" == "true" \
-      && (-z "${CODEX_AI_CI_BRANCH_REGEX}" || "${branch}" =~ ${CODEX_AI_CI_BRANCH_REGEX})) ]]; then
+  if [[ ${profile_selection_status} -eq 0 \
+    && ("${execution_mode}" == "codex_only" \
+      || ("${RUN_CODEX_AI_CI}" == "true" \
+        && (-z "${CODEX_AI_CI_BRANCH_REGEX}" || "${branch}" =~ ${CODEX_AI_CI_BRANCH_REGEX}))) ]]; then
     codex_ai_ci_verdict="UNKNOWN"
     codex_ai_mode="full"
     if [[ ${status} -ne 0 ]]; then
@@ -631,16 +904,16 @@ if head_sha:
 output.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
 
-  if [[ -n "${docs_only_artifact_dir}" ]]; then
-    echo "Artifact dir: ${docs_only_artifact_dir}" >> "${run_dir}/local-ci.log"
+  if [[ -n "${nonexecuted_artifact_dir}" ]]; then
+    echo "Artifact dir: ${nonexecuted_artifact_dir}" >> "${run_dir}/local-ci.log"
   fi
   local publish_status=0
   set +e
   publish_result "${sha}" "${status}" "${run_id}" "${run_dir}" "${branch}" "${head_sha}"
   publish_status=$?
   set -e
-  if [[ -n "${docs_only_artifact_dir}" ]]; then
-    rm -rf -- "${docs_only_artifact_dir}"
+  if [[ -n "${nonexecuted_artifact_dir}" ]]; then
+    rm -rf -- "${nonexecuted_artifact_dir}"
   fi
 
   if [[ ${publish_status} -eq 0 ]]; then
@@ -658,7 +931,7 @@ PY
     return "${status}"
   fi
   return "${publish_status}"
-}
+)
 
 run_all_once() {
   local status=0

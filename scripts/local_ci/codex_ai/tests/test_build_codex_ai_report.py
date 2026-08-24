@@ -5,6 +5,7 @@ import json
 import re
 import tarfile
 from argparse import Namespace
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -168,6 +169,44 @@ def build(
     return report
 
 
+def build_fallback(
+    tmp_path: Path,
+    ledger: list[dict] | None,
+    archive_entries: list[tuple[str, bytes, str]] | None,
+    *,
+    command_ledger_state: str = "available",
+    generated_archive_state: str = "available",
+):
+    repository_root = tmp_path / "fallback-repo"
+    repository_root.mkdir(exist_ok=True)
+    (repository_root / "example.py").write_text("value = 1\n", encoding="utf-8")
+    manifest = [{"path": "example.py", "change_type": "modified"}]
+    manifest_path = tmp_path / "fallback-manifest.json"
+    ledger_path = tmp_path / "fallback-ledger.json"
+    archive_path = tmp_path / "fallback-generated.tar.gz"
+    output_path = tmp_path / "fallback-report.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    if ledger is not None:
+        ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    if archive_entries is not None:
+        write_archive(archive_path, archive_entries)
+    BUILDER.build_fallback_report(
+        Namespace(
+            output=output_path,
+            manifest=manifest_path,
+            command_ledger=ledger_path,
+            command_ledger_state=command_ledger_state,
+            generated_archive=archive_path,
+            generated_archive_state=generated_archive_state,
+            failure_reason="结构化审查分析未能完成。",
+            change_request_context_status="valid",
+        )
+    )
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    RENDERER.validate_report(report, manifest, repository_root)
+    return report
+
+
 def test_builder_assigns_trusted_fields_and_pass_status(tmp_path):
     command = "python3 -m pytest generated_tests/test_generated.py"
     report = build(
@@ -220,6 +259,240 @@ def test_public_validation_uses_fact_groups_without_internal_status_labels(tmp_p
     assert "Runner 校验：" not in validation
 
 
+def test_public_validation_keeps_counts_for_every_mixed_command_outcome(tmp_path):
+    document = analysis()
+    annotated_commands = [
+        ("check-success", "none"),
+        ("check-stable", "product"),
+        ("check-stable", "product"),
+        ("check-flaky", "flaky"),
+        ("check-flaky", "flaky"),
+        ("check-infrastructure", "infrastructure"),
+        ("check-unknown", "unknown"),
+    ]
+    document["test_assessment"]["commands"] = [
+        {
+            "command": command,
+            "purpose": "综合定向验证",
+            "evidence": "执行事实来自可信命令记录。",
+            "failure_classification": classification,
+        }
+        for command, classification in annotated_commands
+    ]
+    exits = [0, 1, 1, 1, 0, 2, 1]
+    report = build(
+        tmp_path,
+        document,
+        [
+            {
+                "command": command,
+                "exit_code": exit_code,
+                "duration_seconds": 0.1,
+            }
+            for (command, _), exit_code in zip(annotated_commands, exits)
+        ],
+    )
+
+    assert report["test_execution"]["status"] == "insufficient_evidence"
+    assert Counter(
+        command["status"] for command in report["test_execution"]["commands"]
+    ) == {
+        "passed": 2,
+        "stable_failure": 2,
+        "flaky_failure": 1,
+        "infrastructure_failure": 1,
+        "failed": 1,
+    }
+    comment = RENDERER.render_comment(report, comment_args())
+    validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
+    assert "综合定向验证共 7 条执行记录" in validation
+    assert "2 条成功" in validation
+    assert "2 条可稳定复现的失败" in validation
+    assert "1 条重复执行结果不一致" in validation
+    assert "1 条受运行环境限制" in validation
+    assert "1 条失败待归因" in validation
+
+
+def test_public_validation_sanitizes_internal_sources_and_enums(tmp_path):
+    document = analysis()
+    document["test_assessment"] = {
+        "evidence_level": "insufficient",
+        "summary": [
+            "Runner 事实校验：test_execution.status=not_run；"
+            "evidence_level=insufficient。",
+            "未执行任何新增验证命令。",
+        ],
+        "commands": [],
+    }
+    document["residual_risks"] = []
+    report = build(tmp_path, document, [], archive_entries=[])
+
+    comment = RENDERER.render_comment(report, comment_args())
+    assert "Runner" not in comment
+    assert "test_execution.status" not in comment
+    assert "evidence_level" not in comment
+    assert "not_run" not in comment
+    assert "insufficient" not in comment
+    assert "本次未新增验证命令" in comment
+    assert comment.count("本次未新增验证命令") == 1
+    assert "现有验证覆盖有限" in comment
+
+
+def test_public_validation_sanitizing_does_not_rewrite_finding_evidence(tmp_path):
+    document = analysis()
+    item = finding()
+    item["evidence"] = (
+        '代码证据为 `status == "passed"`，并调用 `Runner.run()`；'
+        "常量 `AI-001` 也必须保持不变。"
+    )
+    document["findings"] = [item]
+    report = build(
+        tmp_path,
+        document,
+        [
+            {
+                "command": "python3 -m pytest generated_tests/test_generated.py",
+                "exit_code": 0,
+                "duration_seconds": 0.2,
+            }
+        ],
+    )
+    report["changed_files"][0]["path"] = "docs/AI-001-passed.py"
+
+    comment = RENDERER.render_comment(report, comment_args())
+
+    assert 'status == "passed"' in comment
+    assert "Runner.run()" in comment
+    assert "AI-001" in comment
+    assert "`docs/AI-001-passed.py`" in comment
+
+
+def test_no_findings_wording_requires_complete_review_and_evidence(tmp_path):
+    complete = build(
+        tmp_path,
+        analysis(),
+        [
+            {
+                "command": "python3 -m pytest generated_tests/test_generated.py",
+                "exit_code": 0,
+                "duration_seconds": 0.2,
+            }
+        ],
+    )
+    assert "本次审查未发现需要处理的具体代码缺陷" in RENDERER.render_comment(
+        complete, comment_args()
+    )
+
+    limited_document = analysis()
+    limited_document["test_assessment"] = {
+        "evidence_level": "insufficient",
+        "summary": ["当前验证覆盖仍然有限。"],
+        "commands": [],
+    }
+    limited_document["residual_risks"] = []
+    limited = build(tmp_path, limited_document, [], archive_entries=[])
+    limited_comment = RENDERER.render_comment(limited, comment_args())
+    assert "本次未形成可确认的具体代码问题" in limited_comment
+    assert "本次审查未发现需要处理的具体代码缺陷" not in limited_comment
+    assert "除上述验证限制外，本次未报告其他剩余风险" in limited_comment
+
+
+def test_public_summary_only_shows_verdict_for_complete_review(tmp_path):
+    complete = build(
+        tmp_path,
+        analysis(),
+        [
+            {
+                "command": "python3 -m pytest generated_tests/test_generated.py",
+                "exit_code": 0,
+                "duration_seconds": 0.2,
+            }
+        ],
+    )
+    complete_comment = RENDERER.render_comment(complete, comment_args())
+    assert "Codex 执行状态" not in complete_comment
+    assert "Codex AI 审查结论：**通过**" in complete_comment
+    assert "Codex 建议性结论" not in complete_comment
+    assert "本地确定性 CI 检查：" in complete_comment
+
+    incomplete = build_fallback(tmp_path, [], [])
+    incomplete_comment = RENDERER.render_comment(incomplete, comment_args())
+    assert "Codex 执行状态" not in incomplete_comment
+    assert "Codex 建议性结论" not in incomplete_comment
+    assert "Codex AI 审查结论" not in incomplete_comment
+
+
+def test_public_summary_routes_known_limitations_to_limit_group(tmp_path):
+    document = analysis()
+    document["residual_risks"] = []
+    document["test_assessment"]["summary"] = [
+        "复用了与当前提交匹配的确定性检查日志。",
+        "尚未在真实 GitHub Environment 审批流程中完成端到端验证。",
+    ]
+    report = build(
+        tmp_path,
+        document,
+        [
+            {
+                "command": "python3 -m pytest generated_tests/test_generated.py",
+                "exit_code": 0,
+                "duration_seconds": 0.2,
+            }
+        ],
+    )
+    comment = RENDERER.render_comment(report, comment_args())
+    validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
+    results, limits = validation.split("- 限制与未覆盖：", 1)
+    assert "复用了与当前提交匹配的确定性检查日志" in results
+    assert "尚未在真实 GitHub Environment" not in results
+    assert "尚未在真实 GitHub Environment" in limits
+    assert "除上述验证限制外，本次未报告其他剩余风险" in comment
+    assert "本次未报告额外的验证限制或未覆盖项" not in limits
+
+
+def test_frontend_only_scope_lists_the_complete_backend_limit(tmp_path):
+    report = build(
+        tmp_path,
+        analysis(),
+        [
+            {
+                "command": "python3 -m pytest generated_tests/test_generated.py",
+                "exit_code": 0,
+                "duration_seconds": 0.2,
+            }
+        ],
+    )
+    args = comment_args()
+    args.backend_validation_scope = "frontend_only"
+    comment = RENDERER.render_comment(report, args)
+    assert (
+        "当前没有部署可供测试的厂商后端，未执行后端构建、JIT、FlagGems 和性能验证。"
+        in comment
+    )
+
+
+@pytest.mark.parametrize(
+    ("execution_mode", "backend_scope", "status", "expected"),
+    [
+        ("full", "full", "0", "已通过；Codex AI 自动审查只提供补充意见"),
+        ("full", "full", "1", "未通过；Codex AI 自动审查用于辅助定位原因"),
+        ("codex_only", "full", "", "按策略未执行确定性 CI；该状态不表示确定性测试通过"),
+        ("unavailable", "full", "", "执行状态不可确认；当前不能据此判断确定性门禁结果"),
+        ("full", "frontend_only", "0", "前端验证范围已通过；本次未执行厂商后端"),
+        ("full", "frontend_only", "1", "前端验证范围未通过；本次未执行厂商后端"),
+        ("full", "unavailable", "0", "已执行范围通过，但后端验证范围不可确认"),
+    ],
+)
+def test_deterministic_ci_public_modes_are_explicit_and_backward_compatible(
+    execution_mode, backend_scope, status, expected
+):
+    args = comment_args()
+    args.local_ci_execution_mode = execution_mode
+    args.backend_validation_scope = backend_scope
+    args.local_ci_status = status
+    assert expected in RENDERER.deterministic_ci_comment_line(args)
+
+
 @pytest.mark.parametrize(
     ("exits", "classification", "expected", "public_result"),
     [
@@ -230,7 +503,7 @@ def test_public_validation_uses_fact_groups_without_internal_status_labels(tmp_p
             "执行失败，现有记录尚不足以完成稳定性或根因归因",
         ),
         ([1, 1], "product", "stable_failure", "出现可稳定复现的失败"),
-        ([1, 0], "flaky", "flaky_failure", "重复执行时出现不一致结果"),
+        ([1, 0], "flaky", "flaky_failure", "1 条重复执行结果不一致"),
         (
             [2],
             "infrastructure",
@@ -259,6 +532,9 @@ def test_failure_status_is_derived_from_repeated_ledger(
     comment = RENDERER.render_comment(report, comment_args())
     validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
     assert public_result in validation
+    if expected == "infrastructure_failure":
+        assert "所执行的验证均受运行环境限制" in validation
+        assert "部分验证受运行环境限制" not in validation
 
 
 def test_not_needed_with_no_commands_derives_not_run(tmp_path):
@@ -303,8 +579,80 @@ def test_insufficient_evidence_with_no_commands_warns_without_faking_runner_stat
     comment = RENDERER.render_comment(report, comment_args())
     validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
     assert "  - 本次未新增验证命令。" in validation
-    assert "  - 本次没有新的命令执行结果。" in validation
+    assert validation.count("本次未新增验证命令") == 1
+    assert "本次没有新的命令执行结果" not in validation
     assert "  - 现有验证尚未覆盖本次变更的全部风险。" in validation
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "本次未新增验证命令。",
+        "本次无需执行额外验证命令",
+        "本次没有必要执行新的诊断命令",
+    ],
+)
+def test_no_command_fact_is_not_duplicated_when_codex_summary_already_states_it(
+    tmp_path, summary
+):
+    document = analysis()
+    document["test_assessment"] = {
+        "evidence_level": "insufficient",
+        "summary": [summary],
+        "commands": [],
+    }
+    report = build(tmp_path, document, [], archive_entries=[])
+
+    validation = RENDERER.render_comment(report, comment_args()).split(
+        "### 验证情况", 1
+    )[1].split("### 剩余风险", 1)[0]
+
+    assert validation.count("本次未新增验证命令") == 1
+
+
+def test_no_command_fact_is_not_duplicated_when_codex_summary_is_empty(tmp_path):
+    document = analysis()
+    document["test_assessment"] = {
+        "evidence_level": "not_needed",
+        "summary": [],
+        "commands": [],
+    }
+    report = build(tmp_path, document, [], archive_entries=[])
+
+    validation = RENDERER.render_comment(report, comment_args()).split(
+        "### 验证情况", 1
+    )[1].split("### 剩余风险", 1)[0]
+
+    assert validation.count("本次未新增验证命令") == 1
+    assert "本次不需要执行额外验证命令" not in validation
+
+
+def test_public_narrative_fields_remove_internal_sources_and_enums(tmp_path):
+    document = analysis()
+    document["summary"] = "由Runner校验后仍是insufficient_evidence状态，但审查已完成。"
+    document["merge_recommendation"] = "Codex 说明：结果为stable_failure，需要人工判断。"
+    document["residual_risks"] = ["Runner仍需核对infrastructure_failure状态。"]
+    report = build(
+        tmp_path,
+        document,
+        [
+            {
+                "command": "python3 -m pytest generated_tests/test_generated.py",
+                "exit_code": 0,
+                "duration_seconds": 0.2,
+            }
+        ],
+    )
+
+    comment = RENDERER.render_comment(report, comment_args())
+    for internal_term in (
+        "Runner",
+        "Codex 说明：",
+        "insufficient_evidence",
+        "stable_failure",
+        "infrastructure_failure",
+    ):
+        assert internal_term not in comment
 
 
 def test_unavailable_is_reserved_for_consistent_failure_fallback(tmp_path):
@@ -327,8 +675,9 @@ def test_unavailable_is_reserved_for_consistent_failure_fallback(tmp_path):
     )
     comment = RENDERER.render_comment(report, comment_args())
     validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
-    assert "Codex AI-CI 未形成可由 Runner 核验的执行结果" in validation
-    assert "Codex AI-CI 未完成，当前没有形成可信的验证记录" in validation
+    assert "本次命令执行事实不可确认" in validation
+    assert "预期验证是否执行及其结果仍待核对" in validation
+    assert "本次自动审查未形成完整的验证依据说明" in validation
     assert "Runner 校验：" not in validation
 
     invalid_report = json.loads(json.dumps(report))
@@ -343,31 +692,150 @@ def test_unavailable_is_reserved_for_consistent_failure_fallback(tmp_path):
             "evidence": "Runner 没有执行这条命令。",
         }
     ]
-    with pytest.raises(ValueError, match="cannot contain commands or generated files"):
+    with pytest.raises(ValueError, match="cannot contain command records"):
         RENDERER.validate_report(
             invalid_report,
             [{"path": "example.py", "change_type": "modified"}],
             tmp_path / "repo",
         )
 
-    invalid_report = json.loads(json.dumps(report))
-    invalid_report["test_execution"]["generated_test_files"] = [
+    archive_report = json.loads(json.dumps(report))
+    archive_report["test_execution"]["generated_test_files"] = [
         "generated_tests/test_generated.py"
     ]
-    with pytest.raises(ValueError, match="cannot contain commands or generated files"):
-        RENDERER.validate_report(
-            invalid_report,
-            [{"path": "example.py", "change_type": "modified"}],
-            tmp_path / "repo",
-        )
+    RENDERER.validate_report(
+        archive_report,
+        [{"path": "example.py", "change_type": "modified"}],
+        tmp_path / "repo",
+    )
 
     report["test_execution"]["status"] = "not_run"
-    with pytest.raises(ValueError, match="must be reported together"):
-        RENDERER.validate_report(
-            report,
-            [{"path": "example.py", "change_type": "modified"}],
-            tmp_path / "repo",
-        )
+    RENDERER.validate_report(
+        report,
+        [{"path": "example.py", "change_type": "modified"}],
+        tmp_path / "repo",
+    )
+
+
+def test_semantic_evidence_can_be_sufficient_when_command_facts_are_unavailable(
+    tmp_path,
+):
+    document = analysis()
+    document["test_assessment"] = {
+        "evidence_level": "sufficient",
+        "summary": ["复用的确定性检查证据足以支持当前审查结论。"],
+        "commands": [],
+    }
+    report = build(tmp_path, document, [], archive_entries=[])
+    report["test_execution"]["status"] = "unavailable"
+    report["verdict"] = "WARNING"
+
+    RENDERER.validate_report(
+        report,
+        [{"path": "example.py", "change_type": "modified"}],
+        tmp_path / "repo",
+    )
+    comment = RENDERER.render_comment(report, comment_args())
+    assert "本次未形成可确认的具体代码问题" in comment
+    assert "本次命令执行事实不可确认" in comment
+
+
+def test_fallback_preserves_trusted_passed_command_independently_of_evidence(
+    tmp_path,
+):
+    report = build_fallback(
+        tmp_path,
+        [
+            {
+                "command": "python3 -m pytest generated_tests/test_generated.py",
+                "exit_code": 0,
+                "duration_seconds": 0.2,
+            }
+        ],
+        [("generated_tests/test_generated.py", b"def test_x(): pass\n", "file")],
+    )
+
+    assert report["verdict"] == "WARNING"
+    assert report["test_execution"]["evidence_level"] == "unavailable"
+    assert report["test_execution"]["status"] == "passed"
+    assert report["test_execution"]["commands"][0]["status"] == "passed"
+    assert report["test_execution"]["generated_test_files"] == [
+        "generated_tests/test_generated.py"
+    ]
+    comment = RENDERER.render_comment(report, comment_args())
+    assert "本次未形成可确认的具体代码问题" in comment
+    assert "本次审查未发现需要处理的具体代码缺陷" not in comment
+    assert "evidence_level" not in comment
+    assert "test_execution.status" not in comment
+    full_report = RENDERER.render_report(report, comment_args())
+    assert "本次未形成可确认的具体代码问题" in full_report
+    assert "未发现需要阻塞合并的关键问题" not in full_report
+
+
+def test_fallback_derives_stable_failure_from_repeated_trusted_facts(tmp_path):
+    command = "python3 -m pytest generated_tests/test_generated.py"
+    report = build_fallback(
+        tmp_path,
+        [
+            {"command": command, "exit_code": 1, "duration_seconds": 0.2},
+            {"command": command, "exit_code": 1, "duration_seconds": 0.3},
+        ],
+        [],
+    )
+
+    assert report["test_execution"]["status"] == "stable_failure"
+    assert {
+        item["status"] for item in report["test_execution"]["commands"]
+    } == {"stable_failure"}
+    assert "出现可稳定复现的失败" in RENDERER.render_comment(
+        report, comment_args()
+    )
+
+
+def test_fallback_distinguishes_empty_and_unavailable_command_ledger(tmp_path):
+    empty = build_fallback(tmp_path, [], [])
+    assert empty["test_execution"]["status"] == "not_run"
+    assert empty["test_execution"]["commands"] == []
+
+    unavailable = build_fallback(
+        tmp_path,
+        None,
+        [("generated_tests/test_generated.py", b"def test_x(): pass\n", "file")],
+        command_ledger_state="unavailable",
+    )
+    assert unavailable["test_execution"]["status"] == "unavailable"
+    assert unavailable["test_execution"]["commands"] == []
+    assert unavailable["test_execution"]["generated_test_files"] == [
+        "generated_tests/test_generated.py"
+    ]
+    validation = RENDERER.render_comment(unavailable, comment_args()).split(
+        "### 验证情况", 1
+    )[1].split("### 剩余风险", 1)[0]
+    assert validation.count("命令执行事实不可确认") == 1
+
+
+def test_fallback_ignores_untrusted_archive_without_losing_report(tmp_path):
+    report = build_fallback(
+        tmp_path,
+        [],
+        [("../escape.py", b"x", "file")],
+    )
+
+    assert report["test_execution"]["status"] == "not_run"
+    assert report["test_execution"]["generated_test_files"] == []
+    assert any("测试文件归档不可确认" in risk for risk in report["residual_risks"])
+    assert any(
+        "未能取得可信的任务级测试文件归档事实" in item
+        for item in report["test_execution"]["summary"]
+    )
+
+
+def test_fallback_rejects_missing_available_command_ledger(tmp_path):
+    with pytest.raises(
+        BUILDER.InvalidTrustedReportInput,
+        match="available command ledger does not exist",
+    ):
+        build_fallback(tmp_path, None, [], command_ledger_state="available")
 
 
 def test_not_needed_with_successful_inspection_ignores_generation_hint(tmp_path):
@@ -437,7 +905,7 @@ def test_suggested_test_keeps_insufficient_with_successful_command(tmp_path):
     assert report["test_execution"]["status"] == "passed"
     comment = RENDERER.render_comment(report, comment_args())
     validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
-    assert "尚未执行：补跑容器契约以覆盖 runner、提示词和报告输出。" in validation
+    assert "尚未执行：补跑容器契约以覆盖自动检查、提示词和报告输出。" in validation
 
 
 def test_generation_error_has_public_execution_facts_and_limit(tmp_path):
@@ -453,7 +921,7 @@ def test_generation_error_has_public_execution_facts_and_limit(tmp_path):
     assert report["test_execution"]["status"] == "test_generation_error"
     comment = RENDERER.render_comment(report, comment_args())
     validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
-    assert "定向测试生成未完成，因此没有形成预期的命令执行结果" in validation
+    assert "定向测试生成未完成" in validation
     assert "测试生成阶段未完成，当前没有形成预期的动态验证覆盖" in validation
 
 
@@ -544,7 +1012,8 @@ def test_unlocated_finding_keeps_full_semantics_in_public_comment(tmp_path):
     assert "调用方会收到错误结果" in comment
     assert "修正该表达式并补充测试" in comment
     assert "当前未发现需要阻塞合入的问题" in report["merge_recommendation"]
-    assert "结构化语义载荷缺口" in report["merge_recommendation"]
+    assert "问题定位或逐文件说明完整性提醒" in report["merge_recommendation"]
+    assert "结构化语义载荷" not in report["merge_recommendation"]
 
 
 def test_public_comment_preserves_key_findings_within_length_budget(tmp_path):

@@ -276,10 +276,13 @@ Gitee relay 的 task ref 约定：
 5. 按 branch 的安全化名称读取 `last-processed-<branch>.sha`；
 6. 为新 SHA 创建独立 run 目录，复制 `LOCAL_CI_SCRIPT_DIR` 到 `runner/<run-id>/`；
 7. 为 PR 获取并校验 task metadata，缺失时保留 warning 并继续；
-8. 对 PR 检查 `ci/base/*` 及三种性能 baseline；缺失时先运行 base task；
-9. 调用可信快照中的 `orchestration/run_deterministic_ci_in_container.sh`；
-10. 根据确定性 Local CI 状态选择 Codex `full` 或 `analysis_only`；
-11. 发布结果；只有发布成功才写入 last-processed SHA；发布失败会重试同一任务。
+8. 从可信提交的 `triton/cmake/llvm-hash.txt` 选择 `LOCAL_CI_PROFILE_DIR/<llvm-hash>.env`；PR 使用 base hash 并要求被测提交一致，push 使用被测提交 hash；未知或未部署的 hash 直接形成非绿色环境结果；
+9. 对 PR 检查 `ci/base/*` 及三种性能 baseline；缺失时先运行 base task；
+10. 在任务级子 shell 中载入单个 profile，并调用可信快照中的 `orchestration/run_deterministic_ci_in_container.sh`，避免配置泄漏到后续任务；
+11. 根据确定性 Local CI 状态选择 Codex `full` 或 `analysis_only`；Codex 使用当前 profile 的容器；
+12. 发布结果；只有发布成功才写入 last-processed SHA；发布失败会重试同一任务。
+
+服务器 profile 文件以完整 LLVM hash 命名，至少定义 `LOCAL_CI_PROFILE_NAME`、`LOCAL_CI_CONTAINER`、`LOCAL_CI_WORKSPACE_HOST`、`LLVM_BUILD_DIR`、`PYTHON_VENV_ACTIVATE`、`RUN_BACKEND_STAGES`、`RUN_FLAGGEMS_TESTS` 和三类 benchmark 开关，并继续承载各自启用阶段的配置。启用后端时还必须定义 `BACKEND_PROFILE`、`EXPECTED_TRITON_BACKEND`、`BACKEND_PATH`、`BACKEND_TEST_COMMAND` 和 `BACKEND_WHEEL_PATTERN`；`BACKEND_UNINSTALL_PACKAGES` 可按包名设置。部署目标映射为：LLVM 19 `10dc3a8e916d73291269e5e2b82dd22681489aa1` 对应 3.0 Sophgo 完整 profile；LLVM 21 `a66376b0dc3b2ea8a84fda26faca287980986f78` 对应 3.3 frontend profile；LLVM 22 `a992f29451b9e140424f35ac5e20177db4afbdc0` 对应 3.6 frontend profile。profile 文件只由服务器维护，仓库不负责构建或部署 LLVM、后端、venv 或长期容器；3.3/3.6 在服务器部署并完成真实任务前仍属于待验证环境。
 
 注意：poller 使用一个全局文件锁，因此单个状态目录内任务是串行的。branch 名称被简单替换为安全路径字符串，多个不同原始 branch 可能归一化为同一名称；修改路径协议时必须同时改 shell 与 Python 实现。
 
@@ -293,11 +296,11 @@ bash scripts/local_ci/orchestration/run_deterministic_ci_in_container.sh <sha> <
 
 脚本：
 
-- 从配置或调用环境读取 profile；
+- 从 poller 已选择的可信 profile 读取容器、workspace、LLVM、venv 和 backend 阶段开关；
 - 保留 task 级 `FLAGGEMS_TEST_MODE` 和 `FRONTEND_BUILD_MODE` 覆盖；
 - 在 `/tmp/triton-anchor-local-ci-task.<sha>.<random>/` 创建带 ownership marker 的任务根目录；
 - 通过 `docker cp` 把可信 runner 快照复制到任务根的 `runner/`；
-- 将构建、后端、FlagGems、性能和路径变量通过 `-e` 传入；
+- 将构建、后端、FlagGems、性能、profile 身份和路径变量通过 `-e` 传入；
 - 通过 `docker exec` 执行 `deterministic_ci/run_deterministic_ci.sh <sha>`；runner 返回且其子进程退出后，校验 marker、SHA、父目录和挂载边界，再回收整个任务根。
 
 容器 token 规则：优先使用 `LOCAL_CI_CONTAINER_GITEE_TOKEN`/read token；只有 `LOCAL_CI_ALLOW_WRITE_TOKEN_IN_CONTAINER=1` 时才回退到 `GITEE_TOKEN`。自动执行 fork PR 时必须关闭该回退，并尽量让容器使用空 token 或只读 token。
@@ -319,15 +322,18 @@ setup Gitee auth
   -> 强制安装 wheel
   -> verify import
   -> tests/test_smoke.py
-  -> source backend env
-  -> backend rebuild
-  -> verify backend discovery
-  -> backend smoke/JIT
-  -> 安装 FlagGems 依赖
-  -> FlagGems sample/full 或自定义命令
-  -> compile benchmark
-  -> pass profile
-  -> IR serialization benchmark
+  -> RUN_BACKEND_STAGES=true:
+       source backend env
+       -> backend rebuild
+       -> verify backend discovery
+       -> backend smoke/JIT
+       -> 安装 FlagGems 依赖
+       -> FlagGems sample/full 或自定义命令
+       -> compile benchmark
+       -> pass profile
+       -> IR serialization benchmark
+     RUN_BACKEND_STAGES=false:
+       上述后端、FlagGems 和性能阶段全部 skipped
   -> delivery-summary.txt
 ```
 
@@ -341,8 +347,12 @@ setup Gitee auth
 - `compile_time_status`
 - `pass_profile_status`
 - `ir_serialization_status`
+- `ci_profile`
+- `llvm_hash`
+- `backend_stages_enabled`
+- `backend_skip_reason`
 
-功能阶段失败会设置 `LOCAL_CI_RESULT_STATUS=1`，最终退出非零。性能比较超过阈值或缺少 baseline 通常写 `warning`，不会把 GitHub overall status 置为 failure；必须查看详细报告而不能只看 overall status。
+所有 profile 都要求现有 `frontend_build` 和 `frontend_smoke` 通过。启用后端阶段时继续沿用现有后端 required 逻辑；关闭时后端、FlagGems 和三类 benchmark 必须明确为 `skipped`，说明为“当前没有部署可供测试的厂商后端，未执行后端构建、JIT、FlagGems 和性能验证。”。功能阶段失败会设置 `LOCAL_CI_RESULT_STATUS=1`，最终退出非零。性能比较超过阈值或缺少 baseline 通常写 `warning`，不会把 GitHub overall status 置为 failure；必须查看详细报告而不能只看 overall status。
 
 当前 Sophgo backend 的 `envsetup.sh` 将 `TRITON_DUMP_DIR` 设为 `/workspace/triton-dump-dir`。每个通过 `run_logged` 执行的命令（包括 backend rebuild）改用任务根的 `dump/<stage>` 作为独立 `TRITON_DUMP_DIR`；若命令内部再次 source backend envsetup，`source_backend_env` 会恢复该命令目录。命令失败时，runner 在清理前只把本命令目录、Sophgo 共享目录和 root fallback 中的 `.ttir`、`.linalg`、`.pplir` 复制到任务根之外的 `artifact-dir/failure-ir/<stage>/` 并写 manifest；`.so`、其他扩展名、成功命令 dump 和旧任务 dump 不保留。随后阶段 dump 立即回收，`/workspace/triton-dump-dir` 与 `/root/.triton/dump` 在命令边界清空。
 
@@ -350,7 +360,7 @@ setup Gitee auth
 
 任务根统一承载 `TMPDIR`、runner、临时 askpass、dump 和三类 benchmark 的隔离 work/cache/dump，正常退出时整体回收。遵循 `TMPDIR` 的 backend/运行时临时 `.so` 会随任务回收；现有 `/tmp/<数字>-<worker>` 创建方是否遵循 `TMPDIR`，必须以服务器下一次任务结果验证。清理只接受 marker 所声明的单个任务根或其 `dump/<stage>`，拒绝挂载点、跨文件系统和路径逃逸；不会扫描 `/tmp/[0-9]+-[0-9]+`，也不触碰 `/root/.triton/cache`、`/root/.flaggems/code_cache`、uv/pip cache 或 `/opt/venv`。异常中断后的过期任务目录回收尚未启用，待另行确定策略。
 
-当前实现中的 backend rebuild 逻辑仍直接使用 `triton_sophgo_backend` 包名和 wheel glob。`BACKEND_PROFILE` 虽然是参数化的，但这部分并未完全泛化；新后端必须检查并可能需要专用 profile/脚本。
+计划部署的 3.3/3.6 frontend profile 在部署后仅运行现有前端 build/install/import/smoke，不需要虚构 backend profile。启用后端阶段的 profile 必须提供 backend profile 名、路径、发现名、JIT 测试命令和 wheel 匹配模式；需要在重建前卸载已有包时，可通过 `BACKEND_UNINSTALL_PACKAGES` 额外提供卸载包名。backend rebuild 使用这些 profile 值，不再固定绑定 Sophgo 包名。以后部署对应厂商后端时，可在服务器 profile 中切换 `RUN_BACKEND_STAGES=true`，但仍须先确认该 backend 的构建脚本和依赖与现有阶段兼容。
 
 ### 5.5 FlagGems 路径
 
@@ -453,12 +463,12 @@ Codex checkout 的行为：
 - 只有 MEDIUM/LOW finding（包括定位待核对的问题）-> `WARNING`；
 - 没有 finding，但存在报告完整性提醒，或测试状态为可稳定复现的失败、非确定性失败、基础设施失败、测试生成失败或证据不足 -> `WARNING`；
 - 没有 finding，且测试状态为通过或合理的未执行 -> `PASS`；
-- Codex 审查未完成时，fallback 报告使用 `evidence_level=unavailable` 和 `status=unavailable`；PR comment 通过验证事实和限制说明审查未完成，不能伪装成模型给出的“证据不足”；
+- Codex 审查未完成时，fallback 的 `evidence_level` 为 `unavailable`，但 `test_execution.status` 仍从可信命令账本独立派生：账本为空才是 `not_run`，账本不可读才是 `unavailable`，已有命令保留退出码、耗时和混合结果；PR comment 通过验证事实和限制说明审查未完成；
 - 说明性字段必须包含中文文本；
 - “贡献者目标与实现情况”中的判断依据始终按子项目展示，多条依据不得挤在同一行；
 - 完整报告保留 `test_execution.summary`、Codex `evidence_level` 和 Runner 执行状态用于诊断；canonical summary 输出 1 至 10 条，renderer 兼容旧单字符串；
 - PR comment 的“验证情况”直接分为“验证内容与结果”“限制与未覆盖”：前者展示去除“Codex 说明”“Runner 校验”等来源前缀后的验证依据、已覆盖内容和观察结果，以及来自可信命令账本和任务级生成测试清单的测试产物与实际结果；命令用途直接与结果组合展示，没有新命令时明确说明未新增命令。未执行验证写入建议测试并进入“限制与未覆盖”，由验证缺口产生的具体行为影响才进入剩余风险；finding 定位和逐文件说明等报告完整性提醒只进入问题、剩余风险和合入建议，不得改写命令执行事实；
-- PR comment 展示结构化报告中的剩余风险；没有剩余风险时显示“未报告剩余风险。”；
+- PR comment 展示结构化报告中的剩余风险；没有剩余风险但存在验证限制时显示“除上述验证限制外，本次未报告其他剩余风险”，避免与 `WARNING` 产生语义冲突；
 - PR comment 不展示 `AI-xxx`、`TEST-xxx`、`RUN-xxx` 或固定失败代码；renderer 和 bridge 将问题、建议测试转换为公共中文描述，将 `RUN-xxx` 替换为命令记录的中文 `purpose`，并将审查主体显示为“Codex AI 自动审查”、Local CI 显示为“本地确定性 CI 检查”；机器 ID 仍保留在 JSON、日志和完整报告中用于关联；
 - renderer 会拒绝 verdict 与 findings/测试状态不一致、命令状态与退出码不一致、manifest 不一致、字段缺失、中文缺失或额外字段；
 - renderer 使用 exact-SHA checkout 校验 finding 文件和行范围；定位有效时生成精确行链接，行号失效但文件可信时生成不带行锚点的文件链接，无法映射可信文件时不伪造链接；
@@ -487,7 +497,7 @@ runner 会根据 changed-files manifest 生成 `codex-context-summary.json` 和 
 - `test_local_ci_codex_ai.sh`：使用固定 JSON fixture 校验 renderer、完整报告、PR comment、中文字段和常见非法报告拒绝逻辑；
 - `test_local_ci_codex_container_setup.sh`：校验临时容器准备与清理逻辑；
 - `test_local_ci_codex_container.sh`：使用 fake Docker/Codex 覆盖 prompt 渲染、runner 约束、凭据边界和多场景结果产物，完整运行以 Linux 环境为准。
-- `test_dump_artifacts.py`：校验失败 IR 扩展名白名单、manifest、受控 dump 清理边界以及 Codex snapshot 前无二次清理/审计契约。
+- `test_dump_artifacts.py`：校验失败 IR 扩展名白名单、manifest、受控 dump 清理边界以及 Codex snapshot 阶段无二次清理/审计契约；确定性 runner 的任务收尾另行执行 best-effort uv CI cache prune。
 
 最小验证命令为：
 
@@ -507,8 +517,8 @@ PYTHONPATH=python python -m pytest scripts/local_ci/tests scripts/local_ci/resul
 - Codex 容器准备共享超时：1500 秒（25 分钟）；
 - generated test cases：1 至 15；
 - generated test files：最多 5；
-- test/build/lint/diagnostic commands：最多 30；
-- 单条命令建议不超过 600 秒；
+- test/build/lint/diagnostic commands：最多 50；
+- 单条命令建议不超过 900 秒；
 - 命令总预算 2700 秒（45 分钟）；
 - 报告预留 450 秒；
 - 成功模式的可测试代码改动若没有生成测试或没有记录命令，会产生 constraint warning；
@@ -519,16 +529,16 @@ PYTHONPATH=python python -m pytest scripts/local_ci/tests scripts/local_ci/resul
 
 ### 6.6 临时容器和凭据边界
 
-当前实现只支持一种临时容器来源：
+临时容器始终来自当前任务选择的 profile：
 
-1. 通过 `docker commit LOCAL_CI_CONTAINER` 创建 snapshot image，用 snapshot image 启动临时容器，并通过 `--volumes-from LOCAL_CI_CONTAINER:ro` 复用 `/workspace`；
+1. 通过 `docker commit LOCAL_CI_CONTAINER` 创建 snapshot image，用 snapshot image 启动临时容器，并通过 `--volumes-from LOCAL_CI_CONTAINER:ro` 复用该 profile 的 `/workspace`；
 2. 复制 host Codex CLI、`config.toml`、`auth.json` 到临时容器 `/root/.codex`；
 3. 复制 verified checkout、schema 和 Local CI log；
 4. 以 root 执行 Codex，使用 `--ephemeral --json --sandbox danger-full-access --ignore-rules`；
 5. 收集 workspace status、`git diff HEAD` 和 untracked tar；
 6. 删除临时 container；同时删除 snapshot image。
 
-Codex 临时容器 source Sophgo backend envsetup 后，会把 `TRITON_DUMP_DIR` 从只读 volume 中的 `/workspace/triton-dump-dir` 改到 `/tmp/triton-anchor-codex-dump`。这只服务本次临时诊断，不会写回长期 Local CI 容器，也不会在 snapshot 前增加清理或审计步骤。
+Codex 临时容器只在 `RUN_BACKEND_STAGES=true` 时 source profile 指定的 backend envsetup；frontend-only profile 不依赖空 backend 变量，也不会回退到 Sophgo 路径。随后 runner 把 `TRITON_DUMP_DIR` 改到 `/tmp/triton-anchor-codex-dump`。这只服务本次临时诊断，不会写回长期 Local CI 容器；snapshot 阶段本身不会增加清理或审计步骤。确定性 runner 已在任务收尾阶段执行 best-effort `uv cache prune --ci`，失败只记录警告，不改变门禁结果。
 
 部署要求：
 
@@ -724,9 +734,9 @@ CI 将大部分 Ruff 问题作为 warning，只阻断 `E9,F63,F7,F82`。`triton/
 - Ninja；
 - C++17 编译器、Python development headers；
 - pybind11；
-- LLVM/MLIR，版本由 `triton/cmake/llvm-hash.txt` 指定为 `10dc3a8e916d73291269e5e2b82dd22681489aa1`；
-- 对应的 PPL、目标后端和 runtime；
-- 运行 Local CI 还需要 Docker、Gitee relay、可用后端容器和 FlagGems。
+- LLVM/MLIR，版本由目标分支的 `triton/cmake/llvm-hash.txt` 指定；当前 Local CI 已知 3.0/3.3/3.6 分别使用 LLVM 19/21/22 的可信 hash；
+- profile 开启后端阶段时需要对应的 PPL、目标后端和 runtime；
+- 运行 Local CI 还需要 Docker、Gitee relay，以及每个启用版本对应的预置容器。frontend-only profile 不要求部署厂商后端或 FlagGems。
 
 初始化 LLVM 环境：
 
@@ -1020,8 +1030,8 @@ CODEX_AI_CI_HOME=/path/to/codex-ai \
 | `shared/validate_task_metadata.py`、metadata fetch/dispatch | `python -m py_compile`；构造有效、错 SHA、错 ref、超长、NUL、非 UTC 输入测试；Codex container harness 的 PR metadata 场景。 |
 | Codex schema、prompt、renderer | `PYTHONPATH=python python -m pytest scripts/local_ci/codex_ai/tests -v --tb=short`；`bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_ai.sh`；renderer 直接校验完整 schema、中文、manifest、verdict 和 fallback。 |
 | `codex_ai/run_codex_ai_ci.sh`、checkout、credential、setup container | `bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_container_setup.sh` 和 `bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_container.sh`；重点检查 exact SHA、merge-base、timeout、cleanup、workspace、token 不泄露和凭据完整性。 |
-| `poll_gitee_and_run.sh`、`orchestration/run_deterministic_ci_in_container.sh` | `bash -n`；fake/local relay 或受控 `--once`；验证 lock、last-processed、snapshot、publish 失败重试和 token forwarding。 |
-| `deterministic_ci/run_deterministic_ci.sh`、backend profile | `bash -n`；完整容器中 frontend build/install/smoke、backend discovery/rebuild/smoke/JIT；不能只跑纯 Python。 |
+| `poll_gitee_and_run.sh`、profile resolver、`orchestration/run_deterministic_ci_in_container.sh` | `bash -n`/`py_compile`；覆盖 3.0、3.3、3.6、未知 hash、缺 profile、PR hash 改变、push 路由和连续任务隔离；fake/local relay 或受控 `--once` 验证 lock、last-processed、publish 失败重试和 token forwarding。 |
+| `deterministic_ci/run_deterministic_ci.sh`、backend profile | `bash -n`；3.0 完整容器运行 frontend build/install/smoke 与 backend discovery/rebuild/smoke/JIT；3.3/3.6 运行相同前端范围并确认所有后端/FlagGems/benchmark 阶段为 `skipped`。 |
 | `deterministic_ci/flaggems/select_flaggems_tests.py`、`deterministic_ci/flaggems/batch_test_flaggems.py`、TSV | 选择器单测/命令检查；sample/full/single、marker alias、空列表、timeout、cache clear、progress extension；有 FlagGems/后端时运行代表性 operator。 |
 | compile/pass/IR benchmark 或 compare | 对应 `test_compile_time_regression.py`、`test_pass_profile_regression.py`、`test_ir_serialization_regression.py`；确认缺基线、空 event、错误 schema 和 slowdown 语义。 |
 | publisher、bridge、receiver、dashboard 协议 | `python -m unittest scripts/local_ci/results/tests/test_local_ci_bridge.py -v`；dashboard contract/sync tests；用 fake results 验证 pending/success/failure/warning、PR comment 幂等和 URL。 |

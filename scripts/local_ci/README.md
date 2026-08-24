@@ -128,9 +128,9 @@ PR candidate 目录同时标识 head 和 Merge-Result；旧的纯 Merge SHA 目�
 
 1. Poller 发现符合规则的 Gitee ref，并用 lock 文件保证同一服务器不会并发处理相同 poller 状态。
 2. PR 任务读取并校验与 GitHub test merge SHA 匹配的 `task-metadata.json`，同时保留 base/head SHA 供 diff 和身份校验。标题和描述只作为声明证据，不能作为命令执行。
-3. Runner 将 Local CI 控制脚本复制到容器内临时目录，并执行 `deterministic_ci/run_deterministic_ci.sh`。
-4. 确定性 runner 在独立 artifact 目录写入 smoke、FlagGems、benchmark、比较结果和 `delivery-summary.txt`；每条受控命令使用独立 Triton dump 目录，失败时只归档本命令的 `.ttir`、`.linalg`、`.pplir`，然后清空 `/workspace/triton-dump-dir`、root fallback 和任务 dump。
-5. 如果分支匹配 `CODEX_AI_CI_BRANCH_REGEX`，Codex 直接从 Local CI 容器快照创建一次性容器，使用只读 `/workspace` 和目标 SHA 的 writable checkout；snapshot 前不再清理或审计 source container，临时容器 source backend envsetup 后把 `TRITON_DUMP_DIR` 改到自身 `/tmp`，避免定向复跑写只读 volume。
+3. Poller 从可信提交读取 `triton/cmake/llvm-hash.txt`，按 `LOCAL_CI_PROFILE_DIR/<llvm-hash>.env` 选择服务器 profile。PR 使用可信 base 的 hash，并要求被测提交保持相同 hash；push 使用被测提交的 hash。未知 hash、缺失 profile 或升级 PR 均报告未部署匹配环境，不回退到默认 Sophgo 容器。
+4. Runner 将 Local CI 控制脚本复制到所选 profile 的容器内临时目录，并执行 `deterministic_ci/run_deterministic_ci.sh`。确定性 runner 在独立 artifact 目录写入 smoke、可选后端/FlagGems/benchmark、比较结果和 `delivery-summary.txt`；每条受控命令使用独立 Triton dump 目录，失败时只归档本命令的 `.ttir`、`.linalg`、`.pplir`，然后清空 `/workspace/triton-dump-dir`、root fallback 和任务 dump。任务退出时还会执行 best-effort `uv cache prune --ci`；失败只记录警告，不改变门禁结果。
+5. 如果分支匹配 `CODEX_AI_CI_BRANCH_REGEX`，Codex 从当前 profile 的 Local CI 容器快照创建一次性容器，使用只读 `/workspace` 和目标 SHA 的 writable checkout；snapshot 阶段本身不再增加清理或审计。只有启用后端阶段的 profile 才 source backend envsetup；任务内统一把 `TRITON_DUMP_DIR` 改到自身 `/tmp`，避免定向复跑写只读 volume。
 6. Codex 先使用 changed-files manifest 生成轻量上下文分组和审查 profile，再只输出 schema 约束的 JSON；renderer 校验 manifest、中文说明、测试状态、命令退出码和预算后生成 Markdown 报告与 PR comment。
 7. Publisher 只复制固定 allowlist 的结果文件，写入 `publish-manifest.json`，原子更新 `latest.txt`，更新 SHA/profile 性能 cache 和 dashboard，然后带 rebase retry push `local-ci-results`。
 8. Bridge 读取 `latest.txt`、`publish-manifest.json`、summary、`result.json` 和 Codex comment，校验 SHA/run/schema 后发布 GitHub statuses，并只对 PR 创建或更新带 marker 的 advisory comment。
@@ -148,16 +148,17 @@ cp scripts/local_ci/config.example.env /opt/local-ci/config.env
 | 配置组 | 关键变量 | 检查重点 |
 | --- | --- | --- |
 | Gitee relay | `GITEE_REPO_URL`、`GITEE_TOKEN`、`GITEE_BRANCH_INCLUDE_REGEX` | token 只放部署环境；结果分支不能被轮询。 |
-| Local CI 状态 | `LOCAL_CI_STATE_DIR`、`LOCAL_CI_CONTAINER`、`LOCAL_CI_SCRIPT_DIR` | 状态目录可写，脚本目录是当前 checkout 的完整 `scripts/local_ci`。 |
+| Local CI 状态 | `LOCAL_CI_STATE_DIR`、`LOCAL_CI_PROFILE_DIR`、`LOCAL_CI_SCRIPT_DIR` | 状态目录可写；profile 目录由服务器维护；脚本目录是当前 checkout 的完整 `scripts/local_ci`。 |
+| 版本 profile | `<llvm-hash>.env` 中的 `LOCAL_CI_PROFILE_NAME`、`LOCAL_CI_CONTAINER`、`LOCAL_CI_WORKSPACE_HOST`、`LLVM_BUILD_DIR`、`PYTHON_VENV_ACTIVATE`、`RUN_BACKEND_STAGES` 和各可选阶段开关 | 文件名必须是可信 LLVM hash；一个任务只加载一个 profile，配置只在该任务子进程中生效。启用后端时还必须提供 backend profile 名、路径、发现名、JIT 命令和 wheel 匹配模式。 |
 | 结果发布 | `GITEE_RESULTS_*`、`PUBLISH_GITEE_RESULTS` | 结果仓库、branch 和 Web URL 必须互相对应。 |
 | Codex | `RUN_CODEX_AI_CI`、`CODEX_BIN`、`CODEX_AI_CI_HOME` | 使用独立 `config.toml`/`auth.json`；runner 通过 Local CI 容器 snapshot 运行，凭据只复制到临时容器的 `/root/.codex`。 |
-| Codex 预算 | `CODEX_AI_CI_TIMEOUT_SECONDS`、`CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS`、`CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS`、`CODEX_AI_CI_MAX_TEST_COMMANDS`、`CODEX_AI_CI_TEST_BUDGET_SECONDS` | 容器准备默认限时 1500 秒；准备成功后，600 秒内没有首个有效进展会提前终止；其余预算过量会产生 warning，不会改变确定性 CI exit code。 |
+| Codex 预算 | `CODEX_AI_CI_TIMEOUT_SECONDS`、`CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS`、`CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS`、`CODEX_AI_CI_MAX_TEST_COMMANDS`、`CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS`、`CODEX_AI_CI_TEST_BUDGET_SECONDS` | hard timeout 仍为 3600 秒，报告预留仍为 450 秒；最多 50 条命令、单条建议 900 秒、累计建议 2700 秒。容器准备默认限时 1500 秒，准备成功后 600 秒内没有首个有效进展会提前终止；建议预算超限只产生 warning。 |
 | backend | `BACKEND_PROFILE`、`BACKEND_PATH`、`BACKEND_ENVSETUP` | profile、backend commit 和环境脚本必须与性能 baseline 相匹配。 |
 | benchmark | `RUN_COMPILE_BENCHMARK`、`RUN_PASS_PROFILE`、`RUN_IR_SERIALIZATION_BENCHMARK` | 三类测量有独立 cache namespace，不能混用阈值或结果。 |
 
 自动处理不可信 PR 时，容器内优先使用只读 relay token 或不传 token。当前部署选择保留示例默认值 `LOCAL_CI_ALLOW_WRITE_TOKEN_IN_CONTAINER=1`，因此缺少独立只读 token 时，候选代码容器可能获得 Gitee 写 token；这是明确保留的残余风险。Codex 通过 Local CI 容器 snapshot 运行，并只复制 exact-SHA checkout 和必要输入；AI 仍以 root、联网和 `danger-full-access` 运行，不能把它描述为完整 hostile-code 隔离。
 
-PR 的 deterministic supervisor 不 source Merge-Result 中的 `envsetup.sh`。poller 从已验证的精确 base ref 提取该文件放入本次 runner 快照，候选版本仅执行 `bash -n`。前端 build/smoke 和后端 rebuild/smoke-JIT 都是 fail-closed 必选阶段。
+PR 的 deterministic supervisor 不 source Merge-Result 中的 `envsetup.sh`。poller 从已验证的精确 base ref 提取该文件放入本次 runner 快照，候选版本仅执行 `bash -n`。任何成功选中的 profile 都继续要求现有 `frontend_build` 和 `frontend_smoke`；`RUN_BACKEND_STAGES=true` 时沿用现有后端 required 逻辑，`false` 时后端构建、JIT、FlagGems 和性能阶段统一记录为 `skipped`。计划部署的 3.3/3.6 frontend profile 使用后一种配置；服务器部署并真实运行前，不能把代码中的路由目标描述为已经验证，部署后的绿色结果也只表示当前前端范围通过。
 
 部署前只检查依赖、不创建长期 Docker 资源：
 
@@ -209,7 +210,7 @@ Codex 报告格式为 `triton-anchor-codex-ai-report/v3`。除审查摘要、文
 
 PR comment 的“验证情况”不展示 `evidence_level` 或 `test_execution.status` 的内部状态标签，而是直接分为“验证内容与结果”“限制与未覆盖”两组事实。“验证内容与结果”同时展示 Codex 对现有 Local CI 证据、静态审查范围、已覆盖路径和观察结果的说明，以及来自可信 JSONL 命令账本和任务级归档的测试文件与实际结果；命令用途直接与结果组合展示，避免重复罗列，没有新命令时明确说明“本次未新增验证命令”。未执行建议测试和动态验证缺口进入“限制与未覆盖”，由缺口产生的具体行为风险才进入“剩余风险”；finding 定位或逐文件说明等报告完整性提醒只保留在对应问题、剩余风险和合入建议中，不再把成功命令描述成证据不足。内部 `evidence_level` 和执行状态继续保留在结构化 JSON、完整报告和诊断摘要中，并独立参与 verdict 计算。
 
-如果 Codex 审查在形成可信语义载荷前失败，fallback 评论仍按两组事实展示：“验证内容与结果”说明未形成可信载荷或可由 Runner 核验的结论，“限制与未覆盖”明确审查未完成；内部报告使用 `unavailable`，不会伪装成 Codex 主动给出的 `insufficient`。
+如果 Codex 审查在形成可信语义载荷前失败，fallback 仍从可信命令账本保留已经执行的命令、退出码和耗时，并尽量保留已收集的测试文件；账本为空才表示未运行，账本不可读才表示执行事实不可确认。“验证内容与结果”按验证用途分别展示成功与失败数量，单条失败只影响相应用途，不会覆盖其他成功记录；“限制与未覆盖”说明审查未完成。内部报告继续保留详细状态，不把已执行命令改写成“未新增命令”。
 
 Codex AI-CI 的审查目标是服务 `triton-anchor` 仓库及其后续分支，而不是做泛化 AI 审查平台。主要关注：Triton/AnchorIR 前端语义、TTIR pipeline、adapter/ABI、C++/MLIR binding、Public API 兼容性、Local CI 任务/结果协议、后端 smoke/FlagGems/性能证据是否支持本次 diff。纯风格、泛化重构或与这些主线无关的建议不应扩大成阻塞 finding。
 
@@ -264,6 +265,7 @@ Windows Git Bash 不能替代 Linux harness：`python3`、`/tmp`、symlink 权�
 | --- | --- |
 | 任务一直未处理 | `LOCAL_CI_STATE_DIR/poll.lock`、branch include regex、Gitee ref 是否存在、`last_processed` 是否已推进。 |
 | 确定性 CI 未启动 | `local-ci.log`、容器是否运行、`LOCAL_CI_SCRIPT_DIR` 是否包含完整 canonical 模块树。 |
+| 版本环境未部署 | 查看可信/被测 `llvm-hash.txt`、`LOCAL_CI_PROFILE_DIR/<hash>.env` 和 profile 中的容器、LLVM、venv 配置；系统不会回退到其他版本环境。 |
 | 结果已生成但 GitHub pending | `local-ci-results` 是否 push 成功、`latest.txt` 是否指向当前 run、bridge 是否能读取 Gitee API。 |
 | Codex 失败但 Local CI 通过 | 查看 `codex-ai-ci-summary.txt` 的 `failure_code`、`failure_reason`、Codex log 和凭据校验；这是非阻塞路径。 |
 | 报告生成失败 | 先按 `failure_code` 区分 `analysis_contract_failed`（Codex 语义载荷不满足公开契约）、`trusted_report_input_failed`（manifest、命令账本或生成文件归档异常）、`report_contract_failed`（Runner canonical 报告内部契约异常）和 `report_metadata_failed`（Runner 无法读取执行事实）；finding 定位无效本身会保留为“定位待核对的问题”，不再作废整份报告。 |

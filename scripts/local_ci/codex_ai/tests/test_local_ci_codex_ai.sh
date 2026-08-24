@@ -226,6 +226,11 @@ grep -Fq "## Codex AI 自动审查" "${comment_md}"
 grep -Fq "仅供参考且不阻塞合入" "${comment_md}"
 grep -Fq "### 审查摘要" "${comment_md}"
 grep -Fq "本地确定性 CI 检查：" "${comment_md}"
+grep -Fq "Codex AI 审查结论：" "${comment_md}"
+if grep -Fq "Codex 执行状态" "${comment_md}"; then
+  echo "PR 评论不应显示 Codex 执行状态" >&2
+  exit 1
+fi
 grep -Fq "### 贡献者目标与实现情况" "${comment_md}"
 grep -Fq "贡献者目标：贡献者希望修复缓存命中后的状态读取逻辑" "${comment_md}"
 grep -Fq -- "- 判断依据：" "${comment_md}"

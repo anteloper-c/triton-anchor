@@ -336,10 +336,10 @@ def write_analysis(
                     "evidence": "定向测试命令执行通过。",
                     "failure_classification": "none",
                 }
-                for _ in range(31)
+                for _ in range(51)
             ],
         }
-        durations = [601, *([100] * 30)]
+        durations = [901, *([40] * 50)]
         command_events.extend(
             {
                 "id": f"cmd-{index:03d}",
@@ -703,8 +703,8 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
         assert "只有确实需要新增覆盖且现有测试无法表达时，才创建 1 至 15 个定向测试用例" in prompt
         assert "是否生成新测试文件不是证据充分性的必要条件" in prompt
         assert "最多创建或修改 5 个测试文件" in prompt
-        assert "最多执行 30 条测试、构建、lint 或诊断命令" in prompt
-        assert "单条命令预计不超过 600 秒" in prompt
+        assert "最多执行 50 条测试、构建、lint 或诊断命令" in prompt
+        assert "单条命令预计不超过 900 秒" in prompt
         assert "累计测试预算不超过 2700 秒" in prompt
         assert "至少预留 450 秒" in prompt
         assert "失败用例最多额外复跑一次" in prompt
@@ -757,8 +757,6 @@ chmod +x "${fake_bin}/docker"
 assert_chinese_failure_report() {
   local output_dir="$1"
   local manifest_path="${output_dir}/codex-changed-files-manifest.json"
-  local manifest_count
-  manifest_count="$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))))' "${manifest_path}")"
   grep -Fq "# Codex AI 自动审查报告" "${output_dir}/codex-ai-report.md"
   grep -Fq "## 结论" "${output_dir}/codex-ai-report.md"
   grep -Fq "**警告**" "${output_dir}/codex-ai-report.md"
@@ -767,16 +765,31 @@ assert_chinese_failure_report() {
   grep -Fq "## Codex AI 自动审查" "${output_dir}/codex-ai-comment.md"
   grep -Fq "### 审查摘要" "${output_dir}/codex-ai-comment.md"
   grep -Fq "本地确定性 CI 检查：" "${output_dir}/codex-ai-comment.md"
+  if grep -Fq "Codex 执行状态" "${output_dir}/codex-ai-comment.md"; then
+    echo "失败评论不应显示 Codex 执行状态" >&2
+    exit 1
+  fi
   grep -Fq "### 贡献者目标与实现情况" "${output_dir}/codex-ai-comment.md"
   grep -Fq "### 变更文件" "${output_dir}/codex-ai-comment.md"
-  python3 "${renderer}" \
-    --input "${output_dir}/codex-ai-report.json" \
-    --output "${output_dir}/validated-fallback.md" \
-    --comment-output "${output_dir}/validated-fallback-comment.md" \
-    --branch test --base-sha a --target-sha b \
-    --changed-file-count "${manifest_count}" \
-    --changed-files-manifest "${manifest_path}" \
-    >/dev/null
+  if [[ -r "${manifest_path}" ]]; then
+    local manifest_count
+    manifest_count="$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))))' "${manifest_path}")"
+    python3 "${renderer}" \
+      --input "${output_dir}/codex-ai-report.json" \
+      --output "${output_dir}/validated-fallback.md" \
+      --comment-output "${output_dir}/validated-fallback-comment.md" \
+      --branch test --base-sha a --target-sha b \
+      --changed-file-count "${manifest_count}" \
+      --changed-files-manifest "${manifest_path}" \
+      >/dev/null
+  else
+    grep -Fq "变更文件清单尚未生成或不可确认" \
+      "${output_dir}/codex-ai-comment.md"
+    if grep -Fq "本次差异没有变更文件" "${output_dir}/codex-ai-comment.md"; then
+      echo "早期失败把未知变更集误报为无变更" >&2
+      exit 1
+    fi
+  fi
   python3 -c 'from pathlib import Path; Path("'"${output_dir}"'/codex-ai-report.md").read_text(encoding="utf-8"); Path("'"${output_dir}"'/codex-ai-comment.md").read_text(encoding="utf-8")'
 }
 
@@ -801,6 +814,8 @@ run_case() {
   local case_task_metadata_file="${10:-}"
   local case_head_sha="${11:-}"
   local case_head_ref="${12:-}"
+  local case_run_backend_stages="${13:-true}"
+  local case_execution_mode="${14:-full}"
   local case_root="${test_root}/${case_name}"
   local output_dir="${case_root}/output"
   local docker_root="${case_root}/container-root"
@@ -852,11 +867,14 @@ run_case() {
   CODEX_BIN="${fake_codex}" \
   CODEX_AI_CI_HOME="${case_codex_home}" \
   LOCAL_CI_CONTAINER="anchor-sophgo-ci" \
+  LLVM_BUILD_DIR="/workspace/llvm-selected-profile" \
   CODEX_AI_CI_WORKSPACE_ROOT="${workspace_root}" \
   CODEX_AI_CI_TIMEOUT_SECONDS="${timeout_seconds}" \
   CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS="${prepare_timeout_seconds}" \
   CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS="${startup_timeout_seconds}" \
   CODEX_AI_CI_REASONING_EFFORT="low" \
+  RUN_BACKEND_STAGES="${case_run_backend_stages}" \
+  LOCAL_CI_EXECUTION_MODE="${case_execution_mode}" \
     "${runner}" "${repo_url}" "${output_dir}" "${case_target_sha}" \
     "${case_base_sha}" "${case_base_ref}" "${case_branch}" "${local_ci_status}" \
     "${case_task_metadata_file}" "${case_head_sha}" "${case_head_ref}"
@@ -936,10 +954,16 @@ grep -Fxq "status: pass" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "local_ci_status: 0" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "analysis_mode: full" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "execution_mode: ephemeral_container" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "local_ci_execution_mode: full" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "ci_profile: legacy" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "llvm_hash: unknown" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "backend_stages_enabled: true" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "source_container: anchor-sophgo-ci" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_execution_status: passed" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "workspace_dirty: true" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fq -- "--volumes-from anchor-sophgo-ci:ro" "${test_root}/success/docker-state/docker.log"
+grep -Fq -- "--env AI_LLVM_BUILD_DIR=/workspace/llvm-selected-profile" \
+  "${test_root}/success/docker-state/docker.log"
 grep -Fq "generated_tests/test_generated.py" "${success_output}/codex-workspace-status.txt"
 tar -tzf "${success_output}/codex-generated-files.tar.gz" | grep -Fxq "generated_tests/test_generated.py"
 grep -Fq "# Codex AI 自动审查报告" "${success_output}/codex-ai-report.md"
@@ -982,8 +1006,8 @@ grep -Fxq "startup_timed_out: false" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "min_generated_test_cases: 1" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "max_generated_test_cases: 15" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "max_generated_test_files: 5" "${success_output}/codex-ai-ci-summary.txt"
-grep -Fxq "max_test_commands: 30" "${success_output}/codex-ai-ci-summary.txt"
-grep -Fxq "recommended_command_timeout_seconds: 600" \
+grep -Fxq "max_test_commands: 50" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "recommended_command_timeout_seconds: 900" \
   "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_budget_seconds: 2700" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "report_reserve_seconds: 450" "${success_output}/codex-ai-ci-summary.txt"
@@ -992,6 +1016,17 @@ grep -Fxq "max_test_command_duration_seconds: 0.2" "${success_output}/codex-ai-c
 grep -Fxq "total_test_command_duration_seconds: 0.2" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fq "## 测试执行约束" "${success_output}/codex-ai-report.md"
 grep -Fq "状态：通过" "${success_output}/codex-ai-report.md"
+
+run_case frontend-only success 0 30 0 \
+  "${target_sha}" "${base_sha}" "${task_branch}" "" "" "" "" false
+frontend_only_output="${test_root}/frontend-only/output"
+grep -Fxq "status: pass" "${frontend_only_output}/codex-ai-ci-summary.txt"
+grep -Fxq "backend_stages_enabled: false" \
+  "${frontend_only_output}/codex-ai-ci-summary.txt"
+grep -Fq -- "--env AI_RUN_BACKEND_STAGES=false" \
+  "${test_root}/frontend-only/docker-state/docker.log"
+grep -Fq "当前没有部署可供测试的厂商后端" \
+  "${frontend_only_output}/codex-ai-comment.md"
 
 run_case credential-mutation credential_mutation 0 30 0
 mutation_output="${test_root}/credential-mutation/output"
@@ -1003,6 +1038,10 @@ grep -Fq "独立凭据文件内容发生变化" \
 grep -Fq "## 凭据完整性" "${mutation_output}/codex-ai-report.md"
 grep -Fq "### Codex AI CI 凭据完整性警告" \
   "${mutation_output}/codex-ai-comment.md"
+if grep -Eqi "\brunner\b" "${mutation_output}/codex-ai-comment.md"; then
+  echo "凭据警告仍暴露内部 runner 术语" >&2
+  exit 1
+fi
 
 run_case untrusted-artifact untrusted_artifact 0 30 0
 untrusted_artifact_output="${test_root}/untrusted-artifact/output"
@@ -1044,6 +1083,20 @@ grep -Fq "判断：已实现" "${pr_output}/codex-ai-report.md"
 grep -Fq "贡献者希望增强适配器在新边界条件下的稳健性" \
   "${pr_output}/codex-ai-comment.md"
 [[ ! -e /tmp/codex-pr-metadata-must-not-run ]]
+
+run_case pr-codex-only success 0 30 0 \
+  "${pr_merge_sha}" "${pr_target_base_sha}" "${pr_branch}" "${pr_base_branch}" \
+  "${pr_metadata_file}" "${pr_head_sha}" "${pr_head_branch}" true codex_only
+pr_codex_only_output="${test_root}/pr-codex-only/output"
+grep -Fxq "local_ci_execution_mode: codex_only" \
+  "${pr_codex_only_output}/codex-ai-ci-summary.txt"
+grep -Fq "按策略未执行确定性 CI" \
+  "${pr_codex_only_output}/codex-ai-comment.md"
+if grep -Fq "本地确定性 CI 检查：已通过" \
+  "${pr_codex_only_output}/codex-ai-comment.md"; then
+  echo "codex_only 评论不应声称确定性 CI 已通过" >&2
+  exit 1
+fi
 
 run_case pr-metadata-supplies-head-sha success 0 30 0 \
   "${pr_merge_sha}" "${pr_target_base_sha}" "${pr_branch}" "" \
@@ -1154,13 +1207,13 @@ run_case over-limit over_limit 0 30 0
 over_limit_output="${test_root}/over-limit/output"
 grep -Fxq "status: pass" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fxq "generated_test_file_count: 6" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_command_count: 31" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fxq "max_test_command_duration_seconds: 601" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fxq "total_test_command_duration_seconds: 3601" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_command_count: 51" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fxq "max_test_command_duration_seconds: 901" "${over_limit_output}/codex-ai-ci-summary.txt"
+grep -Fxq "total_test_command_duration_seconds: 2901" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: warning" "${over_limit_output}/codex-ai-ci-summary.txt"
 grep -Fq "生成测试文件数量 6 超过限制 5" "${over_limit_output}/codex-ai-ci-summary.txt"
-grep -Fq "单条命令最长耗时 601 秒" "${over_limit_output}/codex-ai-report.md"
-grep -Fq "测试和诊断命令累计耗时 3601 秒" "${over_limit_output}/codex-ai-report.md"
+grep -Fq "单条命令最长耗时 901 秒" "${over_limit_output}/codex-ai-report.md"
+grep -Fq "测试和诊断命令累计耗时 2901 秒" "${over_limit_output}/codex-ai-report.md"
 
 run_case zero-tests zero_tests 0 30 0
 zero_output="${test_root}/zero-tests/output"
@@ -1295,9 +1348,9 @@ if ! grep -Fxq "failure_code: analysis_contract_failed" \
   cat "${schema_error_output}/codex-ai-ci-summary.txt" >&2
   exit 1
 fi
-grep -Fxq "test_execution_status: unavailable" \
+grep -Fxq "test_execution_status: passed" \
   "${schema_error_output}/codex-ai-ci-summary.txt"
-if ! grep -Fq "Codex 审查语义载荷未满足公开结构契约" \
+if ! grep -Fq "Codex 审查结果整理失败" \
   "${schema_error_output}/codex-ai-comment.md"; then
   cat "${schema_error_output}/codex-ai-comment.md" >&2
   exit 1
@@ -1320,9 +1373,9 @@ run_case malformed-analysis malformed_analysis 0 30 1
 malformed_output="${test_root}/malformed-analysis/output"
 grep -Fxq "failure_code: analysis_contract_failed" \
   "${malformed_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_execution_status: unavailable" \
+grep -Fxq "test_execution_status: passed" \
   "${malformed_output}/codex-ai-ci-summary.txt"
-grep -Fq "Codex 审查语义载荷未满足公开结构契约" \
+grep -Fq "Codex 审查结果整理失败" \
   "${malformed_output}/codex-ai-comment.md"
 if grep -Fq "Expecting property name" "${malformed_output}/codex-ai-comment.md"; then
   echo "JSON 解析内部错误细节泄漏到公开评论" >&2
@@ -1334,15 +1387,22 @@ trusted_input_output="${test_root}/trusted-input-error/output"
 grep -Fxq "status: fail" "${trusted_input_output}/codex-ai-ci-summary.txt"
 grep -Fxq "failure_code: trusted_report_input_failed" \
   "${trusted_input_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_execution_status: unavailable" \
+grep -Fxq "test_execution_status: passed" \
   "${trusted_input_output}/codex-ai-ci-summary.txt"
-grep -Fq "Runner 生成的可信报告输入校验失败" \
+grep -Fq "Codex 审查所需的任务证据校验失败" \
   "${trusted_input_output}/codex-ai-comment.md"
 if grep -Fq "generated archive member" \
   "${trusted_input_output}/codex-ai-comment.md"; then
   echo "可信输入内部错误细节泄漏到公开评论" >&2
   exit 1
 fi
+for output in "${schema_error_output}" "${malformed_output}" "${trusted_input_output}"; do
+  if grep -Eqi "Runner|schema|canonical|语义载荷|结构契约|内部契约" \
+    "${output}/codex-ai-comment.md"; then
+    echo "失败评论仍暴露内部报告实现术语：${output}" >&2
+    exit 1
+  fi
+done
 
 run_case timeout timeout 0 1 1
 timeout_output="${test_root}/timeout/output"

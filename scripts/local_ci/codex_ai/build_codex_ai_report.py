@@ -8,7 +8,7 @@ import json
 import re
 import sys
 import tarfile
-from collections import Counter, defaultdict, deque
+from collections import defaultdict, deque
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -387,9 +387,13 @@ def semantic_command_annotations(
 
 
 def build_commands(
-    analysis: dict[str, Any], ledger: list[dict[str, Any]]
+    analysis: dict[str, Any] | None, ledger: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    annotations = semantic_command_annotations(analysis)
+    annotations = (
+        semantic_command_annotations(analysis)
+        if analysis is not None
+        else defaultdict(deque)
+    )
     commands: list[dict[str, Any]] = []
     classifications: list[str] = []
     for index, fact in enumerate(ledger, start=1):
@@ -424,10 +428,9 @@ def build_commands(
     ]
     if not failed_indexes:
         return commands, classifications
-    if all(classifications[index] == "infrastructure" for index in failed_indexes):
-        for index in failed_indexes:
+    for index in failed_indexes:
+        if classifications[index] == "infrastructure":
             commands[index]["status"] = "infrastructure_failure"
-        return commands, classifications
 
     outcomes: dict[str, list[int]] = defaultdict(list)
     for command in commands:
@@ -437,19 +440,28 @@ def build_commands(
         for text, exits in outcomes.items()
         if any(code == 0 for code in exits) and any(code != 0 for code in exits)
     }
-    if flaky and all(commands[index]["command"] in flaky for index in failed_indexes):
-        for index in failed_indexes:
+    for index in failed_indexes:
+        if (
+            commands[index]["command"] in flaky
+            and classifications[index] != "infrastructure"
+        ):
             commands[index]["status"] = "flaky_failure"
-        return commands, classifications
 
-    failures = Counter(commands[index]["command"] for index in failed_indexes)
-    stable = {text for text, count in failures.items() if count >= 2}
-    if (
-        stable
-        and all(commands[index]["command"] in stable for index in failed_indexes)
-        and all(classifications[index] == "product" for index in failed_indexes)
-    ):
-        for index in failed_indexes:
+    failure_indexes_by_text: dict[str, list[int]] = defaultdict(list)
+    for index in failed_indexes:
+        failure_indexes_by_text[commands[index]["command"]].append(index)
+    stable = {
+        text
+        for text, indexes in failure_indexes_by_text.items()
+        if len(indexes) >= 2
+        and all(classifications[index] != "infrastructure" for index in indexes)
+    }
+    for index in failed_indexes:
+        if (
+            commands[index]["status"] == "failed"
+            and commands[index]["command"] in stable
+            and classifications[index] != "infrastructure"
+        ):
             commands[index]["status"] = "stable_failure"
     return commands, classifications
 
@@ -852,7 +864,7 @@ def build_report(args: argparse.Namespace) -> None:
     if normalization_warnings:
         normalized_merge_recommendation = (
             normalized_merge_recommendation.rstrip("。")
-            + "；另请人工核对报告中标记的结构化语义载荷缺口，"
+            + "；另请人工核对报告中标记的问题定位或逐文件说明完整性提醒，"
             "本次 Codex AI 结果不应单独作为合入依据。"
         )
     report = {
@@ -870,6 +882,145 @@ def build_report(args: argparse.Namespace) -> None:
         "residual_risks": residual_risks,
         "test_execution": {
             "evidence_level": evidence_level,
+            "status": execution_status,
+            "summary": execution_summary,
+            "generated_test_files": generated_files,
+            "commands": commands,
+        },
+        "completion_marker": "CODEX_AI_CI_COMPLETE",
+    }
+    write_json(args.output, report)
+
+
+def build_fallback_changed_files(
+    manifest: list[dict[str, str]], commands: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    validation_strategy = (
+        f"自动审查未完成；已保留 {len(commands)} 条可信命令执行记录供人工核对。"
+        if commands
+        else "自动审查未完成；请结合代码差异和现有检查结果人工核对。"
+    )
+    return [
+        {
+            "path": item["path"],
+            "change_type": item["change_type"],
+            "summary": "自动审查未完成，未能可靠归纳该文件的具体改动。",
+            "impact": "该文件的行为影响仍需结合代码差异人工核对。",
+            "validation_strategy": validation_strategy,
+        }
+        for item in manifest
+    ]
+
+
+def build_fallback_report(args: argparse.Namespace) -> None:
+    """Build a canonical warning report while preserving available trusted facts."""
+    try:
+        manifest = load_manifest(args.manifest)
+        if args.command_ledger_state == "available":
+            if not args.command_ledger.is_file():
+                raise ValueError("available command ledger does not exist")
+            ledger = load_command_ledger(args.command_ledger)
+        else:
+            ledger = []
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        ValueError,
+    ) as exc:
+        raise InvalidTrustedReportInput(str(exc)) from exc
+
+    generated_archive: list[str] = []
+    archive_confirmed = False
+    if args.generated_archive_state == "available":
+        try:
+            if not args.generated_archive.is_file():
+                raise ValueError("available generated archive does not exist")
+            generated_archive = parse_generated_archive(args.generated_archive)
+            archive_confirmed = True
+        except (OSError, ValueError, tarfile.TarError) as exc:
+            print(f"Ignored untrusted generated archive in fallback report: {exc}")
+
+    commands, _ = build_commands(None, ledger)
+    generated_files = [
+        relative for relative in generated_archive if is_test_path(relative)
+    ]
+    execution_status = (
+        derive_execution_status("unavailable", commands)
+        if args.command_ledger_state == "available"
+        else "unavailable"
+    )
+    execution_summary = [
+        "本次自动审查未完成，未形成完整的代码审查分析结果。"
+    ]
+    if commands:
+        execution_summary.append(
+            f"已从可信执行记录保留 {len(commands)} 条验证或诊断命令事实。"
+        )
+    if generated_files:
+        execution_summary.append(
+            f"已从任务级归档保留 {len(generated_files)} 个新增测试文件记录。"
+        )
+    elif not archive_confirmed:
+        execution_summary.append("本次未能取得可信的任务级测试文件归档事实。")
+
+    failure_reason = text_or_default(
+        args.failure_reason,
+        "自动审查执行未完成，具体原因未能可靠归纳。",
+    )
+    context_not_applicable = args.change_request_context_status == "not_applicable"
+    assessment = {
+        "status": "not_applicable" if context_not_applicable else "not_assessable",
+        "contributor_goal": (
+            "当前任务没有适用的变更请求功能声明。"
+            if context_not_applicable
+            else "自动审查未完成，未能可靠归纳贡献者的修改目标。"
+        ),
+        "expected_behavior": (
+            "当前任务没有适用的变更请求预期行为声明。"
+            if context_not_applicable
+            else "自动审查未完成，未能可靠归纳贡献者声明的预期行为。"
+        ),
+        "implementation_summary": (
+            "自动审查未完成，当前只能保留可信的文件和命令事实。"
+        ),
+        "evidence": [
+            "本次仅保留了可由自动化流程确认的文件、命令和测试产物事实。"
+        ],
+    }
+    behavior_coverage = {
+        name: {
+            "scope": f"本次未能完整判断变更涉及的{label}。",
+            "strategy": "请结合代码差异、确定性检查结果和已保留的执行事实人工核对。",
+            "result": "自动审查未完成，当前没有形成可信的行为覆盖结论。",
+        }
+        for name, label in BEHAVIOR_LABELS.items()
+    }
+    report = {
+        "verdict": "WARNING",
+        "summary": f"Codex AI 自动审查未完成：{failure_reason}",
+        "merge_recommendation": (
+            "请结合本地确定性 CI 检查结果和完整执行记录决定是否合入；"
+            "本次未完成的自动审查结果不应单独作为判断依据。"
+        ),
+        "change_request_assessment": assessment,
+        "changed_files": build_fallback_changed_files(manifest, commands),
+        "behavior_coverage": behavior_coverage,
+        "findings": [],
+        "unlocated_findings": [],
+        "suggested_tests": [],
+        "residual_risks": unique_in_order(
+            [
+                "自动审查未完成，当前代码差异仍需结合可信检查结果人工核对。",
+                *(
+                    ["任务级测试文件归档不可确认，不能据此判断是否生成了新增测试。"]
+                    if not archive_confirmed
+                    else []
+                ),
+            ]
+        ),
+        "test_execution": {
+            "evidence_level": "unavailable",
             "status": execution_status,
             "summary": execution_summary,
             "generated_test_files": generated_files,
@@ -901,6 +1052,23 @@ def parse_args() -> argparse.Namespace:
     build.add_argument("--repository-root", type=Path, required=True)
     build.add_argument("--analysis-mode", choices=("full", "analysis_only"), required=True)
     build.add_argument("--test-generation-expected", type=parse_bool, required=True)
+    fallback = subparsers.add_parser("build-fallback")
+    fallback.add_argument("--output", type=Path, required=True)
+    fallback.add_argument("--manifest", type=Path, required=True)
+    fallback.add_argument("--command-ledger", type=Path, required=True)
+    fallback.add_argument(
+        "--command-ledger-state",
+        choices=("available", "unavailable"),
+        required=True,
+    )
+    fallback.add_argument("--generated-archive", type=Path, required=True)
+    fallback.add_argument(
+        "--generated-archive-state",
+        choices=("available", "unavailable"),
+        required=True,
+    )
+    fallback.add_argument("--failure-reason", required=True)
+    fallback.add_argument("--change-request-context-status", required=True)
     return parser.parse_args()
 
 
@@ -917,8 +1085,10 @@ def main() -> int:
                 ValueError,
             ) as exc:
                 raise InvalidTrustedReportInput(str(exc)) from exc
-        else:
+        elif args.command == "build":
             build_report(args)
+        else:
+            build_fallback_report(args)
     except InvalidTrustedReportInput as exc:
         print(f"Invalid Codex AI trusted input: {exc}")
         return 1

@@ -260,7 +260,7 @@ LOCAL_CI_CONFIG=/path/to/local-ci/config.env \
   bash scripts/local_ci/poll_gitee_and_run.sh
 ```
 
-`poll_gitee_and_run.sh` 负责读取配置、扫描 Gitee refs、加锁、去重、冻结可信脚本、准备 PR base/head/metadata、性能 baseline 预热、运行确定性 CI 与 Codex，并在成功发布后推进 processed SHA。
+`poll_gitee_and_run.sh` 负责读取配置、扫描 Gitee refs、加锁、去重、冻结可信脚本、准备 PR base/head/metadata、按可信 LLVM hash 选择服务器 profile、性能 baseline 预热、运行确定性 CI 与 Codex，并在成功发布后推进 processed SHA。
 
 生产建议：
 
@@ -285,18 +285,21 @@ GITEE_BRANCH_INCLUDE_REGEX=^ci/(pr-[0-9]+/.+|push/.+|full/.+)$
   -> source envsetup
   -> 前端 build / wheel install / import verify
   -> 前端 smoke
-  -> 后端环境 / rebuild / discovery
-  -> 后端 smoke + JIT
-  -> FlagGems sample / full / single
-  -> compile-time、pass profile、IR serialization
+  -> RUN_BACKEND_STAGES=true：
+       后端环境 / rebuild / discovery
+       -> 后端 smoke + JIT
+       -> FlagGems sample / full / single
+       -> compile-time、pass profile、IR serialization
+     RUN_BACKEND_STAGES=false：
+       后端、FlagGems 与性能阶段全部 skipped
   -> delivery-summary.txt 和 result.json
 ```
 
 PR 测试 Merge-Result 代码，但 supervisor 只 source 从精确 comparison base 提取的可信 `envsetup.sh`；候选 `envsetup.sh` 只做独立语法检查。push 任务使用当前 push commit 的版本。
 
-前端 build、前端 smoke、后端 rebuild、后端 smoke/JIT 是必选阶段。任何必选阶段缺失、`not_run`、`running` 或失败时，最终结果必须失败；候选脚本中的 `exit 0` 不能把未执行阶段伪装为 success。
+所有 profile 都要求现有前端 build 和前端 smoke 通过。`RUN_BACKEND_STAGES=true` 时继续要求现有后端阶段；`false` 时后端、FlagGems 和性能阶段必须明确为 `skipped`。任何当前必选阶段缺失、`not_run`、`running` 或失败时，最终结果必须失败；候选脚本中的 `exit 0` 不能把未执行阶段伪装为 success。
 
-当前端到端验证的 backend profile 是 **Sophgo CModel**。接入其他后端时，必须独立维护 container、运行时、后端命令、FlagGems 范围、性能基线、status context 与 Pages 展示，不能直接沿用 Sophgo 的 whitelist 或阈值。
+profile 由服务器 `LOCAL_CI_PROFILE_DIR/<llvm-hash>.env` 提供。PR 使用可信 base 的 `triton/cmake/llvm-hash.txt` 选择 profile，并要求被测提交保持相同 hash；push 使用被测提交 hash。未知 hash、缺 profile 或 LLVM 升级 PR 不回退到其他环境。路由目标中，LLVM 19 hash `10dc3a8e916d73291269e5e2b82dd22681489aa1` 使用 **3.0 Sophgo CModel** 完整 profile；LLVM 21 `a66376b0dc3b2ea8a84fda26faca287980986f78` 与 LLVM 22 `a992f29451b9e140424f35ac5e20177db4afbdc0` 分别使用 3.3/3.6 frontend profile，只执行现有前端 build/install/import 与 `tests/test_smoke.py`。3.3/3.6 当前没有部署可供测试的厂商后端，其 frontend profile、LLVM 和容器也需要服务器另行部署并完成真实任务验证；仓库代码本身不表示环境已经部署。
 
 ### 5.4 FlagGems 与性能基线
 
@@ -346,13 +349,13 @@ PR 的执行 checkout 使用 tested Merge-Result；Codex 的代码审查 diff �
 
 Codex 只输出符合 `codex_ai_analysis.schema.json` 的语义分析。runner 从 Git manifest、Codex JSONL、工作区 patch/archive 等可信事实构建结构化审查报告，再由 renderer 生成报告和评论。无法验证文件或行号的 finding 不会被静默丢弃，而会保留为 `unlocated_findings`，并把 verdict 至少降为 warning。
 
-同一 tested SHA 的 Codex 重跑会更新同一条评论；不同 tested SHA 会保留各自评论。评论展示变更摘要、验证内容、限制、finding 和剩余风险，不展示内部 ID 或机器实现细节。
+同一 tested SHA 的 Codex 重跑会更新同一条评论；不同 tested SHA 会保留各自评论。审查摘要展示“本地确定性 CI 检查”，并且只在审查完成时展示“Codex AI 审查结论”；底部元数据保留 Codex 执行状态。`codex_only` 文档任务明确显示确定性 CI 按策略跳过。验证情况固定为“验证内容与结果”“限制与未覆盖”：同一用途按成功、稳定失败、非确定性失败和环境限制分别计数，单条失败不会覆盖其他成功记录；失败 fallback 继续保留已执行命令的退出码、耗时和已收集测试文件。评论保留 finding 代码链接、变更文件和剩余风险，但不展示内部 ID、状态前缀或机器实现术语。
 
 ### 6.3 安全边界与预算
 
 Codex 临时容器不是完整 hostile-code sandbox：它来自已执行候选代码的 Local CI 容器 snapshot，Codex 以 root、联网和 `danger-full-access` 执行，并可能 source 候选 checkout 的 `envsetup.sh`。独立凭据与临时容器降低风险，但不能被描述为“可安全运行任意恶意代码”。
 
-当前默认约束包括最多 30 条测试/构建/lint/诊断命令、2700 秒累计命令预算、3600 秒 hard timeout 和 450 秒报告预留。超限写 constraint warning，不改变确定性 CI exit code。
+当前默认约束包括最多 50 条测试/构建/lint/诊断命令、单条命令建议 900 秒、2700 秒累计命令预算、3600 秒 hard timeout 和 450 秒报告预留。超限写 constraint warning，不改变确定性 CI exit code。
 
 ## 7. 结果、状态与 Dashboard
 
@@ -436,16 +439,15 @@ GITEE_RESULTS_OWNER="<results-owner>"
 GITEE_RESULTS_REPO="triton-anchor-local-ci-results"
 GITEE_RESULTS_BRANCH="local-ci-results"
 
-LOCAL_CI_CONTAINER="anchor-sophgo-ci-prod"
 LOCAL_CI_STATE_DIR="/home/localci/local_ci/local-ci-state"
 LOCAL_CI_SCRIPT_DIR="/home/localci/local_ci/control_anchor/triton-anchor/scripts/local_ci"
-LOCAL_CI_WORKSPACE_HOST="/home/localci/local_ci/workspace"
+LOCAL_CI_PROFILE_DIR="/home/localci/local_ci/profiles"
 CODEX_AI_CI_HOME="/home/localci/local_ci/secrets/codex-ai"
 ```
 
-容器内 `ANCHOR_DIR` 每次任务都会删除并重新 clone，不能与 backend、LLVM、PPL、FlagGems 或 artifact 目录重叠。`GITEE_BRANCH` 表示本次实际 task ref，只能由 poller 传入，不能固定为某个 Worker 分支。
+每个 `<llvm-hash>.env` 至少定义 `LOCAL_CI_PROFILE_NAME`、`LOCAL_CI_CONTAINER`、`LOCAL_CI_WORKSPACE_HOST`、`LLVM_BUILD_DIR`、`PYTHON_VENV_ACTIVATE` 和 `RUN_BACKEND_STAGES`，并按需定义现有 backend、FlagGems 与 benchmark 配置。容器内 `ANCHOR_DIR` 每次任务都会删除并重新 clone，不能与 backend、LLVM、PPL、FlagGems 或 artifact 目录重叠。`GITEE_BRANCH` 表示本次实际 task ref，只能由 poller 传入，不能固定为某个 Worker 分支。
 
-`config.example.env` 是模板，不会覆盖已有 `config.env`。更新可信脚本或配置后需要重启 poller；下一次任务会使用新的 runner 快照。
+`config.example.env` 是模板，不会覆盖已有 `config.env`。仓库脚本更新后服务器只需同步 `CI_dev`，下一次任务会使用新的 runner 快照；只有修改服务器本地 `config.env` 或 profile 配置时才需要重启 poller。
 
 ### 8.3 安全配置重点
 
@@ -490,7 +492,7 @@ LOCAL_CI_POLL_INTERVAL=60 \
 1. 查看 GitHub Actions run，确认问题发生于 Router、Security Gate、dispatcher、receiver、Pages 还是普通 GitHub CI；
 2. Local CI pending 时，检查 Gitee 对应 `ci/*` ref 是否存在且 SHA 与 run title 一致；
 3. 检查 poller 是否运行，并查看 `LOCAL_CI_STATE_DIR` 下的 lock、runner 快照和 task 日志；
-4. 检查 `LOCAL_CI_CONTAINER`、workspace、venv 与 backend 路径；
+4. 检查任务 LLVM hash、对应 profile，以及 profile 中的容器、workspace、venv 与 backend 路径；
 5. 在 `local-ci-results` 中按 `h-<head12>_m-<merge12>` 或 push SHA 查找 `latest.txt`、manifest、summary 和 result；
 6. 按阶段查看前端、后端、FlagGems、性能或 Codex 产物；
 7. Pages 未更新时，确认 receiver 在 result ready 后请求了 `mode=pages`，并核对 Pages branch、Environment 与 Dashboard source/full refs。
@@ -545,4 +547,4 @@ git diff --check
 | Dashboard | `scripts/dashboard/`、`dashboard/` |
 | API 契约 | `api_contract/`、`scripts/api_contract/` |
 
-当前完成完整环境配置和端到端验证的 backend profile 是 **Sophgo CModel**。系统已具备多分支 Gateway、Merge-Result Local CI、状态回写、性能比较、Dashboard 和非阻塞 Codex AI 审查能力。其他后端仍需独立完成环境、测试集、性能基线、结果展示和运维验证后，才能视为完成接入。
+当前完成完整后端环境配置和端到端验证的是 **3.0 Sophgo CModel** profile；3.3/3.6 已纳入 LLVM-hash 路由，计划部署的 frontend profile 只覆盖前端验证范围，服务器环境和真实任务验证仍待完成。系统已具备多分支 Gateway、Merge-Result Local CI、状态回写、性能比较、Dashboard 和非阻塞 Codex AI 审查能力。其他后端仍需独立完成环境、测试集、性能基线、结果展示和运维验证后，才能视为完成接入。

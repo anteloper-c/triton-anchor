@@ -293,7 +293,19 @@ LOCAL_CI_STATE_DIR/runner/<run-id>/
 - 一次任务运行期间使用固定脚本版本；
 - 历史 run 可以追溯到当时使用的脚本快照。
 
-#### 4.4.3 fresh-clone 和干净构建
+#### 4.4.3 版本 profile、fresh-clone 和干净构建
+
+poller 先读取可信提交的 `triton/cmake/llvm-hash.txt`，从服务器 `LOCAL_CI_PROFILE_DIR` 选择同名 `<llvm-hash>.env`。PR 以可信 base SHA 的 hash 选择，并要求被测提交保持相同 hash；push 直接使用被测提交的 hash。未知 hash、缺失或不可读的 profile、以及改变 LLVM hash 的升级 PR 都会报告未部署匹配环境，不会静默回退到 Sophgo。每个任务只在自己的子进程中载入一个 profile。
+
+仓库代码支持以下路由目标；其中 3.3/3.6 仍需在服务器部署对应 profile、LLVM、venv 和长期容器后才能实际执行：
+
+| Triton 范围 | LLVM hash | profile 部署后的计划执行范围 |
+| --- | --- | --- |
+| 3.0 | `10dc3a8e916d73291269e5e2b82dd22681489aa1` | 现有 Sophgo 前端与后端完整阶段 |
+| 3.3 | `a66376b0dc3b2ea8a84fda26faca287980986f78` | 现有前端 build/install/import 和 `tests/test_smoke.py` |
+| 3.6 | `a992f29451b9e140424f35ac5e20177db4afbdc0` | 现有前端 build/install/import 和 `tests/test_smoke.py` |
+
+仓库实现只负责按 hash 选择 profile，不负责部署这些执行环境。服务器尚未提供对应 profile 时，任务会明确给出非绿色环境结果；表中范围不能当作已经完成的服务器验证记录。
 
 容器内的 `ANCHOR_DIR` 是专用待测目录。每个任务都会删除旧目录并从 Gitee task ref fresh-clone 精确提交，然后：
 
@@ -307,7 +319,7 @@ LOCAL_CI_STATE_DIR/runner/<run-id>/
 
 这一流程用于防止构建失败时误用旧安装包，也避免历史 CMake 或 wheel 产物污染当前结果。
 
-前端 build、前端 smoke、后端 rebuild、后端 smoke/JIT 是必选阶段。任何阶段缺失、处于 `not_run`/`running` 或失败时，即使候选脚本尝试 `exit 0`，最终退出码和 bridge 结果仍会被强制判为失败。
+任何成功选中的 profile 都要求现有前端 build 和前端 smoke 通过。`RUN_BACKEND_STAGES=true` 时继续要求现有后端 rebuild、discovery 和 smoke/JIT；`false` 时后端、FlagGems 和三类 benchmark 明确记录为 `skipped`，并说明“当前没有部署可供测试的厂商后端，未执行后端构建、JIT、FlagGems 和性能验证。”。3.3/3.6 profile 部署并真实运行后，其绿色结果只表示上述前端范围通过。
 
 ### 4.4.7 凭据残余风险
 
@@ -319,14 +331,17 @@ LOCAL_CI_STATE_DIR/runner/<run-id>/
 fresh-clone 精确 SHA
   -> 构建并安装 triton-anchor
   -> 前端 tests/test_smoke.py
-  -> source 后端环境
-  -> rebuild 后端 wheel 并强制安装
-  -> backend discovery
-  -> 后端 smoke/JIT
-  -> FlagGems sample 或 full
-  -> 编译时间监测
-  -> Pass profiling
-  -> IR 序列化/反序列化监测
+  -> RUN_BACKEND_STAGES=true：
+       source 后端环境
+       -> rebuild 后端 wheel 并强制安装
+       -> backend discovery
+       -> 后端 smoke/JIT
+       -> FlagGems sample 或 full
+       -> 编译时间监测
+       -> Pass profiling
+       -> IR 序列化/反序列化监测
+     RUN_BACKEND_STAGES=false：
+       上述后端、FlagGems 和性能阶段全部 skipped
   -> 写入 summary 和阶段日志
 ```
 
@@ -350,7 +365,7 @@ Local CI 的任务协议和 runner 骨架可以复用，但真实执行不能假
 | 性能监测 | 代表性 kernel、重复次数、噪声下限、回归阈值、backend profile 和 SHA 基线命名空间 |
 | 结果展示 | GitHub status context、结果中的 backend 标识以及 Pages 中的 backend 行 |
 
-当前仓库的默认配置和已经跑通的完整链路对应 **Sophgo CModel**：profile 为 `sophgo-cmodel`，预期 Triton backend 为 `sophgo`，后端通过 `PIO_CMODEL` 初始化，并执行 Sophgo 后端的 smoke/JIT。当前 FlagGems sample 白名单根据该环境 2026-07-28 的全量运行结果整理，包含 42 个成功且耗时不超过 600 秒的算子（因超时设置及仿真环境影响算子通过情况，当前结果仅为 CI 校验，不作为验收结果），覆盖 6 个类别；full 列表仍对应当前约定的 1～127 号算子并覆盖全部 8 类。
+当前已经跑通后端完整链路的是 **3.0 Sophgo CModel**：profile 为 `sophgo-cmodel`，预期 Triton backend 为 `sophgo`，后端通过 `PIO_CMODEL` 初始化，并执行 Sophgo 后端的 smoke/JIT。当前 FlagGems sample 白名单根据该环境 2026-07-28 的全量运行结果整理，包含 42 个成功且耗时不超过 600 秒的算子（因超时设置及仿真环境影响算子通过情况，当前结果仅为 CI 校验，不作为验收结果），覆盖 6 个类别；full 列表仍对应当前约定的 1～127 号算子并覆盖全部 8 类。3.3 和 3.6 当前没有部署可供测试的厂商后端；对应 frontend profile、LLVM 和容器完成服务器部署后，仅执行现有前端范围。以后部署匹配后端时可在服务器 profile 中启用现有后端阶段，但仍需先验证具体 backend 脚本和依赖兼容性。
 
 这些算子结果不能直接视为其他后端的白名单。后续接入新后端时，应先完成该后端的全量探测，再生成自己的算子映射、白名单和性能基线；必要时通过 `FLAGGEMS_TEST_COMMAND` 使用后端专用测试入口。建议每个后端使用独立的 `config.env`、容器、状态目录和 status context，公共脚本仅复用调度、快照、结果协议和通用阶段控制。
 
@@ -512,20 +527,16 @@ cp scripts/local_ci/config.example.env /path/to/local-ci/config.env
 ```bash
 LOCAL_CI_SCRIPT_DIR=/path/to/trusted/triton-anchor/scripts/local_ci
 LOCAL_CI_STATE_DIR=/path/to/local-ci-state
-LOCAL_CI_CONTAINER=anchor-sophgo-ci
-LOCAL_CI_WORKSPACE_HOST=/path/to/workspace
+LOCAL_CI_PROFILE_DIR=/path/to/local-ci/profiles
 
 GITEE_POLL_ALL_BRANCHES=1
 GITEE_BRANCHES=""
 
-WORKSPACE=/workspace
-ANCHOR_DIR=/workspace/triton-anchor
-BACKEND_PATH=/workspace/triton-sophgo-backend
-BACKEND_ENVSETUP_ARGS=PIO_CMODEL
-BACKEND_TEST_COMMAND="python3 tests/test_smoke.py && python3 tests/test_jit.py"
+# 容器、workspace、LLVM、venv、RUN_BACKEND_STAGES 和 backend/benchmark
+# 配置放在 LOCAL_CI_PROFILE_DIR/<llvm-hash>.env 中。
 ```
 
-以上示例值是当前 **Sophgo CModel** runner profile，不是所有后端共用的固定值。新后端应维护独立的配置文件，并同步调整容器、后端路径及命令、FlagGems 用例集合、性能 kernel/阈值、结果 context 和 Pages backend 标识；不能直接沿用 Sophgo 的白名单和性能基线。
+全局 `config.env` 只指定 profile 目录；每个 `<llvm-hash>.env` 至少定义 `LOCAL_CI_PROFILE_NAME`、`LOCAL_CI_CONTAINER`、`LOCAL_CI_WORKSPACE_HOST`、`LLVM_BUILD_DIR`、`PYTHON_VENV_ACTIVATE` 和 `RUN_BACKEND_STAGES`，并按需定义现有 backend、FlagGems 和 benchmark 变量。新后端不能直接沿用 Sophgo 的白名单和性能基线。
 
 `ANCHOR_DIR` 每次任务都会被递归删除并重新 clone，因此必须是专用目录，不能与 backend、FlagGems、LLVM、PPL 或 artifact 目录重叠。
 
@@ -604,7 +615,7 @@ GitHub commit status 没有 warning 状态，因此性能 warning 会映射为 s
 1. 查看 GitHub Actions 中失败的 workflow 和 Job Summary。
 2. 如果 Local CI 一直 pending，检查 Gitee task ref 是否存在且 SHA 正确。
 3. 检查本地 poller 是否运行，以及 `LOCAL_CI_STATE_DIR` 下的日志和 lock。
-4. 检查容器是否存在、名称是否与 `LOCAL_CI_CONTAINER` 一致。
+4. 检查任务 LLVM hash 是否有对应服务器 profile，并确认该 profile 的容器、workspace、LLVM 和 venv 可用。
 5. 查看对应 run 目录和 Gitee `local-ci-results` 中的 `delivery-summary.txt`。
 6. 根据阶段查看 `frontend-smoke.log`、`backend-rebuild.log`、`backend-smoke-jit.log`、`flaggems.log` 或性能报告。
 7. Pages 不更新时，检查 receiver 是否触发 `backend-status-pages.yml`，以及数据契约测试和 Gitee 同步步骤。
