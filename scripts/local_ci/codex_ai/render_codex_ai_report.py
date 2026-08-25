@@ -1009,34 +1009,15 @@ def exclude_seen_comment_items(
 
 def public_command_result(
     purpose: str,
-    statuses: list[str],
+    commands: list[dict[str, Any]],
     identifier_descriptions: dict[str, str] | None = None,
 ) -> str:
     purpose = public_narrative_text(
         purpose, identifier_descriptions
     ).rstrip("。！？；， ")
+    statuses = [command["status"] for command in commands]
     counts = Counter(statuses)
     total = sum(counts.values())
-    if counts == {"flaky_failure": total}:
-        return (
-            f"{purpose}重复执行时出现不一致结果；该验证目标尚未形成稳定结论，"
-            "对整体结论的影响需结合根因判断。"
-        )
-    if counts == {"stable_failure": total}:
-        return (
-            f"{purpose}出现可稳定复现的失败；这会削弱相关审查结论，"
-            "对整体结论的影响需结合失败原因判断。"
-        )
-    if counts == {"infrastructure_failure": total}:
-        return (
-            f"{purpose}受运行环境限制，未能完整执行；这不表示其他已成功验证也失败，"
-            "但该验证目标仍未形成完整证据。"
-        )
-    if counts == {"failed": total}:
-        return (
-            f"{purpose}执行失败，现有记录尚不足以完成稳定性或根因归因；"
-            "不能据此推断其他验证也失败，对整体结论的影响仍待判断。"
-        )
     if counts == {"passed": 1}:
         return f"{purpose}执行成功。"
     if counts == {"passed": total}:
@@ -1045,10 +1026,10 @@ def public_command_result(
         return f"{purpose}未执行。"
     labels = {
         "passed": "成功",
-        "stable_failure": "可稳定复现的失败",
+        "stable_failure": "可稳定复现失败",
         "flaky_failure": "重复执行结果不一致",
         "infrastructure_failure": "受运行环境限制",
-        "failed": "失败待归因",
+        "failed": "失败",
         "not_executed": "未执行",
     }
     details = "、".join(
@@ -1056,25 +1037,61 @@ def public_command_result(
         for status, label in labels.items()
         if counts[status]
     )
-    return (
-        f"{purpose}共 {total} 条执行记录：{details}；"
-        "失败或限制说明该验证目标尚未完全形成结论，不能据此把其他成功记录一并视为失败。"
+    if total == 1:
+        single_result = {
+            "stable_failure": "重复执行仍失败",
+            "flaky_failure": "重复执行结果不一致",
+            "infrastructure_failure": "受运行环境限制而未完成",
+            "failed": "失败",
+        }
+        result = f"{purpose}{single_result.get(statuses[0], '未执行')}"
+    else:
+        result = f"{purpose}共 {total} 条执行记录：{details}"
+
+    generic_evidence = {
+        "执行结果来自可信CodexJSONL事件",
+        "执行事实来自可信命令记录",
+        "定向测试执行完成",
+    }
+    failure_evidence = unique_comment_items(
+        evidence
+        for command in commands
+        if command["status"] not in {"passed", "not_executed"}
+        if (
+            evidence := public_narrative_text(
+                command["evidence"], identifier_descriptions
+            ).rstrip("。！？；， ")
+        )
+        and "".join(evidence.split()) not in generic_evidence
     )
+    if failure_evidence:
+        return f"{result}；{'；'.join(failure_evidence)}。"
+
+    failure_statuses = set(statuses) - {"passed", "not_executed"}
+    if not failure_statuses:
+        fallback = "未执行记录对应的验证目标未覆盖"
+    elif failure_statuses == {"infrastructure_failure"}:
+        fallback = "现有记录未说明具体环境限制，相关验证目标未完成"
+    elif failure_statuses == {"flaky_failure"}:
+        fallback = "现有记录未说明结果不一致的原因，相关验证目标仍待复核"
+    elif failure_statuses == {"stable_failure"}:
+        fallback = "现有记录未说明失败原因，相关验证目标未通过"
+    else:
+        fallback = "现有记录未说明具体原因，相关验证目标仍待确认"
+    return f"{result}；{fallback}。"
 
 
 def public_validation_result_items(
     test_execution: dict[str, Any],
     identifier_descriptions: dict[str, str] | None = None,
 ) -> list[str]:
-    statuses_by_purpose: dict[str, list[str]] = {}
+    commands_by_purpose: dict[str, list[dict[str, Any]]] = {}
     for command in test_execution["commands"]:
-        statuses_by_purpose.setdefault(command["purpose"], []).append(
-            command["status"]
-        )
-    if statuses_by_purpose:
+        commands_by_purpose.setdefault(command["purpose"], []).append(command)
+    if commands_by_purpose:
         return [
-            public_command_result(purpose, statuses, identifier_descriptions)
-            for purpose, statuses in statuses_by_purpose.items()
+            public_command_result(purpose, commands, identifier_descriptions)
+            for purpose, commands in commands_by_purpose.items()
         ]
 
     if test_execution["status"] == "test_generation_error":
@@ -1106,8 +1123,6 @@ def public_validation_limit_items(
             items.append("部分验证受运行环境限制，当前没有完成全部预期覆盖。")
     elif execution_status == "test_generation_error":
         items.append("测试生成阶段未完成，当前没有形成预期的动态验证覆盖。")
-    elif execution_status == "insufficient_evidence":
-        items.append("失败记录尚不足以完成稳定性或根因归因。")
     elif execution_status == "unavailable":
         items.append("预期验证是否执行及其结果仍待核对。")
 

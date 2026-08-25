@@ -262,22 +262,46 @@ def test_public_validation_uses_fact_groups_without_internal_status_labels(tmp_p
 def test_public_validation_keeps_counts_for_every_mixed_command_outcome(tmp_path):
     document = analysis()
     annotated_commands = [
-        ("check-success", "none"),
-        ("check-stable", "product"),
-        ("check-stable", "product"),
-        ("check-flaky", "flaky"),
-        ("check-flaky", "flaky"),
-        ("check-infrastructure", "infrastructure"),
-        ("check-unknown", "unknown"),
+        ("check-success", "none", "缓存失效路径验证通过。"),
+        (
+            "check-stable",
+            "product",
+            "缓存恢复后仍读取旧状态；该路径的恢复行为未通过验证。",
+        ),
+        (
+            "check-stable",
+            "product",
+            "缓存恢复后仍读取旧状态；该路径的恢复行为未通过验证。",
+        ),
+        (
+            "check-flaky",
+            "flaky",
+            "同一输入重复执行时结果不一致；该路径的稳定性仍待复核。",
+        ),
+        (
+            "check-flaky",
+            "flaky",
+            "同一输入重复执行时结果不一致；该路径的稳定性仍待复核。",
+        ),
+        (
+            "check-infrastructure",
+            "infrastructure",
+            "当前环境未发现预期的 Sophgo backend；backend smoke 和 JIT 未完成验证。",
+        ),
+        (
+            "check-unknown",
+            "unknown",
+            "诊断输出未提供具体原因；异常恢复路径仍待确认。",
+        ),
     ]
     document["test_assessment"]["commands"] = [
         {
             "command": command,
             "purpose": "综合定向验证",
-            "evidence": "执行事实来自可信命令记录。",
+            "evidence": evidence,
             "failure_classification": classification,
         }
-        for command, classification in annotated_commands
+        for command, classification, evidence in annotated_commands
     ]
     exits = [0, 1, 1, 1, 0, 2, 1]
     report = build(
@@ -289,7 +313,7 @@ def test_public_validation_keeps_counts_for_every_mixed_command_outcome(tmp_path
                 "exit_code": exit_code,
                 "duration_seconds": 0.1,
             }
-            for (command, _), exit_code in zip(annotated_commands, exits)
+            for (command, _, _), exit_code in zip(annotated_commands, exits)
         ],
     )
 
@@ -307,10 +331,15 @@ def test_public_validation_keeps_counts_for_every_mixed_command_outcome(tmp_path
     validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
     assert "综合定向验证共 7 条执行记录" in validation
     assert "2 条成功" in validation
-    assert "2 条可稳定复现的失败" in validation
+    assert "2 条可稳定复现失败" in validation
     assert "1 条重复执行结果不一致" in validation
     assert "1 条受运行环境限制" in validation
-    assert "1 条失败待归因" in validation
+    assert "1 条失败" in validation
+    assert "缓存恢复后仍读取旧状态" in validation
+    assert "当前环境未发现预期的 Sophgo backend" in validation
+    assert "对应原因及影响" not in validation
+    assert "失败待归因" not in validation
+    assert "不能据此把其他成功记录一并视为失败" not in validation
 
 
 def test_public_validation_sanitizes_internal_sources_and_enums(tmp_path):
@@ -494,30 +523,54 @@ def test_deterministic_ci_public_modes_are_explicit_and_backward_compatible(
 
 
 @pytest.mark.parametrize(
-    ("exits", "classification", "expected", "public_result"),
+    ("exits", "classification", "purpose", "evidence", "expected", "public_result"),
     [
         (
             [1],
             "product",
+            "PR Comment 混合结果契约测试",
+            "pytest 输出显示评论仍包含已禁止的“失败待归因”描述。"
+            "因此本次未能确认新的失败说明格式符合预期，"
+            "但不影响已经独立通过的 Python 语法和差异格式检查。",
             "insufficient_evidence",
-            "执行失败，现有记录尚不足以完成稳定性或根因归因",
+            "PR Comment 混合结果契约测试失败；pytest 输出显示评论仍包含已禁止的"
+            "“失败待归因”描述。因此本次未能确认新的失败说明格式符合预期，"
+            "但不影响已经独立通过的 Python 语法和差异格式检查。",
         ),
-        ([1, 1], "product", "stable_failure", "出现可稳定复现的失败"),
-        ([1, 0], "flaky", "flaky_failure", "1 条重复执行结果不一致"),
+        (
+            [1, 1],
+            "product",
+            "生成代码路径定向测试",
+            "定向测试执行完成。",
+            "stable_failure",
+            "2 条可稳定复现失败",
+        ),
+        (
+            [1, 0],
+            "flaky",
+            "生成代码路径定向测试",
+            "定向测试执行完成。",
+            "flaky_failure",
+            "1 条重复执行结果不一致",
+        ),
         (
             [2],
             "infrastructure",
+            "生成代码路径定向测试",
+            "定向测试执行完成。",
             "infrastructure_failure",
-            "受运行环境限制，未能完整执行",
+            "受运行环境限制而未完成；现有记录未说明具体环境限制",
         ),
     ],
 )
 def test_failure_status_is_derived_from_repeated_ledger(
-    tmp_path, exits, classification, expected, public_result
+    tmp_path, exits, classification, purpose, evidence, expected, public_result
 ):
     command = "python3 -m pytest generated_tests/test_generated.py"
     document = analysis(command)
     semantic = document["test_assessment"]["commands"][0]
+    semantic["purpose"] = purpose
+    semantic["evidence"] = evidence
     semantic["failure_classification"] = classification
     document["test_assessment"]["commands"] = [
         copy.deepcopy(semantic) for _ in exits
@@ -787,7 +840,7 @@ def test_fallback_derives_stable_failure_from_repeated_trusted_facts(tmp_path):
     assert {
         item["status"] for item in report["test_execution"]["commands"]
     } == {"stable_failure"}
-    assert "出现可稳定复现的失败" in RENDERER.render_comment(
+    assert "2 条可稳定复现失败" in RENDERER.render_comment(
         report, comment_args()
     )
 
