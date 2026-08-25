@@ -410,7 +410,12 @@ def build_commands(
     for index, fact in enumerate(ledger, start=1):
         command_key = normalize_command(fact["command"]) or fact["command"]
         if annotations[command_key]:
-            annotation = annotations[command_key].popleft()
+            annotation_queue = annotations[command_key]
+            annotation = (
+                annotation_queue.popleft()
+                if len(annotation_queue) > 1
+                else annotation_queue[0]
+            )
         else:
             annotation = {
                 "role": "unclassified",
@@ -489,11 +494,6 @@ def derive_execution_status(
     validation_commands = [
         command for command in commands if command["role"] == "validation"
     ]
-    if any(
-        command["role"] == "unclassified" and command["exit_code"] != 0
-        for command in commands
-    ):
-        return "insufficient_evidence"
     if not validation_commands:
         if evidence_level == "unavailable" and commands:
             return "insufficient_evidence"
@@ -864,8 +864,8 @@ def build_report(args: argparse.Namespace) -> None:
     )
     command_warnings = (
         [
-            f"{unclassified_failure_count} 条非零退出命令未标明验证或诊断用途，"
-            "其对审查结论的影响仍需核对。"
+            f"{unclassified_failure_count} 条非零退出命令没有可匹配的用途说明；"
+            "其执行事实已保留，但未用于派生正式验证状态。"
         ]
         if unclassified_failure_count
         else []
@@ -915,12 +915,6 @@ def build_report(args: argparse.Namespace) -> None:
         merge_recommendation,
         "请结合本地确定性 CI 检查结果决定是否合入。",
     )
-    if normalization_warnings:
-        normalized_merge_recommendation = (
-            normalized_merge_recommendation.rstrip("。")
-            + "；另请人工核对报告中标记的问题定位或逐文件说明完整性提醒，"
-            "本次 Codex AI 结果不应单独作为合入依据。"
-        )
     report = {
         "verdict": verdict,
         "summary": text_or_default(

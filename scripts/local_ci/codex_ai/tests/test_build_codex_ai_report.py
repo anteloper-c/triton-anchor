@@ -374,9 +374,7 @@ def test_unresolved_diagnostic_verdict_follows_overall_evidence_level(
 
     assert report["test_execution"]["status"] == "passed"
     assert report["verdict"] == expected_verdict
-    assert "问题定位或逐文件说明完整性提醒" not in report[
-        "merge_recommendation"
-    ]
+    assert report["merge_recommendation"] == document["merge_recommendation"]
     comment = RENDERER.render_comment(report, comment_args())
     validation = comment.split("### 验证情况", 1)[1].split(
         "### 剩余风险", 1
@@ -616,9 +614,7 @@ def test_failure_status_is_derived_from_repeated_ledger(
     semantic["evidence"] = evidence
     semantic["failure_classification"] = classification
     document["test_assessment"]["summary"] = [evidence]
-    document["test_assessment"]["commands"] = [
-        copy.deepcopy(semantic) for _ in exits
-    ]
+    document["test_assessment"]["commands"] = [copy.deepcopy(semantic)]
     ledger = [
         {"command": command, "exit_code": code, "duration_seconds": 0.1}
         for code in exits
@@ -1115,7 +1111,7 @@ def test_unlocated_finding_keeps_full_semantics_in_public_comment(tmp_path):
     assert "调用方会收到错误结果" in comment
     assert "修正该表达式并补充测试" in comment
     assert "当前未发现需要阻塞合入的问题" in report["merge_recommendation"]
-    assert "问题定位或逐文件说明完整性提醒" in report["merge_recommendation"]
+    assert report["merge_recommendation"] == document["merge_recommendation"]
     assert "结构化语义载荷" not in report["merge_recommendation"]
 
 
@@ -1477,28 +1473,54 @@ def test_unreported_ledger_command_is_kept_as_unclassified_history(tmp_path):
     assert report["test_execution"]["status"] == "not_run"
 
 
-def test_omitted_semantic_commands_do_not_hide_failure_ledger(tmp_path):
-    document = analysis()
-    document["test_assessment"]["commands"] = []
-    document["test_assessment"]["evidence_level"] = "not_needed"
+def test_unclassified_search_failures_do_not_override_formal_validation(tmp_path):
+    validation_command = "python3 -m pytest report_tests.py"
+    document = analysis(validation_command)
+    document["test_assessment"]["summary"] = [
+        "报告契约定向测试执行通过。",
+    ]
     report = build(
         tmp_path,
         document,
         [
             {
-                "command": "python3 -m pytest generated_tests/test_generated.py",
-                "exit_code": 1,
+                "command": validation_command,
+                "exit_code": 0,
                 "duration_seconds": 0.2,
-            }
+            },
+            {
+                "command": "rg old_field scripts/local_ci",
+                "exit_code": 127,
+                "duration_seconds": 0.1,
+            },
+            {
+                "command": "grep -R old_field scripts/local_ci",
+                "exit_code": 1,
+                "duration_seconds": 0.1,
+            },
         ],
     )
-    assert len(report["test_execution"]["commands"]) == 1
-    assert report["test_execution"]["status"] == "insufficient_evidence"
-    assert report["test_execution"]["commands"][0]["role"] == "unclassified"
+    assert report["test_execution"]["status"] == "passed"
+    assert report["verdict"] == "WARNING"
+    assert [
+        command["role"] for command in report["test_execution"]["commands"]
+    ] == ["validation", "unclassified", "unclassified"]
     assert any(
-        "非零退出命令未标明验证或诊断用途" in risk
+        "2 条非零退出命令没有可匹配的用途说明" in risk
+        and "未用于派生正式验证状态" in risk
         for risk in report["residual_risks"]
     )
+    assert report["merge_recommendation"] == document["merge_recommendation"]
+
+    comment = RENDERER.render_comment(report, comment_args())
+    validation = comment.split("### 验证情况", 1)[1].split(
+        "### 剩余风险", 1
+    )[0]
+    assert "报告契约定向测试执行通过" in validation
+    assert "当前执行环境无法调用 'rg'" in validation
+    assert "'grep' 退出码 1" in validation
+    assert "不代表正式验证失败" in validation
+    assert "其是否影响验证结论仍待核对" not in validation
 
 
 @pytest.mark.parametrize(

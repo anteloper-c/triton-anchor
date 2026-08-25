@@ -1074,6 +1074,45 @@ def public_unresolved_diagnostic_items(
     return items
 
 
+def public_unclassified_failure_items(
+    commands: list[dict[str, Any]],
+) -> list[str]:
+    items: list[str] = []
+    for command in commands:
+        if command["role"] != "unclassified" or command["exit_code"] == 0:
+            continue
+        command_text = " ".join(command["command"].split())
+        command_excerpt = f"`{comment_inline(command_text, 180)}`"
+        exit_code = command["exit_code"]
+        is_rg = re.search(
+            r"(?<![\w.-])rg(?:\.exe)?(?=\s|$|['\"])", command_text, re.IGNORECASE
+        )
+        is_grep = re.search(
+            r"(?<![\w.-])grep(?:\.exe)?(?=\s|$|['\"])",
+            command_text,
+            re.IGNORECASE,
+        )
+        if (is_rg or is_grep) and exit_code == 1:
+            tool = "rg" if is_rg else "grep"
+            items.append(
+                f"搜索命令 {command_excerpt} 没有找到匹配项（`{tool}` 退出码 1）；"
+                "这表示本次搜索没有结果，不代表正式验证失败。"
+            )
+        elif (is_rg or is_grep) and exit_code == 127:
+            tool = "rg" if is_rg else "grep"
+            items.append(
+                f"搜索命令 {command_excerpt} 未能启动（退出码 127，当前执行环境无法调用 "
+                f"`{tool}`）；该条搜索本身未完成，但不会覆盖正式验证的执行结果。"
+            )
+        else:
+            items.append(
+                f"命令 {command_excerpt} 以退出码 {exit_code} 结束；现有记录未说明"
+                "它用于哪项检查或具体失败原因。该记录不会覆盖正式验证状态，"
+                "对应检查的影响仍需结合审查说明核对。"
+            )
+    return items
+
+
 def public_validation_limit_items(
     document: dict[str, Any],
     args: argparse.Namespace | None = None,
@@ -1089,6 +1128,7 @@ def public_validation_limit_items(
             test_execution["commands"], identifier_descriptions
         )
     )
+    items.extend(public_unclassified_failure_items(test_execution["commands"]))
 
     if execution_status == "stable_failure":
         items.append("可稳定复现的失败尚未经过修复后复测。")
@@ -1106,15 +1146,6 @@ def public_validation_limit_items(
         items.append("测试生成阶段未完成，当前没有形成预期的动态验证覆盖。")
     elif execution_status == "unavailable":
         items.append("预期验证是否执行及其结果仍待核对。")
-    elif execution_status == "insufficient_evidence" and any(
-        command["role"] == "unclassified" and command["exit_code"] != 0
-        for command in test_execution["commands"]
-    ):
-        items.append(
-            "存在未标明验证或诊断用途的非零退出命令，"
-            "其是否影响验证结论仍待核对。"
-        )
-
     if evidence_level == "insufficient":
         items.append("现有验证尚未覆盖本次变更的全部风险。")
     elif evidence_level == "test_generation_error" and execution_status != "test_generation_error":
