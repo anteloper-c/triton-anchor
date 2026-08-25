@@ -977,6 +977,10 @@ grep -Fq "**通过**" "${success_output}/codex-ai-report.md"
 grep -Fq 'triton-anchor-codex-ai-report/v3' "${success_output}/codex-ai-report.md"
 grep -Fq "## 具体文件变更" "${success_output}/codex-ai-report.md"
 grep -Fq "## 行为覆盖" "${success_output}/codex-ai-report.md"
+grep -Fq '"file_id": "FILE-001"' "${success_output}/codex-ai-analysis.json"
+grep -Fq '"path": "payload.txt"' "${success_output}/codex-ai-report.json"
+grep -Fq '"id": "RUN-001"' "${success_output}/codex-ai-report.json"
+grep -Fq '"exit_code": 0' "${success_output}/codex-ai-report.json"
 grep -Fq "## Codex AI 自动审查" "${success_output}/codex-ai-comment.md"
 grep -Fq "### 变更文件" "${success_output}/codex-ai-comment.md"
 grep -Fq "检查了该文件在当前差异中的具体改动。" \
@@ -1224,7 +1228,7 @@ grep -Fq "测试和诊断命令累计耗时 2901 秒" "${over_limit_output}/code
 run_case zero-tests zero_tests 0 30 0
 zero_output="${test_root}/zero-tests/output"
 grep -Fxq "status: pass" "${zero_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_execution_status: passed" "${zero_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_execution_status: not_run" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fxq "generated_test_file_count: 0" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_command_count: 1" "${zero_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_generation_expected: true" "${zero_output}/codex-ai-ci-summary.txt"
@@ -1235,6 +1239,8 @@ grep -Fq "本次仅覆盖了与代码差异直接相关的路径。" \
 grep -Fq "可测试代码改动没有生成或执行定向测试，当前证据不足。" \
   "${zero_output}/codex-ai-report.md"
 grep -Fq -- "- 验证内容与结果：" "${zero_output}/codex-ai-comment.md"
+grep -Fq -- "  - 本次未新增验证命令。" \
+  "${zero_output}/codex-ai-comment.md"
 grep -Fq -- "- 限制与未覆盖：" "${zero_output}/codex-ai-comment.md"
 grep -Fq "现有验证尚未覆盖本次变更的全部风险" \
   "${zero_output}/codex-ai-comment.md"
@@ -1242,7 +1248,7 @@ grep -Fq "现有验证尚未覆盖本次变更的全部风险" \
 run_case docs-only docs_only 0 30 0 "${docs_target_sha}" "${base_sha}" "${docs_branch}"
 docs_output="${test_root}/docs-only/output"
 grep -Fxq "status: pass" "${docs_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_execution_status: passed" "${docs_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_execution_status: not_run" "${docs_output}/codex-ai-ci-summary.txt"
 grep -Fxq "generated_test_file_count: 0" "${docs_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_command_count: 1" "${docs_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_generation_expected: false" "${docs_output}/codex-ai-ci-summary.txt"
@@ -1276,7 +1282,7 @@ analysis_output="${test_root}/analysis/output"
 grep -Fxq "status: pass" "${analysis_output}/codex-ai-ci-summary.txt"
 grep -Fxq "local_ci_status: 1" "${analysis_output}/codex-ai-ci-summary.txt"
 grep -Fxq "analysis_mode: analysis_only" "${analysis_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_execution_status: passed" "${analysis_output}/codex-ai-ci-summary.txt"
+grep -Fxq "test_execution_status: not_run" "${analysis_output}/codex-ai-ci-summary.txt"
 grep -Fxq "generated_test_file_count: 0" "${analysis_output}/codex-ai-ci-summary.txt"
 grep -Fxq "test_command_count: 1" "${analysis_output}/codex-ai-ci-summary.txt"
 grep -Fxq "constraint_status: pass" "${analysis_output}/codex-ai-ci-summary.txt"
@@ -1301,14 +1307,6 @@ grep -Fxq "workspace_dirty: true" \
 grep -Fq "test_failure_diagnostic.py" \
   "${analysis_diagnostic_output}/codex-workspace-status.txt"
 
-run_case canonical-builder success 0 30 0
-canonical_output="${test_root}/canonical-builder/output"
-grep -Fxq "status: pass" "${canonical_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_execution_status: passed" "${canonical_output}/codex-ai-ci-summary.txt"
-grep -Fq '"file_id": "FILE-001"' "${canonical_output}/codex-ai-analysis.json"
-grep -Fq '"path": "payload.txt"' "${canonical_output}/codex-ai-report.json"
-grep -Fq '"id": "RUN-001"' "${canonical_output}/codex-ai-report.json"
-grep -Fq '"exit_code": 0' "${canonical_output}/codex-ai-report.json"
 run_case format-error format_error 0 30 0
 format_output="${test_root}/format-error/output"
 grep -Fxq "report_format_valid: true" "${format_output}/codex-ai-ci-summary.txt"
@@ -1354,7 +1352,7 @@ if ! grep -Fxq "failure_code: analysis_contract_failed" \
   cat "${schema_error_output}/codex-ai-ci-summary.txt" >&2
   exit 1
 fi
-grep -Fxq "test_execution_status: passed" \
+grep -Fxq "test_execution_status: insufficient_evidence" \
   "${schema_error_output}/codex-ai-ci-summary.txt"
 if ! grep -Fq "Codex 审查结果整理失败" \
   "${schema_error_output}/codex-ai-comment.md"; then
@@ -1379,7 +1377,7 @@ run_case malformed-analysis malformed_analysis 0 30 1
 malformed_output="${test_root}/malformed-analysis/output"
 grep -Fxq "failure_code: analysis_contract_failed" \
   "${malformed_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_execution_status: passed" \
+grep -Fxq "test_execution_status: insufficient_evidence" \
   "${malformed_output}/codex-ai-ci-summary.txt"
 grep -Fq "Codex 审查结果整理失败" \
   "${malformed_output}/codex-ai-comment.md"
@@ -1393,7 +1391,7 @@ trusted_input_output="${test_root}/trusted-input-error/output"
 grep -Fxq "status: fail" "${trusted_input_output}/codex-ai-ci-summary.txt"
 grep -Fxq "failure_code: trusted_report_input_failed" \
   "${trusted_input_output}/codex-ai-ci-summary.txt"
-grep -Fxq "test_execution_status: passed" \
+grep -Fxq "test_execution_status: insufficient_evidence" \
   "${trusted_input_output}/codex-ai-ci-summary.txt"
 grep -Fq "Codex 审查所需的任务证据校验失败" \
   "${trusted_input_output}/codex-ai-comment.md"

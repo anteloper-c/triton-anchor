@@ -1574,6 +1574,12 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
     validation_artifact_items = exclude_seen_comment_items(
         unique_comment_items(validation_artifact_items), validation_basis_items
     )
+    if (
+        not validation_basis_items
+        and not validation_artifact_items
+        and test_execution["status"] == "not_run"
+    ):
+        validation_artifact_items.append("本次未新增验证命令。")
     validation_limit_items = unique_comment_items(
         validation_summary_limit_items
         + public_validation_limit_items(document, args, identifier_descriptions)
