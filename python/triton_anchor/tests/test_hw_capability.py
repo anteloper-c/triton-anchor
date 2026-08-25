@@ -85,3 +85,59 @@ class TestHWCapability:
                 ptr_model="structured",
                 # Missing matrix_cap!
             )
+
+    @pytest.mark.parametrize(
+        (
+            "compute_paradigm",
+            "anchor_ir_track",
+            "ptr_model",
+            "valid_capability",
+            "conflicting_capability",
+            "expected_capability",
+        ),
+        [
+            (
+                ComputeParadigm.AME_MATRIX,
+                AnchorIRTrack.LINALG,
+                "structured",
+                {"matrix_cap": MatrixCapability()},
+                {"tensor_cap": TensorCapability()},
+                "tensor_cap",
+            ),
+            (
+                ComputeParadigm.TENSOR_PROCESSOR,
+                AnchorIRTrack.LINALG,
+                "axis_info",
+                {"tensor_cap": TensorCapability()},
+                {"matrix_cap": MatrixCapability()},
+                "matrix_cap",
+            ),
+            (
+                ComputeParadigm.GPGPU,
+                AnchorIRTrack.TRITON_GPU,
+                "gpu",
+                {"gpgpu_cap": GPGPUCapability()},
+                {"tensor_cap": TensorCapability()},
+                "tensor_cap",
+            ),
+        ],
+    )
+    def test_validation_rejects_conflicting_capability(
+        self,
+        compute_paradigm,
+        anchor_ir_track,
+        ptr_model,
+        valid_capability,
+        conflicting_capability,
+        expected_capability,
+    ):
+        with pytest.raises(ValueError, match=f"does not allow {expected_capability}"):
+            HWCapability(
+                name="bad",
+                arch_family="test",
+                compute_paradigm=compute_paradigm,
+                anchor_ir_track=anchor_ir_track,
+                ptr_model=ptr_model,
+                **valid_capability,
+                **conflicting_capability,
+            )
