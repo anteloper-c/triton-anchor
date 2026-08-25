@@ -259,25 +259,37 @@ def test_public_validation_uses_fact_groups_without_internal_status_labels(tmp_p
     assert "Runner 校验：" not in validation
 
 
-def test_public_validation_keeps_counts_for_every_mixed_command_outcome(tmp_path):
+def test_public_validation_explains_mixed_outcomes_without_internal_details(tmp_path):
     document = analysis()
     annotated_commands = [
-        ("check-success", "none"),
-        ("check-stable", "product"),
-        ("check-stable", "product"),
-        ("check-flaky", "flaky"),
-        ("check-flaky", "flaky"),
-        ("check-infrastructure", "infrastructure"),
-        ("check-unknown", "unknown"),
+        ("check-success", "none", "缓存失效路径验证通过。"),
+        (
+            "check-stable",
+            "product",
+            "缓存恢复后仍读取旧状态，重复验证得到相同结果。",
+        ),
+        (
+            "check-stable",
+            "product",
+            "缓存恢复后仍读取旧状态，重复验证得到相同结果。",
+        ),
+        ("check-flaky", "flaky", "同一路径重复验证时观察到不同结果。"),
+        ("check-flaky", "flaky", "同一路径重复验证时观察到不同结果。"),
+        (
+            "check-infrastructure",
+            "infrastructure",
+            "依赖服务不可用，未能完成集成路径验证。",
+        ),
+        ("check-unknown", "unknown", "该验证未通过，当前未确认具体原因。"),
     ]
     document["test_assessment"]["commands"] = [
         {
             "command": command,
             "purpose": "综合定向验证",
-            "evidence": "执行事实来自可信命令记录。",
+            "evidence": evidence,
             "failure_classification": classification,
         }
-        for command, classification in annotated_commands
+        for command, classification, evidence in annotated_commands
     ]
     exits = [0, 1, 1, 1, 0, 2, 1]
     report = build(
@@ -289,7 +301,7 @@ def test_public_validation_keeps_counts_for_every_mixed_command_outcome(tmp_path
                 "exit_code": exit_code,
                 "duration_seconds": 0.1,
             }
-            for (command, _), exit_code in zip(annotated_commands, exits)
+            for (command, _, _), exit_code in zip(annotated_commands, exits)
         ],
     )
 
@@ -305,12 +317,34 @@ def test_public_validation_keeps_counts_for_every_mixed_command_outcome(tmp_path
     }
     comment = RENDERER.render_comment(report, comment_args())
     validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
-    assert "综合定向验证共 7 条执行记录" in validation
-    assert "2 条成功" in validation
-    assert "2 条可稳定复现的失败" in validation
-    assert "1 条重复执行结果不一致" in validation
-    assert "1 条受运行环境限制" in validation
-    assert "1 条失败待归因" in validation
+    assert "综合定向验证共 7 项验证，2 项通过，5 项未通过或未完成" in validation
+    assert "缓存恢复后仍读取旧状态，重复验证得到相同结果" in validation
+    assert "同一路径重复验证时观察到不同结果" in validation
+    assert "依赖服务不可用，未能完成集成路径验证" in validation
+    assert "相关验证目标未通过，整体结论必须保留该失败" in validation
+    assert "其他已通过验证仍然有效" in validation
+    for internal_detail in (
+        "执行记录",
+        "RUN-",
+        "check-success",
+        "check-stable",
+        "check-flaky",
+        "check-infrastructure",
+        "check-unknown",
+        "exit_code",
+        "duration_seconds",
+        "stable_failure",
+        "flaky_failure",
+        "infrastructure_failure",
+        "失败待归因",
+        "失败或限制说明该验证目标尚未完全形成结论",
+    ):
+        assert internal_detail not in validation
+
+    full_report = RENDERER.render_report(report, comment_args())
+    assert "| RUN-001 |" in full_report
+    assert "`check-stable`" in full_report
+    assert "| 编号 | 功能 | 状态 | 退出码 | 耗时（秒） | 命令 | 证据 |" in full_report
 
 
 def test_public_validation_sanitizes_internal_sources_and_enums(tmp_path):
@@ -500,15 +534,25 @@ def test_deterministic_ci_public_modes_are_explicit_and_backward_compatible(
             [1],
             "product",
             "insufficient_evidence",
-            "执行失败，现有记录尚不足以完成稳定性或根因归因",
+            "验证未通过，当前未确认具体原因",
         ),
-        ([1, 1], "product", "stable_failure", "出现可稳定复现的失败"),
-        ([1, 0], "flaky", "flaky_failure", "1 条重复执行结果不一致"),
+        (
+            [1, 1],
+            "product",
+            "stable_failure",
+            "重复验证仍未通过，相关失败可以复现",
+        ),
+        (
+            [1, 0],
+            "flaky",
+            "flaky_failure",
+            "重复验证结果不一致，当前尚不能确认其稳定性",
+        ),
         (
             [2],
             "infrastructure",
             "infrastructure_failure",
-            "受运行环境限制，未能完整执行",
+            "验证受运行环境限制，未取得预期结果",
         ),
     ],
 )
@@ -533,8 +577,7 @@ def test_failure_status_is_derived_from_repeated_ledger(
     validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
     assert public_result in validation
     if expected == "infrastructure_failure":
-        assert "所执行的验证均受运行环境限制" in validation
-        assert "部分验证受运行环境限制" not in validation
+        assert "受运行环境限制的验证路径尚未完成" in validation
 
 
 def test_not_needed_with_no_commands_derives_not_run(tmp_path):
@@ -787,9 +830,18 @@ def test_fallback_derives_stable_failure_from_repeated_trusted_facts(tmp_path):
     assert {
         item["status"] for item in report["test_execution"]["commands"]
     } == {"stable_failure"}
-    assert "出现可稳定复现的失败" in RENDERER.render_comment(
-        report, comment_args()
-    )
+    comment = RENDERER.render_comment(report, comment_args())
+    assert "重复验证仍未通过，相关失败可以复现" in comment
+    assert "可信执行记录" not in comment
+    assert "RUN-" not in comment
+    assert command not in comment
+    assert "退出码" not in comment
+    assert "耗时" not in comment
+
+    full_report = RENDERER.render_report(report, comment_args())
+    assert "| RUN-001 |" in full_report
+    assert f"`{command}`" in full_report
+    assert "| 编号 | 功能 | 状态 | 退出码 | 耗时（秒） | 命令 | 证据 |" in full_report
 
 
 def test_fallback_distinguishes_empty_and_unavailable_command_ledger(tmp_path):
