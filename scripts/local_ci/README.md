@@ -160,6 +160,8 @@ cp scripts/local_ci/config.example.env /opt/local-ci/config.env
 
 PR 的 deterministic supervisor 不 source Merge-Result 中的 `envsetup.sh`。poller 从已验证的精确 base ref 提取该文件放入本次 runner 快照，候选版本仅执行 `bash -n`。任何成功选中的 profile 都继续要求现有 `frontend_build` 和 `frontend_smoke`；`RUN_BACKEND_STAGES=true` 时沿用现有后端 required 逻辑，`false` 时后端构建、JIT、FlagGems 和性能阶段统一记录为 `skipped`。计划部署的 3.3/3.6 frontend profile 使用后一种配置；服务器部署并真实运行前，不能把代码中的路由目标描述为已经验证，部署后的绿色结果也只表示当前前端范围通过。
 
+启用后端阶段时，runner 会在安装新 frontend wheel 后、第一次 Python 导入和 `frontend_smoke` 之前准备 profile 的 backend 环境。原因是 Triton 导入过程会通过 `triton.backends` entry points 自动发现已安装的外部后端；如果此时还没有加载 profile 的 backend `envsetup.sh`，frontend smoke 可能把缺少运行库路径或芯片环境误报为 backend ABI/安装失败。backend wheel 重建完成后 runner 会再次准备该环境，再执行 backend discovery、smoke 和 JIT。frontend-only profile 的环境准备是 no-op，不会读取空的 backend 配置。
+
 部署前只检查依赖、不创建长期 Docker 资源：
 
 ```bash

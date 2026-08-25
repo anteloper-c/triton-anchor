@@ -45,6 +45,63 @@ def test_frontend_only_profile_skips_every_backend_dependent_stage() -> None:
     assert 'required_statuses+=(' in RUNNER
 
 
+def test_backend_environment_wraps_frontend_and_rebuilt_backend_validation() -> None:
+    main_start = RUNNER.index("Local CI commit: ${target_sha}")
+    prepare_frontend = RUNNER.index(
+        'prepare_backend_environment "frontend validation"', main_start
+    )
+    verify_frontend = RUNNER.index(
+        "run_logged verify-triton-anchor-import", prepare_frontend
+    )
+    frontend_smoke = RUNNER.index(
+        'FRONTEND_SMOKE_STATUS "Frontend smoke"', verify_frontend
+    )
+    rebuild_backend = RUNNER.index("rebuild_backend\n", frontend_smoke)
+    refresh_backend = RUNNER.index(
+        'prepare_backend_environment "rebuilt backend validation"',
+        rebuild_backend,
+    )
+    verify_backend = RUNNER.index(
+        "run_logged verify-backend-discovery", refresh_backend
+    )
+
+    assert (
+        prepare_frontend
+        < verify_frontend
+        < frontend_smoke
+        < rebuild_backend
+        < refresh_backend
+        < verify_backend
+    )
+
+
+def test_backend_environment_preparation_is_a_frontend_only_noop() -> None:
+    start = RUNNER.index("prepare_backend_environment() {")
+    end = RUNNER.index("\n}\n\nfetch_performance_baseline()", start) + 3
+    function = RUNNER[start:end]
+    script = f"""
+set -euo pipefail
+source_backend_env() {{ calls=$((calls + 1)); }}
+{function}
+calls=0
+RUN_BACKEND_STAGES=false
+prepare_backend_environment "frontend validation"
+printf 'frontend_only_calls=%s\\n' "${{calls}}"
+RUN_BACKEND_STAGES=true
+prepare_backend_environment "frontend validation"
+printf 'backend_enabled_calls=%s\\n' "${{calls}}"
+"""
+    result = subprocess.run(
+        ["bash", "-c", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "frontend_only_calls=0" in result.stdout
+    assert "backend_enabled_calls=1" in result.stdout
+
+
 def test_frontend_only_empty_backend_path_passes_checkout_overlap_guard(
     tmp_path: Path,
 ) -> None:
