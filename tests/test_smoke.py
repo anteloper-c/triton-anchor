@@ -184,6 +184,21 @@ def test_hw_capability():
     except ValueError:
         print("  校验逻辑正确：缺少 tensor_cap 时抛出 ValueError ✓")
 
+    # 测试校验：Paradigm 不允许携带其他范式的 Cap
+    try:
+        HWCapability(
+            name="conflicting-tpu",
+            arch_family="tpu",
+            compute_paradigm=ComputeParadigm.TENSOR_PROCESSOR,
+            anchor_ir_track="linalg",
+            ptr_model="axis_info",
+            tensor_cap=TensorCapability(),
+            matrix_cap=MatrixCapability(),
+        )
+        raise AssertionError("应该抛出 ValueError，但没有")
+    except ValueError:
+        print("  校验逻辑正确：互斥 capability 冲突时抛出 ValueError ✓")
+
     # 测试 GPUTarget 兼容性
     target = hw_tpu.to_gpu_target()
     print(f"  to_gpu_target() 兼容性转换成功: {target}")

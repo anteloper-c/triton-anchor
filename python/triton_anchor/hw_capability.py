@@ -329,6 +329,20 @@ class HWCapability:
             add("error", "paradigm_capability", f"{self.compute_paradigm.name} requires {cap_name}")
             return
 
+        unexpected_capabilities = [
+            name
+            for name, value in required_caps.values()
+            if value is not None and name != cap_name
+        ]
+        if unexpected_capabilities:
+            add(
+                "error",
+                "paradigm_capability",
+                f"{self.compute_paradigm.name} does not allow "
+                f"{', '.join(unexpected_capabilities)}",
+            )
+            return
+
         add("ok", "paradigm_capability", f"{self.compute_paradigm.name} uses {cap_name}")
 
     def _check_capability_values(self, add) -> None:

@@ -86,6 +86,18 @@ class TestHWCapability:
                 # Missing matrix_cap!
             )
 
+    def test_validation_rejects_conflicting_capability(self):
+        with pytest.raises(ValueError, match="does not allow matrix_cap"):
+            HWCapability(
+                name="bad-tpu",
+                arch_family="tpu",
+                compute_paradigm=ComputeParadigm.TENSOR_PROCESSOR,
+                anchor_ir_track=AnchorIRTrack.LINALG,
+                ptr_model="axis_info",
+                tensor_cap=TensorCapability(),
+                matrix_cap=MatrixCapability(),
+            )
+
     def test_preferred_adapter_must_be_registered(self):
         with pytest.raises(ValueError, match="not registered"):
             HWCapability(
