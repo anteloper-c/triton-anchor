@@ -221,16 +221,37 @@ class HWCapability:
                 raise ValueError(
                     f"AME_MATRIX paradigm requires matrix_cap (hw: {self.name})"
                 )
+            expected_capability = "matrix_cap"
 
         elif self.compute_paradigm == ComputeParadigm.TENSOR_PROCESSOR:
             if self.tensor_cap is None:
                 raise ValueError(
                     f"TENSOR_PROCESSOR paradigm requires tensor_cap (hw: {self.name})"
                 )
+            expected_capability = "tensor_cap"
 
         elif self.compute_paradigm == ComputeParadigm.GPGPU:
             if self.gpgpu_cap is None:
                 raise ValueError(f"GPGPU paradigm requires gpgpu_cap (hw: {self.name})")
+            expected_capability = "gpgpu_cap"
+
+        else:
+            return
+
+        unexpected_capabilities = [
+            name
+            for name, capability in (
+                ("matrix_cap", self.matrix_cap),
+                ("tensor_cap", self.tensor_cap),
+                ("gpgpu_cap", self.gpgpu_cap),
+            )
+            if capability is not None and name != expected_capability
+        ]
+        if unexpected_capabilities:
+            raise ValueError(
+                f"{self.compute_paradigm.name} paradigm does not allow "
+                f"{', '.join(unexpected_capabilities)} (hw: {self.name})"
+            )
 
     def __post_init__(self):
         """Validate capability fields and resolve AnchorIRTrack.
