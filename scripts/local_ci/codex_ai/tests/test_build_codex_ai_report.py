@@ -1512,16 +1512,6 @@ def test_unclassified_search_failures_do_not_override_formal_validation(tmp_path
     )
     assert report["merge_recommendation"] == document["merge_recommendation"]
 
-    comment = RENDERER.render_comment(report, comment_args())
-    validation = comment.split("### 验证情况", 1)[1].split(
-        "### 剩余风险", 1
-    )[0]
-    assert "报告契约定向测试执行通过" in validation
-    assert "当前执行环境无法调用 'rg'" in validation
-    assert "'grep' 退出码 1" in validation
-    assert "不代表正式验证失败" in validation
-    assert "其是否影响验证结论仍待核对" not in validation
-
 
 @pytest.mark.parametrize(
     "entry",

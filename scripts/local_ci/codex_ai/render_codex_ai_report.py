@@ -156,12 +156,13 @@ CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 MAX_ASSESSMENT_EVIDENCE_ITEMS = 8
 MAX_TEST_EXECUTION_SUMMARY_ITEMS = 10
 INTERNAL_COMMENT_ID_RE = re.compile(
-    r"(?<![A-Za-z0-9_.-])(AI|TEST|RUN)-0*([1-9][0-9]*)"
+    r"(?<![A-Za-z0-9_.-])(AI|FILE|TEST|RUN)-0*([1-9][0-9]*)"
     r"(?![A-Za-z0-9_.-])[ \t]*",
     re.IGNORECASE,
 )
 PUBLIC_COMMENT_ID_TEMPLATES = {
     "AI": "问题 {number}",
+    "FILE": "变更文件 {number}",
     "TEST": "建议测试 {number}",
     "RUN": "相关验证",
 }
@@ -832,6 +833,9 @@ MAX_COMMENT_VALIDATION_COMMAND_ITEMS = 6
 MAX_COMMENT_VALIDATION_LIMIT_ITEMS = 6
 MAX_COMMENT_RESIDUAL_RISK_ITEMS = 6
 REPORT_NORMALIZATION_RISK_PREFIX = "报告完整性提醒："
+COMMAND_RECORD_NORMALIZATION_RISK_RE = re.compile(
+    r"^报告完整性提醒：[0-9]+ 条非零退出命令没有可匹配的用途说明"
+)
 
 
 def comment_inline(value: Any, limit: int = 2_000) -> str:
@@ -900,6 +904,29 @@ INTERNAL_FAILURE_NARRATIVE_REPLACEMENTS = (
         "Codex 自动审查验证结果汇总阶段未完成",
     ),
 )
+PUBLIC_INTERNAL_NARRATIVE_REPLACEMENTS = (
+    (re.compile(r"\bunclassified\b", re.IGNORECASE), "用途未说明"),
+    (re.compile(r"\bledger\b", re.IGNORECASE), "命令执行记录"),
+    (re.compile(r"\btest_execution\.status\b", re.IGNORECASE), "正式验证状态"),
+    (re.compile(r"\bmerge_recommendation\b", re.IGNORECASE), "合入建议"),
+    (re.compile(r"\bverdict\b", re.IGNORECASE), "审查结论"),
+    (re.compile(r"\bbuilder\b", re.IGNORECASE), "报告生成逻辑"),
+    (re.compile(r"\brenderer\b", re.IGNORECASE), "公开评论生成逻辑"),
+    (re.compile(r"\bschema\b", re.IGNORECASE), "报告格式"),
+    (re.compile(r"\bcanonical\b", re.IGNORECASE), "标准报告"),
+    (
+        re.compile(r"\bderive_execution_status\b", re.IGNORECASE),
+        "验证状态派生逻辑",
+    ),
+    (
+        re.compile(r"\bpublic_unclassified_failure_items\b", re.IGNORECASE),
+        "辅助检查公开说明逻辑",
+    ),
+)
+PUBLIC_INTERNAL_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])(?:/workspace|/tmp)/[^\s`'\"，。；：！？（）()]+"
+)
+PUBLIC_CODE_SPAN_RE = re.compile(r"`([^`\r\n]+)`")
 
 
 def replace_public_runner_term(text: str) -> str:
@@ -913,33 +940,54 @@ def replace_public_runner_term(text: str) -> str:
     return re.sub(r"(?<=自动检查)\s+(?=[\u3400-\u9fff，。；：！？])", "", text)
 
 
+def public_code_span(match: re.Match[str]) -> str:
+    text = " ".join(match.group(1).split())
+    lowered = text.lower()
+    if "/workspace/" in lowered or "/tmp/" in lowered:
+        if "pytest" in lowered:
+            return "定向测试命令"
+        if re.search(r"(?:^|[\s/])(rg|grep)(?:\.exe)?(?:\s|$)", lowered):
+            return "代码搜索命令"
+        return "辅助检查命令"
+    if re.match(r"^(?:python[0-9.]*\s+-m\s+pytest|pytest)(?:\s|$)", lowered):
+        return "定向测试命令"
+    if re.search(r"(?:^|[\s/])(rg|grep)(?:\.exe)?(?:\s|$)", lowered):
+        return "代码搜索命令"
+    if re.match(
+        r"^(?:(?:/bin/)?(?:bash|sh|zsh)\s+-c\b|sed\b|cat\b|head\b|tail\b)",
+        lowered,
+    ):
+        return "辅助信息读取命令"
+    return match.group(0)
+
+
 def public_narrative_text(
     value: str, identifier_descriptions: dict[str, str] | None = None
 ) -> str:
-    parts = re.split(r"(`[^`\r\n]*`)", value)
-    for index in range(0, len(parts), 2):
-        text = parts[index]
-        if identifier_descriptions is not None:
-            text = INTERNAL_COMMENT_ID_RE.sub(
-                lambda match: public_comment_identifier(
-                    match, identifier_descriptions
-                ),
-                text,
-            )
-        text = INTERNAL_VALIDATION_ASSIGNMENT_RE.sub(
-            lambda match: INTERNAL_VALIDATION_ENUM_LABELS[match.group(1).lower()],
+    text = value
+    if identifier_descriptions is not None:
+        text = INTERNAL_COMMENT_ID_RE.sub(
+            lambda match: public_comment_identifier(match, identifier_descriptions),
             text,
         )
-        text = INTERNAL_VALIDATION_ENUM_RE.sub(
-            lambda match: INTERNAL_VALIDATION_ENUM_LABELS[match.group(1).lower()],
-            text,
-        )
-        for prefix in VALIDATION_SUMMARY_PREFIXES:
-            text = text.replace(prefix, "")
-        for pattern, replacement in INTERNAL_FAILURE_NARRATIVE_REPLACEMENTS:
-            text = pattern.sub(replacement, text)
-        parts[index] = replace_public_runner_term(text)
-    return "".join(parts).strip()
+    text = PUBLIC_CODE_SPAN_RE.sub(public_code_span, text)
+    text = PUBLIC_INTERNAL_PATH_RE.sub("任务内部路径", text)
+    text = INTERNAL_VALIDATION_ASSIGNMENT_RE.sub(
+        lambda match: INTERNAL_VALIDATION_ENUM_LABELS[match.group(1).lower()],
+        text,
+    )
+    text = INTERNAL_VALIDATION_ENUM_RE.sub(
+        lambda match: INTERNAL_VALIDATION_ENUM_LABELS[match.group(1).lower()],
+        text,
+    )
+    for prefix in VALIDATION_SUMMARY_PREFIXES:
+        text = text.replace(prefix, "")
+    for pattern, replacement in INTERNAL_FAILURE_NARRATIVE_REPLACEMENTS:
+        text = pattern.sub(replacement, text)
+    for pattern, replacement in PUBLIC_INTERNAL_NARRATIVE_REPLACEMENTS:
+        text = pattern.sub(replacement, text)
+    text = text.removeprefix(REPORT_NORMALIZATION_RISK_PREFIX)
+    return replace_public_runner_term(text).strip()
 
 
 def public_validation_summary_item(
@@ -1077,40 +1125,43 @@ def public_unresolved_diagnostic_items(
 def public_unclassified_failure_items(
     commands: list[dict[str, Any]],
 ) -> list[str]:
-    items: list[str] = []
-    for command in commands:
-        if command["role"] != "unclassified" or command["exit_code"] == 0:
-            continue
-        command_text = " ".join(command["command"].split())
-        command_excerpt = f"`{comment_inline(command_text, 180)}`"
-        exit_code = command["exit_code"]
-        is_rg = re.search(
-            r"(?<![\w.-])rg(?:\.exe)?(?=\s|$|['\"])", command_text, re.IGNORECASE
-        )
-        is_grep = re.search(
-            r"(?<![\w.-])grep(?:\.exe)?(?=\s|$|['\"])",
-            command_text,
-            re.IGNORECASE,
-        )
-        if (is_rg or is_grep) and exit_code == 1:
-            tool = "rg" if is_rg else "grep"
-            items.append(
-                f"搜索命令 {command_excerpt} 没有找到匹配项（`{tool}` 退出码 1）；"
-                "这表示本次搜索没有结果，不代表正式验证失败。"
-            )
-        elif (is_rg or is_grep) and exit_code == 127:
-            tool = "rg" if is_rg else "grep"
-            items.append(
-                f"搜索命令 {command_excerpt} 未能启动（退出码 127，当前执行环境无法调用 "
-                f"`{tool}`）；该条搜索本身未完成，但不会覆盖正式验证的执行结果。"
-            )
-        else:
-            items.append(
-                f"命令 {command_excerpt} 以退出码 {exit_code} 结束；现有记录未说明"
-                "它用于哪项检查或具体失败原因。该记录不会覆盖正式验证状态，"
-                "对应检查的影响仍需结合审查说明核对。"
-            )
-    return items
+    if not any(
+        command["role"] == "unclassified" and command["exit_code"] != 0
+        for command in commands
+    ):
+        return []
+    return [
+        "部分辅助检查没有形成可确认的结果；其结果不会被当作正式验证结论，"
+        "具体执行记录保留在完整报告中。"
+    ]
+
+
+def public_comment_identifier_descriptions(
+    document: dict[str, Any],
+) -> dict[str, str]:
+    descriptions = {
+        f"FILE-{index:03d}": changed_file["path"]
+        for index, changed_file in enumerate(document["changed_files"], start=1)
+    }
+    descriptions.update(
+        {
+            finding["id"]: public_narrative_text(finding["title"])
+            for finding in document["findings"] + document["unlocated_findings"]
+        }
+    )
+    descriptions.update(
+        {
+            test["id"]: public_narrative_text(test["description"])
+            for test in document["suggested_tests"]
+        }
+    )
+    descriptions.update(
+        {
+            command["id"]: public_narrative_text(command["purpose"])
+            for command in document["test_execution"]["commands"]
+        }
+    )
+    return descriptions
 
 
 def public_validation_limit_items(
@@ -1455,6 +1506,10 @@ def has_public_validation_limitations(
             "unavailable",
         }
         or unresolved_diagnostic_groups(test_execution["commands"])
+        or any(
+            command["role"] == "unclassified" and command["exit_code"] != 0
+            for command in test_execution["commands"]
+        )
         or document["suggested_tests"]
         or getattr(args, "local_ci_execution_mode", "full") != "full"
         or getattr(args, "backend_validation_scope", "full") != "full"
@@ -1473,10 +1528,7 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
     test_execution_summary = test_execution_summary_items(
         test_execution["summary"], "test_execution.summary"
     )
-    identifier_descriptions = {
-        command["id"]: public_narrative_text(command["purpose"])
-        for command in test_execution["commands"]
-    }
+    identifier_descriptions = public_comment_identifier_descriptions(document)
     assessment = document["change_request_assessment"]
     assessment_evidence = assessment_evidence_items(
         assessment["evidence"], "change_request_assessment.evidence"
@@ -1645,7 +1697,11 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
         "### 剩余风险",
         "",
     ])
-    residual_risks = document["residual_risks"]
+    residual_risks = [
+        risk
+        for risk in document["residual_risks"]
+        if COMMAND_RECORD_NORMALIZATION_RISK_RE.search(risk) is None
+    ]
     if residual_risks:
         shown_residual_risks = residual_risks[:MAX_COMMENT_RESIDUAL_RISK_ITEMS]
         lines.extend(
@@ -1682,11 +1738,17 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
         lines.append("| 无 | 无 | 本次差异没有变更文件。 | 不适用。 |")
     else:
         for index, changed_file in enumerate(changed_files):
+            public_summary = public_narrative_text(
+                changed_file["summary"], identifier_descriptions
+            )
+            public_impact = public_narrative_text(
+                changed_file["impact"], identifier_descriptions
+            )
             row = (
                 f"| `{comment_inline(changed_file['path'], 500)}` | "
                 f"{CHANGE_TYPE_LABELS[changed_file['change_type']]} | "
-                f"{comment_inline(changed_file['summary'], 800)} | "
-                f"{comment_inline(changed_file['impact'], 800)} |"
+                f"{comment_inline(public_summary, 800)} | "
+                f"{comment_inline(public_impact, 800)} |"
             )
             candidate = "\n".join([*lines, row, *table_suffix])
             if len(candidate) > MAX_COMMENT_LENGTH:

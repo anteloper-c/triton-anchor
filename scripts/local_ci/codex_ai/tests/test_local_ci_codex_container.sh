@@ -1333,7 +1333,6 @@ if grep -Fq "逐文件语义说明" <<< "${recoverable_validation_section}"; the
   echo "报告完整性提醒错误进入了公开验证情况" >&2
   exit 1
 fi
-grep -Fq "报告完整性提醒：" "${recoverable_output}/codex-ai-comment.md"
 if grep -Fq "结构化报告未通过" \
   "${recoverable_output}/codex-ai-ci-summary.txt"; then
   echo "可恢复的结构化载荷偏差错误作废了整份报告" >&2
