@@ -13,10 +13,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 
-SHARED_SCRIPT_DIR = Path(__file__).resolve().parents[1] / "shared"
+CODEX_AI_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(CODEX_AI_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(CODEX_AI_SCRIPT_DIR))
+SHARED_SCRIPT_DIR = CODEX_AI_SCRIPT_DIR.parent / "shared"
 if str(SHARED_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SHARED_SCRIPT_DIR))
 from finding_locations import parse_finding_line_range  # noqa: E402
+from codex_jsonl_evidence import normalize_command  # noqa: E402
 
 
 CHINESE_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
@@ -59,6 +63,7 @@ FAILURE_CLASSIFICATIONS = {
     "infrastructure",
     "unknown",
 }
+COMMAND_ROLES = {"validation", "diagnostic"}
 WARNING_EXECUTION_STATUSES = {
     "stable_failure",
     "flaky_failure",
@@ -122,6 +127,7 @@ SUGGESTED_TEST_KEYS = {"priority", "target", "description"}
 TEST_ASSESSMENT_KEYS = {"evidence_level", "summary", "commands"}
 COMMAND_ANNOTATION_KEYS = {
     "command",
+    "role",
     "purpose",
     "evidence",
     "failure_classification",
@@ -365,6 +371,9 @@ def semantic_command_annotations(
         raw = require_object(value, location)
         require_exact_keys(raw, COMMAND_ANNOTATION_KEYS, location)
         command = require_string(raw["command"], f"{location}.command")
+        role = require_string(raw["role"], f"{location}.role")
+        if role not in COMMAND_ROLES:
+            raise ValueError(f"{location}.role is invalid")
         purpose = require_string(raw["purpose"], f"{location}.purpose")
         evidence = require_string(raw["evidence"], f"{location}.evidence")
         classification = require_string(
@@ -372,10 +381,12 @@ def semantic_command_annotations(
         )
         if classification not in FAILURE_CLASSIFICATIONS:
             raise ValueError(f"{location}.failure_classification is invalid")
-        if not command.strip():
+        normalized_command = normalize_command(command)
+        if normalized_command is None:
             continue
-        result[command.strip()].append(
+        result[normalized_command].append(
             {
+                "role": role,
                 "purpose": command_purpose_or_default(purpose),
                 "evidence": text_or_default(
                     evidence, "执行结果来自可信 Codex JSONL 事件。"
@@ -397,10 +408,12 @@ def build_commands(
     commands: list[dict[str, Any]] = []
     classifications: list[str] = []
     for index, fact in enumerate(ledger, start=1):
-        if annotations[fact["command"]]:
-            annotation = annotations[fact["command"]].popleft()
+        command_key = normalize_command(fact["command"]) or fact["command"]
+        if annotations[command_key]:
+            annotation = annotations[command_key].popleft()
         else:
             annotation = {
+                "role": "unclassified",
                 "purpose": "Codex 执行的验证或诊断命令",
                 "evidence": "执行结果来自可信 Codex JSONL 事件。",
                 "failure_classification": (
@@ -414,6 +427,7 @@ def build_commands(
         commands.append(
             {
                 "id": f"RUN-{index:03d}",
+                "role": annotation["role"],
                 "purpose": annotation["purpose"],
                 "command": fact["command"],
                 "exit_code": fact["exit_code"],
@@ -472,9 +486,21 @@ def derive_execution_status(
 ) -> str:
     if evidence_level == "test_generation_error":
         return "test_generation_error"
-    if not commands:
+    validation_commands = [
+        command for command in commands if command["role"] == "validation"
+    ]
+    if any(
+        command["role"] == "unclassified" and command["exit_code"] != 0
+        for command in commands
+    ):
+        return "insufficient_evidence"
+    if not validation_commands:
+        if evidence_level == "unavailable" and commands:
+            return "insufficient_evidence"
         return "not_run"
-    failed = [command for command in commands if command["exit_code"] != 0]
+    failed = [
+        command for command in validation_commands if command["exit_code"] != 0
+    ]
     if failed:
         statuses = {command["status"] for command in failed}
         if statuses == {"infrastructure_failure"}:
@@ -485,6 +511,20 @@ def derive_execution_status(
             return "stable_failure"
         return "insufficient_evidence"
     return "passed"
+
+
+def unresolved_diagnostic_groups(
+    commands: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for command in commands:
+        if command["role"] == "diagnostic":
+            groups[command["purpose"]].append(command)
+    return {
+        purpose: items
+        for purpose, items in groups.items()
+        if items and not any(item["exit_code"] == 0 for item in items)
+    }
 
 
 def normalize_assessment(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -818,7 +858,21 @@ def build_report(args: argparse.Namespace) -> None:
     changed_files, changed_file_warnings = build_changed_files(
         analysis, manifest, commands
     )
-    normalization_warnings = finding_warnings + changed_file_warnings
+    unclassified_failure_count = sum(
+        command["role"] == "unclassified" and command["exit_code"] != 0
+        for command in commands
+    )
+    command_warnings = (
+        [
+            f"{unclassified_failure_count} 条非零退出命令未标明验证或诊断用途，"
+            "其对审查结论的影响仍需核对。"
+        ]
+        if unclassified_failure_count
+        else []
+    )
+    normalization_warnings = (
+        finding_warnings + changed_file_warnings + command_warnings
+    )
     execution_summary = unique_in_order(codex_execution_summary)[:10]
     execution_status = derive_execution_status(
         evidence_level,

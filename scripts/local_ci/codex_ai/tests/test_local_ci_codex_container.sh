@@ -266,6 +266,7 @@ def write_analysis(
                 {
                     "purpose": "失败路径定向诊断",
                     "command": command,
+                    "role": "validation",
                     "evidence": "定向失败诊断用例执行通过。",
                     "failure_classification": "none",
                 }
@@ -304,6 +305,7 @@ def write_analysis(
                 {
                     "purpose": "状态桥接文案回归测试",
                     "command": command,
+                    "role": "validation",
                     "evidence": "桥接单测执行通过。",
                     "failure_classification": "none",
                 }
@@ -333,6 +335,7 @@ def write_analysis(
                 {
                     "purpose": "生成测试约束验证",
                     "command": command,
+                    "role": "validation",
                     "evidence": "定向测试命令执行通过。",
                     "failure_classification": "none",
                 }
@@ -365,6 +368,7 @@ def write_analysis(
                 {
                     "purpose": "生成代码路径定向测试",
                     "command": command,
+                    "role": "validation",
                     "evidence": "定向测试共执行一个用例并通过。",
                     "failure_classification": "none",
                 }
@@ -708,6 +712,8 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
         assert "累计测试预算不超过 2700 秒" in prompt
         assert "至少预留 450 秒" in prompt
         assert "失败用例最多额外复跑一次" in prompt
+        assert "role=validation" in prompt
+        assert "role=diagnostic" in prompt
         assert "默认避免运行全量测试或完整重编译" in prompt
         assert "test_assessment.evidence_level` 使用 `insufficient" in prompt
         expected = "false" if scenario == "docs_only" else "true"

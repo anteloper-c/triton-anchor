@@ -176,6 +176,7 @@ cat > "${valid_json}" <<'JSON'
       {
         "id": "RUN-001",
         "command": "python3 -m pytest python/tests/test_generated_cache.py",
+        "role": "validation",
         "purpose": "缓存版本失配定向测试",
         "exit_code": 0,
         "duration_seconds": 0.2,
@@ -238,7 +239,10 @@ grep -Fq -- "  - 代码差异缺少版本校验。" "${comment_md}"
 grep -Fq -- "  - 缓存版本失配定向测试复现了过期状态。" "${comment_md}"
 grep -Fq "### 验证情况" "${comment_md}"
 grep -Fq -- "- 验证内容与结果：" "${comment_md}"
-grep -Fq -- "  - 缓存版本失配定向测试执行成功。" "${comment_md}"
+if grep -Fq "条执行记录" "${comment_md}"; then
+  echo "PR 评论不应根据全部命令生成固定统计文案" >&2
+  exit 1
+fi
 grep -Fq -- "- 限制与未覆盖：" "${comment_md}"
 grep -Fq -- "  - 验证覆盖了版本变化后的缓存失效路径。" "${comment_md}"
 if grep -Eq -- "^- (验证依据|执行内容|执行结果)：" "${comment_md}"; then

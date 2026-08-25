@@ -143,7 +143,7 @@ Codex 应优先复用 `${LOCAL_CI_LOG}` 和 `${ARTIFACT_DIR}` 中已有的日志
 - 已执行或已复用的诊断足以支撑当前 AI 诊断结论时，`test_assessment.evidence_level` 必须使用 `sufficient`，即使本轮没有新增诊断测试文件；只有存在具体未关闭诊断缺口并写入 `suggested_tests` 时才使用 `insufficient`，相关风险边界可以同时写入 `residual_risks`。
 - 如果 artifact 缺失、路径不可读、产物与当前 checkout 不匹配，或需要全量测试/完整重编译才能完成归因但当前预算不允许执行，不得虚报为已归因或已验证通过，应写入 `residual_risks` 和 `suggested_tests`。
 - 你的 `test_assessment.evidence_level` 和验证说明会作为 Codex 对证据的语义判断保留；PR comment 只按“验证内容与结果”“限制与未覆盖”展示具体事实。Runner 从容器工作区事实推导 `generated_test_files`，从 Codex JSONL 推导命令退出码与耗时，再独立确定 `test_execution.status`、`verdict`、所有 ID 和完成标记。Runner 会用失败、环境限制或结构化语义缺口保守校正矛盾，但不会仅因某条命令退出 0 就把你明确给出的 `insufficient` 提升为证据充分。不要输出这些 runner 字段。
-- `test_assessment.commands` 用于给本轮命令补充用途、证据和失败归因。Runner 以 JSONL 中实际执行的命令为准：漏报命令不会使报告失败；多报或写错的命令会被忽略。
+- `test_assessment.commands` 用于给与审查结论有关的命令补充角色、用途、证据和失败归因。`role=validation` 只用于测试、构建或 lint 等正式验证；搜索、日志检查和环境探查使用 `role=diagnostic`。Runner 以 JSONL 中实际执行的命令为准，并且只根据 `validation` 命令派生 `test_execution.status`；诊断命令的结果和影响应写入 `test_assessment.summary`。通过且与结论无关的探索命令可以省略，每条非零退出命令必须标明为 `validation` 或 `diagnostic`；漏标不会使结构化报告失败，但会产生报告完整性提醒。若失败诊断后来通过等价命令完成，两个命令必须使用相同 `purpose` 并都写入本字段；同一诊断目的没有成功记录时会作为未覆盖限制保留，但不会仅因退出码非零改变 verdict。只有该限制使现有证据不足以支撑审查结论时，才使用 `evidence_level=insufficient`。多报或写错的命令会被忽略。
 - 失败命令的 `evidence` 应直接使用可公开的中文说明观察到的失败或已确认原因，以及它对对应诊断目标的影响；原因尚未确认时应明确说明。如可信记录能够确认它不影响哪些已完成检查，应具体列出这些检查，不要使用泛化的固定结论或作无证据推断。
 - `failure_classification` 不是退出状态：通过命令使用 `none`；产品失败使用 `product`；同命令至少一次通过且至少一次失败时使用 `flaky`；明确由环境、权限、网络、容器、设备或 runner 资源导致时使用 `infrastructure`；证据不足使用 `unknown`。Runner 会根据真实重复执行结果保守推导 stable/flaky/infrastructure，条件不足时使用 `insufficient_evidence`。
 - 计划但未执行的命令不要放入 `test_assessment.commands`，统一写入 `suggested_tests`。

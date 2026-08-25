@@ -5,7 +5,6 @@ import json
 import re
 import tarfile
 from argparse import Namespace
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +62,7 @@ def analysis(command: str = "python3 -m pytest generated_tests/test_generated.py
             "commands": [
                 {
                     "command": command,
+                    "role": "validation",
                     "purpose": "生成代码路径定向测试",
                     "evidence": "定向测试执行完成。",
                     "failure_classification": "none",
@@ -222,6 +222,7 @@ def test_builder_assigns_trusted_fields_and_pass_status(tmp_path):
     assert report["test_execution"]["status"] == "passed"
     assert report["test_execution"]["commands"][0] == {
         "id": "RUN-001",
+        "role": "validation",
         "purpose": "生成代码路径定向测试",
         "command": command,
         "exit_code": 0,
@@ -247,7 +248,7 @@ def test_public_validation_uses_fact_groups_without_internal_status_labels(tmp_p
     assert "  - 生成并执行了一个定向测试。" in validation
     assert "生成了 1 个任务级测试文件：generated_tests/test_generated.py。" in validation
     assert "'generated_tests/test_generated.py'" not in validation
-    assert "  - 生成代码路径定向测试执行成功。" in validation
+    assert "生成代码路径定向测试执行成功" not in validation
     assert "- 限制与未覆盖：" in validation
     assert "  - 本次未报告额外的验证限制或未覆盖项。" in validation
     assert "- 验证依据：" not in validation
@@ -259,87 +260,131 @@ def test_public_validation_uses_fact_groups_without_internal_status_labels(tmp_p
     assert "Runner 校验：" not in validation
 
 
-def test_public_validation_keeps_counts_for_every_mixed_command_outcome(tmp_path):
+def test_diagnostic_failure_does_not_override_formal_validation(tmp_path):
     document = analysis()
-    annotated_commands = [
-        ("check-success", "none", "缓存失效路径验证通过。"),
-        (
-            "check-stable",
-            "product",
-            "缓存恢复后仍读取旧状态；该路径的恢复行为未通过验证。",
-        ),
-        (
-            "check-stable",
-            "product",
-            "缓存恢复后仍读取旧状态；该路径的恢复行为未通过验证。",
-        ),
-        (
-            "check-flaky",
-            "flaky",
-            "同一输入重复执行时结果不一致；该路径的稳定性仍待复核。",
-        ),
-        (
-            "check-flaky",
-            "flaky",
-            "同一输入重复执行时结果不一致；该路径的稳定性仍待复核。",
-        ),
-        (
-            "check-infrastructure",
-            "infrastructure",
-            "当前环境未发现预期的 Sophgo backend；backend smoke 和 JIT 未完成验证。",
-        ),
-        (
-            "check-unknown",
-            "unknown",
-            "诊断输出未提供具体原因；异常恢复路径仍待确认。",
-        ),
+    document["test_assessment"]["summary"] = [
+        "报告契约定向测试共执行一百四十三个用例并全部通过。",
+        "旧字段搜索最初因搜索工具不可用而失败，随后使用现有工具完成等价检查；该诊断过程不影响报告契约测试结论。",
     ]
     document["test_assessment"]["commands"] = [
         {
-            "command": command,
-            "purpose": "综合定向验证",
-            "evidence": evidence,
-            "failure_classification": classification,
-        }
-        for command, classification, evidence in annotated_commands
+            "command": "python3 -m pytest report_tests.py",
+            "role": "validation",
+            "purpose": "报告契约定向测试",
+            "evidence": "一百四十三个用例全部通过。",
+            "failure_classification": "none",
+        },
+        {
+            "command": "rg old_field scripts/local_ci",
+            "role": "diagnostic",
+            "purpose": "旧字段残留搜索",
+            "evidence": "搜索工具不可用；随后使用现有工具完成等价检查。",
+            "failure_classification": "infrastructure",
+        },
+        {
+            "command": "grep -R old_field scripts/local_ci",
+            "role": "diagnostic",
+            "purpose": "旧字段残留搜索",
+            "evidence": "等价搜索已经完成，未发现旧字段残留。",
+            "failure_classification": "none",
+        },
     ]
-    exits = [0, 1, 1, 1, 0, 2, 1]
     report = build(
         tmp_path,
         document,
         [
             {
-                "command": command,
-                "exit_code": exit_code,
+                "command": "python3 -m pytest report_tests.py",
+                "exit_code": 0,
                 "duration_seconds": 0.1,
-            }
-            for (command, _, _), exit_code in zip(annotated_commands, exits)
+            },
+            {
+                "command": "rg old_field scripts/local_ci",
+                "exit_code": 127,
+                "duration_seconds": 0.1,
+            },
+            {
+                "command": "grep -R old_field scripts/local_ci",
+                "exit_code": 0,
+                "duration_seconds": 0.1,
+            },
         ],
     )
 
-    assert report["test_execution"]["status"] == "insufficient_evidence"
-    assert Counter(
-        command["status"] for command in report["test_execution"]["commands"]
-    ) == {
-        "passed": 2,
-        "stable_failure": 2,
-        "flaky_failure": 1,
-        "infrastructure_failure": 1,
-        "failed": 1,
-    }
+    assert report["test_execution"]["status"] == "passed"
+    assert report["verdict"] == "PASS"
+    assert [command["role"] for command in report["test_execution"]["commands"]] == [
+        "validation",
+        "diagnostic",
+        "diagnostic",
+    ]
     comment = RENDERER.render_comment(report, comment_args())
     validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
-    assert "综合定向验证共 7 条执行记录" in validation
-    assert "2 条成功" in validation
-    assert "2 条可稳定复现失败" in validation
-    assert "1 条重复执行结果不一致" in validation
-    assert "1 条受运行环境限制" in validation
-    assert "1 条失败" in validation
-    assert "缓存恢复后仍读取旧状态" in validation
-    assert "当前环境未发现预期的 Sophgo backend" in validation
-    assert "对应原因及影响" not in validation
-    assert "失败待归因" not in validation
-    assert "不能据此把其他成功记录一并视为失败" not in validation
+    assert "一百四十三个用例并全部通过" in validation
+    assert "搜索工具不可用" in validation
+    assert "执行记录" not in validation
+    assert "条成功" not in validation
+
+
+@pytest.mark.parametrize(
+    ("evidence_level", "expected_verdict"),
+    [("sufficient", "PASS"), ("insufficient", "WARNING")],
+)
+def test_unresolved_diagnostic_verdict_follows_overall_evidence_level(
+    tmp_path, evidence_level, expected_verdict
+):
+    document = analysis()
+    document["residual_risks"] = []
+    document["test_assessment"]["evidence_level"] = evidence_level
+    document["test_assessment"]["summary"] = [
+        "报告契约定向测试执行通过。",
+    ]
+    document["test_assessment"]["commands"] = [
+        {
+            "command": "python3 -m pytest report_tests.py",
+            "role": "validation",
+            "purpose": "报告契约定向测试",
+            "evidence": "报告契约定向测试执行通过。",
+            "failure_classification": "none",
+        },
+        {
+            "command": "rg old_field scripts/local_ci",
+            "role": "diagnostic",
+            "purpose": "旧字段残留搜索",
+            "evidence": "临时环境未提供搜索工具，旧字段残留检查尚未完成。",
+            "failure_classification": "infrastructure",
+        },
+    ]
+    report = build(
+        tmp_path,
+        document,
+        [
+            {
+                "command": "python3 -m pytest report_tests.py",
+                "exit_code": 0,
+                "duration_seconds": 0.1,
+            },
+            {
+                "command": "rg old_field scripts/local_ci",
+                "exit_code": 127,
+                "duration_seconds": 0.1,
+            },
+        ],
+    )
+
+    assert report["test_execution"]["status"] == "passed"
+    assert report["verdict"] == expected_verdict
+    assert "问题定位或逐文件说明完整性提醒" not in report[
+        "merge_recommendation"
+    ]
+    comment = RENDERER.render_comment(report, comment_args())
+    validation = comment.split("### 验证情况", 1)[1].split(
+        "### 剩余风险", 1
+    )[0]
+    assert "报告契约定向测试执行通过" in validation
+    assert "旧字段残留搜索没有成功完成" in validation
+    assert "临时环境未提供搜索工具" in validation
+    assert "执行记录" not in validation
 
 
 def test_public_validation_sanitizes_internal_sources_and_enums(tmp_path):
@@ -533,33 +578,31 @@ def test_deterministic_ci_public_modes_are_explicit_and_backward_compatible(
             "因此本次未能确认新的失败说明格式符合预期，"
             "但不影响已经独立通过的 Python 语法和差异格式检查。",
             "insufficient_evidence",
-            "PR Comment 混合结果契约测试失败；pytest 输出显示评论仍包含已禁止的"
-            "“失败待归因”描述。因此本次未能确认新的失败说明格式符合预期，"
-            "但不影响已经独立通过的 Python 语法和差异格式检查。",
+            "pytest 输出显示评论仍包含已禁止的“失败待归因”描述",
         ),
         (
             [1, 1],
             "product",
             "生成代码路径定向测试",
-            "定向测试执行完成。",
+            "生成代码路径定向测试重复执行仍失败，错误输出一致。",
             "stable_failure",
-            "2 条可稳定复现失败",
+            "重复执行仍失败，错误输出一致",
         ),
         (
             [1, 0],
             "flaky",
             "生成代码路径定向测试",
-            "定向测试执行完成。",
+            "生成代码路径定向测试重复执行结果不一致，稳定性待复核。",
             "flaky_failure",
-            "1 条重复执行结果不一致",
+            "重复执行结果不一致，稳定性待复核",
         ),
         (
             [2],
             "infrastructure",
             "生成代码路径定向测试",
-            "定向测试执行完成。",
+            "运行环境缺少必要设备，生成代码路径定向测试受到限制。",
             "infrastructure_failure",
-            "受运行环境限制而未完成；现有记录未说明具体环境限制",
+            "运行环境缺少必要设备",
         ),
     ],
 )
@@ -572,6 +615,7 @@ def test_failure_status_is_derived_from_repeated_ledger(
     semantic["purpose"] = purpose
     semantic["evidence"] = evidence
     semantic["failure_classification"] = classification
+    document["test_assessment"]["summary"] = [evidence]
     document["test_assessment"]["commands"] = [
         copy.deepcopy(semantic) for _ in exits
     ]
@@ -738,6 +782,7 @@ def test_unavailable_is_reserved_for_consistent_failure_fallback(tmp_path):
         {
             "id": "RUN-001",
             "command": "python3 -m pytest",
+            "role": "unclassified",
             "purpose": "定向测试",
             "exit_code": 0,
             "duration_seconds": 0.1,
@@ -793,7 +838,7 @@ def test_semantic_evidence_can_be_sufficient_when_command_facts_are_unavailable(
     assert "本次命令执行事实不可确认" in comment
 
 
-def test_fallback_preserves_trusted_passed_command_independently_of_evidence(
+def test_fallback_preserves_trusted_command_without_guessing_its_role(
     tmp_path,
 ):
     report = build_fallback(
@@ -810,8 +855,9 @@ def test_fallback_preserves_trusted_passed_command_independently_of_evidence(
 
     assert report["verdict"] == "WARNING"
     assert report["test_execution"]["evidence_level"] == "unavailable"
-    assert report["test_execution"]["status"] == "passed"
+    assert report["test_execution"]["status"] == "insufficient_evidence"
     assert report["test_execution"]["commands"][0]["status"] == "passed"
+    assert report["test_execution"]["commands"][0]["role"] == "unclassified"
     assert report["test_execution"]["generated_test_files"] == [
         "generated_tests/test_generated.py"
     ]
@@ -825,7 +871,9 @@ def test_fallback_preserves_trusted_passed_command_independently_of_evidence(
     assert "未发现需要阻塞合并的关键问题" not in full_report
 
 
-def test_fallback_derives_stable_failure_from_repeated_trusted_facts(tmp_path):
+def test_fallback_keeps_repeated_failure_facts_without_guessing_validation_role(
+    tmp_path,
+):
     command = "python3 -m pytest generated_tests/test_generated.py"
     report = build_fallback(
         tmp_path,
@@ -836,12 +884,13 @@ def test_fallback_derives_stable_failure_from_repeated_trusted_facts(tmp_path):
         [],
     )
 
-    assert report["test_execution"]["status"] == "stable_failure"
+    assert report["test_execution"]["status"] == "insufficient_evidence"
     assert {
         item["status"] for item in report["test_execution"]["commands"]
     } == {"stable_failure"}
-    assert "2 条可稳定复现失败" in RENDERER.render_comment(
-        report, comment_args()
+    assert all(
+        item["role"] == "unclassified"
+        for item in report["test_execution"]["commands"]
     )
 
 
@@ -974,11 +1023,11 @@ def test_generation_error_has_public_execution_facts_and_limit(tmp_path):
     assert report["test_execution"]["status"] == "test_generation_error"
     comment = RENDERER.render_comment(report, comment_args())
     validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
-    assert "定向测试生成未完成" in validation
+    assert "创建定向测试时未能完成测试文件生成" in validation
     assert "测试生成阶段未完成，当前没有形成预期的动态验证覆盖" in validation
 
 
-def test_unannotated_success_does_not_override_insufficient(tmp_path):
+def test_unannotated_success_is_not_promoted_to_formal_validation(tmp_path):
     command = "python3 -m pytest scripts/local_ci/results/tests/test_local_ci_bridge.py -q"
     document = analysis("not-an-executed-command")
     document["test_assessment"]["evidence_level"] = "insufficient"
@@ -989,7 +1038,8 @@ def test_unannotated_success_does_not_override_insufficient(tmp_path):
         archive_entries=[],
         test_generation_expected=True,
     )
-    assert report["test_execution"]["status"] == "passed"
+    assert report["test_execution"]["status"] == "not_run"
+    assert report["test_execution"]["commands"][0]["role"] == "unclassified"
 
 
 def test_unmatched_semantic_command_is_ignored(tmp_path):
@@ -1339,14 +1389,17 @@ def test_missing_behavior_category_is_rejected(tmp_path):
     [
         ("evidence_level", "maybe", "test_assessment.evidence_level is invalid"),
         ("command_classification", "maybe", "failure_classification is invalid"),
+        ("command_role", "maybe", "role is invalid"),
     ],
 )
 def test_invalid_semantic_enum_is_rejected(tmp_path, field, value, message):
     document = analysis()
     if field == "evidence_level":
         document["test_assessment"]["evidence_level"] = value
-    else:
+    elif field == "command_classification":
         document["test_assessment"]["commands"][0]["failure_classification"] = value
+    else:
+        document["test_assessment"]["commands"][0]["role"] = value
     with pytest.raises(ValueError, match=message):
         build(tmp_path, document, [])
 
@@ -1410,7 +1463,7 @@ def test_english_and_missing_noncritical_fields_are_normalized(tmp_path):
     assert report["test_execution"]["summary"]
 
 
-def test_unreported_ledger_command_cannot_result_in_not_run(tmp_path):
+def test_unreported_ledger_command_is_kept_as_unclassified_history(tmp_path):
     document = analysis("command-not-present-in-ledger")
     document["test_assessment"]["evidence_level"] = "not_needed"
     actual = "python3 -m pytest generated_tests/test_generated.py"
@@ -1420,7 +1473,8 @@ def test_unreported_ledger_command_cannot_result_in_not_run(tmp_path):
         [{"command": actual, "exit_code": 0, "duration_seconds": 0.2}],
     )
     assert report["test_execution"]["commands"][0]["command"] == actual
-    assert report["test_execution"]["status"] == "passed"
+    assert report["test_execution"]["commands"][0]["role"] == "unclassified"
+    assert report["test_execution"]["status"] == "not_run"
 
 
 def test_omitted_semantic_commands_do_not_hide_failure_ledger(tmp_path):
@@ -1440,6 +1494,11 @@ def test_omitted_semantic_commands_do_not_hide_failure_ledger(tmp_path):
     )
     assert len(report["test_execution"]["commands"]) == 1
     assert report["test_execution"]["status"] == "insufficient_evidence"
+    assert report["test_execution"]["commands"][0]["role"] == "unclassified"
+    assert any(
+        "非零退出命令未标明验证或诊断用途" in risk
+        for risk in report["residual_risks"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -1512,6 +1571,11 @@ def test_analysis_schema_matches_builder_contract() -> None:
             "failure_classification"
         ]["enum"]
     ) == BUILDER.FAILURE_CLASSIFICATIONS
+    assert set(
+        assessment["properties"]["commands"]["items"]["properties"]["role"][
+            "enum"
+        ]
+    ) == BUILDER.COMMAND_ROLES
 
 
 def test_report_schema_matches_renderer_contract() -> None:
@@ -1572,6 +1636,11 @@ def test_report_schema_matches_renderer_contract() -> None:
             "enum"
         ]
     ) == RENDERER.COMMAND_STATUSES
+    assert set(
+        execution["properties"]["commands"]["items"]["properties"]["role"][
+            "enum"
+        ]
+    ) == RENDERER.COMMAND_ROLES
     identifier_examples = {
         "findings": "AI-1000",
         "unlocated_findings": "AI-1000",

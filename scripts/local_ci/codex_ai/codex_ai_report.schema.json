@@ -271,7 +271,7 @@
         },
         "status": {
           "type": "string",
-          "description": "not_run 表示可信命令账本没有记录已执行命令；只要存在已执行命令但事实仍不足，应使用 insufficient_evidence。unavailable 表示可信命令执行事实不可取得；即使 Codex 审查证据 unavailable，只要命令账本可信，仍应从账本独立派生执行状态。",
+          "description": "状态只根据标记为 validation 的正式验证命令派生；diagnostic 命令保留为执行事实，但其退出码不直接改变该状态。not_run 表示没有正式验证命令，unavailable 表示可信命令执行事实不可取得。",
           "enum": [
             "not_run",
             "passed",
@@ -306,6 +306,10 @@
             "properties": {
               "id": {"type": "string", "pattern": "^RUN-[0-9]{3,}$"},
               "command": {"type": "string"},
+              "role": {
+                "type": "string",
+                "enum": ["validation", "diagnostic", "unclassified"]
+              },
               "purpose": {
                 "type": "string",
                 "minLength": 1,
@@ -330,6 +334,7 @@
             "required": [
               "id",
               "command",
+              "role",
               "purpose",
               "exit_code",
               "duration_seconds",
