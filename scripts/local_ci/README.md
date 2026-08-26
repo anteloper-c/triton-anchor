@@ -265,14 +265,53 @@ for root in "${ARTIFACT_ROOTS[@]}"; do
     -exec setfacl -m u:race_work:rw- {} +
 done
 
-# 用途：验证 root 容器新建的 artifact 可以由宿主机 poller 账号删除。
-PROBE_HOST=/home/race_work/local_ci/profile-workspaces/sophgo-cmodel/local-ci-artifacts/.poller-acl-probe
-docker exec anchor-sophgo-ci bash -lc \
-  'rm -rf /workspace/local-ci-artifacts/.poller-acl-probe &&
-   mkdir -p /workspace/local-ci-artifacts/.poller-acl-probe/child &&
-   : > /workspace/local-ci-artifacts/.poller-acl-probe/child/probe.log'
-rm -rf -- "${PROBE_HOST}"
-[[ ! -e "${PROBE_HOST}" ]] && echo "artifact ACL probe: PASS"
+# 用途：逐根验证 root 新建的 artifact 可以由宿主机 poller 账号删除。
+# 默认 workspace 没有独立持久容器，直接使用宿主机 root 模拟写入。
+probe_artifact_root() {
+  local host_root="$1"
+  local writer_container="${2:-}"
+  local probe_host="${host_root}/.poller-acl-probe"
+
+  if [[ -n "${writer_container}" ]]; then
+    if ! docker exec "${writer_container}" bash -lc \
+      'probe=/workspace/local-ci-artifacts/.poller-acl-probe
+       rm -rf -- "${probe}" && mkdir -p "${probe}/child" &&
+       : > "${probe}/child/probe.log"'; then
+      echo "artifact ACL probe create failed: ${host_root}" >&2
+      return 1
+    fi
+  else
+    sudo rm -rf -- "${probe_host}" || return 1
+    sudo mkdir -p "${probe_host}/child" || return 1
+    sudo touch "${probe_host}/child/probe.log" || return 1
+  fi
+
+  if [[ ! -e "${probe_host}/child/probe.log" ]]; then
+    echo "artifact ACL probe is not visible on host: ${host_root}" >&2
+    return 1
+  fi
+  if rm -rf -- "${probe_host}" && [[ ! -e "${probe_host}" ]]; then
+    echo "artifact ACL probe: PASS ${host_root}"
+    return 0
+  fi
+  echo "artifact ACL probe delete failed: ${host_root}" >&2
+  return 1
+}
+
+probe_failed=0
+probe_artifact_root /home/race_work/local_ci/workspace/local-ci-artifacts \
+  || probe_failed=1
+probe_artifact_root /home/race_work/local_ci/profile-workspaces/sophgo-cmodel/local-ci-artifacts \
+  anchor-sophgo-ci || probe_failed=1
+probe_artifact_root /home/race_work/local_ci/profile-workspaces/triton-3.3-frontend/local-ci-artifacts \
+  anchor-triton-3.3-ci || probe_failed=1
+probe_artifact_root /home/race_work/local_ci/profile-workspaces/triton-3.6-frontend/local-ci-artifacts \
+  anchor-triton-3.6-ci || probe_failed=1
+[[ "${probe_failed}" == "0" ]] || {
+  echo "artifact ACL probes: FAIL" >&2
+  exit 1
+}
+echo "artifact ACL probes: PASS"
 
 # 用途：实时设置 Sophgo 持久 CI 容器的 CPU、内存和 PID 硬上限；
 # 命令不会重启容器，但容器重建时需要在创建配置中重新声明这些值。

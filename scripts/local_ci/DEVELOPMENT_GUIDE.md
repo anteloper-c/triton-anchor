@@ -1005,7 +1005,7 @@ CODEX_AI_CI_HOME=/path/to/codex-ai \
 - 单日志、单 artifact 文件、单任务 artifact 和 Gitee 发布预算分别为 512 MiB、2 GiB、5 GiB 和 256 MiB。超限结果使用 `log_size_limit`、`artifact_size_limit` 或 `gitee_result_size_limit`，不能把未发布的大文件当作有效证据。
 - `maintenance/manage_local_ci_state.py` 默认 dry-run。poller 仅在长驻模式、整轮任务结束且距离上次维护至少 24 小时时使用 `--apply`；成功结果保留 14 天、失败结果 28 天、无结果目录 7 天、带 Local CI 标签且已停止或未被引用的 Codex Docker 残留 72 小时。
 - 维护范围只来自 `LOCAL_CI_STATE_DIR` 和 `LOCAL_CI_ARTIFACT_HOST_ROOTS`。不得使用全局 Docker prune，不得清理 Gitee task ref、Gitee 结果历史、LLVM/PPL、profile workspace 本体或其他项目资源。
-- 持久 profile 容器通常以 root 写入 artifact，而维护跟随 poller 的宿主机账号运行。服务器必须只对每个 artifact 根及其现有子树授予 poller 账号读写执行 ACL，并在目录上设置同一账号的默认 ACL，保证新 artifact 继承可删除权限；不得为此递归修改整个 profile workspace。dry-run 不执行删除，不能替代一次固定探针目录的“容器创建、宿主机删除”验证。
+- 持久 profile 容器通常以 root 写入 artifact，而维护跟随 poller 的宿主机账号运行。服务器必须只对每个 artifact 根及其现有子树授予 poller 账号读写执行 ACL，并在目录上设置同一账号的默认 ACL，保证新 artifact 继承可删除权限；不得为此递归修改整个 profile workspace。dry-run 不执行删除，不能替代对每个受管根分别执行固定探针目录的“root 创建、宿主机 poller 删除”验证。
 
 ## 13. 修改前后的 AI 协作规则
 
