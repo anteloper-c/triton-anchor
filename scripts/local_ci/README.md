@@ -243,6 +243,37 @@ python3 scripts/local_ci/maintenance/manage_local_ci_state.py \
   --success-days 14 --failure-days 28 --incomplete-days 7 \
   --docker-orphan-grace-hours 72
 
+# 用途：只对受管 artifact 根及其现有内容授权 poller 账号清理权限；
+# 默认 ACL 会被容器以后以 root 创建的新目录和文件继承。
+# Ubuntu/Debian 服务器首次配置时安装提供 setfacl/getfacl 的 acl 软件包。
+command -v setfacl >/dev/null || sudo apt-get install -y acl
+command -v setfacl >/dev/null || {
+  echo "setfacl is required; install the server acl package first." >&2
+  exit 1
+}
+ARTIFACT_ROOTS=(
+  /home/race_work/local_ci/workspace/local-ci-artifacts
+  /home/race_work/local_ci/profile-workspaces/sophgo-cmodel/local-ci-artifacts
+  /home/race_work/local_ci/profile-workspaces/triton-3.3-frontend/local-ci-artifacts
+  /home/race_work/local_ci/profile-workspaces/triton-3.6-frontend/local-ci-artifacts
+)
+for root in "${ARTIFACT_ROOTS[@]}"; do
+  [[ -d "${root}" ]] || continue
+  sudo find "${root}" -type d \
+    -exec setfacl -m u:race_work:rwx,d:u:race_work:rwx {} +
+  sudo find "${root}" -type f \
+    -exec setfacl -m u:race_work:rw- {} +
+done
+
+# 用途：验证 root 容器新建的 artifact 可以由宿主机 poller 账号删除。
+PROBE_HOST=/home/race_work/local_ci/profile-workspaces/sophgo-cmodel/local-ci-artifacts/.poller-acl-probe
+docker exec anchor-sophgo-ci bash -lc \
+  'rm -rf /workspace/local-ci-artifacts/.poller-acl-probe &&
+   mkdir -p /workspace/local-ci-artifacts/.poller-acl-probe/child &&
+   : > /workspace/local-ci-artifacts/.poller-acl-probe/child/probe.log'
+rm -rf -- "${PROBE_HOST}"
+[[ ! -e "${PROBE_HOST}" ]] && echo "artifact ACL probe: PASS"
+
 # 用途：实时设置 Sophgo 持久 CI 容器的 CPU、内存和 PID 硬上限；
 # 命令不会重启容器，但容器重建时需要在创建配置中重新声明这些值。
 docker update --cpus 48 --memory 96g --memory-swap 96g --pids-limit 8192 \
@@ -259,6 +290,11 @@ docker inspect --format \
 ```
 
 这里的 `--memory-swap` 是内存与 swap 的总上限；与 `--memory` 设为相同值表示容器不额外使用主机 swap。
+
+维护由长驻 poller 以其宿主机账号执行，不需要额外的 root service/timer。容器仍可保持
+root 身份；服务器只为 `LOCAL_CI_ARTIFACT_HOST_ROOTS` 配置 poller 账号的访问 ACL，禁止对
+整个 profile workspace 执行递归 `chown` 或 `chmod 777`。dry-run 只验证候选识别，不会尝试
+删除，因此启用 `--apply` 前必须通过上述“容器创建、宿主机删除”探针。
 
 ## 结果和报告
 
