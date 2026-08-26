@@ -368,6 +368,57 @@ def validate_finding_location(
         )
 
 
+def command_target_groups(
+    commands: list[dict[str, Any]], role: str
+) -> dict[str, list[dict[str, Any]]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for command in commands:
+        if command["role"] == role:
+            groups.setdefault(command["purpose"], []).append(command)
+    return groups
+
+
+def command_target_status(commands: list[dict[str, Any]]) -> str:
+    methods: dict[str, list[dict[str, Any]]] = {}
+    for command in commands:
+        methods.setdefault(command["command"], []).append(command)
+    failed_indexes = [
+        index
+        for index, command in enumerate(commands)
+        if command["exit_code"] != 0
+    ]
+    clean_methods = {
+        command_text
+        for command_text, method_commands in methods.items()
+        if method_commands
+        and all(command["status"] == "passed" for command in method_commands)
+    }
+    if not failed_indexes:
+        return (
+            "passed"
+            if any(command["status"] == "passed" for command in commands)
+            else "insufficient_evidence"
+        )
+    if any(
+        index > failed_indexes[-1] and command["command"] in clean_methods
+        for index, command in enumerate(commands)
+    ):
+        return "passed"
+
+    failed_statuses = {
+        command["status"]
+        for command in commands
+        if command["exit_code"] != 0
+    }
+    if failed_statuses == {"infrastructure_failure"}:
+        return "infrastructure_failure"
+    if failed_statuses == {"flaky_failure"}:
+        return "flaky_failure"
+    if failed_statuses == {"stable_failure"}:
+        return "stable_failure"
+    return "insufficient_evidence"
+
+
 def validate_report(
     document: Any,
     expected_files: list[dict[str, str]],
@@ -564,11 +615,6 @@ def validate_report(
         raise ValueError("residual_risks must be an array")
     for index, risk in enumerate(residual_risks):
         require_chinese_string(risk, f"residual_risks[{index}]")
-    has_report_normalization_risk = any(
-        risk.startswith(REPORT_NORMALIZATION_RISK_PREFIX)
-        for risk in residual_risks
-    )
-
     test_execution = document["test_execution"]
     if not isinstance(test_execution, dict):
         raise ValueError("test_execution must be an object")
@@ -597,8 +643,6 @@ def validate_report(
     if not isinstance(commands, list):
         raise ValueError("test_execution.commands must be an array")
     command_ids: set[str] = set()
-    validation_command_statuses: list[str] = []
-    validation_command_statuses_by_text: dict[str, list[str]] = {}
     for index, command in enumerate(commands):
         location = f"test_execution.commands[{index}]"
         if not isinstance(command, dict):
@@ -642,27 +686,21 @@ def validate_report(
             raise ValueError(
                 f"{location}.{command_status} command must have a non-zero exit_code"
             )
-        if command_role == "validation":
-            validation_command_statuses.append(command_status)
-            validation_command_statuses_by_text.setdefault(command_text, []).append(
-                command_status
-            )
         require_chinese_string(command["evidence"], f"{location}.evidence")
 
-    executed_statuses = [
-        status
-        for status in validation_command_statuses
-        if status != "not_executed"
+    validation_target_statuses = [
+        command_target_status(target_commands)
+        for target_commands in command_target_groups(commands, "validation").values()
     ]
     if execution_status == "passed":
-        if not executed_statuses or any(
-            status != "passed" for status in executed_statuses
+        if not validation_target_statuses or any(
+            status != "passed" for status in validation_target_statuses
         ):
             raise ValueError(
-                "test_execution.status passed requires at least one executed command "
-                "and all executed commands to pass"
+                "test_execution.status passed requires at least one completed "
+                "validation target and all validation targets to pass"
             )
-    elif execution_status == "not_run" and executed_statuses:
+    elif execution_status == "not_run" and validation_target_statuses:
         raise ValueError(
             "test_execution.status not_run cannot contain executed validation commands"
         )
@@ -671,39 +709,31 @@ def validate_report(
             "test_execution.status unavailable cannot contain command records"
         )
     elif execution_status == "stable_failure":
-        has_comparable_repeat = any(
-            statuses.count("stable_failure") >= 2
-            for statuses in validation_command_statuses_by_text.values()
-        )
-        if not has_comparable_repeat or any(
+        if "stable_failure" not in validation_target_statuses or any(
             status not in {"passed", "stable_failure"}
-            for status in executed_statuses
+            for status in validation_target_statuses
         ):
             raise ValueError(
-                "test_execution.status stable_failure requires at least two "
-                "stable_failure command records"
+                "test_execution.status stable_failure requires an unresolved "
+                "stable validation target"
             )
     elif execution_status == "flaky_failure":
-        has_inconsistent_repeat = any(
-            "passed" in statuses and "flaky_failure" in statuses
-            for statuses in validation_command_statuses_by_text.values()
-        )
-        if not has_inconsistent_repeat or any(
+        if "flaky_failure" not in validation_target_statuses or any(
             status not in {"passed", "flaky_failure"}
-            for status in executed_statuses
+            for status in validation_target_statuses
         ):
             raise ValueError(
-                "test_execution.status flaky_failure requires both passed and "
-                "flaky_failure command records"
+                "test_execution.status flaky_failure requires an unresolved "
+                "flaky validation target"
             )
     elif execution_status == "infrastructure_failure":
-        if "infrastructure_failure" not in validation_command_statuses or any(
+        if "infrastructure_failure" not in validation_target_statuses or any(
             status not in {"passed", "infrastructure_failure"}
-            for status in executed_statuses
+            for status in validation_target_statuses
         ):
             raise ValueError(
-                "test_execution.status infrastructure_failure requires an "
-                "infrastructure_failure command record"
+                "test_execution.status infrastructure_failure requires an unresolved "
+                "infrastructure-limited validation target"
             )
 
     warning_execution_statuses = {
@@ -724,7 +754,6 @@ def validate_report(
         if (
                 findings
                 or unlocated_findings
-                or has_report_normalization_risk
                 or evidence_level
                 in {"insufficient", "test_generation_error", "unavailable"}
             or execution_status in warning_execution_statuses
@@ -770,9 +799,14 @@ VERDICT_LABELS = {
     "WARNING": "警告",
     "FAIL": "失败",
 }
+COMMENT_VERDICT_LABELS = {
+    "PASS": "通过",
+    "WARNING": "需关注（非阻塞）",
+    "FAIL": "失败",
+}
 TEST_EXECUTION_STATUS_LABELS = {
     "not_run": "未执行",
-    "passed": "所执行的验证命令均通过",
+    "passed": "正式验证目标均已完成",
     "stable_failure": "可稳定复现的失败",
     "flaky_failure": "非确定性失败",
     "infrastructure_failure": "受环境限制，未完全执行",
@@ -1071,22 +1105,45 @@ def exclude_seen_comment_items(
     return result
 
 
+def exclude_covered_comment_items(
+    items: list[str], covering_items: list[str]
+) -> list[str]:
+    covering = [
+        comment_inline(item, 1_000).rstrip("。！？；， ")
+        for item in covering_items
+    ]
+    result: list[str] = []
+    for item in items:
+        normalized = comment_inline(item, 1_000).rstrip("。！？；， ")
+        if any(
+            normalized == cover
+            or normalized in cover
+            for cover in covering
+        ):
+            continue
+        result.append(item)
+    return result
+
+
 def unresolved_diagnostic_groups(
     commands: list[dict[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for command in commands:
-        if command["role"] == "diagnostic":
-            groups.setdefault(command["purpose"], []).append(command)
+    return unresolved_command_target_groups(commands, "diagnostic")
+
+
+def unresolved_command_target_groups(
+    commands: list[dict[str, Any]], role: str
+) -> dict[str, list[dict[str, Any]]]:
     return {
         purpose: items
-        for purpose, items in groups.items()
-        if items and not any(item["exit_code"] == 0 for item in items)
+        for purpose, items in command_target_groups(commands, role).items()
+        if command_target_status(items) != "passed"
     }
 
 
-def public_unresolved_diagnostic_items(
+def public_unresolved_target_items(
     commands: list[dict[str, Any]],
+    role: str,
     identifier_descriptions: dict[str, str] | None = None,
 ) -> list[str]:
     generic_evidence = {
@@ -1095,15 +1152,16 @@ def public_unresolved_diagnostic_items(
         "定向测试执行完成",
     }
     items: list[str] = []
-    for purpose, diagnostic_commands in unresolved_diagnostic_groups(
-        commands
+    for purpose, target_commands in unresolved_command_target_groups(
+        commands, role
     ).items():
         public_purpose = public_narrative_text(
             purpose, identifier_descriptions
         ).rstrip("。！？；， ")
         evidence_items = unique_comment_items(
             evidence
-            for command in diagnostic_commands
+            for command in target_commands
+            if command["exit_code"] != 0
             if (
                 evidence := public_narrative_text(
                     command["evidence"], identifier_descriptions
@@ -1113,27 +1171,22 @@ def public_unresolved_diagnostic_items(
         )
         if evidence_items:
             items.append(
-                f"{public_purpose}没有成功完成；{'；'.join(evidence_items[:2])}。"
+                f"{public_purpose}尚未完成；{evidence_items[-1]}。"
             )
         else:
             items.append(
-                f"{public_purpose}没有成功完成，对应诊断目标仍待确认。"
+                f"{public_purpose}尚未完成，对应目标的原因和影响仍待确认。"
             )
     return items
 
 
-def public_unclassified_failure_items(
+def public_unresolved_diagnostic_items(
     commands: list[dict[str, Any]],
+    identifier_descriptions: dict[str, str] | None = None,
 ) -> list[str]:
-    if not any(
-        command["role"] == "unclassified" and command["exit_code"] != 0
-        for command in commands
-    ):
-        return []
-    return [
-        "部分辅助检查没有形成可确认的结果；其结果不会被当作正式验证结论，"
-        "具体执行记录保留在完整报告中。"
-    ]
+    return public_unresolved_target_items(
+        commands, "diagnostic", identifier_descriptions
+    )
 
 
 def public_comment_identifier_descriptions(
@@ -1175,20 +1228,30 @@ def public_validation_limit_items(
     items: list[str] = []
 
     items.extend(
+        public_unresolved_target_items(
+            test_execution["commands"], "validation", identifier_descriptions
+        )
+    )
+    items.extend(
         public_unresolved_diagnostic_items(
             test_execution["commands"], identifier_descriptions
         )
     )
-    items.extend(public_unclassified_failure_items(test_execution["commands"]))
 
     if execution_status == "stable_failure":
         items.append("可稳定复现的失败尚未经过修复后复测。")
     elif execution_status == "flaky_failure":
         items.append("重复执行结果不一致，仍需在可比且稳定的环境中复测。")
     elif execution_status == "infrastructure_failure":
-        commands = test_execution["commands"]
-        if commands and all(
-            command["status"] == "infrastructure_failure" for command in commands
+        validation_target_statuses = [
+            command_target_status(target_commands)
+            for target_commands in command_target_groups(
+                test_execution["commands"], "validation"
+            ).values()
+        ]
+        if validation_target_statuses and all(
+            status == "infrastructure_failure"
+            for status in validation_target_statuses
         ):
             items.append("所执行的验证均受运行环境限制，当前没有完成预期覆盖。")
         else:
@@ -1506,10 +1569,6 @@ def has_public_validation_limitations(
             "unavailable",
         }
         or unresolved_diagnostic_groups(test_execution["commands"])
-        or any(
-            command["role"] == "unclassified" and command["exit_code"] != 0
-            for command in test_execution["commands"]
-        )
         or document["suggested_tests"]
         or getattr(args, "local_ci_execution_mode", "full") != "full"
         or getattr(args, "backend_validation_scope", "full") != "full"
@@ -1558,7 +1617,7 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
     if review_complete:
         lines.append(
             "- Codex AI 审查结论："
-            f"**{VERDICT_LABELS[document['verdict']]}**"
+            f"**{COMMENT_VERDICT_LABELS[document['verdict']]}**"
         )
     lines.extend(
         [
@@ -1663,9 +1722,17 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
         and test_execution["status"] == "not_run"
     ):
         validation_artifact_items.append("本次未新增验证命令。")
+    derived_validation_limit_items = public_validation_limit_items(
+        document, args, identifier_descriptions
+    )
+    validation_summary_limit_items = exclude_covered_comment_items(
+        validation_summary_limit_items, derived_validation_limit_items
+    )
+    derived_validation_limit_items = exclude_covered_comment_items(
+        derived_validation_limit_items, validation_summary_limit_items
+    )
     validation_limit_items = unique_comment_items(
-        validation_summary_limit_items
-        + public_validation_limit_items(document, args, identifier_descriptions)
+        validation_summary_limit_items + derived_validation_limit_items
     )
     has_reported_validation_limits = bool(validation_limit_items)
     if not validation_limit_items:
@@ -1700,7 +1767,7 @@ def render_comment(document: dict[str, Any], args: argparse.Namespace) -> str:
     residual_risks = [
         risk
         for risk in document["residual_risks"]
-        if COMMAND_RECORD_NORMALIZATION_RISK_RE.search(risk) is None
+        if not risk.startswith(REPORT_NORMALIZATION_RISK_PREFIX)
     ]
     if residual_risks:
         shown_residual_risks = residual_risks[:MAX_COMMENT_RESIDUAL_RISK_ITEMS]

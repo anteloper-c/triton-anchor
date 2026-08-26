@@ -11,6 +11,7 @@ ORCHESTRATOR = (
     ROOT / "orchestration/run_deterministic_ci_in_container.sh"
 ).read_text()
 CODEX_RUNNER = (ROOT / "codex_ai/run_codex_ai_ci.sh").read_text()
+CODEX_FAILURE_PROMPT = (ROOT / "codex_ai/prompts/codex_ai_failure.md").read_text()
 
 
 def test_pr_sources_only_base_envsetup_from_runner_snapshot() -> None:
@@ -19,6 +20,9 @@ def test_pr_sources_only_base_envsetup_from_runner_snapshot() -> None:
     assert 'source "${TRUSTED_ANCHOR_ENVSETUP}"' not in RUNNER
     assert 'source "${envsetup_file}"' in RUNNER
     assert 'git -C "${checkout_dir}" show "${base_sha}:envsetup.sh"' in POLLER
+    assert 'TRUSTED_ANCHOR_ENVSETUP="${TRUSTED_ANCHOR_ENVSETUP:-${LOCAL_CI_ROOT}/trusted/envsetup.sh}"' in CODEX_RUNNER
+    assert '"copy_trusted_envsetup" docker cp' in CODEX_RUNNER
+    assert 'anchor_setup="${AI_ANCHOR_ENVSETUP}"' in CODEX_RUNNER
 
 
 def test_candidate_exit_zero_cannot_override_required_stage_failure() -> None:
@@ -183,6 +187,12 @@ def test_profile_capability_is_passed_to_container_and_codex() -> None:
         assert field in RUNNER
     assert 'LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-}" \\' in POLLER
     assert 'export LLVM_BUILD_DIR="${AI_LLVM_BUILD_DIR}"' in CODEX_RUNNER
+    assert 'PPL_ROOT="${PPL_ROOT:-}" \\' in POLLER
+    assert 'export PPL_ROOT="${AI_PPL_ROOT}"' in CODEX_RUNNER
+    assert 'export LOCAL_CI_RUN_ID="${AI_LOCAL_CI_RUN_ID}"' in CODEX_RUNNER
+    assert 'export TMPDIR=/tmp/triton-anchor-codex-tmp' in CODEX_RUNNER
+    assert 'if [[ "${AI_ANALYSIS_MODE}" == "full" ]]' in CODEX_RUNNER
+    assert "CODEX_AI_ENVIRONMENT_STATUS" in CODEX_FAILURE_PROMPT
     assert 'LOCAL_CI_EXECUTION_MODE="${LOCAL_CI_EXECUTION_MODE:-full}"' in POLLER
 
 

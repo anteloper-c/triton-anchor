@@ -18,8 +18,10 @@ workspace_root="${test_root}/host-workspaces"
 fake_bin="${test_root}/bin"
 codex_home="${test_root}/codex-home"
 fake_codex="${test_root}/codex"
+trusted_envsetup="${test_root}/trusted-envsetup.sh"
 task_branch="ci/push/container-test"
 mkdir -p "${source_repo}" "${workspace_root}" "${fake_bin}" "${codex_home}"
+printf 'export TRUSTED_ENVSETUP_USED=1\n' > "${trusted_envsetup}"
 
 printf '#!/usr/bin/env bash\necho codex-cli-test\n' > "${fake_codex}"
 chmod +x "${fake_codex}"
@@ -873,6 +875,7 @@ run_case() {
   CODEX_BIN="${fake_codex}" \
   CODEX_AI_CI_HOME="${case_codex_home}" \
   LOCAL_CI_CONTAINER="anchor-sophgo-ci" \
+  TRUSTED_ANCHOR_ENVSETUP="${trusted_envsetup}" \
   LLVM_BUILD_DIR="/workspace/llvm-selected-profile" \
   CODEX_AI_CI_WORKSPACE_ROOT="${workspace_root}" \
   CODEX_AI_CI_TIMEOUT_SECONDS="${timeout_seconds}" \
@@ -1092,6 +1095,10 @@ grep -Fq '"title": "增强 adapter 稳健性"' \
 grep -Fq "判断：已实现" "${pr_output}/codex-ai-report.md"
 grep -Fq "贡献者希望增强适配器在新边界条件下的稳健性" \
   "${pr_output}/codex-ai-comment.md"
+grep -Fq "cp ${trusted_envsetup} anchor-codex-ai-" \
+  "${test_root}/pr-merge-base/docker-state/docker.log"
+grep -Fq -- "--env AI_ANCHOR_ENVSETUP=/codex-workspace/input/trusted-envsetup.sh" \
+  "${test_root}/pr-merge-base/docker-state/docker.log"
 [[ ! -e /tmp/codex-pr-metadata-must-not-run ]]
 
 run_case pr-codex-only success 0 30 0 \

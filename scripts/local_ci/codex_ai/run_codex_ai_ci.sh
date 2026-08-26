@@ -46,6 +46,19 @@ fi
 PYTHON_VENV_ACTIVATE="${PYTHON_VENV_ACTIVATE:-/opt/venv/bin/activate}"
 LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-}"
 SOURCE_ENVSETUP="${SOURCE_ENVSETUP:-1}"
+TRUSTED_ANCHOR_ENVSETUP="${TRUSTED_ANCHOR_ENVSETUP:-${LOCAL_CI_ROOT}/trusted/envsetup.sh}"
+CODEX_TEST_PYTHON_BIN="${CODEX_TEST_PYTHON_BIN:-python3}"
+PPL_ROOT="${PPL_ROOT:-}"
+PACKAGE_TOOL="${PACKAGE_TOOL:-auto}"
+FRONTEND_BUILD_MODE="${FRONTEND_BUILD_MODE:-}"
+BACKEND_PROFILE="${BACKEND_PROFILE:-}"
+EXPECTED_TRITON_BACKEND="${EXPECTED_TRITON_BACKEND:-}"
+FLAGGEMS_CLONE_DIR="${FLAGGEMS_CLONE_DIR:-}"
+MAX_JOBS="${MAX_JOBS:-1}"
+CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-1}"
+NINJAFLAGS="${NINJAFLAGS:--j1}"
+UV_LINK_MODE="${UV_LINK_MODE:-copy}"
+LOCAL_CI_RUN_ID="${LOCAL_CI_RUN_ID:-}"
 ANCHOR_DIR="${ANCHOR_DIR:-/workspace/triton-anchor}"
 if [[ "${RUN_BACKEND_STAGES}" == "false" ]]; then
   BACKEND_PATH=""
@@ -67,6 +80,11 @@ container_schema_path="${container_workspace_root}/codex-ai-analysis.schema.json
 container_jsonl_recorder_path="${container_workspace_root}/codex-jsonl-evidence.py"
 container_local_ci_log="${container_input_dir}/local-ci.log"
 container_changed_files_manifest="${container_input_dir}/codex-changed-files-manifest.json"
+container_trusted_envsetup="${container_input_dir}/trusted-envsetup.sh"
+container_anchor_envsetup=""
+if [[ "${branch}" =~ ^ci/pr-[0-9]+/.+ && "${SOURCE_ENVSETUP}" == "1" ]]; then
+  container_anchor_envsetup="${container_trusted_envsetup}"
+fi
 
 log_path="${output_dir}/codex-ai-ci.log"
 codex_jsonl_path="${output_dir}/codex-ai-events.jsonl"
@@ -1576,6 +1594,13 @@ create_ephemeral_container() {
     "${ephemeral_container}:${container_checkout_dir}"; then
     fail_prepare_step "无法把经过验证的 checkout 复制到临时容器"
   fi
+  if [[ "${branch}" =~ ^ci/pr-[0-9]+/.+ && "${SOURCE_ENVSETUP}" == "1" ]]; then
+    if ! run_prepare_command "copy_trusted_envsetup" docker cp \
+      "${TRUSTED_ANCHOR_ENVSETUP}" \
+      "${ephemeral_container}:${container_trusted_envsetup}"; then
+      fail_prepare_step "无法把可信目标分支环境脚本复制到临时容器"
+    fi
+  fi
   if ! run_prepare_command "copy_analysis_schema" docker cp "${schema_path}" \
     "${ephemeral_container}:${container_schema_path}"; then
     fail_prepare_step "无法把语义分析 schema 复制到临时容器"
@@ -1704,6 +1729,9 @@ if [[ "${branch}" =~ ^ci/pr-[0-9]+/.+ ]]; then
   if [[ -z "${requested_head_sha}" ]]; then
     fail_ai_ci "PR Codex 审查缺少贡献分支精确 SHA"
   fi
+  if [[ "${SOURCE_ENVSETUP}" == "1" && ! -r "${TRUSTED_ANCHOR_ENVSETUP}" ]]; then
+    fail_ai_ci "PR Codex 审查缺少可信目标分支环境脚本"
+  fi
   if ! git -C "${workspace_dir}" cat-file -e "${requested_base_sha}^{commit}" 2>/dev/null; then
     fail_ai_ci "PR 目标分支提交在 Codex checkout 中不可用：${requested_base_sha}"
   fi
@@ -1811,7 +1839,22 @@ printf '%s\n' "${prompt}" | timeout --signal=TERM --kill-after=30s \
     --env "AI_PYTHON_VENV_ACTIVATE=${PYTHON_VENV_ACTIVATE}" \
     --env "AI_LLVM_BUILD_DIR=${LLVM_BUILD_DIR}" \
     --env "AI_SOURCE_ENVSETUP=${SOURCE_ENVSETUP}" \
+    --env "AI_ANCHOR_ENVSETUP=${container_anchor_envsetup}" \
     --env "AI_CHECKOUT_DIR=${container_checkout_dir}" \
+    --env "AI_TARGET_SHA=${target_sha}" \
+    --env "AI_BRANCH=${branch}" \
+    --env "AI_LOCAL_CI_RUN_ID=${LOCAL_CI_RUN_ID}" \
+    --env "AI_TEST_PYTHON_BIN=${CODEX_TEST_PYTHON_BIN}" \
+    --env "AI_PPL_ROOT=${PPL_ROOT}" \
+    --env "AI_PACKAGE_TOOL=${PACKAGE_TOOL}" \
+    --env "AI_FRONTEND_BUILD_MODE=${FRONTEND_BUILD_MODE}" \
+    --env "AI_BACKEND_PROFILE=${BACKEND_PROFILE}" \
+    --env "AI_EXPECTED_TRITON_BACKEND=${EXPECTED_TRITON_BACKEND}" \
+    --env "AI_FLAGGEMS_CLONE_DIR=${FLAGGEMS_CLONE_DIR}" \
+    --env "AI_MAX_JOBS=${MAX_JOBS}" \
+    --env "AI_CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL}" \
+    --env "AI_NINJAFLAGS=${NINJAFLAGS}" \
+    --env "AI_UV_LINK_MODE=${UV_LINK_MODE}" \
     --env "AI_BACKEND_PATH=${BACKEND_PATH}" \
     --env "AI_BACKEND_ENVSETUP=${BACKEND_ENVSETUP}" \
     --env "AI_BACKEND_ENVSETUP_ARGS=${BACKEND_ENVSETUP_ARGS}" \
@@ -1820,6 +1863,9 @@ printf '%s\n' "${prompt}" | timeout --signal=TERM --kill-after=30s \
     bash -lc '
       bootstrap_status=0
       set +u
+      export TMPDIR=/tmp/triton-anchor-codex-tmp
+      export TRITON_DUMP_DIR=/tmp/triton-anchor-codex-dump
+      mkdir -p "${TMPDIR}" "${TRITON_DUMP_DIR}" || bootstrap_status=1
       if [[ -n "${AI_PYTHON_VENV_ACTIVATE}" && -f "${AI_PYTHON_VENV_ACTIVATE}" ]]; then
         source "${AI_PYTHON_VENV_ACTIVATE}" || bootstrap_status=1
       else
@@ -1829,8 +1875,33 @@ printf '%s\n' "${prompt}" | timeout --signal=TERM --kill-after=30s \
       if [[ -n "${AI_LLVM_BUILD_DIR}" ]]; then
         export LLVM_BUILD_DIR="${AI_LLVM_BUILD_DIR}"
       fi
-      if [[ "${AI_SOURCE_ENVSETUP}" == "1" && -f "${AI_CHECKOUT_DIR}/envsetup.sh" ]]; then
-        source "${AI_CHECKOUT_DIR}/envsetup.sh" || bootstrap_status=1
+      export WORKSPACE=/workspace
+      export ANCHOR_DIR="${AI_CHECKOUT_DIR}"
+      export GITHUB_SHA="${AI_TARGET_SHA}"
+      export GITHUB_REF="refs/heads/${AI_BRANCH}"
+      export LOCAL_CI_RUN_ID="${AI_LOCAL_CI_RUN_ID}"
+      export PYTHON_BIN="${AI_TEST_PYTHON_BIN}"
+      export PPL_ROOT="${AI_PPL_ROOT}"
+      export PACKAGE_TOOL="${AI_PACKAGE_TOOL}"
+      export FRONTEND_BUILD_MODE="${AI_FRONTEND_BUILD_MODE}"
+      export BACKEND_PROFILE="${AI_BACKEND_PROFILE}"
+      export EXPECTED_TRITON_BACKEND="${AI_EXPECTED_TRITON_BACKEND}"
+      export FLAGGEMS_CLONE_DIR="${AI_FLAGGEMS_CLONE_DIR}"
+      export FLAGGEMS_ROOT="${AI_FLAGGEMS_CLONE_DIR}"
+      export MAX_JOBS="${AI_MAX_JOBS}"
+      export CMAKE_BUILD_PARALLEL_LEVEL="${AI_CMAKE_BUILD_PARALLEL_LEVEL}"
+      export NINJAFLAGS="${AI_NINJAFLAGS}"
+      export UV_LINK_MODE="${AI_UV_LINK_MODE}"
+      if [[ "${AI_SOURCE_ENVSETUP}" == "1" ]]; then
+        anchor_setup="${AI_ANCHOR_ENVSETUP}"
+        if [[ -n "${anchor_setup}" && -f "${anchor_setup}" ]]; then
+          source "${anchor_setup}" || bootstrap_status=1
+        elif [[ -n "${anchor_setup}" ]]; then
+          echo "Codex AI CI 环境提示：前端环境脚本不存在。" >&2
+          bootstrap_status=1
+        elif [[ -f "${AI_CHECKOUT_DIR}/envsetup.sh" ]]; then
+          source "${AI_CHECKOUT_DIR}/envsetup.sh" || bootstrap_status=1
+        fi
       fi
       if [[ "${AI_RUN_BACKEND_STAGES}" == "true" ]]; then
         backend_setup="${AI_BACKEND_ENVSETUP}"
@@ -1845,13 +1916,20 @@ printf '%s\n' "${prompt}" | timeout --signal=TERM --kill-after=30s \
           bootstrap_status=1
         fi
       fi
+      export TMPDIR=/tmp/triton-anchor-codex-tmp
       export TRITON_DUMP_DIR=/tmp/triton-anchor-codex-dump
-      mkdir -p "${TRITON_DUMP_DIR}" || bootstrap_status=1
+      mkdir -p "${TMPDIR}" "${TRITON_DUMP_DIR}" || bootstrap_status=1
       set -u
-      if [[ ${bootstrap_status} -eq 0 ]]; then
-        export CODEX_AI_ENVIRONMENT_STATUS="ready"
-      else
+      if [[ ${bootstrap_status} -ne 0 ]]; then
+        if [[ "${AI_ANALYSIS_MODE}" == "full" ]]; then
+          echo "CODEX_AI_CI_BOOTSTRAP_FAILED_BEFORE_EXEC" >&2
+          echo "Codex AI CI 无法继承确定性 CI 的验证环境。" >&2
+          exit 78
+        fi
         export CODEX_AI_ENVIRONMENT_STATUS="incomplete"
+        echo "Codex AI CI 验证环境不完整；继续执行静态失败诊断。" >&2
+      else
+        export CODEX_AI_ENVIRONMENT_STATUS="ready"
       fi
       unset GITEE_TOKEN GITEE_USERNAME GIT_ASKPASS
       set -o pipefail
@@ -1968,6 +2046,10 @@ if [[ "${startup_timed_out}" == "true" ]]; then
   set_failure_reason "Codex 启动阶段超过 ${CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS} 秒仍未出现首个有效进展"
 elif [[ ${exit_code} -eq 124 || ${exit_code} -eq 137 ]]; then
   set_failure_reason "Codex 执行超过 ${CODEX_AI_CI_TIMEOUT_SECONDS} 秒硬超时"
+elif [[ ${exit_code} -eq 78 ]] && \
+  grep -Fq "CODEX_AI_CI_BOOTSTRAP_FAILED_BEFORE_EXEC" "${log_path}"; then
+  failure_code="container_setup_failed"
+  set_failure_reason "Codex 无法继承确定性 CI 的验证环境"
 elif [[ ${exit_code} -ne 0 ]]; then
   set_failure_reason "Codex exec 异常退出，退出码为 ${exit_code}"
 elif [[ "${report_format_valid}" != "true" ]]; then

@@ -183,7 +183,7 @@ class CodexCommentTests(unittest.TestCase):
         self.assertIn("`aaaaaaaaaaaa`", body)
         self.assertIn("缓存版本失配定向测试稳定复现问题", body)
         self.assertIn("Codex AI 自动审查已完成，本地确定性 CI 检查已通过", body)
-        self.assertIn("Codex AI 审查结论：**警告**", body)
+        self.assertIn("Codex AI 审查结论：**需关注（非阻塞）**", body)
         main, footer = body.split("\n---\n", 1)
         self.assertNotIn("Codex 执行状态", main)
         self.assertIn("Codex 执行状态：完成", footer)
@@ -215,7 +215,7 @@ class CodexCommentTests(unittest.TestCase):
         self.assertIn("本次仅含文档变更，按策略未执行确定性 CI", body)
         self.assertNotIn("本地确定性 CI 检查：已通过", body)
         self.assertNotIn("本地确定性 CI 检查已通过", body)
-        self.assertIn("Codex AI 审查结论：**警告**", body)
+        self.assertIn("Codex AI 审查结论：**需关注（非阻塞）**", body)
         footer = body.split("\n---\n", 1)[1]
         self.assertNotIn("本地确定性", footer)
         self.assertIn("Codex 执行状态：完成", footer)
@@ -283,7 +283,9 @@ class CodexCommentTests(unittest.TestCase):
                     self.assertNotIn("Codex AI 审查结论", body)
                 else:
                     self.assertNotIn("未完成原因", footer)
-                    self.assertIn("Codex AI 审查结论：**警告**", body)
+                    self.assertIn(
+                        "Codex AI 审查结论：**需关注（非阻塞）**", body
+                    )
 
     def test_footer_only_links_nonempty_report_url(self) -> None:
         for report_url, expected in (
@@ -652,6 +654,7 @@ class CodexCommentTests(unittest.TestCase):
                 "测试生成失败",
             ),
             (changed(verdict="FAIL", test_status="passed"), "失败"),
+            (changed(verdict="WARNING", test_status="passed"), "需关注"),
             (
                 changed(
                     verdict="PASS",

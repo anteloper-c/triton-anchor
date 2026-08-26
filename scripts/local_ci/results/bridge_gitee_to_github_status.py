@@ -913,6 +913,13 @@ def normalize_comment_execution_status(body: str, execution_status: str) -> str:
         "",
         body,
     )
+    body = body.replace(
+        "- Codex AI 审查结论：**警告**",
+        "- Codex AI 审查结论：**需关注（非阻塞）**",
+    ).replace(
+        "- Codex 建议性结论（非阻塞）：**警告**",
+        "- Codex AI 审查结论：**需关注（非阻塞）**",
+    )
     if execution_status == "pass":
         return re.sub(
             r"(?m)^- Codex 建议性结论（非阻塞）：",
@@ -1166,7 +1173,7 @@ def codex_advisory_description(codex_ai: CodexAIResult) -> str:
             return f"Codex AI 未完成：{public_failure_reason(codex_ai.failure_code)}（非阻塞）"
         return "Codex AI 未完成（非阻塞）"
     if verdict == "FAIL":
-        return "Codex AI 建议性结论：失败（非阻塞）"
+        return "Codex AI 审查结论：失败（非阻塞）"
     if test_status == "insufficient_evidence":
         return "Codex AI 测试证据不足（非阻塞）"
     if test_status == "stable_failure":
@@ -1178,10 +1185,10 @@ def codex_advisory_description(codex_ai: CodexAIResult) -> str:
     if test_status == "test_generation_error":
         return "Codex AI 测试生成失败（非阻塞）"
     if verdict == "WARNING":
-        return "Codex AI 建议性结论：警告（非阻塞）"
+        return "Codex AI 审查结论：需关注（非阻塞）"
     if constraint_status == "warning":
         return "Codex AI 测试约束警告（非阻塞）"
-    return "Codex AI 建议性结论：通过（非阻塞）"
+    return "Codex AI 审查结论：通过（非阻塞）"
 
 
 def post_codex_advisory_status(

@@ -218,7 +218,7 @@ grep -Fq "这段代码负责" "${report_md}"
 grep -Fq "## 建议测试" "${report_md}"
 grep -Fq "## 测试执行" "${report_md}"
 grep -Fq -- "- Codex 对验证证据的判断：证据充分" "${report_md}"
-grep -Fq -- "- Runner 事实校验：所执行的验证命令均通过" "${report_md}"
+grep -Fq -- "- Runner 事实校验：正式验证目标均已完成" "${report_md}"
 grep -Fq "## 测试执行约束" "${report_md}"
 grep -Fq "状态：警告" "${report_md}"
 grep -Fq "测试命令数量超过轻量约束" "${report_md}"
@@ -228,6 +228,7 @@ grep -Fq "仅供参考且不阻塞合入" "${comment_md}"
 grep -Fq "### 审查摘要" "${comment_md}"
 grep -Fq "本地确定性 CI 检查：" "${comment_md}"
 grep -Fq "Codex AI 审查结论：" "${comment_md}"
+grep -Fq "Codex AI 审查结论：**需关注（非阻塞）**" "${comment_md}"
 if grep -Fq "Codex 执行状态" "${comment_md}"; then
   echo "PR 评论不应显示 Codex 执行状态" >&2
   exit 1

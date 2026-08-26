@@ -349,6 +349,8 @@ run_codex_ai_ci_for_run() {
   local task_metadata_file="$7"
   local head_sha="$8"
   local head_ref="$9"
+  local run_id
+  run_id="$(basename "${run_dir}")"
 
   CODEX_BIN="${CODEX_BIN}" \
     CODEX_AI_CI_HOME="${CODEX_AI_CI_HOME}" \
@@ -368,6 +370,19 @@ run_codex_ai_ci_for_run() {
     LOCAL_CI_ARTIFACT_ROOT="${LOCAL_CI_ARTIFACT_ROOT:-/workspace/local-ci-artifacts}" \
     LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-}" \
     PYTHON_VENV_ACTIVATE="${PYTHON_VENV_ACTIVATE:-}" \
+    TRUSTED_ANCHOR_ENVSETUP="${LOCAL_CI_RUNNER_DIR}/trusted/envsetup.sh" \
+    CODEX_TEST_PYTHON_BIN="${PYTHON_BIN:-python3}" \
+    PPL_ROOT="${PPL_ROOT:-}" \
+    PACKAGE_TOOL="${PACKAGE_TOOL:-auto}" \
+    FRONTEND_BUILD_MODE="${FRONTEND_BUILD_MODE:-}" \
+    BACKEND_PROFILE="${BACKEND_PROFILE:-}" \
+    EXPECTED_TRITON_BACKEND="${EXPECTED_TRITON_BACKEND:-}" \
+    FLAGGEMS_CLONE_DIR="${FLAGGEMS_CLONE_DIR:-}" \
+    MAX_JOBS="${MAX_JOBS:-1}" \
+    CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-1}" \
+    NINJAFLAGS="${NINJAFLAGS:--j1}" \
+    UV_LINK_MODE="${UV_LINK_MODE:-copy}" \
+    LOCAL_CI_RUN_ID="${run_id}" \
     SOURCE_ENVSETUP="${SOURCE_ENVSETUP:-1}" \
     ANCHOR_DIR="${ANCHOR_DIR:-}" \
     BACKEND_PATH="${BACKEND_PATH:-}" \
@@ -760,6 +775,8 @@ EOF
       echo "Artifact dir: ${nonexecuted_artifact_dir}"
     } | tee "${run_dir}/local-ci.log"
   elif [[ "${execution_mode}" == "codex_only" ]]; then
+    prepare_trusted_envsetup "${LOCAL_CI_RUNNER_DIR}" "${branch}" \
+      "${base_branch}" "${base_sha}"
     nonexecuted_artifact_dir="$(
       mktemp -d "/tmp/triton-anchor-docs-only.${sha:0:12}.XXXXXX"
     )"

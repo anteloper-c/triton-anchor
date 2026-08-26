@@ -271,7 +271,7 @@
         },
         "status": {
           "type": "string",
-          "description": "状态只根据标记为 validation 的正式验证命令派生；diagnostic 命令保留为执行事实，但其退出码不直接改变该状态。not_run 表示没有正式验证命令，unavailable 表示可信命令执行事实不可取得。",
+          "description": "状态按 purpose 聚合标记为 validation 的正式验证目标；同一目标此前失败后可由后续不同命令完成，diagnostic 命令保留为执行事实但不直接改变该状态。not_run 表示没有正式验证目标，unavailable 表示可信命令执行事实不可取得。",
           "enum": [
             "not_run",
             "passed",
@@ -312,6 +312,7 @@
               },
               "purpose": {
                 "type": "string",
+                "description": "简洁且稳定的验证目标；只有目标和覆盖范围等价的命令才使用相同文本。",
                 "minLength": 1,
                 "maxLength": 120,
                 "pattern": ".*[\\u3400-\\u4dbf\\u4e00-\\u9fff].*"

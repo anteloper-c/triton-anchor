@@ -264,7 +264,7 @@ def test_diagnostic_failure_does_not_override_formal_validation(tmp_path):
     document = analysis()
     document["test_assessment"]["summary"] = [
         "报告契约定向测试共执行一百四十三个用例并全部通过。",
-        "旧字段搜索最初因搜索工具不可用而失败，随后使用现有工具完成等价检查；该诊断过程不影响报告契约测试结论。",
+        "旧字段残留检查已通过等价方式完成，未发现旧字段残留。",
     ]
     document["test_assessment"]["commands"] = [
         {
@@ -321,9 +321,115 @@ def test_diagnostic_failure_does_not_override_formal_validation(tmp_path):
     comment = RENDERER.render_comment(report, comment_args())
     validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
     assert "一百四十三个用例并全部通过" in validation
-    assert "搜索工具不可用" in validation
+    assert "旧字段残留检查已通过等价方式完成" in validation
+    assert "搜索工具不可用" not in validation
     assert "执行记录" not in validation
     assert "条成功" not in validation
+
+
+def test_validation_target_can_be_closed_by_an_alternative_method(tmp_path):
+    document = analysis()
+    document["test_assessment"]["summary"] = [
+        "报告语法检查已通过等价方式完成。"
+    ]
+    document["test_assessment"]["commands"] = [
+        {
+            "command": "bash -n report_tests.py",
+            "role": "validation",
+            "purpose": "报告语法检查",
+            "evidence": "所用解释器不适用于该文件，未形成语法结论。",
+            "failure_classification": "product",
+        },
+        {
+            "command": "python3 -m py_compile report_tests.py",
+            "role": "validation",
+            "purpose": "报告语法检查",
+            "evidence": "使用正确解释器完成语法检查。",
+            "failure_classification": "none",
+        },
+    ]
+    report = build(
+        tmp_path,
+        document,
+        [
+            {
+                "command": "bash -n report_tests.py",
+                "exit_code": 2,
+                "duration_seconds": 0.1,
+            },
+            {
+                "command": "python3 -m py_compile report_tests.py",
+                "exit_code": 0,
+                "duration_seconds": 0.1,
+            },
+        ],
+    )
+
+    assert report["test_execution"]["status"] == "passed"
+    assert report["verdict"] == "PASS"
+    comment = RENDERER.render_comment(report, comment_args())
+    validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
+    assert "报告语法检查已通过等价方式完成" in validation
+    assert "所用解释器不适用" not in validation
+
+
+@pytest.mark.parametrize(
+    ("role", "expected_status", "expected_verdict"),
+    [
+        ("validation", "insufficient_evidence", "WARNING"),
+        ("diagnostic", "passed", "PASS"),
+    ],
+)
+def test_later_failure_is_not_closed_by_an_earlier_success(
+    tmp_path, role, expected_status, expected_verdict
+):
+    document = analysis()
+    successful = {
+        "command": "python3 -m py_compile report_tests.py",
+        "role": role,
+        "purpose": "报告语法检查",
+        "evidence": "等价语法检查曾执行成功。",
+        "failure_classification": "none",
+    }
+    failed = {
+        "command": "bash -n report_tests.py",
+        "role": role,
+        "purpose": "报告语法检查",
+        "evidence": "后续检查使用了不适用的解释器，因此该目标仍未关闭。",
+        "failure_classification": "product",
+    }
+    ledger = [
+        {
+            "command": successful["command"],
+            "exit_code": 0,
+            "duration_seconds": 0.1,
+        },
+        {"command": failed["command"], "exit_code": 2, "duration_seconds": 0.1},
+    ]
+    if role == "validation":
+        document["test_assessment"]["commands"] = [successful, failed]
+    else:
+        validation_command = document["test_assessment"]["commands"][0]["command"]
+        document["test_assessment"]["commands"].extend([successful, failed])
+        ledger.insert(
+            0,
+            {
+                "command": validation_command,
+                "exit_code": 0,
+                "duration_seconds": 0.1,
+            },
+        )
+    document["test_assessment"]["summary"] = ["完成了与改动相关的静态审查。"]
+
+    report = build(tmp_path, document, ledger)
+    assert report["test_execution"]["status"] == expected_status
+    assert report["verdict"] == expected_verdict
+    validation = RENDERER.render_comment(report, comment_args()).split(
+        "### 验证情况", 1
+    )[1].split("### 剩余风险", 1)[0]
+    assert "报告语法检查尚未完成" in validation
+    assert "后续检查使用了不适用的解释器" in validation
+    assert "等价语法检查曾执行成功" not in validation
 
 
 @pytest.mark.parametrize(
@@ -354,6 +460,13 @@ def test_unresolved_diagnostic_verdict_follows_overall_evidence_level(
             "evidence": "临时环境未提供搜索工具，旧字段残留检查尚未完成。",
             "failure_classification": "infrastructure",
         },
+        {
+            "command": "grep -R old_field scripts/local_ci",
+            "role": "diagnostic",
+            "purpose": "旧字段残留搜索",
+            "evidence": "替代搜索也受当前环境限制，该目标仍未完成。",
+            "failure_classification": "infrastructure",
+        },
     ]
     report = build(
         tmp_path,
@@ -369,6 +482,11 @@ def test_unresolved_diagnostic_verdict_follows_overall_evidence_level(
                 "exit_code": 127,
                 "duration_seconds": 0.1,
             },
+            {
+                "command": "grep -R old_field scripts/local_ci",
+                "exit_code": 2,
+                "duration_seconds": 0.1,
+            },
         ],
     )
 
@@ -380,8 +498,9 @@ def test_unresolved_diagnostic_verdict_follows_overall_evidence_level(
         "### 剩余风险", 1
     )[0]
     assert "报告契约定向测试执行通过" in validation
-    assert "旧字段残留搜索没有成功完成" in validation
-    assert "临时环境未提供搜索工具" in validation
+    assert "旧字段残留搜索尚未完成" in validation
+    assert "替代搜索也受当前环境限制" in validation
+    assert validation.count("旧字段残留搜索尚未完成") == 1
     assert "执行记录" not in validation
 
 
@@ -615,6 +734,14 @@ def test_failure_status_is_derived_from_repeated_ledger(
     semantic["failure_classification"] = classification
     document["test_assessment"]["summary"] = [evidence]
     document["test_assessment"]["commands"] = [copy.deepcopy(semantic)]
+    if expected == "flaky_failure":
+        successful_retry = copy.deepcopy(semantic)
+        successful_retry["evidence"] = "后续一次执行已经通过。"
+        successful_retry["failure_classification"] = "none"
+        document["test_assessment"]["commands"].append(successful_retry)
+        document["test_assessment"]["summary"] = [
+            "完成了与该测试相关的静态审查。"
+        ]
     ledger = [
         {"command": command, "exit_code": code, "duration_seconds": 0.1}
         for code in exits
@@ -623,8 +750,11 @@ def test_failure_status_is_derived_from_repeated_ledger(
     assert report["test_execution"]["status"] == expected
     assert report["verdict"] == "WARNING"
     comment = RENDERER.render_comment(report, comment_args())
+    assert "Codex AI 审查结论：**需关注（非阻塞）**" in comment
     validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
     assert public_result in validation
+    if expected == "flaky_failure":
+        assert "后续一次执行已经通过" not in validation
     if expected == "infrastructure_failure":
         assert "所执行的验证均受运行环境限制" in validation
         assert "部分验证受运行环境限制" not in validation
@@ -1365,12 +1495,12 @@ def test_incomplete_changed_file_annotations_preserve_manifest(tmp_path, changed
         "逐文件语义说明" in item for item in report["test_execution"]["summary"]
     )
     assert any("逐文件语义说明" in item for item in report["residual_risks"])
-    assert report["verdict"] == "WARNING"
+    assert report["verdict"] == "PASS"
 
     comment = RENDERER.render_comment(report, comment_args())
     validation = comment.split("### 验证情况", 1)[1].split("### 剩余风险", 1)[0]
     assert "逐文件语义说明" not in validation
-    assert "逐文件语义说明" in comment.split("### 剩余风险", 1)[1]
+    assert "逐文件语义说明" not in comment
 
 
 def test_missing_behavior_category_is_rejected(tmp_path):
@@ -1501,7 +1631,7 @@ def test_unclassified_search_failures_do_not_override_formal_validation(tmp_path
         ],
     )
     assert report["test_execution"]["status"] == "passed"
-    assert report["verdict"] == "WARNING"
+    assert report["verdict"] == "PASS"
     assert [
         command["role"] for command in report["test_execution"]["commands"]
     ] == ["validation", "unclassified", "unclassified"]
@@ -1511,6 +1641,8 @@ def test_unclassified_search_failures_do_not_override_formal_validation(tmp_path
         for risk in report["residual_risks"]
     )
     assert report["merge_recommendation"] == document["merge_recommendation"]
+    comment = RENDERER.render_comment(report, comment_args())
+    assert "部分辅助检查没有形成可确认的结果" not in comment
 
 
 @pytest.mark.parametrize(

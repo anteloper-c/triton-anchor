@@ -498,33 +498,52 @@ def derive_execution_status(
         if evidence_level == "unavailable" and commands:
             return "insufficient_evidence"
         return "not_run"
-    failed = [
-        command for command in validation_commands if command["exit_code"] != 0
-    ]
-    if failed:
-        statuses = {command["status"] for command in failed}
-        if statuses == {"infrastructure_failure"}:
-            return "infrastructure_failure"
-        if statuses == {"flaky_failure"}:
-            return "flaky_failure"
-        if statuses == {"stable_failure"}:
-            return "stable_failure"
-        return "insufficient_evidence"
-    return "passed"
+    targets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for command in validation_commands:
+        targets[command["purpose"]].append(command)
 
+    unresolved_statuses: list[str] = []
+    for target_commands in targets.values():
+        methods: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for command in target_commands:
+            methods[command["command"]].append(command)
+        failed_indexes = [
+            index
+            for index, command in enumerate(target_commands)
+            if command["exit_code"] != 0
+        ]
+        clean_methods = {
+            command_text
+            for command_text, method_commands in methods.items()
+            if method_commands
+            and all(command["exit_code"] == 0 for command in method_commands)
+        }
+        if not failed_indexes or any(
+            index > failed_indexes[-1]
+            and command["command"] in clean_methods
+            for index, command in enumerate(target_commands)
+        ):
+            continue
 
-def unresolved_diagnostic_groups(
-    commands: list[dict[str, Any]],
-) -> dict[str, list[dict[str, Any]]]:
-    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for command in commands:
-        if command["role"] == "diagnostic":
-            groups[command["purpose"]].append(command)
-    return {
-        purpose: items
-        for purpose, items in groups.items()
-        if items and not any(item["exit_code"] == 0 for item in items)
-    }
+        failed_statuses = {
+            command["status"]
+            for command in target_commands
+            if command["exit_code"] != 0
+        }
+        if failed_statuses == {"infrastructure_failure"}:
+            unresolved_statuses.append("infrastructure_failure")
+        elif failed_statuses == {"flaky_failure"}:
+            unresolved_statuses.append("flaky_failure")
+        elif failed_statuses == {"stable_failure"}:
+            unresolved_statuses.append("stable_failure")
+        else:
+            unresolved_statuses.append("insufficient_evidence")
+
+    if not unresolved_statuses:
+        return "passed"
+    if len(set(unresolved_statuses)) == 1:
+        return unresolved_statuses[0]
+    return "insufficient_evidence"
 
 
 def normalize_assessment(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -870,9 +889,7 @@ def build_report(args: argparse.Namespace) -> None:
         if unclassified_failure_count
         else []
     )
-    normalization_warnings = (
-        finding_warnings + changed_file_warnings + command_warnings
-    )
+    normalization_warnings = finding_warnings + changed_file_warnings + command_warnings
     execution_summary = unique_in_order(codex_execution_summary)[:10]
     execution_status = derive_execution_status(
         evidence_level,
@@ -905,7 +922,6 @@ def build_report(args: argparse.Namespace) -> None:
         if (
             findings
             or unlocated_findings
-            or normalization_warnings
             or evidence_level in {"insufficient", "test_generation_error"}
             or execution_status in WARNING_EXECUTION_STATUSES
         )
