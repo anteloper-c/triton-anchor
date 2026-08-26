@@ -159,7 +159,7 @@ cp scripts/local_ci/config.example.env /opt/local-ci/config.env
 | Local CI 状态 | `LOCAL_CI_STATE_DIR`、`LOCAL_CI_PROFILE_DIR`、`LOCAL_CI_SCRIPT_DIR` | 状态目录可写；profile 目录由服务器维护；脚本目录是当前 checkout 的完整 `scripts/local_ci`。 |
 | 版本 profile | `<llvm-hash>.env` 中的 `LOCAL_CI_PROFILE_NAME`、`LOCAL_CI_CONTAINER`、`LOCAL_CI_WORKSPACE_HOST`、`LLVM_BUILD_DIR`、`PYTHON_VENV_ACTIVATE`、`RUN_BACKEND_STAGES` 和各可选阶段开关 | 文件名必须是可信 LLVM hash；一个任务只加载一个 profile，配置只在该任务子进程中生效。启用后端时还必须提供 backend profile 名、路径、发现名、JIT 命令和 wheel 匹配模式。 |
 | 结果发布 | `GITEE_RESULTS_*`、`PUBLISH_GITEE_RESULTS` | 结果仓库、branch 和 Web URL 必须互相对应。 |
-| Worker 监控 | `LOCAL_CI_HEALTH_*`、`LOCAL_CI_WORKER_ID`、`GITEE_WORKER_HEALTH_BRANCH` | Poller 状态写入 `LOCAL_CI_STATE_DIR/health`；每个 Worker 使用独立 health branch。 |
+| Worker 监控 | `LOCAL_CI_HEALTH_*`、`LOCAL_CI_WORKER_ID`、`GITEE_WORKER_HEALTH_REPO_URL`、`GITEE_WORKER_HEALTH_BRANCH` | Poller 状态写入 `LOCAL_CI_STATE_DIR/health`；最新完整快照发布到专用公开 Health 仓库。 |
 | Codex | `RUN_CODEX_AI_CI`、`CODEX_BIN`、`CODEX_AI_CI_HOME` | 使用独立 `config.toml`/`auth.json`；runner 通过 Local CI 容器 snapshot 运行，凭据只复制到临时容器的 `/root/.codex`。 |
 | Codex 预算 | `CODEX_AI_CI_TIMEOUT_SECONDS`、`CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS`、`CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS`、`CODEX_AI_CI_MAX_TEST_COMMANDS`、`CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS`、`CODEX_AI_CI_TEST_BUDGET_SECONDS` | hard timeout 仍为 3600 秒，报告预留仍为 450 秒；最多 50 条命令、单条建议 900 秒、累计建议 2700 秒。容器准备默认限时 1500 秒，准备成功后 600 秒内没有首个有效进展会提前终止；建议预算超限只产生 warning。 |
 | 资源和时限 | `LOCAL_CI_TASK_TIMEOUT_SECONDS`、`LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS`、`CODEX_AI_CI_CPUS`、`CODEX_AI_CI_MEMORY`、`CODEX_AI_CI_PIDS_LIMIT` | 普通任务 6 小时、full 任务 48 小时；Codex 临时容器由 runner 设置 cgroup，持久 profile 容器由服务器设置。 |
@@ -180,7 +180,7 @@ LOCAL_CI_STATE_DIR/health/
 └── snapshot.json
 ```
 
-这些文件只记录运行事实。当前任务耗时、磁盘可用空间、容器 CPU/内存/PID 限制均不在本模块中做阈值判定，不会终止任务、清理数据或改变 Local CI 结果。`worker-health/<worker-id>` 是只保留最新快照的专用 Gitee branch，不属于 `ci/*` task ref，也不参与任务队列生命周期。
+这些文件只记录运行事实。当前任务耗时、磁盘可用空间、容器 CPU/内存/PID 限制均不在本模块中做阈值判定，不会终止任务、清理数据或改变 Local CI 结果。Publisher 将完整快照作为根目录唯一的 `worker-health.json` force-push 到 `GITEE_WORKER_HEALTH_REPO_URL` 的配置分支；该仓库不属于 `ci/*` task ref，也不参与任务队列生命周期。
 
 服务器可用独立的 oneshot service 每次生成并发布一份快照：
 
@@ -214,7 +214,7 @@ Persistent=true
 WantedBy=timers.target
 ```
 
-GitHub Pages workflow 每十分钟读取该 branch，并在 Dashboard 的 `Worker 运行状态` 页签显示 Poller 心跳、当前任务、常驻容器、存储和最近结果。快照缺失或过旧时页面显示未知或离线；监控链路失败不会回写 GitHub status，也不会影响正在运行的任务。服务器侧原始状态可通过 `LOCAL_CI_STATE_DIR/health/*.json`、`systemctl status` 和 `journalctl` 查看。
+Dashboard 进入 `Worker 运行状态` 页签后，通过公开 Gitee Contents API 读取 `worker-health.json`，并在页签保持打开时每五分钟刷新。页面显示 Poller 心跳、当前任务、常驻容器、存储和最近结果；快照缺失或超过二十分钟未更新时显示未知或离线。GitHub Pages workflow 不再定时搬运健康数据，监控链路失败不会回写 GitHub status，也不会影响正在运行的任务。服务器侧原始状态可通过 `LOCAL_CI_STATE_DIR/health/*.json`、`systemctl status` 和 `journalctl` 查看。
 
 自动处理不可信 PR 时，容器内优先使用只读 relay token 或不传 token。当前部署选择保留示例默认值 `LOCAL_CI_ALLOW_WRITE_TOKEN_IN_CONTAINER=1`，因此缺少独立只读 token 时，候选代码容器可能获得 Gitee 写 token；这是明确保留的残余风险。Codex 通过 Local CI 容器 snapshot 运行，并只复制 exact-SHA checkout 和必要输入；AI 仍以 root、联网和 `danger-full-access` 运行，不能把它描述为完整 hostile-code 隔离。
 

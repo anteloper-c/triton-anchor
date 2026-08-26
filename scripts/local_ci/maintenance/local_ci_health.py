@@ -661,11 +661,11 @@ def parse_args() -> argparse.Namespace:
     publish_parser.add_argument("--input", type=Path)
     publish_parser.add_argument(
         "--repo-url",
-        default=os.getenv("GITEE_RESULTS_REPO_URL") or os.getenv("GITEE_REPO_URL", ""),
+        default=os.getenv("GITEE_WORKER_HEALTH_REPO_URL", ""),
         required=False,
     )
     publish_parser.add_argument(
-        "--branch", default=os.getenv("GITEE_WORKER_HEALTH_BRANCH", "")
+        "--branch", default=os.getenv("GITEE_WORKER_HEALTH_BRANCH", "main")
     )
     publish_parser.set_defaults(handler=publish)
     return parser.parse_args()

@@ -4,12 +4,16 @@ const state = {
   backends: null,
   performance: null,
   workerHealth: null,
+  workerHealthError: "",
   query: "",
   status: "all",
   stage: "all",
   page: 1,
   pageSize: 50,
 };
+
+let workerHealthRefreshTimer = null;
+let workerHealthRefreshPromise = null;
 
 const statusLabels = {
   passed: "通过",
@@ -159,6 +163,98 @@ async function fetchJson(path) {
   const response = await fetch(path, { cache: "no-store" });
   if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
   return response.json();
+}
+
+function decodeBase64Utf8(value) {
+  const binary = atob(String(value || "").replaceAll(/\s/g, ""));
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+async function fetchLiveWorkerHealth() {
+  const source = state.manifest.live_sources?.worker_health;
+  if (!source?.url || source.kind !== "gitee_contents_api") {
+    throw new Error("Worker health live source is not configured");
+  }
+  const response = await fetchJson(source.url);
+  if (response.encoding !== "base64" || typeof response.content !== "string") {
+    throw new Error("Gitee worker health response is invalid");
+  }
+  const document = JSON.parse(decodeBase64Utf8(response.content));
+  if (document.schema !== "triton-anchor-local-ci-worker-health/v1") {
+    throw new Error("Worker health snapshot schema is invalid");
+  }
+  return document;
+}
+
+function secondsSince(value) {
+  if (!value) return null;
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+}
+
+function workerHealthForDisplay(document) {
+  const health = document && typeof document === "object" ? document : {};
+  const snapshotAge = secondsSince(health.collected_at);
+  const staleSeconds = Number(
+    state.manifest?.live_sources?.worker_health?.stale_seconds || 1200,
+  );
+  const poller = health.poller && typeof health.poller === "object" ? health.poller : {};
+  const task = health.active_task && typeof health.active_task === "object"
+    ? health.active_task
+    : null;
+  const stale = health.data_mode === "live"
+    && (snapshotAge === null || snapshotAge > staleSeconds);
+  return {
+    ...health,
+    state: stale ? "offline" : health.state,
+    snapshot_age_seconds: snapshotAge,
+    poller: {
+      ...poller,
+      heartbeat_age_seconds: secondsSince(poller.heartbeat_at),
+    },
+    active_task: task
+      ? { ...task, elapsed_seconds: secondsSince(task.started_at) }
+      : null,
+  };
+}
+
+async function refreshWorkerHealth() {
+  if (workerHealthRefreshPromise) return workerHealthRefreshPromise;
+  if (state.workerHealth?.data_mode !== "live") {
+    $("#workerSnapshotAt").textContent = "正在读取最新快照...";
+  }
+  workerHealthRefreshPromise = fetchLiveWorkerHealth()
+    .then((document) => {
+      state.workerHealth = document;
+      state.workerHealthError = "";
+    })
+    .catch((error) => {
+      state.workerHealthError = error instanceof Error ? error.message : String(error);
+      console.warn("Unable to refresh worker health", error);
+    })
+    .finally(() => {
+      workerHealthRefreshPromise = null;
+      renderWorkerHealth();
+    });
+  return workerHealthRefreshPromise;
+}
+
+function setWorkerHealthRefreshEnabled(enabled) {
+  if (workerHealthRefreshTimer !== null) {
+    window.clearInterval(workerHealthRefreshTimer);
+    workerHealthRefreshTimer = null;
+  }
+  if (!enabled) return;
+  refreshWorkerHealth();
+  const refreshSeconds = Math.max(
+    60,
+    Number(state.manifest.live_sources?.worker_health?.refresh_seconds || 300),
+  );
+  workerHealthRefreshTimer = window.setInterval(() => {
+    if (document.visibilityState === "visible") refreshWorkerHealth();
+  }, refreshSeconds * 1000);
 }
 
 async function loadData() {
@@ -350,7 +446,7 @@ function renderPerformance() {
 }
 
 function renderWorkerHealth() {
-  const health = state.workerHealth || {};
+  const health = workerHealthForDisplay(state.workerHealth);
   const poller = health.poller || {};
   const task = health.active_task;
   const container = health.container || {};
@@ -360,9 +456,12 @@ function renderWorkerHealth() {
 
   $("#workerProfile").textContent = health.profile || "unknown";
   $("#workerId").textContent = health.worker_id || "--";
-  $("#workerSnapshotAt").textContent = health.collected_at
+  const snapshotLabel = health.collected_at
     ? `快照 ${formatDate(health.collected_at)}（${formatElapsed(health.snapshot_age_seconds)}前）`
     : "快照 --";
+  $("#workerSnapshotAt").textContent = state.workerHealthError
+    ? `${snapshotLabel} · 刷新失败`
+    : snapshotLabel;
 
   const metrics = [
     {
@@ -522,7 +621,15 @@ function bindEvents() {
       $$(".tab-button").forEach((item) => item.classList.toggle("active", item === button));
       $$(".view").forEach((view) => view.classList.remove("active"));
       $(`#${button.dataset.view}View`).classList.add("active");
+      setWorkerHealthRefreshEnabled(button.dataset.view === "worker");
     });
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    const workerButton = $('.tab-button[data-view="worker"]');
+    if (document.visibilityState === "visible" && workerButton?.classList.contains("active")) {
+      refreshWorkerHealth();
+    }
   });
 
   $("#operatorSearch").addEventListener("input", (event) => {

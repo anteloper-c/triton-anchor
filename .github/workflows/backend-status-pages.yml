@@ -2,8 +2,6 @@ name: Backend Status Pages
 run-name: ${{ inputs.run_title || github.event.pull_request.title || github.event.head_commit.message || format('Dashboard on {0}', github.ref_name) }}
 
 on:
-  schedule:
-    - cron: "*/10 * * * *"
   push:
     paths:
       - "dashboard/**"
@@ -68,14 +66,12 @@ jobs:
           GITEE_RESULTS_REPO: ${{ vars.GITEE_RESULTS_REPO || 'triton-anchor-local-ci-results' }}
           GITEE_RESULTS_REPO_URL: ${{ vars.GITEE_RESULTS_REPO_URL }}
           GITEE_RESULTS_BRANCH: ${{ vars.GITEE_RESULTS_BRANCH || 'local-ci-results' }}
-          GITEE_WORKER_HEALTH_BRANCH: ${{ vars.GITEE_WORKER_HEALTH_BRANCH || 'worker-health/sophgo-cmodel-01' }}
           GITEE_RESULTS_WEB_URL: ${{ vars.GITEE_RESULTS_WEB_URL || 'https://gitee.com/likehupochuan/triton-anchor-local-ci-results' }}
           GITEE_USERNAME: ${{ vars.GITEE_USERNAME || 'likehupochuan' }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           DASHBOARD_SOURCE_BRANCH: ${{ vars.DASHBOARD_SOURCE_BRANCH || format('ci/push/{0}', vars.LOCAL_CI_PAGES_BRANCH || 'CI_dev') }}
           DASHBOARD_FULL_TEST_SOURCE_BRANCH: ${{ vars.DASHBOARD_FULL_TEST_SOURCE_BRANCH || format('ci/full/{0}', vars.LOCAL_CI_PAGES_BRANCH || 'CI_dev') }}
           BACKEND_PROFILE: ${{ vars.LOCAL_CI_BACKEND_PROFILE || 'sophgo-cmodel' }}
-          WORKER_HEALTH_STALE_SECONDS: ${{ vars.LOCAL_CI_WORKER_HEALTH_STALE_SECONDS || '1200' }}
         run: |
           if [[ -z "${GITEE_TOKEN}" ]]; then
             echo "GITEE_TOKEN is empty"
@@ -96,16 +92,6 @@ jobs:
           GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
             git clone --depth 1 --branch "${GITEE_RESULTS_BRANCH}" \
               "${repo_url}" "${RUNNER_TEMP}/gitee-results"
-          health_args=()
-          if GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
-            git clone --depth 1 --branch "${GITEE_WORKER_HEALTH_BRANCH}" \
-              "${repo_url}" "${RUNNER_TEMP}/gitee-worker-health"; then
-            health_args=(
-              --worker-health-file "${RUNNER_TEMP}/gitee-worker-health/worker-health.json"
-            )
-          else
-            echo "Worker health snapshot is unavailable; Dashboard will show unknown status."
-          fi
           python scripts/dashboard/sync_gitee_results.py \
             --results-dir "${RUNNER_TEMP}/gitee-results" \
             --output-dir dashboard/data \
@@ -113,9 +99,7 @@ jobs:
             --full-test-source-branch "${DASHBOARD_FULL_TEST_SOURCE_BRANCH}" \
             --profile "${BACKEND_PROFILE}" \
             --results-branch "${GITEE_RESULTS_BRANCH}" \
-            --results-web-url "${GITEE_RESULTS_WEB_URL}" \
-            --worker-health-stale-seconds "${WORKER_HEALTH_STALE_SECONDS}" \
-            "${health_args[@]}"
+            --results-web-url "${GITEE_RESULTS_WEB_URL}"
 
       - name: Validate dashboard data contracts
         run: |
