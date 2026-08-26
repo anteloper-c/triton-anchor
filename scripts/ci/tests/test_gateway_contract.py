@@ -167,7 +167,7 @@ class GatewayV3ContractTests(unittest.TestCase):
         self.assertIn('.get("execution_mode", "full")', self.poller)
         codex_at = self.poller.rindex("run_codex_ai_ci_for_run")
         artifact_at = self.poller.index(
-            'echo "Artifact dir: ${docs_only_artifact_dir}"', codex_at
+            'echo "Artifact dir: ${nonexecuted_artifact_dir}"', codex_at
         )
         publish_at = self.poller.index('publish_result "${sha}"', artifact_at)
         self.assertLess(codex_at, artifact_at)
