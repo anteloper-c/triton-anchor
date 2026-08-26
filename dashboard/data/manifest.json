@@ -5,7 +5,8 @@
   "sources": {
     "full_test": "full-test.json",
     "backend_status": "backend-status.json",
-    "performance": "performance.json"
+    "performance": "performance.json",
+    "worker_health": "worker-health.json"
   },
   "downloads": {
     "full_test_csv": "full-test.csv"

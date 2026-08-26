@@ -24,6 +24,10 @@ GITEE_BRANCH_INCLUDE_REGEX="${GITEE_BRANCH_INCLUDE_REGEX:-^ci/(pr-[0-9]+/.+|push
 GITEE_TOKEN="${GITEE_TOKEN:-}"
 LOCAL_CI_POLL_INTERVAL="${LOCAL_CI_POLL_INTERVAL:-60}"
 LOCAL_CI_ONCE="${LOCAL_CI_ONCE:-0}"
+LOCAL_CI_HEALTH_ENABLED="${LOCAL_CI_HEALTH_ENABLED:-1}"
+LOCAL_CI_HEALTH_DIR="${LOCAL_CI_HEALTH_DIR:-${LOCAL_CI_STATE_DIR%/}/health}"
+LOCAL_CI_WORKER_ID="${LOCAL_CI_WORKER_ID:-local-ci-worker}"
+LOCAL_CI_HEARTBEAT_INTERVAL_SECONDS="${LOCAL_CI_HEARTBEAT_INTERVAL_SECONDS:-60}"
 GITEE_RESULT_CONTEXT="${GITEE_RESULT_CONTEXT:-local-ci/sophgo-cmodel}"
 GITEE_RESULTS_BRANCH="${GITEE_RESULTS_BRANCH:-local-ci-results}"
 GITEE_RESULTS_OWNER="${GITEE_RESULTS_OWNER:-${GITEE_OWNER}}"
@@ -62,6 +66,7 @@ CODEX_AI_CI_MAX_TEST_COMMANDS="${CODEX_AI_CI_MAX_TEST_COMMANDS:-50}"
 CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS="${CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS:-900}"
 CODEX_AI_CI_TEST_BUDGET_SECONDS="${CODEX_AI_CI_TEST_BUDGET_SECONDS:-2700}"
 CODEX_AI_CI_REPORT_RESERVE_SECONDS="${CODEX_AI_CI_REPORT_RESERVE_SECONDS:-450}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 export GITEE_TOKEN GITEE_USERNAME GITEE_WEB_URL GITEE_RESULTS_WEB_URL WORKSPACE LOCAL_CI_WORKSPACE_HOST LOCAL_CI_CONFIG LOCAL_CI_CONTAINER
 
 mkdir -p "${LOCAL_CI_STATE_DIR}"
@@ -90,6 +95,51 @@ exec 9>"${lock_file}"
 if ! flock -n 9; then
   echo "Another local-ci poller is already running: ${lock_file}" >&2
   exit 1
+fi
+
+if [[ "${1:-}" == "--once" ]]; then
+  LOCAL_CI_ONCE="1"
+fi
+
+HEALTH_TOOL="${LOCAL_CI_ROOT}/maintenance/local_ci_health.py"
+HEALTH_HEARTBEAT_PID=""
+
+health_call() {
+  if [[ "${LOCAL_CI_HEALTH_ENABLED}" != "1" ]]; then
+    return 0
+  fi
+  if [[ ! -f "${HEALTH_TOOL}" ]]; then
+    echo "Warning: Local CI health tool is unavailable: ${HEALTH_TOOL}" >&2
+    return 0
+  fi
+  if ! "${PYTHON_BIN}" "${HEALTH_TOOL}" "$@"; then
+    echo "Warning: Local CI health update failed: $*" >&2
+  fi
+  return 0
+}
+
+stop_health_heartbeat() {
+  if [[ -n "${HEALTH_HEARTBEAT_PID}" ]]; then
+    kill "${HEALTH_HEARTBEAT_PID}" >/dev/null 2>&1 || true
+    wait "${HEALTH_HEARTBEAT_PID}" >/dev/null 2>&1 || true
+  fi
+}
+
+trap stop_health_heartbeat EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+health_call poller-start \
+  --health-dir "${LOCAL_CI_HEALTH_DIR}" \
+  --worker-id "${LOCAL_CI_WORKER_ID}" \
+  --pid "$$"
+if [[ "${LOCAL_CI_HEALTH_ENABLED}" == "1" && -f "${HEALTH_TOOL}" ]]; then
+  "${PYTHON_BIN}" "${HEALTH_TOOL}" heartbeat \
+    --health-dir "${LOCAL_CI_HEALTH_DIR}" \
+    --worker-id "${LOCAL_CI_WORKER_ID}" \
+    --parent-pid "$$" \
+    --interval "${LOCAL_CI_HEARTBEAT_INTERVAL_SECONDS}" &
+  HEALTH_HEARTBEAT_PID="$!"
 fi
 
 latest_sha() {
@@ -482,6 +532,7 @@ stage_runner_scripts() {
     shared/result_paths.py \
     shared/path_utils.sh \
     shared/resolve_ci_profile.py \
+    maintenance/local_ci_health.py \
     shared/validate_task_metadata.py; do
     if [[ ! -f "${LOCAL_CI_SCRIPT_DIR}/${required_path}" ]]; then
       echo "LOCAL_CI_SCRIPT_DIR is not a complete Local CI root; missing ${required_path}" >&2
@@ -604,6 +655,43 @@ run_once() (
   local run_dir="${LOCAL_CI_STATE_DIR}/runs/${safe_branch}/${run_id}"
   mkdir -p "${run_dir}"
 
+  local health_task_started=1
+  local health_result_status="error"
+  local health_result_exit_code=1
+  local health_publish_status=-1
+  local health_failure_code="task_interrupted"
+  finish_health_task() {
+    local shell_status="$?"
+    trap - EXIT
+    if [[ "${health_failure_code}" == "task_interrupted" ]]; then
+      health_result_exit_code="${shell_status}"
+    fi
+    if [[ "${health_task_started}" == "1" ]]; then
+      health_call task-finish \
+        --health-dir "${LOCAL_CI_HEALTH_DIR}" \
+        --worker-id "${LOCAL_CI_WORKER_ID}" \
+        --branch "${branch}" \
+        --sha "${sha}" \
+        --run-id "${run_id}" \
+        --profile "${LOCAL_CI_PROFILE_NAME:-unknown}" \
+        --status "${health_result_status}" \
+        --exit-code "${health_result_exit_code}" \
+        --publish-status "${health_publish_status}" \
+        --failure-code "${health_failure_code}"
+    fi
+    exit "${shell_status}"
+  }
+  trap finish_health_task EXIT
+  health_call task-start \
+    --health-dir "${LOCAL_CI_HEALTH_DIR}" \
+    --worker-id "${LOCAL_CI_WORKER_ID}" \
+    --branch "${branch}" \
+    --sha "${sha}" \
+    --run-id "${run_id}" \
+    --profile "resolving" \
+    --container "${LOCAL_CI_CONTAINER:-}" \
+    --stage "preparing"
+
   echo "Detected new commit on ${branch}: ${sha}"
   echo "Run directory: ${run_dir}"
 
@@ -663,6 +751,11 @@ run_once() (
   fi
   echo "Local CI execution mode: ${execution_mode}"
   LOCAL_CI_EXECUTION_MODE="${execution_mode}"
+  health_call task-stage \
+    --health-dir "${LOCAL_CI_HEALTH_DIR}" \
+    --run-id "${run_id}" \
+    --stage "preparing" \
+    --execution-mode "${execution_mode}"
 
   local PROFILE_SELECTION_ERROR=""
   local profile_selection_status=0
@@ -672,6 +765,12 @@ run_once() (
     profile_selection_status=$?
     echo "Local CI profile selection failed: ${PROFILE_SELECTION_ERROR}" >&2
   fi
+  health_call task-stage \
+    --health-dir "${LOCAL_CI_HEALTH_DIR}" \
+    --run-id "${run_id}" \
+    --stage "profile-selected" \
+    --profile "${LOCAL_CI_PROFILE_NAME:-unavailable}" \
+    --container "${LOCAL_CI_CONTAINER:-}"
 
   local flaggems_test_mode
   flaggems_test_mode="$(flaggems_mode_for_branch "${branch}")"
@@ -714,6 +813,10 @@ run_once() (
         local base_run_dir="${LOCAL_CI_STATE_DIR}/runs/$(safe_path_part "${base_branch}")/${base_run_id}"
         mkdir -p "${base_run_dir}"
         echo "Running base task once to populate missing performance baseline(s) for ${base_sha}."
+        health_call task-stage \
+          --health-dir "${LOCAL_CI_HEALTH_DIR}" \
+          --run-id "${run_id}" \
+          --stage "performance-baseline"
 
         local base_status=0
         set +e
@@ -739,6 +842,8 @@ run_once() (
   local nonexecuted_artifact_dir=""
   if [[ ${profile_selection_status} -ne 0 ]]; then
     status=1
+    health_result_status="error"
+    health_failure_code="profile_selection_failed"
     LOCAL_CI_PROFILE_NAME="unavailable"
     RUN_BACKEND_STAGES="false"
     BACKEND_SKIP_REASON="${PROFILE_SELECTION_ERROR}"
@@ -807,6 +912,10 @@ EOF
     echo "Skipping deterministic Local CI for documentation-only PR." |
       tee "${run_dir}/local-ci.log"
   else
+    health_call task-stage \
+      --health-dir "${LOCAL_CI_HEALTH_DIR}" \
+      --run-id "${run_id}" \
+      --stage "deterministic-ci"
     prepare_trusted_envsetup "${LOCAL_CI_RUNNER_DIR}" "${branch}" \
       "${base_branch}" "${base_sha}"
     set +e
@@ -817,6 +926,16 @@ EOF
       tee "${run_dir}/local-ci.log"
     status=${PIPESTATUS[0]}
     set -e
+  fi
+  health_result_exit_code="${status}"
+  if [[ ${profile_selection_status} -eq 0 ]]; then
+    if [[ ${status} -eq 0 ]]; then
+      health_result_status="success"
+      health_failure_code=""
+    else
+      health_result_status="failure"
+      health_failure_code="deterministic_ci_failed"
+    fi
   fi
 
   local codex_ai_base_sha=""
@@ -842,6 +961,10 @@ EOF
     if [[ ${status} -ne 0 ]]; then
       codex_ai_mode="analysis_only"
     fi
+    health_call task-stage \
+      --health-dir "${LOCAL_CI_HEALTH_DIR}" \
+      --run-id "${run_id}" \
+      --stage "codex-ai"
     echo "Running non-blocking Codex AI CI for ${sha} (${codex_ai_mode})." |
       tee -a "${run_dir}/local-ci.log"
     local codex_ai_ci_exit=0
@@ -925,10 +1048,20 @@ PY
     echo "Artifact dir: ${nonexecuted_artifact_dir}" >> "${run_dir}/local-ci.log"
   fi
   local publish_status=0
+  health_call task-stage \
+    --health-dir "${LOCAL_CI_HEALTH_DIR}" \
+    --run-id "${run_id}" \
+    --stage "publishing"
   set +e
   publish_result "${sha}" "${status}" "${run_id}" "${run_dir}" "${branch}" "${head_sha}"
   publish_status=$?
   set -e
+  health_publish_status="${publish_status}"
+  if [[ ${publish_status} -ne 0 ]]; then
+    health_result_status="error"
+    health_result_exit_code="${publish_status}"
+    health_failure_code="result_publish_failed"
+  fi
   if [[ -n "${nonexecuted_artifact_dir}" ]]; then
     rm -rf -- "${nonexecuted_artifact_dir}"
   fi
@@ -952,19 +1085,49 @@ PY
 
 run_all_once() {
   local status=0
+  local branch_output=""
+  local -a branches=()
   local branch
+
+  health_call poller-update \
+    --health-dir "${LOCAL_CI_HEALTH_DIR}" \
+    --worker-id "${LOCAL_CI_WORKER_ID}" \
+    --pid "$$" \
+    --phase started
+  if ! branch_output="$(list_branches)"; then
+    health_call poller-update \
+      --health-dir "${LOCAL_CI_HEALTH_DIR}" \
+      --worker-id "${LOCAL_CI_WORKER_ID}" \
+      --pid "$$" \
+      --phase finished \
+      --status error \
+      --error-code "gitee_branch_discovery_failed"
+    return 1
+  fi
   while IFS= read -r branch; do
     if ! branch_is_enabled "${branch}"; then
       continue
     fi
+    branches+=("${branch}")
+  done < <(printf '%s\n' "${branch_output}" | awk 'NF' | sort -u)
+  health_call poller-update \
+    --health-dir "${LOCAL_CI_HEALTH_DIR}" \
+    --worker-id "${LOCAL_CI_WORKER_ID}" \
+    --pid "$$" \
+    --phase started \
+    --task-ref-count "${#branches[@]}"
+  for branch in "${branches[@]}"; do
     run_once "${branch}" || status=1
-  done < <(list_branches | awk 'NF' | sort -u)
+  done
+  health_call poller-update \
+    --health-dir "${LOCAL_CI_HEALTH_DIR}" \
+    --worker-id "${LOCAL_CI_WORKER_ID}" \
+    --pid "$$" \
+    --phase finished \
+    --status success \
+    --task-ref-count "${#branches[@]}"
   return "${status}"
 }
-
-if [[ "${1:-}" == "--once" ]]; then
-  LOCAL_CI_ONCE="1"
-fi
 
 while true; do
   loop_status=0

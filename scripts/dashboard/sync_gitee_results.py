@@ -24,6 +24,8 @@ DEFAULT_RESULTS_WEB_URL = (
     "https://gitee.com/likehupochuan/triton-anchor-local-ci-results"
 )
 RUN_ID_RE = re.compile(r"^(\d{8}T\d{6}Z)-")
+WORKER_HEALTH_SCHEMA = "triton-anchor-local-ci-worker-health/v1"
+WORKER_STATES = {"healthy", "busy", "degraded", "offline", "unknown"}
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backend-name", default="Sophgo")
     parser.add_argument("--results-branch", default="local-ci-results")
     parser.add_argument("--results-web-url", default=DEFAULT_RESULTS_WEB_URL)
+    parser.add_argument("--worker-health-file", type=Path)
+    parser.add_argument("--worker-health-stale-seconds", type=int, default=1200)
     return parser.parse_args()
 
 
@@ -521,6 +525,93 @@ def performance_document(
     }
 
 
+def unavailable_worker_health() -> dict[str, Any]:
+    return {
+        "schema": WORKER_HEALTH_SCHEMA,
+        "data_mode": "unavailable",
+        "worker_id": "",
+        "profile": "unknown",
+        "state": "unknown",
+        "collected_at": "",
+        "snapshot_age_seconds": None,
+        "poller": {
+            "alive": False,
+            "heartbeat_at": "",
+            "heartbeat_age_seconds": None,
+            "task_ref_count": 0,
+            "last_poll_status": "unknown",
+            "last_error_code": "",
+        },
+        "active_task": None,
+        "last_result": None,
+        "container": {
+            "name": "",
+            "available": False,
+            "running": False,
+            "status": "unknown",
+            "limits": {},
+            "stats": {},
+        },
+        "storage": [],
+    }
+
+
+def worker_health_document(
+    source_path: Path | None,
+    stale_seconds: int,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if source_path is None:
+        return unavailable_worker_health()
+    source = read_json(source_path)
+    if source is None or source.get("schema") != WORKER_HEALTH_SCHEMA:
+        return unavailable_worker_health()
+
+    collected_at = str(source.get("collected_at") or "")
+    collected = None
+    try:
+        collected = datetime.fromisoformat(collected_at.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    current = now or datetime.now(timezone.utc)
+    age_seconds = None
+    if collected is not None and collected.tzinfo is not None:
+        age_seconds = max(
+            0, int((current - collected.astimezone(timezone.utc)).total_seconds())
+        )
+
+    state = str(source.get("state") or "unknown")
+    if state not in WORKER_STATES:
+        state = "unknown"
+    if age_seconds is None or age_seconds > stale_seconds:
+        state = "offline"
+
+    poller = source.get("poller")
+    active_task = source.get("active_task")
+    last_result = source.get("last_result")
+    container = source.get("container")
+    storage = source.get("storage")
+    return {
+        "schema": WORKER_HEALTH_SCHEMA,
+        "data_mode": "live",
+        "worker_id": str(source.get("worker_id") or ""),
+        "profile": str(source.get("profile") or "unknown"),
+        "state": state,
+        "collected_at": collected_at,
+        "snapshot_age_seconds": age_seconds,
+        "poller": poller if isinstance(poller, dict) else {},
+        "active_task": active_task if isinstance(active_task, dict) else None,
+        "last_result": last_result if isinstance(last_result, dict) else None,
+        "container": container if isinstance(container, dict) else {},
+        "storage": (
+            [item for item in storage if isinstance(item, dict)]
+            if isinstance(storage, list)
+            else []
+        ),
+    }
+
+
 def write_json(path: Path, document: dict[str, Any]) -> None:
     path.write_text(
         json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -568,6 +659,8 @@ def sync_dashboard(
     backend_name: str = "Sophgo",
     results_branch: str = "local-ci-results",
     results_web_url: str = DEFAULT_RESULTS_WEB_URL,
+    worker_health_file: Path | None = None,
+    worker_health_stale_seconds: int = 1200,
 ) -> None:
     main_runs = discover_runs(results_dir, source_branch)
     if not main_runs:
@@ -586,6 +679,10 @@ def sync_dashboard(
             main_runs, backend_name, profile, results_web_url, results_branch
         ),
     )
+    worker_health = worker_health_document(
+        worker_health_file, worker_health_stale_seconds
+    )
+    write_json(output_dir / "worker-health.json", worker_health)
 
     manifest_path = output_dir / "manifest.json"
     manifest = read_json(manifest_path)
@@ -609,7 +706,9 @@ def sync_dashboard(
         "full_test": full_test_mode,
         "backend_status": "live",
         "performance": "live",
+        "worker_health": worker_health["data_mode"],
     }
+    manifest.setdefault("sources", {})["worker_health"] = "worker-health.json"
     write_json(manifest_path, manifest)
 
 
@@ -624,6 +723,10 @@ def main() -> int:
         backend_name=args.backend_name,
         results_branch=args.results_branch,
         results_web_url=args.results_web_url,
+        worker_health_file=(
+            args.worker_health_file.resolve() if args.worker_health_file else None
+        ),
+        worker_health_stale_seconds=args.worker_health_stale_seconds,
     )
     return 0
 
