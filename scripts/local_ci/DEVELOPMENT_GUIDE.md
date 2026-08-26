@@ -993,6 +993,14 @@ CODEX_AI_CI_HOME=/path/to/codex-ai \
 - `docs/build.md` 的预编译 LLVM、out-of-tree backend 部分仍是 TODO。
 - backend profile、FlagGems 列表、性能阈值和 dashboard 数据都有日期/环境前提，更新后必须写明生成环境。
 
+### 12.6 资源与保留治理
+
+- poller 仍全局串行；普通任务由 6 小时总预算保护，`ci/full/*` 使用 48 小时总预算和 FlagGems 30 分钟 idle、12 小时 soft、2 小时进展扩展、40 小时 hard 上限。full 的三个性能阶段各保留 2 小时上限。
+- 持久 profile 容器的 CPU、内存和 PID cgroup 属于服务器部署状态；仓库只设置 Codex 临时容器的 12 CPU、48 GiB、4096 PID，并在容器和 snapshot image 上写 Local CI ownership label。
+- 单日志、单 artifact 文件、单任务 artifact 和 Gitee 发布预算分别为 512 MiB、2 GiB、5 GiB 和 256 MiB。超限结果使用 `log_size_limit`、`artifact_size_limit` 或 `gitee_result_size_limit`，不能把未发布的大文件当作有效证据。
+- `maintenance/manage_local_ci_state.py` 默认 dry-run。poller 仅在长驻模式、整轮任务结束且距离上次维护至少 24 小时时使用 `--apply`；成功结果保留 14 天、失败结果 28 天、无结果目录 7 天、带 Local CI 标签且已停止或未被引用的 Codex Docker 残留 72 小时。
+- 维护范围只来自 `LOCAL_CI_STATE_DIR` 和 `LOCAL_CI_ARTIFACT_HOST_ROOTS`。不得使用全局 Docker prune，不得清理 Gitee task ref、Gitee 结果历史、LLVM/PPL、profile workspace 本体或其他项目资源。
+
 ## 13. 修改前后的 AI 协作规则
 
 ### 13.1 修改前
@@ -1031,6 +1039,7 @@ CODEX_AI_CI_HOME=/path/to/codex-ai \
 | Codex schema、prompt、renderer | `PYTHONPATH=python python -m pytest scripts/local_ci/codex_ai/tests -v --tb=short`；`bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_ai.sh`；renderer 直接校验完整 schema、中文、manifest、verdict 和 fallback。 |
 | `codex_ai/run_codex_ai_ci.sh`、checkout、credential、setup container | `bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_container_setup.sh` 和 `bash scripts/local_ci/codex_ai/tests/test_local_ci_codex_container.sh`；重点检查 exact SHA、merge-base、timeout、cleanup、workspace、token 不泄露和凭据完整性。 |
 | `poll_gitee_and_run.sh`、profile resolver、`orchestration/run_deterministic_ci_in_container.sh` | `bash -n`/`py_compile`；覆盖 3.0、3.3、3.6、未知 hash、缺 profile、PR hash 改变、push 路由和连续任务隔离；fake/local relay 或受控 `--once` 验证 lock、last-processed、publish 失败重试和 token forwarding。 |
+| `maintenance/manage_local_ci_state.py`、`shared/capped_tee.py`、`shared/output_limits.py` | 临时根目录测试 dry-run/apply、14/28/7 天边界、symlink 和受管根约束；测试日志、单文件、目录总量及 Gitee 发布预算的等于/超限边界。 |
 | `deterministic_ci/run_deterministic_ci.sh`、backend profile | `bash -n`；3.0 完整容器运行 frontend build/install/smoke 与 backend discovery/rebuild/smoke/JIT；3.3/3.6 运行相同前端范围并确认所有后端/FlagGems/benchmark 阶段为 `skipped`。 |
 | `deterministic_ci/flaggems/select_flaggems_tests.py`、`deterministic_ci/flaggems/batch_test_flaggems.py`、TSV | 选择器单测/命令检查；sample/full/single、marker alias、空列表、timeout、cache clear、progress extension；有 FlagGems/后端时运行代表性 operator。 |
 | compile/pass/IR benchmark 或 compare | 对应 `test_compile_time_regression.py`、`test_pass_profile_regression.py`、`test_ir_serialization_regression.py`；确认缺基线、空 event、错误 schema 和 slowdown 语义。 |

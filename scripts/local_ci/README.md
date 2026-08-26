@@ -30,13 +30,15 @@ poll_gitee_and_run.sh
 
 ## 入口和模块边界
 
-根目录只保留一个稳定入口：
+根目录只保留稳定 poller 入口；状态回收入口统一放在 `maintenance/`：
 
 ```bash
 bash scripts/local_ci/poll_gitee_and_run.sh
+python3 scripts/local_ci/maintenance/manage_local_ci_state.py \
+  --state-dir /home/race_work/local_ci/local-ci-state
 ```
 
-该脚本由 systemd、cron 和人工运维调用，负责轮询、锁、防重复处理、任务编排和结果发布。其他运行代码按职责放在以下目录：
+poller 由 systemd 和人工运维调用，负责轮询、锁、防重复处理、任务编排、每日维护和结果发布。维护入口默认只预览，显式 `--apply` 才删除受管数据。其他运行代码按职责放在以下目录：
 
 | 模块 | 负责什么 |
 | --- | --- |
@@ -46,9 +48,9 @@ bash scripts/local_ci/poll_gitee_and_run.sh
 | `codex_ai/` | exact-SHA checkout、临时容器、prompt、schema、报告和测试预算。 |
 | `results/` | 固定 allowlist 复制产物、发布 Gitee 结果、回写 GitHub。 |
 | `shared/` | task metadata、结果路径和 shell 路径归一化等跨模块协议。 |
-| `maintenance/` | 记录 Poller/任务状态，采集容器和存储事实，发布 Worker 健康快照。 |
+| `maintenance/` | 记录和发布 Worker 健康状态，执行受管状态、artifact 和 Codex 残留回收。 |
 
-依赖方向应保持单向：poller 调用 orchestration、deterministic、Codex 和 results；Codex 与 results 只通过 `shared/` 使用共享协议。不要重新增加根目录兼容 wrapper。
+依赖方向应保持单向：poller 调用 orchestration、deterministic、Codex、results 和维护入口；Codex 与 results 只通过 `shared/` 使用共享协议。不要重新增加根目录兼容 wrapper。
 
 ## 文件结构速览
 
@@ -82,12 +84,15 @@ scripts/local_ci/
 │   ├── publish_gitee_result.py            # 按 allowlist 发布 run 产物到 Gitee 结果分支
 │   ├── bridge_gitee_to_github_status.py   # 将 Gitee 结果转换为 GitHub status / PR comment
 │   └── tests/                             # bridge 和发布协议相关测试
-├── maintenance/                           # Worker 可观测性；不参与 CI 成败判定
-│   └── local_ci_health.py                 # 原子记录状态、采集快照并发布到专用 Gitee branch
+├── maintenance/                           # Worker 可观测性和服务器侧保留治理
+│   ├── local_ci_health.py                 # 原子记录状态、采集快照并发布到专用 Gitee branch
+│   └── manage_local_ci_state.py           # 预览或回收受管状态、artifact 和 Codex 残留
 ├── shared/                                # 跨模块共享协议，避免各模块重复实现路径和 metadata 规则
 │   ├── result_paths.py                    # Python 侧结果路径协议
 │   ├── finding_locations.py               # finding 文件位置和行号边界校验
+│   ├── capped_tee.py                       # 限制单日志大小并生成输出超限标记
 │   ├── dump_artifacts.py                  # 归档当前任务失败 IR 并清理受控 dump 目录
+│   ├── output_limits.py                    # 检查和收束任务 artifact 预算
 │   ├── task_tmp.py                        # 创建、校验和清理任务级临时目录
 │   ├── path_utils.sh                      # Shell 侧路径归一化
 │   └── validate_task_metadata.py          # PR metadata 校验
@@ -157,6 +162,9 @@ cp scripts/local_ci/config.example.env /opt/local-ci/config.env
 | Worker 监控 | `LOCAL_CI_HEALTH_*`、`LOCAL_CI_WORKER_ID`、`GITEE_WORKER_HEALTH_BRANCH` | Poller 状态写入 `LOCAL_CI_STATE_DIR/health`；每个 Worker 使用独立 health branch。 |
 | Codex | `RUN_CODEX_AI_CI`、`CODEX_BIN`、`CODEX_AI_CI_HOME` | 使用独立 `config.toml`/`auth.json`；runner 通过 Local CI 容器 snapshot 运行，凭据只复制到临时容器的 `/root/.codex`。 |
 | Codex 预算 | `CODEX_AI_CI_TIMEOUT_SECONDS`、`CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS`、`CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS`、`CODEX_AI_CI_MAX_TEST_COMMANDS`、`CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS`、`CODEX_AI_CI_TEST_BUDGET_SECONDS` | hard timeout 仍为 3600 秒，报告预留仍为 450 秒；最多 50 条命令、单条建议 900 秒、累计建议 2700 秒。容器准备默认限时 1500 秒，准备成功后 600 秒内没有首个有效进展会提前终止；建议预算超限只产生 warning。 |
+| 资源和时限 | `LOCAL_CI_TASK_TIMEOUT_SECONDS`、`LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS`、`CODEX_AI_CI_CPUS`、`CODEX_AI_CI_MEMORY`、`CODEX_AI_CI_PIDS_LIMIT` | 普通任务 6 小时、full 任务 48 小时；Codex 临时容器由 runner 设置 cgroup，持久 profile 容器由服务器设置。 |
+| 输出预算 | `LOCAL_CI_LOG_MAX_BYTES`、`LOCAL_CI_ARTIFACT_FILE_MAX_BYTES`、`LOCAL_CI_ARTIFACT_MAX_BYTES`、`GITEE_RESULT_MAX_BYTES` | 单日志 512 MiB、单文件 2 GiB、单任务 5 GiB、单次 Gitee 发布 256 MiB。 |
+| 保留维护 | `LOCAL_CI_MAINTENANCE_*`、`LOCAL_CI_ARTIFACT_HOST_ROOTS` | 每 24 小时在任务轮次之间执行；成功 14 天、失败 28 天、无结果目录 7 天、Codex Docker 残留 72 小时。 |
 | backend | `BACKEND_PROFILE`、`BACKEND_PATH`、`BACKEND_ENVSETUP` | profile、backend commit 和环境脚本必须与性能 baseline 相匹配。 |
 | benchmark | `RUN_COMPILE_BENCHMARK`、`RUN_PASS_PROFILE`、`RUN_IR_SERIALIZATION_BENCHMARK` | 三类测量有独立 cache namespace，不能混用阈值或结果。 |
 
@@ -221,6 +229,37 @@ CODEX_AI_CI_HOME=/opt/local-ci/secrets/codex-ai \
   bash scripts/local_ci/codex_ai/setup_codex_ai_container.sh
 ```
 
+首次启用维护前先预览，然后设置持久容器资源并核验：
+
+```bash
+# 用途：只读预览将按 14/28/7 天规则回收的 run、runner snapshot、
+# artifact 和带 Local CI 标签的 Codex Docker 残留；没有 --apply，不会删除。
+python3 scripts/local_ci/maintenance/manage_local_ci_state.py \
+  --state-dir /home/race_work/local_ci/local-ci-state \
+  --artifact-root /home/race_work/local_ci/workspace/local-ci-artifacts \
+  --artifact-root /home/race_work/local_ci/profile-workspaces/sophgo-cmodel/local-ci-artifacts \
+  --artifact-root /home/race_work/local_ci/profile-workspaces/triton-3.3-frontend/local-ci-artifacts \
+  --artifact-root /home/race_work/local_ci/profile-workspaces/triton-3.6-frontend/local-ci-artifacts \
+  --success-days 14 --failure-days 28 --incomplete-days 7 \
+  --docker-orphan-grace-hours 72
+
+# 用途：实时设置 Sophgo 持久 CI 容器的 CPU、内存和 PID 硬上限；
+# 命令不会重启容器，但容器重建时需要在创建配置中重新声明这些值。
+docker update --cpus 48 --memory 96g --memory-swap 96g --pids-limit 8192 \
+  anchor-sophgo-ci
+
+# 用途：实时设置 Triton 3.3/3.6 frontend 容器的资源硬上限。
+docker update --cpus 24 --memory 48g --memory-swap 48g --pids-limit 4096 \
+  anchor-triton-3.3-ci anchor-triton-3.6-ci
+
+# 用途：只读核验三个持久 CI 容器最终生效的 cgroup 配置。
+docker inspect --format \
+  '{{.Name}} cpus={{.HostConfig.NanoCpus}} memory={{.HostConfig.Memory}} swap={{.HostConfig.MemorySwap}} pids={{.HostConfig.PidsLimit}}' \
+  anchor-sophgo-ci anchor-triton-3.3-ci anchor-triton-3.6-ci
+```
+
+这里的 `--memory-swap` 是内存与 swap 的总上限；与 `--memory` 设为相同值表示容器不额外使用主机 swap。
+
 ## 结果和报告
 
 每个 run 目录通常包含：
@@ -243,7 +282,7 @@ codex-generated-files.tar.gz
 
 容器本地 artifact 目录可能额外包含 `failure-ir/<stage>/{manifest.json,task/,sophgo/,root/}` 和 `failure-ir-collection.log`。`failure-ir/` 只在失败命令实际产生 `.ttir`、`.linalg` 或 `.pplir` 时创建；不会复制 `.so`、成功命令 dump 或旧任务 dump。它供紧随确定性 CI 的 Codex 失败诊断读取，当前 publisher allowlist 不把原始 IR 推送到 Gitee 结果分支。确定性 runner 在 `/tmp/triton-anchor-local-ci-task.<sha>.<random>/` 下统一持有 `TMPDIR`、dump、runner、临时凭据和 benchmark 隔离目录；失败 IR 提升到该目录之外的 artifact 后，阶段 dump 立即清理，任务退出时按 ownership marker 回收整个任务目录。
 
-任务清理不会扫描 `/tmp/[0-9]+-[0-9]+` 或其他全局路径，也不会触碰 `/root/.triton/cache`、`/root/.flaggems/code_cache`、`/root/.cache/uv`、`/root/.cache/pip` 和 `/opt/venv`。这些共享缓存继续供后续 Local CI 与 Codex 复用。当前只治理正常任务生命周期；异常中断后的过期任务目录回收策略尚未启用。
+任务清理不会扫描 `/tmp/[0-9]+-[0-9]+` 或其他全局路径，也不会触碰 `/root/.triton/cache`、`/root/.flaggems/code_cache`、`/root/.cache/uv`、`/root/.cache/pip` 和 `/opt/venv`。这些共享缓存继续供后续 Local CI 与 Codex 复用。每日维护只处理配置列出的 state/artifact 根目录，以及带 `triton-anchor.role` 标签、已经停止的过期 Codex 容器和未被任何容器引用的过期 snapshot 镜像。
 
 本次不把 `TRITON_CACHE_DIR` 改为任务级临时目录。它保存以源码、Triton/backend 和编译配置为 key 的可复用编译产物，命中时会跳过编译 pipeline；与只用于诊断的 dump 不同。compile benchmark 已使用并清理独立 session cache。应先上线 dump 清理并观察 snapshot 计时与 cache 体积，再决定是否需要独立的 cache 生命周期方案。
 

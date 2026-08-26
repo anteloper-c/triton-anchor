@@ -119,6 +119,45 @@ def test_codex_budget_defaults_are_consistent_at_the_poller_boundary() -> None:
     assert 'CODEX_AI_CI_REPORT_RESERVE_SECONDS="${CODEX_AI_CI_REPORT_RESERVE_SECONDS:-450}"' in POLLER
 
 
+def test_resource_and_retention_governance_defaults_are_wired() -> None:
+    for expected in (
+        'LOCAL_CI_TASK_TIMEOUT_SECONDS="${LOCAL_CI_TASK_TIMEOUT_SECONDS:-21600}"',
+        'LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS="${LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS:-172800}"',
+        'LOCAL_CI_MAINTENANCE_INTERVAL_SECONDS="${LOCAL_CI_MAINTENANCE_INTERVAL_SECONDS:-86400}"',
+        'LOCAL_CI_SUCCESS_RETENTION_DAYS="${LOCAL_CI_SUCCESS_RETENTION_DAYS:-14}"',
+        'LOCAL_CI_FAILURE_RETENTION_DAYS="${LOCAL_CI_FAILURE_RETENTION_DAYS:-28}"',
+        'LOCAL_CI_LOG_MAX_BYTES="${LOCAL_CI_LOG_MAX_BYTES:-536870912}"',
+        'LOCAL_CI_ARTIFACT_MAX_BYTES="${LOCAL_CI_ARTIFACT_MAX_BYTES:-5368709120}"',
+    ):
+        assert expected in POLLER
+    assert 'run_maintenance_if_due || echo "Local CI maintenance failed; polling will continue."' in POLLER
+    assert 'LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS="${deterministic_timeout_seconds}"' in POLLER
+    assert 'timeout --signal=TERM --kill-after=60s' in ORCHESTRATOR
+    assert '--root "${run_dir}"' in POLLER
+    assert ': > "${run_dir}/.local-ci-run-root"' in POLLER
+    full_mode = POLLER[POLLER.index('if [[ "${flaggems_test_mode}" == "full" ]]') :]
+    for variable in (
+        "LOCAL_CI_FULL_FLAGGEMS_IDLE_TIMEOUT_SECONDS",
+        "LOCAL_CI_FULL_FLAGGEMS_SOFT_TIMEOUT_SECONDS",
+        "LOCAL_CI_FULL_FLAGGEMS_EXTENSION_SECONDS",
+        "LOCAL_CI_FULL_FLAGGEMS_HARD_TIMEOUT_SECONDS",
+        "LOCAL_CI_FULL_PERFORMANCE_TIMEOUT",
+    ):
+        assert variable in full_mode
+
+
+def test_codex_ephemeral_container_has_resource_limits_and_ownership_labels() -> None:
+    for expected in (
+        '--cpus "${CODEX_AI_CI_CPUS}"',
+        '--memory "${CODEX_AI_CI_MEMORY}"',
+        '--memory-swap "${CODEX_AI_CI_MEMORY_SWAP}"',
+        '--pids-limit "${CODEX_AI_CI_PIDS_LIMIT}"',
+        '--label "triton-anchor.run-id=${LOCAL_CI_RUN_ID}"',
+        'LABEL triton-anchor.role=codex-ai-snapshot',
+    ):
+        assert expected in CODEX_RUNNER
+
+
 def test_poller_uses_base_hash_for_pr_and_rejects_candidate_hash_change() -> None:
     assert (
         'selected_hash="$(read_verified_llvm_hash "${base_branch}" "${base_sha}")"'

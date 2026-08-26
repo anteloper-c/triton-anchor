@@ -30,6 +30,10 @@ CODEX_AI_CI_MAX_TEST_COMMANDS="${CODEX_AI_CI_MAX_TEST_COMMANDS:-50}"
 CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS="${CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS:-900}"
 CODEX_AI_CI_TEST_BUDGET_SECONDS="${CODEX_AI_CI_TEST_BUDGET_SECONDS:-2700}"
 CODEX_AI_CI_REPORT_RESERVE_SECONDS="${CODEX_AI_CI_REPORT_RESERVE_SECONDS:-450}"
+CODEX_AI_CI_CPUS="${CODEX_AI_CI_CPUS:-12}"
+CODEX_AI_CI_MEMORY="${CODEX_AI_CI_MEMORY:-48g}"
+CODEX_AI_CI_MEMORY_SWAP="${CODEX_AI_CI_MEMORY_SWAP:-48g}"
+CODEX_AI_CI_PIDS_LIMIT="${CODEX_AI_CI_PIDS_LIMIT:-4096}"
 LOCAL_CI_CONTAINER="${LOCAL_CI_CONTAINER:-anchor-sophgo-ci}"
 LOCAL_CI_ARTIFACT_ROOT="${LOCAL_CI_ARTIFACT_ROOT:-/workspace/local-ci-artifacts}"
 LOCAL_CI_PROFILE_NAME="${LOCAL_CI_PROFILE_NAME:-legacy}"
@@ -260,6 +264,10 @@ write_summary() {
     echo "max_generated_test_files: ${CODEX_AI_CI_MAX_GENERATED_TEST_FILES}"
     echo "max_test_commands: ${CODEX_AI_CI_MAX_TEST_COMMANDS}"
     echo "recommended_command_timeout_seconds: ${CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS}"
+    echo "container_cpus: ${CODEX_AI_CI_CPUS}"
+    echo "container_memory: ${CODEX_AI_CI_MEMORY}"
+    echo "container_memory_swap: ${CODEX_AI_CI_MEMORY_SWAP}"
+    echo "container_pids_limit: ${CODEX_AI_CI_PIDS_LIMIT}"
     echo "test_budget_seconds: ${CODEX_AI_CI_TEST_BUDGET_SECONDS}"
     echo "report_reserve_seconds: ${CODEX_AI_CI_REPORT_RESERVE_SECONDS}"
     echo "marker_found: ${marker_found}"
@@ -1159,10 +1167,20 @@ validate_prerequisites() {
     CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS
     CODEX_AI_CI_TEST_BUDGET_SECONDS
     CODEX_AI_CI_REPORT_RESERVE_SECONDS
+    CODEX_AI_CI_PIDS_LIMIT
   )
   for integer_name in "${integer_names[@]}"; do
     validate_positive_integer "${integer_name}" "${!integer_name}"
   done
+  if [[ ! "${CODEX_AI_CI_CPUS}" =~ ^[1-9][0-9]*([.][0-9]+)?$ ]]; then
+    fail_ai_ci "CODEX_AI_CI_CPUS 必须是正数"
+  fi
+  if [[ ! "${CODEX_AI_CI_MEMORY}" =~ ^[1-9][0-9]*[kKmMgG]$ ]]; then
+    fail_ai_ci "CODEX_AI_CI_MEMORY 必须是 Docker 支持的正整数容量"
+  fi
+  if [[ ! "${CODEX_AI_CI_MEMORY_SWAP}" =~ ^[1-9][0-9]*[kKmMgG]$ ]]; then
+    fail_ai_ci "CODEX_AI_CI_MEMORY_SWAP 必须是 Docker 支持的正整数容量"
+  fi
 
   if ((
     10#${CODEX_AI_CI_MIN_GENERATED_TEST_CASES} >
@@ -1517,7 +1535,11 @@ create_ephemeral_container() {
   echo "正在从 ${LOCAL_CI_CONTAINER} 创建本次任务的临时镜像 ${ephemeral_image}。" >> "${log_path}"
   phase_started_seconds="${SECONDS}"
   if ! run_prepare_command "environment_snapshot" \
-    docker commit "${LOCAL_CI_CONTAINER}" "${ephemeral_image}"; then
+    docker commit \
+      --change "LABEL triton-anchor.role=codex-ai-snapshot" \
+      --change "LABEL triton-anchor.run-id=${LOCAL_CI_RUN_ID}" \
+      --change "LABEL triton-anchor.target-sha=${target_sha}" \
+      "${LOCAL_CI_CONTAINER}" "${ephemeral_image}"; then
     snapshot_duration_seconds="$((SECONDS - phase_started_seconds))"
     fail_prepare_step "无法从本次 Local CI 容器创建环境快照"
   fi
@@ -1527,7 +1549,12 @@ create_ephemeral_container() {
   if ! run_prepare_command "container_start" docker run -dit \
     --name "${ephemeral_container}" \
     --hostname "${ephemeral_container}" \
+    --cpus "${CODEX_AI_CI_CPUS}" \
+    --memory "${CODEX_AI_CI_MEMORY}" \
+    --memory-swap "${CODEX_AI_CI_MEMORY_SWAP}" \
+    --pids-limit "${CODEX_AI_CI_PIDS_LIMIT}" \
     --label "triton-anchor.role=codex-ai" \
+    --label "triton-anchor.run-id=${LOCAL_CI_RUN_ID}" \
     --label "triton-anchor.target-sha=${target_sha}" \
     --volumes-from "${LOCAL_CI_CONTAINER}:ro" \
     --entrypoint /bin/bash \

@@ -28,6 +28,24 @@ LOCAL_CI_HEALTH_ENABLED="${LOCAL_CI_HEALTH_ENABLED:-1}"
 LOCAL_CI_HEALTH_DIR="${LOCAL_CI_HEALTH_DIR:-${LOCAL_CI_STATE_DIR%/}/health}"
 LOCAL_CI_WORKER_ID="${LOCAL_CI_WORKER_ID:-local-ci-worker}"
 LOCAL_CI_HEARTBEAT_INTERVAL_SECONDS="${LOCAL_CI_HEARTBEAT_INTERVAL_SECONDS:-60}"
+LOCAL_CI_TASK_TIMEOUT_SECONDS="${LOCAL_CI_TASK_TIMEOUT_SECONDS:-21600}"
+LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS="${LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS:-172800}"
+LOCAL_CI_FULL_FLAGGEMS_IDLE_TIMEOUT_SECONDS="${LOCAL_CI_FULL_FLAGGEMS_IDLE_TIMEOUT_SECONDS:-1800}"
+LOCAL_CI_FULL_FLAGGEMS_SOFT_TIMEOUT_SECONDS="${LOCAL_CI_FULL_FLAGGEMS_SOFT_TIMEOUT_SECONDS:-43200}"
+LOCAL_CI_FULL_FLAGGEMS_EXTENSION_SECONDS="${LOCAL_CI_FULL_FLAGGEMS_EXTENSION_SECONDS:-7200}"
+LOCAL_CI_FULL_FLAGGEMS_HARD_TIMEOUT_SECONDS="${LOCAL_CI_FULL_FLAGGEMS_HARD_TIMEOUT_SECONDS:-144000}"
+LOCAL_CI_FULL_PERFORMANCE_TIMEOUT="${LOCAL_CI_FULL_PERFORMANCE_TIMEOUT:-2h}"
+LOCAL_CI_LOG_MAX_BYTES="${LOCAL_CI_LOG_MAX_BYTES:-536870912}"
+LOCAL_CI_ARTIFACT_FILE_MAX_BYTES="${LOCAL_CI_ARTIFACT_FILE_MAX_BYTES:-2147483648}"
+LOCAL_CI_ARTIFACT_MAX_BYTES="${LOCAL_CI_ARTIFACT_MAX_BYTES:-5368709120}"
+LOCAL_CI_OUTPUT_CHECK_INTERVAL_SECONDS="${LOCAL_CI_OUTPUT_CHECK_INTERVAL_SECONDS:-15}"
+GITEE_RESULT_MAX_BYTES="${GITEE_RESULT_MAX_BYTES:-268435456}"
+LOCAL_CI_MAINTENANCE_ENABLED="${LOCAL_CI_MAINTENANCE_ENABLED:-0}"
+LOCAL_CI_MAINTENANCE_INTERVAL_SECONDS="${LOCAL_CI_MAINTENANCE_INTERVAL_SECONDS:-86400}"
+LOCAL_CI_SUCCESS_RETENTION_DAYS="${LOCAL_CI_SUCCESS_RETENTION_DAYS:-14}"
+LOCAL_CI_FAILURE_RETENTION_DAYS="${LOCAL_CI_FAILURE_RETENTION_DAYS:-28}"
+LOCAL_CI_INCOMPLETE_RETENTION_DAYS="${LOCAL_CI_INCOMPLETE_RETENTION_DAYS:-7}"
+LOCAL_CI_DOCKER_ORPHAN_GRACE_HOURS="${LOCAL_CI_DOCKER_ORPHAN_GRACE_HOURS:-72}"
 GITEE_RESULT_CONTEXT="${GITEE_RESULT_CONTEXT:-local-ci/sophgo-cmodel}"
 GITEE_RESULTS_BRANCH="${GITEE_RESULTS_BRANCH:-local-ci-results}"
 GITEE_RESULTS_OWNER="${GITEE_RESULTS_OWNER:-${GITEE_OWNER}}"
@@ -39,6 +57,7 @@ GITEE_WEB_URL="${GITEE_WEB_URL:-https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}}"
 GITEE_RESULTS_WEB_URL="${GITEE_RESULTS_WEB_URL:-https://gitee.com/${GITEE_RESULTS_OWNER}/${GITEE_RESULTS_REPO}}"
 LOCAL_CI_CONTAINER="${LOCAL_CI_CONTAINER:-triton-anchor-dev}"
 LOCAL_CI_WORKSPACE_HOST="${LOCAL_CI_WORKSPACE_HOST:-/root/projects/test/workspace}"
+LOCAL_CI_ARTIFACT_HOST_ROOTS="${LOCAL_CI_ARTIFACT_HOST_ROOTS:-${LOCAL_CI_WORKSPACE_HOST%/}/local-ci-artifacts}"
 BACKEND_PROFILE="${BACKEND_PROFILE:-sophgo-cmodel}"
 LOCAL_CI_PROFILE_DIR="${LOCAL_CI_PROFILE_DIR:-}"
 LOCAL_CI_PROFILE_NAME="${LOCAL_CI_PROFILE_NAME:-${BACKEND_PROFILE}}"
@@ -67,6 +86,10 @@ CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS="${CODEX_AI_CI_RECOMMENDED_COMMA
 CODEX_AI_CI_TEST_BUDGET_SECONDS="${CODEX_AI_CI_TEST_BUDGET_SECONDS:-2700}"
 CODEX_AI_CI_REPORT_RESERVE_SECONDS="${CODEX_AI_CI_REPORT_RESERVE_SECONDS:-450}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+CODEX_AI_CI_CPUS="${CODEX_AI_CI_CPUS:-12}"
+CODEX_AI_CI_MEMORY="${CODEX_AI_CI_MEMORY:-48g}"
+CODEX_AI_CI_MEMORY_SWAP="${CODEX_AI_CI_MEMORY_SWAP:-48g}"
+CODEX_AI_CI_PIDS_LIMIT="${CODEX_AI_CI_PIDS_LIMIT:-4096}"
 export GITEE_TOKEN GITEE_USERNAME GITEE_WEB_URL GITEE_RESULTS_WEB_URL WORKSPACE LOCAL_CI_WORKSPACE_HOST LOCAL_CI_CONFIG LOCAL_CI_CONTAINER
 
 mkdir -p "${LOCAL_CI_STATE_DIR}"
@@ -86,6 +109,31 @@ case "${GITEE_POLL_ALL_BRANCHES}" in
     exit 1
     ;;
 esac
+case "${LOCAL_CI_MAINTENANCE_ENABLED}" in
+  0|1) ;;
+  *)
+    echo "LOCAL_CI_MAINTENANCE_ENABLED must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
+for positive_name in \
+  LOCAL_CI_TASK_TIMEOUT_SECONDS LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS \
+  LOCAL_CI_FULL_FLAGGEMS_IDLE_TIMEOUT_SECONDS LOCAL_CI_FULL_FLAGGEMS_SOFT_TIMEOUT_SECONDS \
+  LOCAL_CI_FULL_FLAGGEMS_EXTENSION_SECONDS LOCAL_CI_FULL_FLAGGEMS_HARD_TIMEOUT_SECONDS \
+  LOCAL_CI_LOG_MAX_BYTES LOCAL_CI_ARTIFACT_FILE_MAX_BYTES LOCAL_CI_ARTIFACT_MAX_BYTES \
+  LOCAL_CI_OUTPUT_CHECK_INTERVAL_SECONDS GITEE_RESULT_MAX_BYTES \
+  LOCAL_CI_MAINTENANCE_INTERVAL_SECONDS LOCAL_CI_SUCCESS_RETENTION_DAYS \
+  LOCAL_CI_FAILURE_RETENTION_DAYS LOCAL_CI_INCOMPLETE_RETENTION_DAYS \
+  LOCAL_CI_DOCKER_ORPHAN_GRACE_HOURS; do
+  if [[ ! "${!positive_name}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "${positive_name} must be a positive integer" >&2
+    exit 1
+  fi
+done
+if [[ ! "${LOCAL_CI_FULL_PERFORMANCE_TIMEOUT}" =~ ^[1-9][0-9]*[smhd]?$ ]]; then
+  echo "LOCAL_CI_FULL_PERFORMANCE_TIMEOUT must be a positive timeout value such as 7200 or 2h" >&2
+  exit 1
+fi
 if [[ "${GITEE_POLL_ALL_BRANCHES}" == "0" && -z "${GITEE_BRANCHES//[[:space:],]/}" ]]; then
   echo "GITEE_BRANCHES is required when GITEE_POLL_ALL_BRANCHES=0" >&2
   exit 1
@@ -389,6 +437,60 @@ flaggems_mode_for_branch() {
   esac
 }
 
+task_timeout_for_branch() {
+  local branch="$1"
+  case "${branch}" in
+    ci/full/*) printf '%s' "${LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS}" ;;
+    *) printf '%s' "${LOCAL_CI_TASK_TIMEOUT_SECONDS}" ;;
+  esac
+}
+
+remaining_task_seconds() {
+  local started_seconds="$1"
+  local timeout_seconds="$2"
+  local remaining="$((timeout_seconds - (SECONDS - started_seconds)))"
+  if [[ ${remaining} -lt 1 ]]; then
+    remaining=1
+  fi
+  printf '%s' "${remaining}"
+}
+
+capped_run_log() {
+  local output="$1"
+  local marker="$2"
+  local mode="${3:-replace}"
+  local args=(
+    --output "${output}"
+    --max-bytes "${LOCAL_CI_LOG_MAX_BYTES}"
+    --marker "${marker}"
+  )
+  if [[ "${mode}" == "append" ]]; then
+    args+=(--append)
+  fi
+  "${PYTHON_BIN:-python3}" \
+    "${LOCAL_CI_RUNNER_DIR}/shared/capped_tee.py" "${args[@]}"
+}
+
+output_failure_code() {
+  local report="$1"
+  "${PYTHON_BIN:-python3}" -c \
+    'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("failure_code", "artifact_size_limit"))' \
+    "${report}" 2>/dev/null || printf 'artifact_size_limit'
+}
+
+compact_run_output() {
+  local run_dir="$1"
+  local report="$2"
+  "${PYTHON_BIN:-python3}" "${LOCAL_CI_RUNNER_DIR}/shared/output_limits.py" compact \
+    --root "${run_dir}" \
+    --report "${report}"
+  {
+    echo "Local CI output was compacted after exceeding a configured limit."
+    echo "Local CI failure code: $(output_failure_code "${report}")"
+    echo "Output limit report: ${report}"
+  } > "${run_dir}/local-ci.log"
+}
+
 run_codex_ai_ci_for_run() {
   local sha="$1"
   local run_dir="$2"
@@ -399,10 +501,12 @@ run_codex_ai_ci_for_run() {
   local task_metadata_file="$7"
   local head_sha="$8"
   local head_ref="$9"
+  local remaining_seconds="${10}"
   local run_id
   run_id="$(basename "${run_dir}")"
 
-  CODEX_BIN="${CODEX_BIN}" \
+  timeout --signal=TERM --kill-after=60s "${remaining_seconds}s" env \
+    CODEX_BIN="${CODEX_BIN}" \
     CODEX_AI_CI_HOME="${CODEX_AI_CI_HOME}" \
     CODEX_AI_CI_TIMEOUT_SECONDS="${CODEX_AI_CI_TIMEOUT_SECONDS}" \
     CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS="${CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS}" \
@@ -416,6 +520,10 @@ run_codex_ai_ci_for_run() {
     CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS="${CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS}" \
     CODEX_AI_CI_TEST_BUDGET_SECONDS="${CODEX_AI_CI_TEST_BUDGET_SECONDS}" \
     CODEX_AI_CI_REPORT_RESERVE_SECONDS="${CODEX_AI_CI_REPORT_RESERVE_SECONDS}" \
+    CODEX_AI_CI_CPUS="${CODEX_AI_CI_CPUS}" \
+    CODEX_AI_CI_MEMORY="${CODEX_AI_CI_MEMORY}" \
+    CODEX_AI_CI_MEMORY_SWAP="${CODEX_AI_CI_MEMORY_SWAP}" \
+    CODEX_AI_CI_PIDS_LIMIT="${CODEX_AI_CI_PIDS_LIMIT}" \
     LOCAL_CI_CONTAINER="${LOCAL_CI_CONTAINER}" \
     LOCAL_CI_ARTIFACT_ROOT="${LOCAL_CI_ARTIFACT_ROOT:-/workspace/local-ci-artifacts}" \
     LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-}" \
@@ -432,6 +540,9 @@ run_codex_ai_ci_for_run() {
     CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-1}" \
     NINJAFLAGS="${NINJAFLAGS:--j1}" \
     UV_LINK_MODE="${UV_LINK_MODE:-copy}" \
+    LOCAL_CI_LOG_MAX_BYTES="${LOCAL_CI_LOG_MAX_BYTES}" \
+    LOCAL_CI_ARTIFACT_FILE_MAX_BYTES="${LOCAL_CI_ARTIFACT_FILE_MAX_BYTES}" \
+    LOCAL_CI_ARTIFACT_MAX_BYTES="${LOCAL_CI_ARTIFACT_MAX_BYTES}" \
     LOCAL_CI_RUN_ID="${run_id}" \
     SOURCE_ENVSETUP="${SOURCE_ENVSETUP:-1}" \
     ANCHOR_DIR="${ANCHOR_DIR:-}" \
@@ -447,7 +558,30 @@ run_codex_ai_ci_for_run() {
     LOCAL_CI_EXECUTION_MODE="${LOCAL_CI_EXECUTION_MODE:-full}" \
     bash "${LOCAL_CI_RUNNER_DIR}/codex_ai/run_codex_ai_ci.sh" \
     "${GITEE_REPO_URL}" "${run_dir}" "${sha}" "${base_sha}" "${base_ref}" \
-    "${branch}" "${local_ci_status}" "${task_metadata_file}" "${head_sha}" "${head_ref}"
+    "${branch}" "${local_ci_status}" "${task_metadata_file}" "${head_sha}" "${head_ref}" &
+  local codex_pid="$!"
+  (
+    while kill -0 "${codex_pid}" >/dev/null 2>&1; do
+      sleep "${LOCAL_CI_OUTPUT_CHECK_INTERVAL_SECONDS}"
+      if ! "${PYTHON_BIN:-python3}" \
+        "${LOCAL_CI_RUNNER_DIR}/shared/output_limits.py" check \
+          --root "${run_dir}" \
+          --max-log-bytes "${LOCAL_CI_LOG_MAX_BYTES}" \
+          --max-file-bytes "${LOCAL_CI_ARTIFACT_FILE_MAX_BYTES}" \
+          --max-total-bytes "${LOCAL_CI_ARTIFACT_MAX_BYTES}" \
+          --report "${run_dir}/output-limit.json"; then
+        echo "Codex AI CI output limit exceeded; terminating Codex execution." >&2
+        kill -TERM "${codex_pid}" >/dev/null 2>&1 || true
+        break
+      fi
+    done
+  ) &
+  local output_monitor_pid="$!"
+  local codex_status=0
+  wait "${codex_pid}" || codex_status=$?
+  kill "${output_monitor_pid}" >/dev/null 2>&1 || true
+  wait "${output_monitor_pid}" 2>/dev/null || true
+  return "${codex_status}"
 }
 
 publish_result() {
@@ -481,6 +615,7 @@ publish_result() {
     --llvm-hash "${LOCAL_CI_LLVM_HASH:-unavailable}"
     --backend-stages-enabled "${RUN_BACKEND_STAGES:-false}"
     --backend-skip-reason "${BACKEND_SKIP_REASON:-}"
+    --max-publish-bytes "${GITEE_RESULT_MAX_BYTES}"
   )
   if [[ -n "${head_sha}" ]]; then
     args+=(--head-sha "${head_sha}")
@@ -527,7 +662,9 @@ stage_runner_scripts() {
     results/publish_gitee_result.py \
     results/bridge_gitee_to_github_status.py \
     shared/finding_locations.py \
+    shared/capped_tee.py \
     shared/dump_artifacts.py \
+    shared/output_limits.py \
     shared/task_tmp.py \
     shared/result_paths.py \
     shared/path_utils.sh \
@@ -654,6 +791,11 @@ run_once() (
   run_id="$(date -u +%Y%m%dT%H%M%SZ)-${sha:0:12}"
   local run_dir="${LOCAL_CI_STATE_DIR}/runs/${safe_branch}/${run_id}"
   mkdir -p "${run_dir}"
+  : > "${run_dir}/.local-ci-run-root"
+  local task_started_seconds="${SECONDS}"
+  local task_timeout_seconds
+  task_timeout_seconds="$(task_timeout_for_branch "${branch}")"
+  local output_limit_report="${run_dir}/output-limit.json"
 
   local health_task_started=1
   local health_result_status="error"
@@ -694,6 +836,7 @@ run_once() (
 
   echo "Detected new commit on ${branch}: ${sha}"
   echo "Run directory: ${run_dir}"
+  echo "Task execution timeout: ${task_timeout_seconds} seconds"
 
   LOCAL_CI_RUNNER_DIR="$(stage_runner_scripts "${run_id}")"
   export LOCAL_CI_RUNNER_DIR
@@ -775,6 +918,22 @@ run_once() (
   local flaggems_test_mode
   flaggems_test_mode="$(flaggems_mode_for_branch "${branch}")"
   echo "FlagGems test mode: ${flaggems_test_mode}"
+  local task_flaggems_idle_timeout="${FLAGGEMS_IDLE_TIMEOUT_SECONDS:-300}"
+  local task_flaggems_total_timeout="${FLAGGEMS_TOTAL_TIMEOUT_SECONDS:-6000}"
+  local task_flaggems_extension_timeout="${FLAGGEMS_FULL_TIMEOUT_EXTENSION_SECONDS:-1800}"
+  local task_flaggems_hard_timeout="${FLAGGEMS_FULL_HARD_TIMEOUT_SECONDS:-14400}"
+  local task_compile_timeout="${COMPILE_BENCHMARK_TIMEOUT:-30m}"
+  local task_pass_profile_timeout="${PASS_PROFILE_TIMEOUT:-30m}"
+  local task_ir_serialization_timeout="${IR_SERIALIZATION_TIMEOUT:-30m}"
+  if [[ "${flaggems_test_mode}" == "full" ]]; then
+    task_flaggems_idle_timeout="${LOCAL_CI_FULL_FLAGGEMS_IDLE_TIMEOUT_SECONDS}"
+    task_flaggems_total_timeout="${LOCAL_CI_FULL_FLAGGEMS_SOFT_TIMEOUT_SECONDS}"
+    task_flaggems_extension_timeout="${LOCAL_CI_FULL_FLAGGEMS_EXTENSION_SECONDS}"
+    task_flaggems_hard_timeout="${LOCAL_CI_FULL_FLAGGEMS_HARD_TIMEOUT_SECONDS}"
+    task_compile_timeout="${LOCAL_CI_FULL_PERFORMANCE_TIMEOUT}"
+    task_pass_profile_timeout="${LOCAL_CI_FULL_PERFORMANCE_TIMEOUT}"
+    task_ir_serialization_timeout="${LOCAL_CI_FULL_PERFORMANCE_TIMEOUT}"
+  fi
 
   if [[ ${profile_selection_status} -eq 0 \
     && "${branch}" =~ ^ci/pr-[0-9]+/.+$ \
@@ -819,13 +978,24 @@ run_once() (
           --stage "performance-baseline"
 
         local base_status=0
+        local base_timeout_seconds
+        base_timeout_seconds="$(remaining_task_seconds "${task_started_seconds}" "${task_timeout_seconds}")"
         set +e
         LOCAL_CI_BASE_SHA="" LOCAL_CI_BASE_REF="" GITEE_BRANCH="${base_branch}" \
           LOCAL_CI_RUN_ID="${base_run_id}" FLAGGEMS_TEST_MODE="${flaggems_test_mode}" \
+          FLAGGEMS_IDLE_TIMEOUT_SECONDS="${task_flaggems_idle_timeout}" \
+          FLAGGEMS_TOTAL_TIMEOUT_SECONDS="${task_flaggems_total_timeout}" \
+          FLAGGEMS_FULL_TIMEOUT_EXTENSION_SECONDS="${task_flaggems_extension_timeout}" \
+          FLAGGEMS_FULL_HARD_TIMEOUT_SECONDS="${task_flaggems_hard_timeout}" \
+          COMPILE_BENCHMARK_TIMEOUT="${task_compile_timeout}" \
+          PASS_PROFILE_TIMEOUT="${task_pass_profile_timeout}" \
+          IR_SERIALIZATION_TIMEOUT="${task_ir_serialization_timeout}" \
+          LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS="${base_timeout_seconds}" \
           RUN_FLAGGEMS_TESTS=false \
           bash "${LOCAL_CI_RUNNER_DIR}/orchestration/run_deterministic_ci_in_container.sh" \
             "${base_sha}" "${base_branch}" 2>&1 |
-          tee "${base_run_dir}/local-ci.log"
+          capped_run_log "${base_run_dir}/local-ci.log" \
+            "${base_run_dir}/output-limit.json"
         base_status=${PIPESTATUS[0]}
         set -e
         echo "{\"sha\":\"${base_sha}\",\"status\":${base_status},\"run_dir\":\"${base_run_dir}\"}" \
@@ -839,6 +1009,7 @@ run_once() (
   fi
 
   local status=0
+  local failure_code=""
   local nonexecuted_artifact_dir=""
   if [[ ${profile_selection_status} -ne 0 ]]; then
     status=1
@@ -878,7 +1049,7 @@ EOF
       echo "Local CI did not start because no trusted execution profile was selected."
       echo "${PROFILE_SELECTION_ERROR}"
       echo "Artifact dir: ${nonexecuted_artifact_dir}"
-    } | tee "${run_dir}/local-ci.log"
+    } | capped_run_log "${run_dir}/local-ci.log" "${output_limit_report}"
   elif [[ "${execution_mode}" == "codex_only" ]]; then
     prepare_trusted_envsetup "${LOCAL_CI_RUNNER_DIR}" "${branch}" \
       "${base_branch}" "${base_sha}"
@@ -910,7 +1081,7 @@ pass_profile_status: skipped
 ir_serialization_status: skipped
 EOF
     echo "Skipping deterministic Local CI for documentation-only PR." |
-      tee "${run_dir}/local-ci.log"
+      capped_run_log "${run_dir}/local-ci.log" "${output_limit_report}"
   else
     health_call task-stage \
       --health-dir "${LOCAL_CI_HEALTH_DIR}" \
@@ -918,14 +1089,46 @@ EOF
       --stage "deterministic-ci"
     prepare_trusted_envsetup "${LOCAL_CI_RUNNER_DIR}" "${branch}" \
       "${base_branch}" "${base_sha}"
+    local deterministic_timeout_seconds
+    deterministic_timeout_seconds="$(
+      remaining_task_seconds "${task_started_seconds}" "${task_timeout_seconds}"
+    )"
     set +e
     LOCAL_CI_BASE_SHA="${base_sha}" LOCAL_CI_BASE_REF="${base_branch}" GITEE_BRANCH="${branch}" \
       LOCAL_CI_RUN_ID="${run_id}" FLAGGEMS_TEST_MODE="${flaggems_test_mode}" \
+      FLAGGEMS_IDLE_TIMEOUT_SECONDS="${task_flaggems_idle_timeout}" \
+      FLAGGEMS_TOTAL_TIMEOUT_SECONDS="${task_flaggems_total_timeout}" \
+      FLAGGEMS_FULL_TIMEOUT_EXTENSION_SECONDS="${task_flaggems_extension_timeout}" \
+      FLAGGEMS_FULL_HARD_TIMEOUT_SECONDS="${task_flaggems_hard_timeout}" \
+      COMPILE_BENCHMARK_TIMEOUT="${task_compile_timeout}" \
+      PASS_PROFILE_TIMEOUT="${task_pass_profile_timeout}" \
+      IR_SERIALIZATION_TIMEOUT="${task_ir_serialization_timeout}" \
+      LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS="${deterministic_timeout_seconds}" \
       bash "${LOCAL_CI_RUNNER_DIR}/orchestration/run_deterministic_ci_in_container.sh" \
         "${sha}" "${branch}" 2>&1 |
-      tee "${run_dir}/local-ci.log"
+      capped_run_log "${run_dir}/local-ci.log" "${output_limit_report}"
     status=${PIPESTATUS[0]}
     set -e
+    case "${status}" in
+      124) failure_code="task_timeout" ;;
+      86) failure_code="log_size_limit" ;;
+      87) failure_code="artifact_size_limit" ;;
+    esac
+    if [[ -f "${output_limit_report}" ]]; then
+      failure_code="$(output_failure_code "${output_limit_report}")"
+      if [[ "${failure_code}" == "log_size_limit" ]]; then
+        status=86
+      else
+        status=87
+      fi
+    fi
+    local reported_failure_code=""
+    reported_failure_code="$(
+      sed -n 's/^Local CI failure code: //p' "${run_dir}/local-ci.log" | tail -n 1
+    )"
+    case "${reported_failure_code}" in
+      log_size_limit|artifact_size_limit) failure_code="${reported_failure_code}" ;;
+    esac
   fi
   health_result_exit_code="${status}"
   if [[ ${profile_selection_status} -eq 0 ]]; then
@@ -952,7 +1155,8 @@ EOF
   local codex_ai_test_status="NOT_RUN"
   local codex_ai_failure_code=""
   local codex_ai_mode="not_run"
-  if [[ ${profile_selection_status} -eq 0 \
+  if [[ ! -f "${output_limit_report}" \
+    && ${profile_selection_status} -eq 0 \
     && ("${execution_mode}" == "codex_only" \
       || ("${RUN_CODEX_AI_CI}" == "true" \
         && (-z "${CODEX_AI_CI_BRANCH_REGEX}" || "${branch}" =~ ${CODEX_AI_CI_BRANCH_REGEX}))) ]]; then
@@ -966,13 +1170,17 @@ EOF
       --run-id "${run_id}" \
       --stage "codex-ai"
     echo "Running non-blocking Codex AI CI for ${sha} (${codex_ai_mode})." |
-      tee -a "${run_dir}/local-ci.log"
+      capped_run_log "${run_dir}/local-ci.log" "${output_limit_report}" append
     local codex_ai_ci_exit=0
+    local codex_remaining_seconds
+    codex_remaining_seconds="$(
+      remaining_task_seconds "${task_started_seconds}" "${task_timeout_seconds}"
+    )"
     set +e
     run_codex_ai_ci_for_run \
       "${sha}" "${run_dir}" "${codex_ai_base_sha}" "${codex_ai_base_ref}" "${branch}" "${status}" \
-      "${task_metadata_file}" "${head_sha}" "${head_branch}" 2>&1 |
-      tee -a "${run_dir}/local-ci.log"
+      "${task_metadata_file}" "${head_sha}" "${head_branch}" "${codex_remaining_seconds}" 2>&1 |
+      capped_run_log "${run_dir}/local-ci.log" "${output_limit_report}" append
     codex_ai_ci_exit=${PIPESTATUS[0]}
     set -e
     local codex_ai_summary="${run_dir}/codex-ai-ci-summary.txt"
@@ -995,17 +1203,38 @@ EOF
       codex_ai_ci_status="pass"
     else
       codex_ai_ci_status="fail"
+      if [[ ${codex_ai_ci_exit} -eq 124 ]]; then
+        codex_ai_failure_code="timeout"
+      fi
       echo "Codex AI CI failed but does not change the deterministic local-ci result." |
-        tee -a "${run_dir}/local-ci.log"
+        capped_run_log "${run_dir}/local-ci.log" "${output_limit_report}" append
     fi
   else
-    echo "Codex AI CI skipped for ${branch}." | tee -a "${run_dir}/local-ci.log"
+    if [[ -f "${output_limit_report}" ]]; then
+      echo "Codex AI CI skipped because the task output limit was already exceeded." |
+        capped_run_log "${run_dir}/local-ci.log" "${output_limit_report}" append || true
+    else
+      echo "Codex AI CI skipped for ${branch}." |
+        capped_run_log "${run_dir}/local-ci.log" "${output_limit_report}" append
+    fi
+  fi
+
+  if [[ -f "${output_limit_report}" ]]; then
+    failure_code="$(output_failure_code "${output_limit_report}")"
+    if [[ "${failure_code}" == "log_size_limit" ]]; then
+      status=86
+    else
+      status=87
+    fi
+    if ! compact_run_output "${run_dir}" "${output_limit_report}"; then
+      echo "Failed to compact output-limited Local CI run: ${run_dir}" >&2
+    fi
   fi
 
   "${PYTHON_BIN:-python3}" - "${run_dir}/result.json" "${sha}" "${status}" \
     "${codex_ai_ci_status}" "${codex_ai_mode}" "${codex_ai_ci_verdict}" \
     "${codex_ai_test_status}" "${codex_ai_failure_code}" "${run_dir}" "${base_sha}" "${head_sha}" \
-    "${branch}" <<'PY'
+    "${branch}" "${failure_code}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -1023,6 +1252,7 @@ output = Path(sys.argv[1])
     base_sha,
     head_sha,
     branch,
+    failure_code,
 ) = sys.argv[2:]
 result = {
     "sha": tested_sha,
@@ -1035,6 +1265,7 @@ result = {
     "codex_ai_ci_verdict": codex_ai_ci_verdict,
     "codex_ai_test_status": codex_ai_test_status,
     "codex_ai_failure_code": codex_ai_failure_code,
+    "failure_code": failure_code,
     "run_dir": run_dir,
 }
 if base_sha:
@@ -1056,11 +1287,30 @@ PY
   publish_result "${sha}" "${status}" "${run_id}" "${run_dir}" "${branch}" "${head_sha}"
   publish_status=$?
   set -e
+  if [[ -f "${run_dir}/gitee-result-size-limit.json" ]]; then
+    status=88
+    failure_code="gitee_result_size_limit"
+    "${PYTHON_BIN:-python3}" - "${run_dir}/result.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+result = json.loads(path.read_text(encoding="utf-8"))
+result["status"] = 88
+result["failure_code"] = "gitee_result_size_limit"
+path.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
+  fi
   health_publish_status="${publish_status}"
   if [[ ${publish_status} -ne 0 ]]; then
     health_result_status="error"
     health_result_exit_code="${publish_status}"
     health_failure_code="result_publish_failed"
+  elif [[ ${profile_selection_status} -eq 0 && ${status} -ne 0 ]]; then
+    health_result_status="failure"
+    health_result_exit_code="${status}"
+    health_failure_code="${failure_code:-deterministic_ci_failed}"
   fi
   if [[ -n "${nonexecuted_artifact_dir}" ]]; then
     rm -rf -- "${nonexecuted_artifact_dir}"
@@ -1129,11 +1379,50 @@ run_all_once() {
   return "${status}"
 }
 
+run_maintenance_if_due() {
+  if [[ "${LOCAL_CI_MAINTENANCE_ENABLED}" != "1" || "${LOCAL_CI_ONCE}" == "1" ]]; then
+    return 0
+  fi
+  local maintenance_script="${LOCAL_CI_SCRIPT_DIR}/maintenance/manage_local_ci_state.py"
+  local report="${LOCAL_CI_STATE_DIR}/maintenance/latest.json"
+  if [[ ! -f "${maintenance_script}" ]]; then
+    echo "Local CI maintenance script is missing: ${maintenance_script}" >&2
+    return 1
+  fi
+  if [[ -f "${report}" ]]; then
+    local last_run now
+    last_run="$(stat -c %Y "${report}")"
+    now="$(date +%s)"
+    if ((now - last_run < LOCAL_CI_MAINTENANCE_INTERVAL_SECONDS)); then
+      return 0
+    fi
+  fi
+
+  local args=(
+    --apply
+    --state-dir "${LOCAL_CI_STATE_DIR}"
+    --success-days "${LOCAL_CI_SUCCESS_RETENTION_DAYS}"
+    --failure-days "${LOCAL_CI_FAILURE_RETENTION_DAYS}"
+    --incomplete-days "${LOCAL_CI_INCOMPLETE_RETENTION_DAYS}"
+    --docker-orphan-grace-hours "${LOCAL_CI_DOCKER_ORPHAN_GRACE_HOURS}"
+    --report "${report}"
+  )
+  local artifact_root
+  while IFS= read -r artifact_root; do
+    if [[ -n "${artifact_root}" ]]; then
+      args+=(--artifact-root "${artifact_root}")
+    fi
+  done < <(printf '%s' "${LOCAL_CI_ARTIFACT_HOST_ROOTS}" | tr ':' '\n')
+  echo "Running Local CI retention maintenance."
+  "${PYTHON_BIN:-python3}" "${maintenance_script}" "${args[@]}"
+}
+
 while true; do
   loop_status=0
   run_all_once || loop_status=$?
   if [[ "${LOCAL_CI_ONCE}" == "1" ]]; then
     exit "${loop_status}"
   fi
+  run_maintenance_if_due || echo "Local CI maintenance failed; polling will continue." >&2
   sleep "${LOCAL_CI_POLL_INTERVAL}"
 done
