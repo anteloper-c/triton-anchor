@@ -294,6 +294,11 @@ Gitee relay 的 task ref 约定：
 bash scripts/local_ci/orchestration/run_deterministic_ci_in_container.sh <sha> <source-branch>
 ```
 
+未显式设置 `LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS` 时，普通分支使用
+`LOCAL_CI_TASK_TIMEOUT_SECONDS`（默认 6 小时），`ci/full/*` 使用
+`LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS`（默认 48 小时）。poller 调用时传入的任务剩余秒数
+优先于上述默认值；直接调试时也可显式设置该变量覆盖分支预算。
+
 脚本：
 
 - 从 poller 已选择的可信 profile 读取容器、workspace、LLVM、venv 和 backend 阶段开关；

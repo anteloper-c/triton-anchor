@@ -132,6 +132,7 @@ def test_resource_and_retention_governance_defaults_are_wired() -> None:
         assert expected in POLLER
     assert 'run_maintenance_if_due || echo "Local CI maintenance failed; polling will continue."' in POLLER
     assert 'LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS="${deterministic_timeout_seconds}"' in POLLER
+    assert 'deterministic_timeout_for_branch \\\n    "${GITEE_BRANCH}"' in ORCHESTRATOR
     assert 'timeout --signal=TERM --kill-after=60s' in ORCHESTRATOR
     assert '--root "${run_dir}"' in POLLER
     assert ': > "${run_dir}/.local-ci-run-root"' in POLLER
@@ -144,6 +145,44 @@ def test_resource_and_retention_governance_defaults_are_wired() -> None:
         "LOCAL_CI_FULL_PERFORMANCE_TIMEOUT",
     ):
         assert variable in full_mode
+
+
+def test_direct_container_entry_uses_branch_budget_without_task_override() -> None:
+    start = ORCHESTRATOR.index("deterministic_timeout_for_branch() {")
+    end = ORCHESTRATOR.index("\n}\n\n", start) + 3
+    function = ORCHESTRATOR[start:end]
+    script = (
+        f"set -euo pipefail\n{function}\n"
+        "unset LOCAL_CI_TASK_TIMEOUT_SECONDS LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS\n"
+        "printf 'default-ordinary=%s\\n' \"$(deterministic_timeout_for_branch ci/push/main '')\"\n"
+        "printf 'default-full=%s\\n' \"$(deterministic_timeout_for_branch ci/full/nightly '')\"\n"
+        "LOCAL_CI_TASK_TIMEOUT_SECONDS=111\n"
+        "LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS=222\n"
+        "printf 'ordinary=%s\\n' \"$(deterministic_timeout_for_branch ci/push/main '')\"\n"
+        "printf 'full=%s\\n' \"$(deterministic_timeout_for_branch ci/full/nightly '')\"\n"
+        "printf 'override=%s\\n' \"$(deterministic_timeout_for_branch ci/full/nightly 7)\"\n"
+    )
+    result = subprocess.run(
+        ["bash"], input=script.encode(), capture_output=True, check=False
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert result.stdout.decode().splitlines() == [
+        "default-ordinary=21600",
+        "default-full=172800",
+        "ordinary=111",
+        "full=222",
+        "override=7",
+    ]
+
+
+def test_container_entry_validates_timeout_before_docker_setup() -> None:
+    timeout_assignment = ORCHESTRATOR.index(
+        'LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS="$(')
+    timeout_validation = ORCHESTRATOR.index(
+        'if [[ ! "${LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]'
+    )
+    docker_setup = ORCHESTRATOR.index('CONTAINER_CI_TASK_TMP_ROOT="$(')
+    assert timeout_assignment < timeout_validation < docker_setup
 
 
 def test_codex_ephemeral_container_has_resource_limits_and_ownership_labels() -> None:

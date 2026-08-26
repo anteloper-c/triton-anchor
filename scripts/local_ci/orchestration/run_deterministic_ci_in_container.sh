@@ -80,7 +80,6 @@ fi
 if [[ -n "${TASK_IR_SERIALIZATION_TIMEOUT}" ]]; then
   IR_SERIALIZATION_TIMEOUT="${TASK_IR_SERIALIZATION_TIMEOUT}"
 fi
-LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS="${TASK_LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS}"
 if [[ -n "${TASK_FRONTEND_BUILD_MODE}" ]]; then
   FRONTEND_BUILD_MODE="${TASK_FRONTEND_BUILD_MODE}"
 fi
@@ -105,6 +104,29 @@ if [[ ! "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
   echo "Local CI target SHA must be a lowercase 40-character hexadecimal commit." >&2
   exit 2
 fi
+
+deterministic_timeout_for_branch() {
+  local branch="$1"
+  local task_override="$2"
+  if [[ -n "${task_override}" ]]; then
+    printf '%s' "${task_override}"
+    return
+  fi
+  case "${branch}" in
+    ci/full/*) printf '%s' "${LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS:-172800}" ;;
+    *) printf '%s' "${LOCAL_CI_TASK_TIMEOUT_SECONDS:-21600}" ;;
+  esac
+}
+
+LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS="$(
+  deterministic_timeout_for_branch \
+    "${GITEE_BRANCH}" "${TASK_LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS}"
+)"
+if [[ ! "${LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS must be a positive integer." >&2
+  exit 2
+fi
+
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 LOCAL_CI_CONTAINER="${LOCAL_CI_CONTAINER:-triton-anchor-dev}"
 CONTAINER_CI_TASK_TMP_ROOT=""
@@ -188,11 +210,6 @@ docker exec "${LOCAL_CI_CONTAINER}" \
     --path "${CONTAINER_CI_TASK_TMP_ROOT}" \
     --target-sha "${sha}"
 docker cp "${LOCAL_CI_ROOT}/." "${LOCAL_CI_CONTAINER}:${CONTAINER_CI_RUNNER_DIR}/"
-
-if [[ ! "${LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS must be a positive integer." >&2
-  exit 2
-fi
 
 docker exec \
   "${docker_args[@]}" \
