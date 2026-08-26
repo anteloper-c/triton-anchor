@@ -708,15 +708,6 @@ source_backend_env() {
   return "${setup_status}"
 }
 
-prepare_backend_environment() {
-  local phase="${1:?backend environment phase is required}"
-  if [[ "${RUN_BACKEND_STAGES}" != "true" ]]; then
-    return 0
-  fi
-  echo "Preparing backend environment for ${phase}."
-  source_backend_env
-}
-
 fetch_performance_baseline() {
   local result_dir="$1"
   local branch_label="$2"
@@ -1246,7 +1237,6 @@ fi
 
 source_python_venv
 source_anchor_env
-prepare_backend_environment "frontend validation"
 
 run_logged verify-triton-anchor-import "${PYTHON_BIN}" - <<'PY'
 import triton_anchor
@@ -1259,10 +1249,11 @@ run_recorded_stage_in_dir FRONTEND_SMOKE_STATUS "Frontend smoke" \
 
 if [[ "${RUN_BACKEND_STAGES}" == "true" ]]; then
 BACKEND_REBUILD_STATUS="running"
+source_backend_env
 rebuild_backend
 source_python_venv
 source_anchor_env
-prepare_backend_environment "rebuilt backend validation"
+source_backend_env
 
 run_logged verify-backend-discovery "${PYTHON_BIN}" - <<'PY'
 from triton.backends import backends

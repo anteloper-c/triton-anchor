@@ -16,7 +16,11 @@ CODEX_FAILURE_PROMPT = (ROOT / "codex_ai/prompts/codex_ai_failure.md").read_text
 
 def test_pr_sources_only_base_envsetup_from_runner_snapshot() -> None:
     assert 'TRUSTED_ANCHOR_ENVSETUP="${TRUSTED_ANCHOR_ENVSETUP:-${RUNNER_ROOT}/trusted/envsetup.sh}"' in RUNNER
-    assert 'bash -n "${ANCHOR_DIR}/envsetup.sh"' in RUNNER
+    pr_block = RUNNER[RUNNER.index('if [[ -n "${LOCAL_CI_BASE_SHA}" ]]') :]
+    pr_block = pr_block[: pr_block.index("elif")]
+    assert 'bash -n "${ANCHOR_DIR}/envsetup.sh"' in pr_block
+    assert 'source "${ANCHOR_DIR}/envsetup.sh"' not in pr_block
+    assert 'envsetup_file="${TRUSTED_ANCHOR_ENVSETUP}"' in pr_block
     assert 'source "${TRUSTED_ANCHOR_ENVSETUP}"' not in RUNNER
     assert 'source "${envsetup_file}"' in RUNNER
     assert 'git -C "${checkout_dir}" show "${base_sha}:envsetup.sh"' in POLLER
@@ -49,61 +53,29 @@ def test_frontend_only_profile_skips_every_backend_dependent_stage() -> None:
     assert 'required_statuses+=(' in RUNNER
 
 
-def test_backend_environment_wraps_frontend_and_rebuilt_backend_validation() -> None:
+def test_backend_environment_starts_after_frontend_validation() -> None:
     main_start = RUNNER.index("Local CI commit: ${target_sha}")
-    prepare_frontend = RUNNER.index(
-        'prepare_backend_environment "frontend validation"', main_start
-    )
     verify_frontend = RUNNER.index(
-        "run_logged verify-triton-anchor-import", prepare_frontend
+        "run_logged verify-triton-anchor-import", main_start
     )
     frontend_smoke = RUNNER.index(
         'FRONTEND_SMOKE_STATUS "Frontend smoke"', verify_frontend
     )
-    rebuild_backend = RUNNER.index("rebuild_backend\n", frontend_smoke)
-    refresh_backend = RUNNER.index(
-        'prepare_backend_environment "rebuilt backend validation"',
-        rebuild_backend,
-    )
+    prepare_backend = RUNNER.index("source_backend_env\n", frontend_smoke)
+    rebuild_backend = RUNNER.index("rebuild_backend\n", prepare_backend)
+    refresh_backend = RUNNER.index("source_backend_env\n", rebuild_backend)
     verify_backend = RUNNER.index(
         "run_logged verify-backend-discovery", refresh_backend
     )
 
     assert (
-        prepare_frontend
-        < verify_frontend
+        verify_frontend
         < frontend_smoke
+        < prepare_backend
         < rebuild_backend
         < refresh_backend
         < verify_backend
     )
-
-
-def test_backend_environment_preparation_is_a_frontend_only_noop() -> None:
-    start = RUNNER.index("prepare_backend_environment() {")
-    end = RUNNER.index("\n}\n\nfetch_performance_baseline()", start) + 3
-    function = RUNNER[start:end]
-    script = f"""
-set -euo pipefail
-source_backend_env() {{ calls=$((calls + 1)); }}
-{function}
-calls=0
-RUN_BACKEND_STAGES=false
-prepare_backend_environment "frontend validation"
-printf 'frontend_only_calls=%s\\n' "${{calls}}"
-RUN_BACKEND_STAGES=true
-prepare_backend_environment "frontend validation"
-printf 'backend_enabled_calls=%s\\n' "${{calls}}"
-"""
-    result = subprocess.run(
-        ["bash", "-c", script],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "frontend_only_calls=0" in result.stdout
-    assert "backend_enabled_calls=1" in result.stdout
 
 
 def test_frontend_only_empty_backend_path_passes_checkout_overlap_guard(
@@ -327,19 +299,6 @@ def test_pr_without_trusted_envsetup_fails_closed() -> None:
     assert "Trusted base commit has no envsetup.sh" in POLLER
     assert "Trusted base envsetup.sh is required for PR Local CI" in RUNNER
     assert "PR Local CI requires SOURCE_ENVSETUP=1" in RUNNER
-
-
-def test_exit_zero_envsetup_is_never_sourced_from_candidate() -> None:
-    with tempfile.TemporaryDirectory() as directory:
-        candidate = Path(directory) / "envsetup.sh"
-        candidate.write_text("exit 0\n", encoding="utf-8")
-        subprocess.run(["bash", "-n", str(candidate)], check=True)
-
-    pr_block = RUNNER[RUNNER.index('if [[ -n "${LOCAL_CI_BASE_SHA}" ]]') :]
-    pr_block = pr_block[: pr_block.index("elif")]
-    assert 'bash -n "${ANCHOR_DIR}/envsetup.sh"' in pr_block
-    assert 'source "${ANCHOR_DIR}/envsetup.sh"' not in pr_block
-    assert 'envsetup_file="${TRUSTED_ANCHOR_ENVSETUP}"' in pr_block
 
 
 def test_runner_requires_the_actual_task_ref() -> None:
