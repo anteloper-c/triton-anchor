@@ -28,6 +28,7 @@ SNAPSHOT_SCHEMA = "triton-anchor-local-ci-worker-health/v1"
 WORKER_ID_RE = re.compile(r"[A-Za-z0-9_.-]+")
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 TASK_STATES = {"healthy", "busy", "degraded", "offline", "unknown"}
+STORAGE_MEASUREMENT_TTL_SECONDS = 1800
 
 
 def utc_now() -> str:
@@ -283,39 +284,83 @@ def task_finish(args: argparse.Namespace) -> int:
     return 0
 
 
-def nearest_existing_path(path: Path) -> Path | None:
-    current = path
-    while not current.exists() and current != current.parent:
-        current = current.parent
-    return current if current.exists() else None
+def cached_storage_info(
+    previous: object,
+    label: str,
+    configured_path: str,
+    now: datetime,
+) -> dict[str, Any] | None:
+    if not isinstance(previous, dict):
+        return None
+    age = seconds_since(previous.get("measured_at"), now=now)
+    directory_bytes = previous.get("directory_bytes")
+    filesystem_total_bytes = previous.get("filesystem_total_bytes")
+    if (
+        previous.get("label") != label
+        or previous.get("path") != configured_path
+        or age is None
+        or age > STORAGE_MEASUREMENT_TTL_SECONDS
+        or not isinstance(directory_bytes, int)
+        or not isinstance(filesystem_total_bytes, int)
+    ):
+        return None
+    return {
+        "label": label,
+        "path": configured_path,
+        "probe_path": str(previous.get("probe_path") or configured_path),
+        "available": True,
+        "directory_bytes": directory_bytes,
+        "filesystem_total_bytes": filesystem_total_bytes,
+        "directory_percent": previous.get("directory_percent"),
+        "measured_at": previous.get("measured_at"),
+    }
 
 
-def storage_info(label: str, configured_path: str) -> dict[str, Any]:
+def storage_info(
+    label: str,
+    configured_path: str,
+    previous: object,
+    now: datetime,
+) -> dict[str, Any]:
     if not configured_path:
         return {"label": label, "path": "", "available": False}
     path = Path(configured_path)
-    probe = nearest_existing_path(path)
-    if probe is None:
+    if not path.exists():
         return {"label": label, "path": configured_path, "available": False}
+    cached = cached_storage_info(previous, label, configured_path, now)
+    if cached is not None:
+        return cached
     try:
-        usage = shutil.disk_usage(probe)
-    except OSError as exc:
+        usage = shutil.disk_usage(path)
+        completed = subprocess.run(
+            ["du", "-sx", "-B1", "--", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if completed.returncode != 0:
+            raise OSError(completed.stderr.strip() or "du failed")
+        directory_bytes = int(completed.stdout.split(maxsplit=1)[0])
+    except (IndexError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return {
             "label": label,
             "path": configured_path,
             "available": False,
             "error": str(exc)[:300],
         }
-    used_percent = (usage.used / usage.total * 100.0) if usage.total else 0.0
+    directory_percent = (
+        directory_bytes / usage.total * 100.0 if usage.total else 0.0
+    )
     return {
         "label": label,
         "path": configured_path,
-        "probe_path": str(probe.resolve()),
+        "probe_path": str(path.resolve()),
         "available": True,
-        "total_bytes": usage.total,
-        "used_bytes": usage.used,
-        "free_bytes": usage.free,
-        "used_percent": round(used_percent, 2),
+        "directory_bytes": directory_bytes,
+        "filesystem_total_bytes": usage.total,
+        "directory_percent": round(directory_percent, 2),
+        "measured_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
 
@@ -415,6 +460,7 @@ def docker_info(container: str, docker_bin: str) -> dict[str, Any]:
 
 
 def snapshot(args: argparse.Namespace) -> int:
+    previous_snapshot = read_json(args.output)
     poller = read_json(state_path(args.health_dir, "poller"))
     active = read_json(state_path(args.health_dir, "active-task"))
     last_result = read_json(state_path(args.health_dir, "last-result"))
@@ -433,10 +479,22 @@ def snapshot(args: argparse.Namespace) -> int:
     container_name = str((active or {}).get("container") or args.container or "")
     container = docker_info(container_name, args.docker_bin)
     artifact_host = host_artifact_path(args.artifact_path, args.workspace_path)
+    previous_rows = (previous_snapshot or {}).get("storage", [])
+    if not isinstance(previous_rows, list):
+        previous_rows = []
+    previous_storage = {
+        str(row.get("label")): row
+        for row in previous_rows
+        if isinstance(row, dict)
+    }
     storage = [
-        storage_info("state", args.state_path),
-        storage_info("workspace", args.workspace_path),
-        storage_info("artifacts", artifact_host),
+        storage_info("state", args.state_path, previous_storage.get("state"), now),
+        storage_info(
+            "workspace", args.workspace_path, previous_storage.get("workspace"), now
+        ),
+        storage_info(
+            "artifacts", artifact_host, previous_storage.get("artifacts"), now
+        ),
     ]
 
     if poller is None:

@@ -568,10 +568,8 @@ function renderWorkerHealth() {
         <tr>
           <td><strong>${escapeHtml(row.label || "--")}</strong></td>
           <td><code title="${escapeHtml(row.path || "")}">${escapeHtml(row.path || "--")}</code></td>
-          <td>${formatBytes(row.total_bytes)}</td>
-          <td>${formatBytes(row.used_bytes)}</td>
-          <td>${formatBytes(row.free_bytes)}</td>
-          <td>${row.used_percent === null || row.used_percent === undefined ? "--" : `${escapeHtml(row.used_percent)}%`}</td>
+          <td>${formatBytes(row.directory_bytes)}</td>
+          <td>${row.directory_percent === null || row.directory_percent === undefined ? "--" : `${escapeHtml(row.directory_percent)}%`}</td>
         </tr>`,
     )
     .join("");
