@@ -136,33 +136,29 @@ function formatCpuUsage(cpuPercent, cpuLimit) {
   if (!hasUsage) {
     return {
       summary: "--",
-      detail: `限制 ${formatLimit(cpuLimit, "CPU")}`,
+      detail: formatLimit(cpuLimit, "CPU"),
       used: "--",
       utilization: "--",
-      raw: "--",
     };
   }
 
   const usedCpus = rawPercent / 100;
   const used = `${usedCpus.toFixed(2)} CPU`;
-  const raw = `${rawPercent.toFixed(2)}%`;
   if (!hasLimit) {
     return {
-      summary: used,
-      detail: `未设置 CPU 限制 · Docker ${raw}`,
+      summary: "--",
+      detail: formatLimit(cpuLimit, "CPU"),
       used,
       utilization: "--",
-      raw,
     };
   }
 
   const utilization = `${((usedCpus / limit) * 100).toFixed(2)}%`;
   return {
-    summary: `${usedCpus.toFixed(2)} / ${limit} CPU`,
-    detail: `限额利用率 ${utilization} · Docker ${raw}`,
+    summary: utilization,
+    detail: formatLimit(limit, "CPU"),
     used,
     utilization,
-    raw,
   };
 }
 
@@ -596,7 +592,6 @@ function renderWorkerHealth() {
     ["CPU 使用", cpuUsage.used],
     ["CPU 限制", formatLimit(limits.cpus, "CPU")],
     ["CPU 限额利用率", cpuUsage.utilization],
-    ["Docker CPU 原始值", cpuUsage.raw],
     ["内存限制", formatByteLimit(limits.memory_bytes)],
     ["PID 限制", formatLimit(limits.pids, "PID")],
     ["当前 PID", stats.pids || "--"],

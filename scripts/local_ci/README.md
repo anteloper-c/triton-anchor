@@ -180,7 +180,7 @@ LOCAL_CI_STATE_DIR/health/
 └── snapshot.json
 ```
 
-这些文件只记录运行事实。当前任务耗时、磁盘可用空间、容器 CPU/内存/PID 限制均不在本模块中做阈值判定，不会终止任务、清理数据或改变 Local CI 结果。Dashboard 将 Docker CPU 百分比按 `100% = 1 CPU` 换算成当前使用核数，并结合容器 CPU 限额展示限额利用率；详细信息仍保留 Docker 原始值。Publisher 将完整快照作为根目录唯一的 `worker-health.json` force-push 到 `GITEE_WORKER_HEALTH_REPO_URL` 的配置分支；该仓库不属于 `ci/*` task ref，也不参与任务队列生命周期。
+这些文件只记录运行事实。当前任务耗时、磁盘可用空间、容器 CPU/内存/PID 限制均不在本模块中做阈值判定，不会终止任务、清理数据或改变 Local CI 结果。Dashboard 将 Docker CPU 百分比按 `100% = 1 CPU` 换算成当前使用核数，并结合容器 CPU 限额计算限额利用率；顶部卡片直接显示限额利用率和 CPU 限额。Publisher 将完整快照作为根目录唯一的 `worker-health.json` force-push 到 `GITEE_WORKER_HEALTH_REPO_URL` 的配置分支；该仓库不属于 `ci/*` task ref，也不参与任务队列生命周期。
 
 服务器可用独立的 oneshot service 每次生成并发布一份快照：
 
