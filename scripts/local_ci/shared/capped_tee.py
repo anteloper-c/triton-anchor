@@ -52,10 +52,15 @@ def main() -> int:
     remaining = max(args.max_bytes - existing_size, 0)
     mode = "ab" if args.append else "wb"
     marker = Path(args.marker) if args.marker else None
+    reader = sys.stdin.buffer
+    # BufferedReader.read(size) may wait for a pipe to produce all ``size``
+    # bytes or close.  read1() performs at most one raw read, so short progress
+    # messages are forwarded while the producer is still running.
+    read_chunk = getattr(reader, "read1", reader.read)
 
     with output.open(mode) as stream:
         while True:
-            chunk = sys.stdin.buffer.read(min(1024 * 1024, remaining + 1))
+            chunk = read_chunk(min(1024 * 1024, remaining + 1))
             if not chunk:
                 return 0
             if len(chunk) <= remaining:
