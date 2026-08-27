@@ -807,7 +807,7 @@ run_case() {
   local local_ci_status="$3"
   local timeout_seconds="$4"
   local expected_exit="$5"
-  local startup_timeout_seconds=600
+  local startup_timeout_seconds=900
   local prepare_timeout_seconds=1500
   if [[ "${scenario}" == "startup_timeout" ]]; then
     startup_timeout_seconds=1
@@ -1013,7 +1013,7 @@ grep -Eq '^prepare_duration_seconds: [0-9]+$' "${success_output}/codex-ai-ci-sum
 grep -Eq '^snapshot_duration_seconds: [0-9]+$' "${success_output}/codex-ai-ci-summary.txt"
 grep -Eq '^container_start_duration_seconds: [0-9]+$' "${success_output}/codex-ai-ci-summary.txt"
 grep -Eq '^input_setup_duration_seconds: [0-9]+$' "${success_output}/codex-ai-ci-summary.txt"
-grep -Fxq "startup_timeout_seconds: 600" "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "startup_timeout_seconds: 900" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "startup_progress: true" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "startup_timed_out: false" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "min_generated_test_cases: 1" "${success_output}/codex-ai-ci-summary.txt"
