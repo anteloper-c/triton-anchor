@@ -916,7 +916,7 @@ run_case() {
   fi
   [[ ! -e "${docker_state}/active-container" ]]
   [[ ! -e "${docker_state}/active-image" ]]
-  grep -Fq "commit anchor-sophgo-ci triton-anchor-codex-ai-snapshot:" \
+  grep -Eq '^commit .*anchor-sophgo-ci triton-anchor-codex-ai-snapshot:' \
     "${docker_state}/docker.log"
   grep -Fq "image rm -f triton-anchor-codex-ai-snapshot:" \
     "${docker_state}/docker.log"
@@ -1211,7 +1211,7 @@ grep -Fxq "diff_mode: unresolved" "${missing_output}/codex-ai-ci-summary.txt"
 grep -Fq "PR Codex 审查缺少目标分支引用" \
   "${missing_output}/codex-ai-ci-summary.txt"
 assert_chinese_failure_report "${missing_output}"
-if grep -Fq "commit anchor-sophgo-ci" "${missing_docker_state}/docker.log"; then
+if grep -Eq '^commit .*anchor-sophgo-ci( |$)' "${missing_docker_state}/docker.log"; then
   echo "PR base 缺失时不应创建 Codex 临时镜像" >&2
   exit 1
 fi
