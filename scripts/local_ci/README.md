@@ -162,7 +162,7 @@ cp scripts/local_ci/config.example.env /opt/local-ci/config.env
 | Worker 监控 | `LOCAL_CI_HEALTH_*`、`LOCAL_CI_WORKER_ID`、`GITEE_WORKER_HEALTH_REPO_URL`、`GITEE_WORKER_HEALTH_BRANCH` | Poller 状态写入 `LOCAL_CI_STATE_DIR/health`；最新完整快照发布到专用公开 Health 仓库。 |
 | Codex | `RUN_CODEX_AI_CI`、`CODEX_BIN`、`CODEX_AI_CI_HOME` | 使用独立 `config.toml`/`auth.json`；runner 通过 Local CI 容器 snapshot 运行，凭据只复制到临时容器的 `/root/.codex`。 |
 | Codex 预算 | `CODEX_AI_CI_TIMEOUT_SECONDS`、`CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS`、`CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS`、`CODEX_AI_CI_MAX_TEST_COMMANDS`、`CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS`、`CODEX_AI_CI_TEST_BUDGET_SECONDS` | hard timeout 仍为 3600 秒，报告预留仍为 450 秒；最多 50 条命令、单条建议 900 秒、累计建议 2700 秒。容器准备默认限时 1500 秒，准备成功后 600 秒内没有首个有效进展会提前终止；建议预算超限只产生 warning。 |
-| 资源和时限 | `LOCAL_CI_TASK_TIMEOUT_SECONDS`、`LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS`、`CODEX_AI_CI_CPUS`、`CODEX_AI_CI_MEMORY`、`CODEX_AI_CI_PIDS_LIMIT` | 普通任务 6 小时、full 任务 48 小时；Codex 临时容器由 runner 设置 cgroup，持久 profile 容器由服务器设置。 |
+| 资源和时限 | `LOCAL_CI_TASK_TIMEOUT_SECONDS`、`LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS`、`MAX_JOBS`、`CMAKE_BUILD_PARALLEL_LEVEL`、`NINJAFLAGS`、`CODEX_AI_CI_CPUS`、`CODEX_AI_CI_MEMORY`、`CODEX_AI_CI_PIDS_LIMIT` | 普通任务 6 小时、full 任务 48 小时；生产 `config.env` 建议将构建并行度三项统一为 8，脚本缺省值仍为 1；Codex 临时容器由 runner 设置 cgroup，持久 profile 容器由服务器设置。 |
 | 输出预算 | `LOCAL_CI_LOG_MAX_BYTES`、`LOCAL_CI_ARTIFACT_FILE_MAX_BYTES`、`LOCAL_CI_ARTIFACT_MAX_BYTES`、`GITEE_RESULT_MAX_BYTES` | 单日志 512 MiB、单文件 2 GiB、单任务 5 GiB、单次 Gitee 发布 256 MiB。 |
 | 保留维护 | `LOCAL_CI_MAINTENANCE_*`、`LOCAL_CI_ARTIFACT_HOST_ROOTS` | 每 24 小时在任务轮次之间执行；成功 14 天、失败 28 天、无结果目录 7 天、Codex Docker 残留 72 小时。 |
 | backend | `BACKEND_PROFILE`、`BACKEND_PATH`、`BACKEND_ENVSETUP` | profile、backend commit 和环境脚本必须与性能 baseline 相匹配。 |
@@ -180,7 +180,7 @@ LOCAL_CI_STATE_DIR/health/
 └── snapshot.json
 ```
 
-这些文件只记录运行事实。当前任务耗时、磁盘可用空间、容器 CPU/内存/PID 限制均不在本模块中做阈值判定，不会终止任务、清理数据或改变 Local CI 结果。Publisher 将完整快照作为根目录唯一的 `worker-health.json` force-push 到 `GITEE_WORKER_HEALTH_REPO_URL` 的配置分支；该仓库不属于 `ci/*` task ref，也不参与任务队列生命周期。
+这些文件只记录运行事实。当前任务耗时、磁盘可用空间、容器 CPU/内存/PID 限制均不在本模块中做阈值判定，不会终止任务、清理数据或改变 Local CI 结果。Dashboard 将 Docker CPU 百分比按 `100% = 1 CPU` 换算成当前使用核数，并结合容器 CPU 限额展示限额利用率；详细信息仍保留 Docker 原始值。Publisher 将完整快照作为根目录唯一的 `worker-health.json` force-push 到 `GITEE_WORKER_HEALTH_REPO_URL` 的配置分支；该仓库不属于 `ci/*` task ref，也不参与任务队列生命周期。
 
 服务器可用独立的 oneshot service 每次生成并发布一份快照：
 
@@ -313,14 +313,10 @@ probe_artifact_root /home/race_work/local_ci/profile-workspaces/triton-3.6-front
 }
 echo "artifact ACL probes: PASS"
 
-# 用途：实时设置 Sophgo 持久 CI 容器的 CPU、内存和 PID 硬上限；
+# 用途：实时统一设置三个持久 CI 容器的 CPU、内存和 PID 硬上限；
 # 命令不会重启容器，但容器重建时需要在创建配置中重新声明这些值。
-docker update --cpus 48 --memory 96g --memory-swap 96g --pids-limit 8192 \
-  anchor-sophgo-ci
-
-# 用途：实时设置 Triton 3.3/3.6 frontend 容器的资源硬上限。
-docker update --cpus 24 --memory 48g --memory-swap 48g --pids-limit 4096 \
-  anchor-triton-3.3-ci anchor-triton-3.6-ci
+docker update --cpus 16 --memory 64g --memory-swap 64g --pids-limit 4096 \
+  anchor-sophgo-ci anchor-triton-3.3-ci anchor-triton-3.6-ci
 
 # 用途：只读核验三个持久 CI 容器最终生效的 cgroup 配置。
 docker inspect --format \

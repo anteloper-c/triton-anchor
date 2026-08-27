@@ -127,6 +127,45 @@ function formatByteLimit(bytes) {
   return Number(bytes) > 0 ? formatBytes(bytes) : "未设置";
 }
 
+function formatCpuUsage(cpuPercent, cpuLimit) {
+  const rawPercent = Number.parseFloat(String(cpuPercent ?? "").replace(/%$/, ""));
+  const limit = Number(cpuLimit);
+  const hasUsage = Number.isFinite(rawPercent) && rawPercent >= 0;
+  const hasLimit = Number.isFinite(limit) && limit > 0;
+
+  if (!hasUsage) {
+    return {
+      summary: "--",
+      detail: `限制 ${formatLimit(cpuLimit, "CPU")}`,
+      used: "--",
+      utilization: "--",
+      raw: "--",
+    };
+  }
+
+  const usedCpus = rawPercent / 100;
+  const used = `${usedCpus.toFixed(2)} CPU`;
+  const raw = `${rawPercent.toFixed(2)}%`;
+  if (!hasLimit) {
+    return {
+      summary: used,
+      detail: `未设置 CPU 限制 · Docker ${raw}`,
+      used,
+      utilization: "--",
+      raw,
+    };
+  }
+
+  const utilization = `${((usedCpus / limit) * 100).toFixed(2)}%`;
+  return {
+    summary: `${usedCpus.toFixed(2)} / ${limit} CPU`,
+    detail: `限额利用率 ${utilization} · Docker ${raw}`,
+    used,
+    utilization,
+    raw,
+  };
+}
+
 function shortSha(value) {
   return value ? String(value).slice(0, 12) : "--";
 }
@@ -453,6 +492,7 @@ function renderWorkerHealth() {
   const limits = container.limits || {};
   const stats = container.stats || {};
   const lastResult = health.last_result;
+  const cpuUsage = formatCpuUsage(stats.cpu_percent, limits.cpus);
 
   $("#workerProfile").textContent = health.profile || "unknown";
   $("#workerId").textContent = health.worker_id || "--";
@@ -482,8 +522,8 @@ function renderWorkerHealth() {
     },
     {
       label: "容器 CPU",
-      value: stats.cpu_percent || "--",
-      detail: `限制 ${formatLimit(limits.cpus, "CPU")}`,
+      value: cpuUsage.summary,
+      detail: cpuUsage.detail,
     },
     {
       label: "容器内存",
@@ -553,7 +593,10 @@ function renderWorkerHealth() {
       "OOM killed",
       typeof container.oom_killed === "boolean" ? (container.oom_killed ? "是" : "否") : "--",
     ],
+    ["CPU 使用", cpuUsage.used],
     ["CPU 限制", formatLimit(limits.cpus, "CPU")],
+    ["CPU 限额利用率", cpuUsage.utilization],
+    ["Docker CPU 原始值", cpuUsage.raw],
     ["内存限制", formatByteLimit(limits.memory_bytes)],
     ["PID 限制", formatLimit(limits.pids, "PID")],
     ["当前 PID", stats.pids || "--"],

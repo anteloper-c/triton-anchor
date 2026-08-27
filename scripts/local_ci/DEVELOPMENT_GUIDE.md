@@ -765,7 +765,7 @@ python -m build --wheel --no-isolation
 python -m pip install --force-reinstall --no-deps dist/triton_anchor-*.whl
 ```
 
-`setup.py` 通过 CMake 使用 Ninja，默认 build type 为 `TritonRelBuildWithAsserts`，可用 `TRITON_BUILD_TYPE`、`MAX_JOBS`、`LLVM_SYSPATH`、`PYBIND11_SYSPATH` 调整。CMake 还会根据是否定义环境变量 `TTGPU` 选择 TTGPU 路径；当前实现只判断是否定义，不把字符串 `0` 当作 false，修改时应注意这个事实。
+`setup.py` 通过 CMake 使用 Ninja，默认 build type 为 `TritonRelBuildWithAsserts`，可用 `TRITON_BUILD_TYPE`、`MAX_JOBS`、`LLVM_SYSPATH`、`PYBIND11_SYSPATH` 调整。生产 `config.env` 可将 `MAX_JOBS`、`CMAKE_BUILD_PARALLEL_LEVEL` 和 `NINJAFLAGS` 的并行度统一配置为 8，Local CI 脚本未显式配置时仍回退为 1。CMake 还会根据是否定义环境变量 `TTGPU` 选择 TTGPU 路径；当前实现只判断是否定义，不把字符串 `0` 当作 false，修改时应注意这个事实。
 
 ### 9.4 测试命令
 
@@ -1001,7 +1001,7 @@ CODEX_AI_CI_HOME=/path/to/codex-ai \
 ### 12.6 资源与保留治理
 
 - poller 仍全局串行；普通任务由 6 小时总预算保护，`ci/full/*` 使用 48 小时总预算和 FlagGems 30 分钟 idle、12 小时 soft、2 小时进展扩展、40 小时 hard 上限。full 的三个性能阶段各保留 2 小时上限。
-- 持久 profile 容器的 CPU、内存和 PID cgroup 属于服务器部署状态；仓库只设置 Codex 临时容器的 12 CPU、48 GiB、4096 PID，并在容器和 snapshot image 上写 Local CI ownership label。
+- 持久 profile 容器的 CPU、内存和 PID cgroup 属于服务器部署状态，三个容器的部署目标统一为 16 CPU、64 GiB、4096 PID；仓库只直接设置 Codex 临时容器的 12 CPU、48 GiB、4096 PID，并在容器和 snapshot image 上写 Local CI ownership label。
 - 单日志、单 artifact 文件、单任务 artifact 和 Gitee 发布预算分别为 512 MiB、2 GiB、5 GiB 和 256 MiB。超限结果使用 `log_size_limit`、`artifact_size_limit` 或 `gitee_result_size_limit`，不能把未发布的大文件当作有效证据。
 - `maintenance/manage_local_ci_state.py` 默认 dry-run。poller 仅在长驻模式、整轮任务结束且距离上次维护至少 24 小时时使用 `--apply`；成功结果保留 14 天、失败结果 28 天、无结果目录 7 天、带 Local CI 标签且已停止或未被引用的 Codex Docker 残留 72 小时。
 - 维护范围只来自 `LOCAL_CI_STATE_DIR` 和 `LOCAL_CI_ARTIFACT_HOST_ROOTS`。不得使用全局 Docker prune，不得清理 Gitee task ref、Gitee 结果历史、LLVM/PPL、profile workspace 本体或其他项目资源。
