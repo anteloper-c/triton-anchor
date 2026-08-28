@@ -90,9 +90,7 @@ scripts/local_ci/
 ├── shared/                                # 跨模块共享协议，避免各模块重复实现路径和 metadata 规则
 │   ├── result_paths.py                    # Python 侧结果路径协议
 │   ├── finding_locations.py               # finding 文件位置和行号边界校验
-│   ├── capped_tee.py                       # 限制单日志大小并生成输出超限标记
 │   ├── dump_artifacts.py                  # 归档当前任务失败 IR 并清理受控 dump 目录
-│   ├── output_limits.py                    # 检查和收束任务 artifact 预算
 │   ├── task_tmp.py                        # 创建、校验和清理任务级临时目录
 │   ├── path_utils.sh                      # Shell 侧路径归一化
 │   └── validate_task_metadata.py          # PR metadata 校验
@@ -162,8 +160,7 @@ cp scripts/local_ci/config.example.env /opt/local-ci/config.env
 | Worker 监控 | `LOCAL_CI_HEALTH_*`、`LOCAL_CI_WORKER_ID`、`GITEE_WORKER_HEALTH_REPO_URL`、`GITEE_WORKER_HEALTH_BRANCH` | Poller 状态写入 `LOCAL_CI_STATE_DIR/health`；最新完整快照发布到专用公开 Health 仓库。 |
 | Codex | `RUN_CODEX_AI_CI`、`CODEX_BIN`、`CODEX_AI_CI_HOME` | 使用独立 `config.toml`/`auth.json`；runner 通过 Local CI 容器 snapshot 运行，凭据只复制到临时容器的 `/root/.codex`。 |
 | Codex 预算 | `CODEX_AI_CI_TIMEOUT_SECONDS`、`CODEX_AI_CI_PREPARE_TIMEOUT_SECONDS`、`CODEX_AI_CI_STARTUP_TIMEOUT_SECONDS`、`CODEX_AI_CI_MAX_TEST_COMMANDS`、`CODEX_AI_CI_RECOMMENDED_COMMAND_TIMEOUT_SECONDS`、`CODEX_AI_CI_TEST_BUDGET_SECONDS` | hard timeout 仍为 3600 秒，报告预留仍为 450 秒；最多 50 条命令、单条建议 900 秒、累计建议 2700 秒。容器准备默认限时 1500 秒，准备成功后 900 秒内没有首个有效进展会提前终止；建议预算超限只产生 warning。 |
-| 资源和时限 | `LOCAL_CI_TASK_TIMEOUT_SECONDS`、`LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS`、`MAX_JOBS`、`CMAKE_BUILD_PARALLEL_LEVEL`、`NINJAFLAGS`、`CODEX_AI_CI_CPUS`、`CODEX_AI_CI_MEMORY`、`CODEX_AI_CI_PIDS_LIMIT` | 普通任务 6 小时、full 任务 48 小时；生产 `config.env` 建议将构建并行度三项统一为 8，脚本缺省值仍为 1；Codex 临时容器由 runner 设置 cgroup，持久 profile 容器由服务器设置。 |
-| 输出预算 | `LOCAL_CI_LOG_MAX_BYTES`、`LOCAL_CI_ARTIFACT_FILE_MAX_BYTES`、`LOCAL_CI_ARTIFACT_MAX_BYTES`、`GITEE_RESULT_MAX_BYTES` | 单日志 512 MiB、单文件 2 GiB、单任务 5 GiB、单次 Gitee 发布 256 MiB。 |
+| 构建并行 | `MAX_JOBS`、`CMAKE_BUILD_PARALLEL_LEVEL`、`NINJAFLAGS` | 生产配置统一为 8；脚本内的 1 只作为缺少部署配置时的保守回退。 |
 | 保留维护 | `LOCAL_CI_MAINTENANCE_*`、`LOCAL_CI_ARTIFACT_HOST_ROOTS` | 每 24 小时在任务轮次之间执行；成功 14 天、失败 28 天、无结果目录 7 天、Codex Docker 残留 72 小时。 |
 | backend | `BACKEND_PROFILE`、`BACKEND_PATH`、`BACKEND_ENVSETUP` | profile、backend commit 和环境脚本必须与性能 baseline 相匹配。 |
 | benchmark | `RUN_COMPILE_BENCHMARK`、`RUN_PASS_PROFILE`、`RUN_IR_SERIALIZATION_BENCHMARK` | 三类测量有独立 cache namespace，不能混用阈值或结果。 |
@@ -180,7 +177,7 @@ LOCAL_CI_STATE_DIR/health/
 └── snapshot.json
 ```
 
-这些文件只记录运行事实。当前任务耗时、磁盘可用空间、容器 CPU/内存/PID 限制均不在本模块中做阈值判定，不会终止任务、清理数据或改变 Local CI 结果。Dashboard 将 Docker CPU 百分比按 `100% = 1 CPU` 换算成当前使用核数，并结合容器 CPU 限额计算限额利用率；顶部卡片直接显示限额利用率和 CPU 限额。Publisher 将完整快照作为根目录唯一的 `worker-health.json` force-push 到 `GITEE_WORKER_HEALTH_REPO_URL` 的配置分支；该仓库不属于 `ci/*` task ref，也不参与任务队列生命周期。
+这些文件只记录运行事实，不会终止任务、清理数据或改变 Local CI 结果。Dashboard 顶部“容器 CPU”和“容器内存”卡片直接显示 Docker 返回的实时使用率；“运行容器”详情显示 CPU 使用、CPU 使用率、内存使用和 PID 数量，不再列出 CPU、内存或 PID 限额字段。Publisher 将完整快照作为根目录唯一的 `worker-health.json` force-push 到 `GITEE_WORKER_HEALTH_REPO_URL` 的配置分支；该仓库不属于 `ci/*` task ref，也不参与任务队列生命周期。
 
 服务器可用独立的 oneshot service 每次生成并发布一份快照：
 
@@ -229,7 +226,7 @@ CODEX_AI_CI_HOME=/opt/local-ci/secrets/codex-ai \
   bash scripts/local_ci/codex_ai/setup_codex_ai_container.sh
 ```
 
-首次启用维护前先预览，然后设置持久容器资源并核验：
+首次启用维护前先预览，并核验受管 artifact 根的访问权限：
 
 ```bash
 # 用途：只读预览将按 14/28/7 天规则回收的 run、runner snapshot、
@@ -313,18 +310,7 @@ probe_artifact_root /home/race_work/local_ci/profile-workspaces/triton-3.6-front
 }
 echo "artifact ACL probes: PASS"
 
-# 用途：实时统一设置三个持久 CI 容器的 CPU、内存和 PID 硬上限；
-# 命令不会重启容器，但容器重建时需要在创建配置中重新声明这些值。
-docker update --cpus 16 --memory 64g --memory-swap 64g --pids-limit 4096 \
-  anchor-sophgo-ci anchor-triton-3.3-ci anchor-triton-3.6-ci
-
-# 用途：只读核验三个持久 CI 容器最终生效的 cgroup 配置。
-docker inspect --format \
-  '{{.Name}} cpus={{.HostConfig.NanoCpus}} memory={{.HostConfig.Memory}} swap={{.HostConfig.MemorySwap}} pids={{.HostConfig.PidsLimit}}' \
-  anchor-sophgo-ci anchor-triton-3.3-ci anchor-triton-3.6-ci
 ```
-
-这里的 `--memory-swap` 是内存与 swap 的总上限；与 `--memory` 设为相同值表示容器不额外使用主机 swap。
 
 维护由长驻 poller 以其宿主机账号执行，不需要额外的 root service/timer。容器仍可保持
 root 身份；服务器只为 `LOCAL_CI_ARTIFACT_HOST_ROOTS` 配置 poller 账号的访问 ACL，禁止对

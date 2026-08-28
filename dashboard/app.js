@@ -116,50 +116,14 @@ function formatBytes(bytes) {
   return `${scaled.toFixed(digits)} ${units[index]}`;
 }
 
-function formatLimit(value, unit) {
-  if (value === null || value === undefined || value === "" || Number(value) <= 0) {
-    return "未设置";
-  }
-  return `${value} ${unit}`;
+function formatPercent(value) {
+  const percent = Number.parseFloat(String(value ?? "").replace(/%$/, ""));
+  return Number.isFinite(percent) && percent >= 0 ? `${percent.toFixed(2)}%` : "--";
 }
 
-function formatByteLimit(bytes) {
-  return Number(bytes) > 0 ? formatBytes(bytes) : "未设置";
-}
-
-function formatCpuUsage(cpuPercent, cpuLimit) {
-  const rawPercent = Number.parseFloat(String(cpuPercent ?? "").replace(/%$/, ""));
-  const limit = Number(cpuLimit);
-  const hasUsage = Number.isFinite(rawPercent) && rawPercent >= 0;
-  const hasLimit = Number.isFinite(limit) && limit > 0;
-
-  if (!hasUsage) {
-    return {
-      summary: "--",
-      detail: formatLimit(cpuLimit, "CPU"),
-      used: "--",
-      utilization: "--",
-    };
-  }
-
-  const usedCpus = rawPercent / 100;
-  const used = `${usedCpus.toFixed(2)} CPU`;
-  if (!hasLimit) {
-    return {
-      summary: "--",
-      detail: formatLimit(cpuLimit, "CPU"),
-      used,
-      utilization: "--",
-    };
-  }
-
-  const utilization = `${((usedCpus / limit) * 100).toFixed(2)}%`;
-  return {
-    summary: utilization,
-    detail: formatLimit(limit, "CPU"),
-    used,
-    utilization,
-  };
+function formatCpuUse(value) {
+  const percent = Number.parseFloat(String(value ?? "").replace(/%$/, ""));
+  return Number.isFinite(percent) && percent >= 0 ? `${(percent / 100).toFixed(2)} CPU` : "--";
 }
 
 function shortSha(value) {
@@ -485,10 +449,11 @@ function renderWorkerHealth() {
   const poller = health.poller || {};
   const task = health.active_task;
   const container = health.container || {};
-  const limits = container.limits || {};
   const stats = container.stats || {};
   const lastResult = health.last_result;
-  const cpuUsage = formatCpuUsage(stats.cpu_percent, limits.cpus);
+  const cpuUse = formatCpuUse(stats.cpu_percent);
+  const cpuPercent = formatPercent(stats.cpu_percent);
+  const memoryPercent = formatPercent(stats.memory_percent);
 
   $("#workerProfile").textContent = health.profile || "unknown";
   $("#workerId").textContent = health.worker_id || "--";
@@ -518,13 +483,13 @@ function renderWorkerHealth() {
     },
     {
       label: "容器 CPU",
-      value: cpuUsage.summary,
-      detail: cpuUsage.detail,
+      value: cpuPercent,
+      detail: "Docker 实时使用率",
     },
     {
       label: "容器内存",
-      value: stats.memory_percent || "--",
-      detail: stats.memory_usage || `限制 ${formatByteLimit(limits.memory_bytes)}`,
+      value: memoryPercent,
+      detail: stats.memory_usage || "Docker 实时使用率",
     },
   ];
   $("#workerMetrics").innerHTML = metrics
@@ -589,12 +554,10 @@ function renderWorkerHealth() {
       "OOM killed",
       typeof container.oom_killed === "boolean" ? (container.oom_killed ? "是" : "否") : "--",
     ],
-    ["CPU 使用", cpuUsage.used],
-    ["CPU 限制", formatLimit(limits.cpus, "CPU")],
-    ["CPU 限额利用率", cpuUsage.utilization],
-    ["内存限制", formatByteLimit(limits.memory_bytes)],
-    ["PID 限制", formatLimit(limits.pids, "PID")],
-    ["当前 PID", stats.pids || "--"],
+    ["CPU 使用", cpuUse],
+    ["CPU 使用率", cpuPercent],
+    ["内存使用", stats.memory_usage || "--"],
+    ["PID 数量", stats.pids || "--"],
     ["Block I/O", stats.block_io || "--"],
     ["Network I/O", stats.network_io || "--"],
   ]);

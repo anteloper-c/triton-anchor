@@ -294,10 +294,7 @@ Gitee relay 的 task ref 约定：
 bash scripts/local_ci/orchestration/run_deterministic_ci_in_container.sh <sha> <source-branch>
 ```
 
-未显式设置 `LOCAL_CI_DETERMINISTIC_TIMEOUT_SECONDS` 时，普通分支使用
-`LOCAL_CI_TASK_TIMEOUT_SECONDS`（默认 6 小时），`ci/full/*` 使用
-`LOCAL_CI_FULL_TASK_TIMEOUT_SECONDS`（默认 48 小时）。poller 调用时传入的任务剩余秒数
-优先于上述默认值；直接调试时也可显式设置该变量覆盖分支预算。
+该入口不再为普通分支或 `ci/full/*` 设置总任务超时；FlagGems 和三个性能阶段继续使用各自的阶段级超时参数。
 
 脚本：
 
@@ -998,11 +995,11 @@ CODEX_AI_CI_HOME=/path/to/codex-ai \
 - `docs/build.md` 的预编译 LLVM、out-of-tree backend 部分仍是 TODO。
 - backend profile、FlagGems 列表、性能阈值和 dashboard 数据都有日期/环境前提，更新后必须写明生成环境。
 
-### 12.6 资源与保留治理
+### 12.6 资源观测与保留治理
 
-- poller 仍全局串行；普通任务由 6 小时总预算保护，`ci/full/*` 使用 48 小时总预算和 FlagGems 30 分钟 idle、12 小时 soft、2 小时进展扩展、40 小时 hard 上限。full 的三个性能阶段各保留 2 小时上限。
-- 持久 profile 容器的 CPU、内存和 PID cgroup 属于服务器部署状态，三个容器的部署目标统一为 16 CPU、64 GiB、4096 PID；仓库只直接设置 Codex 临时容器的 12 CPU、48 GiB、4096 PID，并在容器和 snapshot image 上写 Local CI ownership label。
-- 单日志、单 artifact 文件、单任务 artifact 和 Gitee 发布预算分别为 512 MiB、2 GiB、5 GiB 和 256 MiB。超限结果使用 `log_size_limit`、`artifact_size_limit` 或 `gitee_result_size_limit`，不能把未发布的大文件当作有效证据。
+- poller 仍全局串行，不再为普通任务或 `ci/full/*` 设置总任务预算。FlagGems 保留默认 300 秒 idle、6000 秒 total、1800 秒 full 进展扩展和 14400 秒 full hard 阶段超时；三个性能阶段各保留默认 30 分钟超时。
+- 仓库不再为持久 profile 容器或 Codex 临时容器设置 CPU、内存和 PID 硬限额；Dashboard 只展示实时 CPU、内存和 PID 使用情况。Codex 容器和 snapshot image 的 Local CI ownership label 继续保留。
+- runner 不再为单日志、单 artifact 文件、单任务 artifact 或 Gitee 发布结果设置额外大小上限；结果仍必须通过既有的完整性和协议校验才能作为有效证据。
 - `maintenance/manage_local_ci_state.py` 默认 dry-run。poller 仅在长驻模式、整轮任务结束且距离上次维护至少 24 小时时使用 `--apply`；成功结果保留 14 天、失败结果 28 天、无结果目录 7 天、带 Local CI 标签且已停止或未被引用的 Codex Docker 残留 72 小时。
 - 维护范围只来自 `LOCAL_CI_STATE_DIR` 和 `LOCAL_CI_ARTIFACT_HOST_ROOTS`。不得使用全局 Docker prune，不得清理 Gitee task ref、Gitee 结果历史、LLVM/PPL、profile workspace 本体或其他项目资源。
 - 持久 profile 容器通常以 root 写入 artifact，而维护跟随 poller 的宿主机账号运行。服务器必须只对每个 artifact 根及其现有子树授予 poller 账号读写执行 ACL，并在目录上设置同一账号的默认 ACL，保证新 artifact 继承可删除权限；不得为此递归修改整个 profile workspace。dry-run 不执行删除，不能替代对每个受管根分别执行固定探针目录的“root 创建、宿主机 poller 删除”验证。
