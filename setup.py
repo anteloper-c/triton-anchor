@@ -524,7 +524,10 @@ setup(
     zip_safe=False,
     entry_points={
         "triton.adapters": [
+            "hybrid = triton_anchor.adapters.hybrid_adapter:HybridAdapter",
+            "triton-gpu = triton_anchor.adapters.triton_gpu_adapter:TritonGPUAdapter",
             "triton-linalg = triton_anchor.adapters.triton_linalg_adapter:TritonLinalgAdapter",
+            "triton-shared = triton_anchor.adapters.triton_shared_adapter:TritonSharedAdapter",
         ]
     },
     keywords=["Compiler", "Deep Learning", "Triton"],
