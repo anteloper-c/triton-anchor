@@ -2,7 +2,7 @@
 
 > 文档定位：这是 T8.2 的唯一系统设计说明，用于解释需求边界、代码职责、输入输出、数据流、门禁语义和后续接入方式。组件事实以 `compliance/component-registry.json` 为准，许可证政策和风险接受分别以同目录对应 JSON 为准；本文件不复制第二份可执行规则。实现或接线发生变化时，必须在同一变更中更新本文件。
 
-当前状态是“Wheel 与 GitHub commit 源码快照技术链已在 anteloper fork 完成 Hosted Runner 验证；提交 `a897db0` 的手工全量 `audit` 和 PR 声明差异/`admission` 接线也已真实运行并正确阻断；每周 `schedule` 仍只是在非默认分支实现，尚未发生周期触发；当前分支继续补齐固定 Git 组件的 OSV 覆盖和许可证客观事实，这部分新增修改仍待远端验证；按当前未解决事实，实际候选和依赖变更仍会被许可证、漏洞覆盖和政策审批阻断；RACE 实际晋级步骤接线尚未完成”。文中必须继续区分：已经实现的核心能力、本地或远端模拟得到的技术验证，以及仍需实际流程或人工审批才能关闭的事项。
+当前状态是“Wheel 与 GitHub commit 源码快照技术链已在 anteloper fork 完成 Hosted Runner 验证；提交 `2998f15` 的手工全量 `audit` 已确认扫描、构建、精确 OSV 覆盖和证据上传正确执行并因真实合规缺口阻断，PR 声明差异/`admission` 接线也已真实运行；每周 `schedule` 仍只是在非默认分支实现，尚未发生周期触发；当前增量让 audit 实际消费已生成的依赖声明 inventory，并固定 TTGPU 派生关系、FlagGems 直接依赖及 pybind11/zlib 上游许可证事实，在新的 Hosted Runner 运行完成前仍只有本地验证；按当前未解决事实，实际候选仍会被组件事实、许可证、漏洞覆盖和政策审批阻断；RACE 实际晋级步骤接线尚未完成”。文中必须继续区分：已经实现的核心能力、本地或远端模拟得到的技术验证，以及仍需实际流程或人工审批才能关闭的事项。
 
 ## 这项工作解决什么问题
 
@@ -148,18 +148,21 @@ GitHub 自动归档不递归包含 FlagGems 子模块源码。当前源码 inven
 |---|---|
 | triton-anchor | `setup.py` 为 0.2.0，`triton_anchor.__version__` 为 0.1.3；版本冲突未解决 |
 | Triton | vendored commit `757b6a61e7df814ba806f498f8bb3160f84b120c` 与该提交官方 MIT LICENSE 可确认；仓库没有随 vendored tree 保存该文件，且源码存在其他许可证标记，正式 concluded license 与兼容性仍待审 |
-| triton-linalg | 已将 vendored surface 与 Cambricon `master@00f51c2e48a943922f86f03d58e29f514def646d` 完整对账：114 个映射文件内容一致、4 个有本地内容修改，另有 117 个文件模式变化；官方 `LICENSE` 声明 Apache-2.0，`ACKNOWLEDGMENTS` 另列 Triton 与 triton-shared 的 MIT 归属。由于本地是派生树而非原样 revision，最终许可证结论、修改声明和随包归属仍待人工审查，详见 [`triton_linalg_license_audit.md`](triton_linalg_license_audit.md) |
+| triton-linalg | 已将 vendored surface 与 Cambricon `master@00f51c2e48a943922f86f03d58e29f514def646d` 完整对账：114 个映射文件内容一致、4 个有本地内容修改，另有 117 个文件模式变化；当前 include/lib tree 分别固定为 `cb73c58b...` 与 `ab55e8b4...`。官方 `LICENSE` 声明 Apache-2.0，`ACKNOWLEDGMENTS` 另列 Triton 与 triton-shared 的 MIT 归属。tree id 只标识本地派生内容，最终许可证结论、修改声明和随包归属仍待人工审查，详见 [`triton_linalg_license_audit.md`](triton_linalg_license_audit.md) |
 | f2reduce | commit `949b91d022c001bbce19157f806013d37f05fbf5` 与 MIT 许可文件均可确认 |
 | LLVM/MLIR | `triton/cmake/llvm-hash.txt` 固定官方 commit `10dc3a8e916d73291269e5e2b82dd22681489aa1`，该提交声明 Apache-2.0 WITH LLVM-exception；同次构建证据以 commit 作为组件身份、另存 `llvm-config` 工具版本，静态/动态链接结果仍由 ELF 证据确认 |
-| pybind11 | 既是构建依赖，也有头文件模板编入原生模块；版本没有固定，不能标成 excluded |
-| TTGPU 变体源码 | 头文件会被打入 Wheel，`TTGPU` 开启时源码还会编入原生模块；当前没有足够证据判断来源、所有权和许可证 |
-| FlagGems | gitlink 固定在 `633d9111528d37e60d9804d2f4ac8d9e00c3af5c`，该提交官方 LICENSE 为 Apache-2.0；当前仅用于兼容性测试，不属于核心 Wheel |
+| pybind11 | 既是构建依赖，也有头文件模板编入原生模块；`2998f15` audit 构建观察到 3.1.0，官方 PyPI 元数据和该 tag LICENSE 均声明 BSD-3-Clause。项目构建声明没有固定全局版本，所以未来候选仍必须使用同次构建证据，concluded license 仍待审 |
+| TTGPU 变体源码 | 17 个文件均能映射到固定 Triton `757b6a6` 文件且包含本地修改，当前两个子树已有 Git tree 身份；这只确认本地派生关系，修改权属、独立版本和许可证结论仍未解决，详见 [`ttgpu_provenance_audit.md`](ttgpu_provenance_audit.md) |
+| FlagGems | gitlink 固定在 `633d9111528d37e60d9804d2f4ac8d9e00c3af5c`，该提交官方 LICENSE 为 Apache-2.0；其 `setup.py` 已确认 Triton/PyTorch/PyYAML、测试 extras 和 example extra 等直接约束，但没有锁文件可证明间接版本；当前仅用于兼容性测试，不属于核心 Wheel，详见 [`flaggems_dependency_audit.md`](flaggems_dependency_audit.md) |
+| zlib | CMake 与当前 Wheel ELF 确认构建/外部运行时关系；官方 v1.3.1 LICENSE 可固定 Zlib 声明，但它不能代替候选实际 Ubuntu 源包、版本和许可证结论 |
 | triton-shared | 已核对官方 MIT LICENSE，但当前只在文档/上游归属中出现，没有构建或打包证据，因此不能人为加入当前 Wheel 的 SBOM |
 | zstd | 较早候选 ELF 曾在 `DT_NEEDED` 中出现 `libzstd.so.1`，2026-08-24 的 audit Wheel 则明确记录为 absent；每份候选必须按自身 ELF 分类。SONAME 只证明 ABI 约束，不证明包版本、源码来源或许可证结论 |
 
 原任务点名组件的固定证据、当前产品用途和待批准兼容性结论集中记录在 [`license_compatibility_review.md`](license_compatibility_review.md)，不由扫描器自动批准。
 
 `install_requires=[]` 不能证明没有 Python 依赖。已分发的 Triton Python 代码存在 `setuptools`、NumPy、PyTorch 和 redis-py 等运行时导入，其中部分只在特定功能启用时需要。这些依赖仍要记录为 required 或 optional 的 `runtime-external`，不能因 Wheel 元数据为空而丢失；可选依赖在 SBOM 中标成 `optional`，不能伪装成候选环境中已经安装的确定版本。
+
+FlagGems 的固定 `setup.py` 进一步声明了 test-only 依赖面。当前登记表已加入此前缺失的 PyYAML、SciPy 和 Transformers，并把已登记的 Triton、PyTorch、setuptools、pytest、NumPy 与 CPython 关联到 FlagGems；这不会把它们加入核心 Wheel 产品 SBOM。由于子模块没有 lock，具体测试环境及间接依赖仍必须由实际解析证据补齐，不能把源码约束转换成任意选定版本。
 
 当前可由源码确认的最小依赖图是：产物根组件直接依赖 Triton、triton-linalg、已分发的 TTGPU 头文件、LLVM/MLIR、pybind11、zlib 和 CPython；Triton 再依赖 f2reduce，并在相应功能启用时使用 setuptools、NumPy、PyTorch 和 redis-py。受评估 ELF 证据还会按实际 `DT_NEEDED` 激活 zstd 等外部运行库。具体产物中的 TTGPU 编译状态、LLVM/zlib 的静态或动态形态以及 zstd 的 ABI 约束，均必须由该次产物证据解析，不能从另一产物继承。
 
@@ -246,6 +249,8 @@ High/Critical 漏洞默认阻断。只有 [`compliance/risk-acceptances.json`](.
 
 提交 `5e56f65` 的 [手工 audit](https://github.com/anteloper-c/triton-anchor/actions/runs/32738446964) 又从同次构建证据查询 Ubuntu CMake、GCC、Ninja 源包版本和 CPython release commit：源码扫描、Wheel 构建/扫描、OSV 查询和证据上传均成功，共记录 12 个扫描覆盖；该运行同时暴露出 OSV commit 结果的空 `version` 未回填，导致 CPython 两条发现被报告为 inventory mismatch，并确认当前 Wheel 不含 `libzstd.so.1`，不能用 runner 上偶然安装的 `libzstd1` 冒充候选运行时覆盖。后续实现只回填已验证的 CPython 候选版本，并保留 zstd ABI-only 的人工覆盖要求；每个新提交仍须由新的 Hosted Runner audit 验证，不能用本地重放替代远端结论。
 
+提交 `2998f15` 的 [最终手工 audit](https://github.com/anteloper-c/triton-anchor/actions/runs/32741572764) 已验证上述修正：源码扫描、Wheel 构建和同次证据、Wheel 扫描、OSV 以及证据上传均成功，`execution_status=pass` 且执行问题为 0；CMake、GCC、Ninja 和 CPython 都取得精确覆盖。最终 `audit_status=blocked`、`compliance_status=fail`，阻断由 25 项组件事实、27 项许可证审查、1 项 pending policy 和 1 项 zstd ABI-only coverage gap 构成。该结果是远端技术验证和正确阻断，不是合规通过。当前让 audit 消费 dependency inventory 及新增组件事实的变更发生在 `2998f15` 之后，仍需新的运行验证，不能沿用该 run 的数量。
+
 以下情况至少有一项出现时，候选不得晋级：
 
 - 合规策略仍未批准；
@@ -263,9 +268,9 @@ High/Critical 漏洞默认阻断。只有 [`compliance/risk-acceptances.json`](.
 
 | 原始要求 | 当前实现与验证证据 | 尚未关闭 |
 |---|---|---|
-| 扫描 Python、C++、子模块和构建环境的直接及间接依赖 | Wheel fork 远端运行已递归拉取子模块并运行源码/Wheel ScanCode、Wheel Syft、OSV、同次构建组件、GNU C++ 与 ELF 采集；源码 fork 远端运行已扫描真实 GitHub 快照的文件、Python/CMake/vendored/子模块声明并完成对账 | 两条链仍是 fork 模拟而非 RACE 正式 CI；GitHub 自动归档不递归包含 FlagGems 子模块源码；部分组件版本、来源和人工漏洞覆盖未解析 |
+| 扫描 Python、C++、子模块和构建环境的直接及间接依赖 | Wheel fork 远端运行已递归拉取子模块并运行源码/Wheel ScanCode、Wheel Syft、OSV、同次构建组件、GNU C++ 与 ELF 采集；源码 fork 远端运行已扫描真实 GitHub 快照的文件、Python/CMake/vendored/子模块声明并完成对账；当前实现已修正 audit 未消费已生成 dependency inventory 的接线，并人工固定 FlagGems 直接依赖 | 新的 audit inventory 接线尚未远端验证；GitHub 自动归档不递归包含 FlagGems 子模块源码，当前声明扫描也尚未自动递归解析其动态 `setup.py`；FlagGems 没有 lock，间接版本及部分组件事实仍未解析 |
 | 为发布产物生成 CycloneDX 或 SPDX SBOM | 远端 Wheel 已按文件名、版本、平台和 SHA256 生成独立 CycloneDX 1.7；源码核心已为真实 GitHub ZIP/TAR.GZ 建立一份以规范树 digest 为根、同时记录两种 representation 的独立 SBOM link | 当前库存因真实未解决组件事实保持 incomplete；正式 tag 候选和实际 release 入口尚未形成 |
-| CI 定期漏洞扫描并跟踪依赖更新 | 手工 `audit` 已在 Hosted Runner 真实构建/扫描 Wheel、生成 dependency inventory 并正确阻断；每周定时定义已接入；精确 PyPI version、Git commit、Ubuntu 源包版本和 CPython release commit 查询均已有远端执行证据 | zstd ABI-only 仍需经审查的覆盖结论；`schedule` 尚未在默认分支周期触发；自动跨期比较、通知和正式保留期尚未落地 |
+| CI 定期漏洞扫描并跟踪依赖更新 | 手工 `audit` 已在 Hosted Runner 真实构建/扫描 Wheel并正确阻断；每周定时定义已接入；精确 PyPI version、Git commit、Ubuntu 源包版本和 CPython release commit 查询均已有远端执行证据；当前 audit 实现已把生成的 dependency inventory 纳入对账 | 新接线尚未远端验证；zstd ABI-only 仍需经审查的覆盖结论；`schedule` 尚未在默认分支周期触发；自动跨期比较、通知和正式保留期尚未落地 |
 | 核对指定组件许可证及兼容性 | 已固定官方许可证证据并形成 [许可证核对记录](license_compatibility_review.md)；triton-linalg 另有 tree 对账 | concluded license、组合兼容性和分发义务仍待 leader/许可证审查人批准 |
 | 生成并维护 THIRD_PARTY_NOTICES.md | 根 Notice 由唯一登记表确定性生成，并有漂移测试；源码候选还核对归档内实际 Notice 的字节摘要 | 6 个分发/嵌入组件仍缺最终版本、许可文本或归属，当前文件不是 release-ready |
 | 新增依赖许可证和高风险漏洞准入 | 个人 fork PR 已真实比较 base/merge-result 声明、对两个 target 调用 `admission` 并因未登记依赖正确阻断；登记表中新增/更新精确组件的 OSV 查询已有针对性测试 | 本次远端样例没有语义修改登记表，因此该 OSV 分支尚未远端执行；首次引入 T8.2 且 base 无登记表时只能记录不可适用；子模块内部及其他间接依赖仍需可信 scanner delta 输入 |
@@ -309,9 +314,9 @@ registry delta          模拟仍限实验分支          └─ commit 源码�
               candidate 只记录门禁结果，不执行发布动作
 ```
 
-`core-test` 用小型夹具验证 Wheel、源码双归档、target 隔离、组件对账、OSV exact-commit/变更组件输入、SBOM/Notice 和 CLI 门禁；它本身不扫描真实项目。`dependency-admission` 只在 PR 上比较受信 base 与 merge-result，并按需要安装 OSV；`candidate-simulation` 这个历史 job id 复用同一 Wheel 真实数据流：定时或手工审计时调用 `audit`，个人实验分支的普通触发才调用模拟 `candidate`；两种模式都使用与 `triton/cmake/llvm-hash.txt` 匹配的公开 LLVM 归档。`source-snapshot-simulation` 不构建 Wheel或 LLVM：它下载当前 `GITHUB_SHA` 的 GitHub API zipball/tarball，与 checkout commit 树对照，只解包一份等价表示后运行独立的 ScanCode、Syft、dependency inventory 和 OSV。固定扫描器、任一证据或对账失败都会使相应执行失败，不能用另一产物报告或空报告替代。源码、手工 audit、声明差异/admission 和非 audit 回归都已在 anteloper fork 运行；它们仍是 commit 或 fork 验证，不是 RACE tag/release 验收。当前新增的 Ubuntu 源包及 CPython release commit 查询仍只有本地针对性验证。
+`core-test` 用小型夹具验证 Wheel、源码双归档、target 隔离、组件对账、OSV exact-commit/变更组件输入、SBOM/Notice 和 CLI 门禁；它本身不扫描真实项目。`dependency-admission` 只在 PR 上比较受信 base 与 merge-result，并按需要安装 OSV；`candidate-simulation` 这个历史 job id 复用同一 Wheel 真实数据流：定时或手工审计时调用 `audit`，个人实验分支的普通触发才调用模拟 `candidate`；两种模式都使用与 `triton/cmake/llvm-hash.txt` 匹配的公开 LLVM 归档。`source-snapshot-simulation` 不构建 Wheel或 LLVM：它下载当前 `GITHUB_SHA` 的 GitHub API zipball/tarball，与 checkout commit 树对照，只解包一份等价表示后运行独立的 ScanCode、Syft、dependency inventory 和 OSV。固定扫描器、任一证据或对账失败都会使相应执行失败，不能用另一产物报告或空报告替代。源码、手工 audit、声明差异/admission 和非 audit 回归都已在 anteloper fork 运行；它们仍是 commit 或 fork 验证，不是 RACE tag/release 验收。Ubuntu 源包及 CPython release commit 查询已在 `2998f15` 的 Hosted Runner audit 验证；当前新增的 dependency inventory audit 接线仍只有本地验证。
 
-模拟 job 从自己的构建步骤取得唯一 `dist/triton_anchor-*.whl`，而不是假定一个固定文件名。构建后立即调用 `build_evidence.py`，所以 `same-build` 声明与当前 Wheel SHA256 对应；实际 package tool 和 ELF 条件依赖也在同一时点分类。本地新增实现要求 Ubuntu Hosted Runner 对 zstd、GCC、CMake 和 Ninja 记录 `dpkg-query` 返回的源包名/源包版本并以 `Ubuntu:<release>` 生态查询 OSV；CPython 记录解释器精确版本，并把对应官方 release tag 解析为 commit 后做 Git 查询。该 tag 映射只用于漏洞查询身份，不证明 `setup-python` 二进制的构建 provenance。工具显示版本、二进制包版本和 OSV 查询身份分别保留，不能用任意相同名称代替实际构建包；该增量仍待 Hosted Runner 验证。`present` 才激活组件，`absent` 只证明条件已经检查，缺少分类继续阻断。核心仍保留任意路径接口；本地、服务器或未来 release job 可以使用同一命令，把 `--wheel` 换成该执行环境实际可见的路径：
+模拟 job 从自己的构建步骤取得唯一 `dist/triton_anchor-*.whl`，而不是假定一个固定文件名。构建后立即调用 `build_evidence.py`，所以 `same-build` 声明与当前 Wheel SHA256 对应；实际 package tool 和 ELF 条件依赖也在同一时点分类。Ubuntu Hosted Runner 对 GCC、CMake 和 Ninja 记录 `dpkg-query` 返回的源包名/源包版本并以 `Ubuntu:<release>` 生态查询 OSV；CPython 记录解释器精确版本，并把对应官方 release tag 解析为 commit 后做 Git 查询。这些路径已由 `2998f15` 的手工 audit 验证。该 tag 映射只用于漏洞查询身份，不证明 `setup-python` 二进制的构建 provenance。工具显示版本、二进制包版本和 OSV 查询身份分别保留，不能用任意相同名称代替实际构建包。`present` 才激活组件，`absent` 只证明条件已经检查，缺少分类继续阻断；当前 audit Wheel 的 zstd 为 absent，不能拿 runner 上的 `libzstd1` 代替候选证据。核心仍保留任意路径接口；本地、服务器或未来 release job 可以使用同一命令，把 `--wheel` 换成该执行环境实际可见的路径：
 
 ```text
 python -m scripts.compliance.cli candidate \

@@ -368,6 +368,11 @@ def _audit_command(args: argparse.Namespace) -> int:
         "build-evidence",
         normalize_build_evidence,
     )
+    dependency_inventory = _normalize_optional(
+        args.dependency_inventory,
+        "dependency-inventory",
+        _normalize_dependency_inventory,
+    )
     osv_result = _normalize_optional(
         args.osv,
         "osv",
@@ -382,7 +387,13 @@ def _audit_command(args: argparse.Namespace) -> int:
     report = evaluate_inventory_audit(
         registry=registry,
         policy=policy,
-        discovery_reports=[scancode, syft, build, osv_result],
+        discovery_reports=[
+            scancode,
+            syft,
+            build,
+            dependency_inventory,
+            osv_result,
+        ],
         vulnerabilities=vulnerabilities,
         vulnerability_coverage=coverage,
         today=date.fromisoformat(args.as_of) if args.as_of else date.today(),
@@ -492,6 +503,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--syft", required=True)
     audit.add_argument("--osv", required=True)
     audit.add_argument("--build-evidence", required=True)
+    audit.add_argument("--dependency-inventory", required=True)
     audit.add_argument("--target", default="core-wheel")
     audit.add_argument("--as-of")
     audit.add_argument("--output", required=True)

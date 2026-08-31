@@ -663,6 +663,7 @@ jobs:
             --syft "${EVIDENCE_DIR}/syft-wheel.cdx.json" \
             --osv "${EVIDENCE_DIR}/osv-results.json" \
             --build-evidence "${EVIDENCE_DIR}/build-evidence.json" \
+            --dependency-inventory "${EVIDENCE_DIR}/dependency-inventory.json" \
             --target core-wheel \
             --output "${EVIDENCE_DIR}/audit/compliance-audit.json"
 

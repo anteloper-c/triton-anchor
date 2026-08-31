@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from argparse import Namespace
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.compliance.cli import (
+    _audit_command,
     _normalize_dependency_inventory,
     build_parser,
     main,
@@ -25,6 +28,58 @@ class ComplianceCliTests(unittest.TestCase):
         )
 
         self.assertEqual("failed", report["status"])
+
+    def test_audit_consumes_the_generated_dependency_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            registry = root / "registry.json"
+            policy = root / "policy.json"
+            risk = root / "risk.json"
+            output = root / "audit.json"
+            evidence = root / "evidence.json"
+            registry.write_text(
+                json.dumps({"schema_version": 1, "components": []}),
+                encoding="utf-8",
+            )
+            policy.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+            risk.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+            evidence.write_text("{}", encoding="utf-8")
+            args = Namespace(
+                registry=str(registry),
+                policy=str(policy),
+                risk_acceptances=str(risk),
+                scancode=str(evidence),
+                syft=str(evidence),
+                build_evidence=str(evidence),
+                dependency_inventory=str(evidence),
+                osv=str(evidence),
+                release_version=None,
+                target="core-wheel",
+                as_of=None,
+                output=str(output),
+            )
+
+            def normalized(_path, source, _normalizer):
+                result = {"source": source, "status": "success", "items": []}
+                if source == "osv":
+                    result.update(vulnerabilities=[], coverage=[])
+                return result
+
+            with patch(
+                "scripts.compliance.cli._normalize_optional",
+                side_effect=normalized,
+            ), patch(
+                "scripts.compliance.cli.evaluate_inventory_audit",
+                return_value={"audit_status": "blocked"},
+            ) as evaluate:
+                exit_code = _audit_command(args)
+
+        self.assertEqual(1, exit_code)
+        sources = [
+            report["source"]
+            for report in evaluate.call_args.kwargs["discovery_reports"]
+        ]
+        self.assertIn("dependency-inventory", sources)
 
     def test_technical_evaluation_writes_outputs_without_promotion_semantics(
         self,

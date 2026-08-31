@@ -10,6 +10,7 @@
 - 官方上游：[Cambricon/triton-linalg `master@00f51c2e48a943922f86f03d58e29f514def646d`](https://github.com/Cambricon/triton-linalg/tree/00f51c2e48a943922f86f03d58e29f514def646d)；
 - 上游提交作者时间：`2025-02-06T03:21:58Z`，提交者时间：`2025-02-07T17:08:27+08:00`；
 - 上游提交 tree：`8481a301538e9235b26493c1ae6893912e5be4fc`。
+- 当前本地 include tree：`cb73c58bcdccde8b8e9baebe7d500c6ad314699a`；当前本地 lib tree：`ab55e8b45bb83f6f1fcfaeca97a3cb6a58c1d330`。
 
 对比使用 Git tree 的文件模式和 blob 标识，不依赖工作区换行转换。路径映射固定为：
 
@@ -107,7 +108,7 @@ triton
 
 ## 尚未关闭的审查项
 
-在以下事项完成前，`component-registry.json` 中 triton-linalg 的版本仍为 `unresolved`，许可证状态仍为 review pending：
+两个本地 tree id 可以稳定标识本次核查的派生内容，但不是 Cambricon 上游 release 或独立语义版本。在以下事项完成前，`component-registry.json` 中 triton-linalg 的版本仍为 `unresolved`，许可证状态仍为 review pending：
 
 1. 确认 4 个内容修改文件所需的修改声明和归属方式，并审查 117 个可执行位变化是否应保留；
 2. 确认上游 `LICENSE` 与 `ACKNOWLEDGMENTS` 应如何随 Wheel/源码发布物提供，且不会被项目根许可证或自动生成 Notice 错误替代；

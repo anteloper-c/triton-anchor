@@ -18,17 +18,17 @@
 | triton-shared | [microsoft/triton-shared `08684f92...a3e4` LICENSE](https://github.com/microsoft/triton-shared/blob/08684f92ad30696362dce1760a83be889639a3e4/LICENSE)，SHA256 `c2cfccb8...5383` | 当前只在文档/上游归属中出现，没有进入核心 Wheel、构建或运行依赖图 | MIT | 已完成“当前不属于候选产物”的核对；若以后成为实际依赖，必须固定实际 revision 并重新做产品兼容性审查 |
 | triton-linalg | 官方基线 `00f51c2e48a943922f86f03d58e29f514def646d` 的 [LICENSE](https://github.com/Cambricon/triton-linalg/blob/00f51c2e48a943922f86f03d58e29f514def646d/LICENSE) 与 [ACKNOWLEDGMENTS](https://github.com/Cambricon/triton-linalg/blob/00f51c2e48a943922f86f03d58e29f514def646d/ACKNOWLEDGMENTS) | 头文件随 Wheel 分发，代码嵌入原生库；本地是含修改的派生树 | Apache-2.0，且 ACKNOWLEDGMENTS 单列 MIT 第三方归属 | 官方声明已确认；4 个内容修改、117 个文件模式变化、缺失上游 LICENSE/ACKNOWLEDGMENTS 的处置及最终兼容性待审，详见 [triton_linalg_license_audit.md](triton_linalg_license_audit.md) |
 | LLVM/MLIR | 仓库 pin `10dc3a8e916d73291269e5e2b82dd22681489aa1`；[该提交 LICENSE.TXT](https://github.com/llvm/llvm-project/blob/10dc3a8e916d73291269e5e2b82dd22681489aa1/LICENSE.TXT)，SHA256 `8d85c105...afee` | CMake 确认参与构建/链接；同次构建证据记录该 source commit，并将 `llvm-config` 输出单独保留为工具版本；静态嵌入或动态外部依赖仍由 ELF 决定 | Apache-2.0 WITH LLVM-exception | 官方项目声明及当前源码 revision 已确认；应随包提供的文本和组合兼容性待审 |
-| FlagGems | gitlink `633d9111528d37e60d9804d2f4ac8d9e00c3af5c`；[该提交 LICENSE](https://github.com/RACE-org/FlagGems/blob/633d9111528d37e60d9804d2f4ac8d9e00c3af5c/LICENSE)，SHA256 `3d96ddb2...302a` | 仅兼容性测试使用，没有复制或链接进核心 Wheel | Apache-2.0 | 上游声明已确认；当前核心 Wheel 不发生产品组合兼容性判断，若用途变化则重新审查 |
+| FlagGems | gitlink `633d9111528d37e60d9804d2f4ac8d9e00c3af5c`；[该提交 LICENSE](https://github.com/RACE-org/FlagGems/blob/633d9111528d37e60d9804d2f4ac8d9e00c3af5c/LICENSE)，SHA256 `3d96ddb2...302a`；固定依赖见 [flaggems_dependency_audit.md](flaggems_dependency_audit.md) | 仅兼容性测试使用，没有复制或链接进核心 Wheel；直接依赖和 extras 保留在 test-only 审计面 | Apache-2.0 | 上游声明已确认；当前核心 Wheel 不发生产品组合兼容性判断，测试环境的具体版本和间接依赖仍待选定，若产品用途变化则重新审查 |
 
 ## 其他当前候选相关组件
 
 | 组件 | 已确认事实 | 仍需关闭的问题 |
 |---|---|---|
 | f2reduce | vendored commit `949b91d022c001bbce19157f806013d37f05fbf5`，本地 `LICENCE.txt` 为 MIT，代码嵌入原生库 | ScanCode 的 GPL 命中只来自 README 中“MIT-licenced rather than GPL-licenced”的比较文字，源码文件没有对应 GPL 命中；该路径级事实已核实，但正式处置仍须审查记录，不能添加静默忽略或由工具自动批准 |
-| pybind11 | 构建依赖且头文件模板编入原生库 | 实际构建版本、固定来源、许可证文本与 concluded license |
-| zlib | CMake 链接，当前实包 ELF 显示 `libz.so.1` 为外部运行依赖 | 实际构建/运行 ABI 来源、版本覆盖和许可证审查 |
-| zstd | 当前实包 ELF 显示 `libzstd.so.1` 为外部运行依赖 | SONAME 不等于包版本或来源；需要人工覆盖记录，不能伪造 OSV 查询版本 |
-| TTGPU 变体源码 | 头文件会被复制，开关启用时还会嵌入原生库 | 来源、所有权、版本和许可证均未解决，是当前明确阻断项 |
+| pybind11 | 构建依赖且头文件模板编入原生库；2026-08-24 Hosted audit 观察到 3.1.0，官方 PyPI 元数据和该 tag LICENSE 均声明 BSD-3-Clause | `pyproject.toml` 没有固定全局版本，未来候选仍取同次构建证据；concluded license 和随包文本待审 |
+| zlib | CMake 链接，当前 audit Wheel 的 ELF 显示 `libz.so.1` 为外部运行依赖；官方 v1.3.1 LICENSE 固定为 Zlib 参考证据 | 官方参考版本不能代替候选使用的 Ubuntu 源包、版本覆盖和许可证结论 |
+| zstd | 较早候选出现 `libzstd.so.1`，2026-08-24 audit Wheel 明确 absent | 每份候选必须按自身 ELF 分类；SONAME 不等于包版本或来源，需要人工覆盖记录，不能伪造 OSV 查询版本 |
+| TTGPU 变体源码 | 17 个文件均能映射到固定 Triton `757b6a6` 文件且包含本地修改，详见 [ttgpu_provenance_audit.md](ttgpu_provenance_audit.md)；头文件会被复制，开关启用时还会嵌入原生库 | 已确认本地派生关系，但修改权属、独立版本、许可证结论和 Notice 仍未解决，是当前明确阻断项 |
 
 ## 批准前必须形成的记录
 

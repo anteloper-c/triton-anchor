@@ -300,7 +300,8 @@
         "kind": "local-derivative",
         "status": "unresolved",
         "evidence_ids": [
-          "triton-linalg-upstream-tree-audit"
+          "triton-linalg-upstream-tree-audit",
+          "triton-linalg-local-tree-identity"
         ]
       },
       "upstream_baseline": {
@@ -389,6 +390,12 @@
           "value": "local derivative of Cambricon master@00f51c2e48a943922f86f03d58e29f514def646d: 114 mapped files content-identical, 4 content-modified, 117 file-mode changes"
         },
         {
+          "id": "triton-linalg-local-tree-identity",
+          "kind": "local-derivative-tree-identity",
+          "location": "scripts/compliance/docs/triton_linalg_license_audit.md",
+          "value": "csrc/include/triton-linalg tree cb73c58bcdccde8b8e9baebe7d500c6ad314699a; csrc/lib/triton-linalg tree ab55e8b45bb83f6f1fcfaeca97a3cb6a58c1d330"
+        },
+        {
           "id": "triton-linalg-upstream-license",
           "kind": "upstream-license-file",
           "location": "https://github.com/Cambricon/triton-linalg/blob/00f51c2e48a943922f86f03d58e29f514def646d/LICENSE",
@@ -431,9 +438,19 @@
       },
       "version": {
         "value": null,
-        "kind": "git-commit",
+        "kind": "local-derivative",
         "status": "unresolved",
-        "evidence_ids": []
+        "evidence_ids": [
+          "ttgpu-triton-derivative-audit"
+        ]
+      },
+      "upstream_baseline": {
+        "value": "757b6a61e7df814ba806f498f8bb3160f84b120c",
+        "kind": "git-commit",
+        "status": "confirmed-by-tree-comparison",
+        "evidence_ids": [
+          "ttgpu-triton-derivative-audit"
+        ]
       },
       "license": {
         "declared": null,
@@ -501,10 +518,17 @@
           "location": "CMakeLists.txt",
           "line_start": 14,
           "line_end": 18
+        },
+        {
+          "id": "ttgpu-triton-derivative-audit",
+          "kind": "upstream-tree-comparison",
+          "location": "scripts/compliance/docs/ttgpu_provenance_audit.md",
+          "value": "17 files introduced at triton-anchor commit 269e7bd9e2e51cd67b3c19e151b9928588f5a809 map to Triton 757b6a61e7df814ba806f498f8bb3160f84b120c with local changes; current include tree 2c2182112b6bde7916b3871a40b53875d94b0440 and lib tree 2aae5f337de8f34955b516d811abea4cb718cb70"
         }
       ],
       "notes": [
-        "Ownership and upstream provenance are not established by the current repository and must not be inferred."
+        "The current files are demonstrably local derivatives of the vendored Triton baseline, but their modification ownership and final license conclusion are not established by that comparison.",
+        "The two Git tree ids identify the current local content only; they do not turn the derivative into an upstream release or approved license conclusion."
       ]
     },
     {
@@ -702,7 +726,7 @@
       "third_party": true,
       "origin": {
         "url": "https://github.com/pybind/pybind11",
-        "status": "pending-build-evidence"
+        "status": "resolved"
       },
       "version": {
         "value": null,
@@ -711,12 +735,19 @@
         "evidence_ids": []
       },
       "license": {
-        "declared": null,
+        "declared": "BSD-3-Clause",
         "concluded": null,
         "expected_expression": "BSD-3-Clause",
-        "status": "pending-build-evidence",
-        "evidence_ids": []
+        "status": "official-package-declaration-confirmed-review-pending",
+        "text_location": "https://github.com/pybind/pybind11/blob/v3.1.0/LICENSE",
+        "evidence_ids": [
+          "pybind-3.1.0-package-metadata",
+          "pybind-3.1.0-upstream-license"
+        ]
       },
+      "copyrights": [
+        "Copyright (c) 2016 Wenzel Jakob"
+      ],
       "usages": [
         {
           "category": "build-only",
@@ -771,10 +802,23 @@
           "location": "CMakeLists.txt",
           "line_start": 37,
           "line_end": 43
+        },
+        {
+          "id": "pybind-3.1.0-package-metadata",
+          "kind": "package-metadata",
+          "location": "https://pypi.org/pypi/pybind11/3.1.0/json",
+          "value": "version 3.1.0; homepage https://github.com/pybind/pybind11; license_expression BSD-3-Clause; license file LICENSE"
+        },
+        {
+          "id": "pybind-3.1.0-upstream-license",
+          "kind": "upstream-license",
+          "location": "https://github.com/pybind/pybind11/blob/v3.1.0/LICENSE",
+          "value": "BSD-3-Clause; Git tag v3.1.0 resolves to 97bf890db679505a14dfe547a5e77bb2bd05dc90; sha256:83965b843b98f670d3a85bd041ed4b372c8ec50d7b4a5995a83ac697ba675dcb"
         }
       ],
       "notes": [
-        "Header-only template code is incorporated into the native module; it is not merely an excluded build tool."
+        "Header-only template code is incorporated into the native module; it is not merely an excluded build tool.",
+        "The 3.1.0 evidence matches the 2026-08-24 hosted audit build. The registry still requires candidate build evidence because pyproject.toml does not pin a global pybind11 version."
       ]
     },
     {
@@ -793,11 +837,13 @@
         "evidence_ids": []
       },
       "license": {
-        "declared": null,
+        "declared": "Zlib",
         "concluded": null,
         "expected_expression": "Zlib",
-        "status": "pending-build-evidence",
-        "evidence_ids": []
+        "status": "official-upstream-declaration-confirmed-candidate-review-pending",
+        "evidence_ids": [
+          "zlib-1.3.1-upstream-license"
+        ]
       },
       "usages": [
         {
@@ -849,9 +895,17 @@
           "location": "CMakeLists.txt",
           "line_start": 274,
           "line_end": 278
+        },
+        {
+          "id": "zlib-1.3.1-upstream-license",
+          "kind": "upstream-license",
+          "location": "https://github.com/madler/zlib/blob/v1.3.1/LICENSE",
+          "value": "Zlib; annotated tag 925af44f3cde53c6b076611c297850091b5dc7bb, commit 51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf; sha256:845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243"
         }
       ],
-      "notes": []
+      "notes": [
+        "The v1.3.1 upstream license is reference evidence for the declared project license; it does not identify the Ubuntu source package or version used by a candidate build."
+      ]
     },
     {
       "id": "zstd",
@@ -1845,6 +1899,175 @@
       "notes": []
     },
     {
+      "id": "pyyaml",
+      "name": "PyYAML",
+      "purl": "pkg:pypi/pyyaml",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/yaml/pyyaml",
+        "status": "resolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "unbounded-declaration",
+        "status": "unresolved",
+        "evidence_ids": [
+          "flaggems-pyyaml-requirement"
+        ]
+      },
+      "license": {
+        "declared": "MIT",
+        "concluded": null,
+        "status": "package-project-confirmed-version-review-pending",
+        "evidence_ids": [
+          "pyyaml-project-metadata"
+        ]
+      },
+      "usages": [
+        {
+          "category": "test-only",
+          "status": "confirmed",
+          "condition": "the FlagGems compatibility test dependency set is installed",
+          "target": "*",
+          "declaration_patterns": [
+            "FlagGems/setup.py"
+          ],
+          "evidence_ids": [
+            "flaggems-pyyaml-requirement"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "flaggems-pyyaml-requirement",
+          "kind": "setup-install-requirement",
+          "location": "FlagGems/setup.py",
+          "line_start": 88,
+          "value": "PyYAML (no version constraint) at FlagGems commit 633d9111528d37e60d9804d2f4ac8d9e00c3af5c"
+        },
+        {
+          "id": "pyyaml-project-metadata",
+          "kind": "package-project-metadata",
+          "location": "https://pypi.org/pypi/PyYAML/json",
+          "value": "project source https://github.com/yaml/pyyaml; declared license MIT; observed 2026-08-31"
+        }
+      ],
+      "notes": [
+        "FlagGems does not constrain the version, so the exact package version and its indirect dependencies remain unresolved until a test environment is selected."
+      ]
+    },
+    {
+      "id": "scipy",
+      "name": "SciPy",
+      "purl": "pkg:pypi/scipy",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/scipy/scipy",
+        "status": "resolved"
+      },
+      "version": {
+        "value": ">=1.14",
+        "kind": "version-constraint",
+        "status": "constraint-only",
+        "evidence_ids": [
+          "flaggems-scipy-requirement"
+        ]
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "candidate-version-and-bundled-components-review-pending",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "test-only",
+          "status": "confirmed",
+          "condition": "the FlagGems test extra is installed",
+          "target": "*",
+          "declaration_patterns": [
+            "FlagGems/setup.py"
+          ],
+          "evidence_ids": [
+            "flaggems-scipy-requirement"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "flaggems-scipy-requirement",
+          "kind": "setup-extra-requirement",
+          "location": "FlagGems/setup.py",
+          "line_start": 94,
+          "value": "scipy>=1.14 at FlagGems commit 633d9111528d37e60d9804d2f4ac8d9e00c3af5c"
+        }
+      ],
+      "notes": [
+        "The constraint does not select an exact SciPy distribution; binary variants may carry additional third-party components and require evidence from the selected test environment."
+      ]
+    },
+    {
+      "id": "transformers",
+      "name": "transformers",
+      "purl": "pkg:pypi/transformers",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/huggingface/transformers",
+        "status": "resolved"
+      },
+      "version": {
+        "value": ">=4.40.2",
+        "kind": "version-constraint",
+        "status": "constraint-only",
+        "evidence_ids": [
+          "flaggems-transformers-requirement"
+        ]
+      },
+      "license": {
+        "declared": "Apache-2.0",
+        "concluded": null,
+        "status": "package-project-confirmed-version-review-pending",
+        "evidence_ids": [
+          "transformers-project-metadata"
+        ]
+      },
+      "usages": [
+        {
+          "category": "test-only",
+          "status": "confirmed",
+          "condition": "the FlagGems example extra is installed for compatibility validation",
+          "target": "*",
+          "declaration_patterns": [
+            "FlagGems/setup.py"
+          ],
+          "evidence_ids": [
+            "flaggems-transformers-requirement"
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "flaggems-transformers-requirement",
+          "kind": "setup-extra-requirement",
+          "location": "FlagGems/setup.py",
+          "line_start": 97,
+          "value": "transformers>=4.40.2 at FlagGems commit 633d9111528d37e60d9804d2f4ac8d9e00c3af5c"
+        },
+        {
+          "id": "transformers-project-metadata",
+          "kind": "package-project-metadata",
+          "location": "https://pypi.org/pypi/transformers/json",
+          "value": "project source https://github.com/huggingface/transformers; declared license Apache 2.0; observed 2026-08-31"
+        }
+      ],
+      "notes": [
+        "This dependency belongs to the optional FlagGems example environment and is not part of the triton-anchor core Wheel."
+      ]
+    },
+    {
       "id": "pytest",
       "name": "pytest",
       "purl": "pkg:pypi/pytest",
@@ -1910,10 +2133,22 @@
         "declared": "Apache-2.0",
         "concluded": null,
         "status": "official-upstream-declaration-confirmed-review-pending",
+        "text_location": "https://github.com/RACE-org/FlagGems/blob/633d9111528d37e60d9804d2f4ac8d9e00c3af5c/LICENSE",
         "evidence_ids": [
           "flaggems-upstream-license"
         ]
       },
+      "depends_on": [
+        "cpython",
+        "numpy",
+        "pytest",
+        "pytorch",
+        "pyyaml",
+        "scipy",
+        "setuptools",
+        "transformers",
+        "triton"
+      ],
       "usages": [
         {
           "category": "test-only",
@@ -1942,10 +2177,17 @@
           "kind": "upstream-license",
           "location": "https://github.com/RACE-org/FlagGems/blob/633d9111528d37e60d9804d2f4ac8d9e00c3af5c/LICENSE",
           "value": "Apache-2.0; sha256:3d96ddb29c3f72e59a4d50d17455e8d2989d603587bbbc88ec069641551b302a"
+        },
+        {
+          "id": "flaggems-dependency-audit",
+          "kind": "submodule-dependency-audit",
+          "location": "scripts/compliance/docs/flaggems_dependency_audit.md",
+          "value": "commit tree 623e945497203cbd81b4a71b1a242e46c7c6d493; setup.py blob e87ebb877bab461eddf7de94dcaea5486503e26a; direct, test and example requirements recorded"
         }
       ],
       "notes": [
-        "FlagGems is not copied or linked into the core wheel by setup.py or CMakeLists.txt; its exact gitlink declares Apache-2.0 upstream, while product compatibility remains not applicable unless its usage changes."
+        "FlagGems is not copied or linked into the core wheel by setup.py or CMakeLists.txt; its exact gitlink declares Apache-2.0 upstream, while product compatibility remains not applicable unless its usage changes.",
+        "The setup.py dependency set is recorded for the test-only audit surface. Triton may be supplied as triton, triton-nightly, or pytorch-triton; the selected distribution and all indirect versions remain environment evidence, not a registry assumption."
       ]
     }
   ]

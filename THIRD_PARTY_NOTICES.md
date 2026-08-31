@@ -27,8 +27,8 @@ This file is complete only when every required attribution field is resolved.
 - Version: `UNRESOLVED`
 - Source: https://github.com/pybind/pybind11
 - Concluded license: `UNRESOLVED`
-- License text: `UNRESOLVED`
-- Copyright: UNRESOLVED
+- License text: `https://github.com/pybind/pybind11/blob/v3.1.0/LICENSE`
+- Copyright: Copyright (c) 2016 Wenzel Jakob
 
 ## Triton
 
