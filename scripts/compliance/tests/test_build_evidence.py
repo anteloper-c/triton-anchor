@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import platform
 import subprocess
 import tempfile
 import unittest
@@ -37,12 +38,42 @@ class BuildEvidenceTests(unittest.TestCase):
         )
         return root
 
+    @staticmethod
+    def python_build_report(package_versions: dict[str, str]) -> dict[str, object]:
+        requirements = {
+            "build": ["packaging>=19.1", "pyproject_hooks"],
+            "packaging": [],
+            "pybind11": [],
+            "pyproject_hooks": [],
+            "setuptools": [],
+            "wheel": [],
+        }
+        roots = {"build", "pybind11", "setuptools", "wheel"}
+        return {
+            "version": "1",
+            "pip_version": "25.2",
+            "environment": {"python_full_version": platform.python_version()},
+            "install": [
+                {
+                    "requested": name in roots,
+                    "metadata": {
+                        "name": name,
+                        "version": package_versions[name],
+                        "requires_dist": requirements[name],
+                    },
+                }
+                for name in requirements
+            ],
+        }
+
     def test_cli_writes_core_consumable_same_build_evidence(self) -> None:
         package_versions = {
             "setuptools": "75.1.0",
             "wheel": "0.44.0",
             "build": "1.2.2",
             "pybind11": "2.13.6",
+            "packaging": "24.1",
+            "pyproject_hooks": "1.2.0",
         }
         tool_versions = {"cmake": "3.30.4", "ninja": "1.12.1"}
         ubuntu_queries = {
@@ -64,6 +95,11 @@ class BuildEvidenceTests(unittest.TestCase):
             wheel = self.make_wheel(directory)
             source_root = self.make_source_root(directory)
             output = directory / "build-evidence.json"
+            python_build_report = directory / "python-build-environment.json"
+            python_build_report.write_text(
+                json.dumps(self.python_build_report(package_versions)),
+                encoding="utf-8",
+            )
             with (
                 mock.patch.object(
                     build_evidence,
@@ -131,6 +167,8 @@ class BuildEvidenceTests(unittest.TestCase):
                         "/usr/bin/g++",
                         "--package-tool",
                         "pypa-build",
+                        "--python-build-report",
+                        str(python_build_report),
                         "--ubuntu-package",
                         "zstd=libzstd1",
                         "--ubuntu-package",
@@ -188,16 +226,62 @@ class BuildEvidenceTests(unittest.TestCase):
             self.assertEqual("present", components["zstd"]["presence"])
             self.assertEqual("absent", components["uv"]["presence"])
             self.assertEqual(
+                ["packaging", "pyproject-hooks"],
+                components["pypa-build"]["depends_on"],
+            )
+            self.assertEqual("24.1", components["packaging"]["version"])
+            self.assertFalse(components["packaging"]["evidence"]["requested"])
+            self.assertEqual(
                 ["embedded"], components["ttgpu-variant-sources"]["usages"]
             )
             normalized = normalize_build_evidence(report, wheel_hash)
             self.assertEqual("success", normalized["status"], normalized["issues"])
             self.assertEqual("same-build", normalized["evidence_binding"])
+            normalized_by_id = {
+                item["component_id"]: item for item in normalized["items"]
+            }
+            self.assertEqual(
+                ["packaging", "pyproject-hooks"],
+                normalized_by_id["pypa-build"]["depends_on"],
+            )
 
             payload["native"]["unmapped_sonames"] = ["libcrypto.so.3"]
             normalized = normalize_build_evidence(report, wheel_hash)
             self.assertEqual("failed", normalized["status"])
             self.assertIn("libcrypto.so.3", normalized["issues"][0])
+
+    def test_python_build_report_rejects_an_unrelated_requested_root(self) -> None:
+        versions = {
+            "setuptools": "75.1.0",
+            "wheel": "0.44.0",
+            "build": "1.2.2",
+            "pybind11": "2.13.6",
+            "packaging": "24.1",
+            "pyproject_hooks": "1.2.0",
+            "ambient": "9.9.9",
+        }
+        report = self.python_build_report(versions)
+        report["install"].append(
+            {
+                "requested": True,
+                "metadata": {
+                    "name": "ambient",
+                    "version": "9.9.9",
+                    "requires_dist": [],
+                },
+            }
+        )
+        with (
+            mock.patch.object(
+                build_evidence,
+                "_distribution_version",
+                side_effect=lambda name: versions.get(name),
+            ),
+            self.assertRaisesRegex(
+                build_evidence.BuildEvidenceError, "requested roots"
+            ),
+        ):
+            build_evidence._python_build_components(report)
 
     def test_ubuntu_package_query_uses_source_package_identity(self) -> None:
         completed = subprocess.CompletedProcess(

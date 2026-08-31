@@ -81,6 +81,8 @@ class CheckedInConfigurationTests(unittest.TestCase):
             "setuptools": "pkg:pypi/setuptools",
             "wheel-build-package": "pkg:pypi/wheel",
             "pypa-build": "pkg:pypi/build",
+            "packaging": "pkg:pypi/packaging",
+            "pyproject-hooks": "pkg:pypi/pyproject-hooks",
             "numpy": "pkg:pypi/numpy",
             "matplotlib": "pkg:pypi/matplotlib",
             "pandas": "pkg:pypi/pandas",
@@ -98,6 +100,9 @@ class CheckedInConfigurationTests(unittest.TestCase):
                 component_id: by_id[component_id].get("purl")
                 for component_id in expected
             },
+        )
+        self.assertEqual(
+            ["packaging", "pyproject-hooks"], by_id["pypa-build"]["depends_on"]
         )
 
     def test_canonical_notice_matches_the_component_registry(self) -> None:

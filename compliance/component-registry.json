@@ -1338,16 +1338,22 @@
         "status": "pending-build-evidence",
         "evidence_ids": []
       },
+      "depends_on": [
+        "packaging",
+        "pyproject-hooks"
+      ],
       "usages": [
         {
           "category": "build-only",
           "status": "confirmed",
           "target": "core-wheel",
           "declaration_patterns": [
-            "CI_dev:scripts/ci/build_frontend.sh"
+            "CI_dev:scripts/ci/build_frontend.sh",
+            ".github/workflows/dependency-compliance.yml"
           ],
           "evidence_ids": [
-            "build-frontend-tool"
+            "build-frontend-tool",
+            "dependency-compliance-build-tool"
           ]
         }
       ],
@@ -1358,10 +1364,90 @@
           "location": "CI_dev:scripts/ci/build_frontend.sh",
           "line_start": 32,
           "line_end": 50
+        },
+        {
+          "id": "dependency-compliance-build-tool",
+          "kind": "workflow-build-requirement",
+          "location": ".github/workflows/dependency-compliance.yml"
         }
       ],
       "notes": [
-        "This component is supplied by the CI_dev delivery worker, not the main source tree."
+        "This component is supplied by CI build environments, not the main source tree."
+      ]
+    },
+    {
+      "id": "packaging",
+      "name": "packaging",
+      "purl": "pkg:pypi/packaging",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/pypa/packaging",
+        "status": "resolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "candidate-evidence-required",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-candidate-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "build-only",
+          "status": "candidate-evidence-required",
+          "condition": "the selected pypa-build distribution resolves packaging",
+          "target": "core-wheel",
+          "evidence_ids": []
+        }
+      ],
+      "evidence": [],
+      "notes": [
+        "The exact version, dependency relation, and package metadata must come from the same-run pip installation report."
+      ]
+    },
+    {
+      "id": "pyproject-hooks",
+      "name": "pyproject_hooks",
+      "aliases": [
+        "pyproject_hooks"
+      ],
+      "purl": "pkg:pypi/pyproject-hooks",
+      "kind": "library",
+      "third_party": true,
+      "origin": {
+        "url": "https://github.com/pypa/pyproject-hooks",
+        "status": "resolved"
+      },
+      "version": {
+        "value": null,
+        "kind": "semver",
+        "status": "candidate-evidence-required",
+        "evidence_ids": []
+      },
+      "license": {
+        "declared": null,
+        "concluded": null,
+        "status": "pending-candidate-evidence",
+        "evidence_ids": []
+      },
+      "usages": [
+        {
+          "category": "build-only",
+          "status": "candidate-evidence-required",
+          "condition": "the selected pypa-build distribution resolves pyproject_hooks",
+          "target": "core-wheel",
+          "evidence_ids": []
+        }
+      ],
+      "evidence": [],
+      "notes": [
+        "The exact version, dependency relation, and package metadata must come from the same-run pip installation report."
       ]
     },
     {

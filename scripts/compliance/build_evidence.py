@@ -24,6 +24,14 @@ _VERSION_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])(\d+(?:\.\d+)+(?:[-+._A-Za-z0-9]*))"
 )
 _NEEDED_PATTERN = re.compile(r"\(NEEDED\).*Shared library: \[([^\]]+)\]")
+_PYPI_NAME_SEPARATOR = re.compile(r"[-_.]+")
+_REQUIREMENT_NAME_PATTERN = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+_PYTHON_BUILD_ROOTS = {
+    "build": "pypa-build",
+    "pybind11": "pybind11",
+    "setuptools": "setuptools",
+    "wheel": "wheel-build-package",
+}
 
 
 class BuildEvidenceError(RuntimeError):
@@ -43,6 +51,155 @@ def _distribution_version(name: str) -> str | None:
         return importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
         return None
+
+
+def _canonical_distribution_name(name: str) -> str:
+    canonical = _PYPI_NAME_SEPARATOR.sub("-", name.strip().casefold())
+    if not canonical or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", canonical):
+        raise BuildEvidenceError(f"invalid Python distribution name: {name!r}")
+    return canonical
+
+
+def _component_id_for_distribution(name: str) -> str:
+    canonical = _canonical_distribution_name(name)
+    return _PYTHON_BUILD_ROOTS.get(canonical, canonical)
+
+
+def _load_python_build_report(path: Path) -> dict[str, Any]:
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise BuildEvidenceError(f"cannot read pip installation report {path}") from exc
+    if not isinstance(report, dict):
+        raise BuildEvidenceError("pip installation report must be an object")
+    return report
+
+
+def _python_build_components(report: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if report.get("version") != "1":
+        raise BuildEvidenceError("pip installation report must use stable format version 1")
+    pip_version = report.get("pip_version")
+    if not isinstance(pip_version, str) or not pip_version:
+        raise BuildEvidenceError("pip installation report lacks pip_version")
+    environment = report.get("environment")
+    if not isinstance(environment, Mapping):
+        raise BuildEvidenceError("pip installation report lacks environment metadata")
+    if environment.get("python_full_version") != platform.python_version():
+        raise BuildEvidenceError(
+            "pip installation report does not describe the build interpreter"
+        )
+    install = report.get("install")
+    if not isinstance(install, list) or not install:
+        raise BuildEvidenceError("pip installation report has no resolved packages")
+
+    resolved: dict[str, dict[str, Any]] = {}
+    for entry in install:
+        if not isinstance(entry, Mapping):
+            raise BuildEvidenceError("pip installation report entries must be objects")
+        metadata = entry.get("metadata")
+        if not isinstance(metadata, Mapping):
+            raise BuildEvidenceError("pip installation report entry lacks metadata")
+        name = metadata.get("name")
+        version = metadata.get("version")
+        requested = entry.get("requested")
+        if not isinstance(name, str) or not isinstance(version, str) or not version:
+            raise BuildEvidenceError(
+                "pip installation report entry lacks distribution name or version"
+            )
+        if not isinstance(requested, bool):
+            raise BuildEvidenceError(
+                f"pip installation report entry {name} lacks requested classification"
+            )
+        canonical = _canonical_distribution_name(name)
+        if canonical in resolved:
+            raise BuildEvidenceError(
+                f"pip installation report repeats distribution {canonical}"
+            )
+        installed_version = _distribution_version(name)
+        if installed_version != version:
+            raise BuildEvidenceError(
+                f"resolved {name} version {version} does not match installed version "
+                f"{installed_version or 'missing'}"
+            )
+        requires_dist = metadata.get("requires_dist", [])
+        if not isinstance(requires_dist, list) or any(
+            not isinstance(requirement, str) for requirement in requires_dist
+        ):
+            raise BuildEvidenceError(
+                f"pip installation report entry {name} has invalid requires_dist"
+            )
+        resolved[canonical] = {
+            "entry": entry,
+            "metadata": metadata,
+            "name": name,
+            "version": version,
+            "requested": requested,
+            "requires_dist": requires_dist,
+        }
+
+    requested_names = {
+        name for name, item in resolved.items() if item["requested"] is True
+    }
+    expected_roots = set(_PYTHON_BUILD_ROOTS)
+    if requested_names != expected_roots:
+        raise BuildEvidenceError(
+            "pip installation report requested roots do not match the reviewed build "
+            f"roots: expected {sorted(expected_roots)}, observed {sorted(requested_names)}"
+        )
+
+    components: list[dict[str, Any]] = []
+    for canonical, item in sorted(resolved.items()):
+        dependency_names: set[str] = set()
+        for requirement in item["requires_dist"]:
+            match = _REQUIREMENT_NAME_PATTERN.match(requirement)
+            if match:
+                dependency = _canonical_distribution_name(match.group(1))
+                if dependency in resolved and dependency != canonical:
+                    dependency_names.add(dependency)
+        evidence: dict[str, Any] = {
+            "source": "pip-install-report",
+            "pip_version": pip_version,
+            "distribution": item["name"],
+            "requested": item["requested"],
+        }
+        license_expression = item["metadata"].get("license_expression")
+        if isinstance(license_expression, str) and license_expression:
+            evidence["declared_license_expression"] = license_expression
+        component = _component(
+            _component_id_for_distribution(canonical),
+            item["version"],
+            ["build-only"],
+            evidence,
+        )
+        component["purl"] = f"pkg:pypi/{canonical}"
+        component["depends_on"] = [
+            _component_id_for_distribution(name) for name in sorted(dependency_names)
+        ]
+        components.append(component)
+    return components
+
+
+def _merge_python_build_components(
+    components: list[dict[str, Any]],
+    python_components: list[dict[str, Any]],
+) -> None:
+    by_id = {str(component["id"]): component for component in components}
+    for observed in python_components:
+        component_id = str(observed["id"])
+        existing = by_id.get(component_id)
+        if existing is None:
+            components.append(observed)
+            by_id[component_id] = observed
+            continue
+        if existing.get("version") != observed.get("version"):
+            raise BuildEvidenceError(
+                f"conflicting Python build versions for {component_id}"
+            )
+        evidence = dict(existing.get("evidence") or {})
+        evidence["python_build_environment"] = observed["evidence"]
+        existing["evidence"] = evidence
+        existing["purl"] = observed["purl"]
+        existing["depends_on"] = observed["depends_on"]
 
 
 def _command_version(command: list[str]) -> str | None:
@@ -299,6 +456,7 @@ def collect_build_evidence(
     evidence_binding: str,
     cxx_compiler: str | None = None,
     package_tool: str | None = None,
+    python_build_report: Mapping[str, Any] | None = None,
     ubuntu_packages: Mapping[str, str] | None = None,
     cpython_source_commit: str | None = None,
 ) -> dict[str, Any]:
@@ -481,6 +639,12 @@ def collect_build_evidence(
                 )
             )
 
+    if python_build_report is not None:
+        _merge_python_build_components(
+            components,
+            _python_build_components(python_build_report),
+        )
+
     _attach_vulnerability_queries(
         components,
         ubuntu_packages or {},
@@ -513,6 +677,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--cxx-compiler")
     parser.add_argument("--package-tool", choices=("pypa-build", "uv"))
+    parser.add_argument("--python-build-report")
     parser.add_argument(
         "--ubuntu-package",
         action="append",
@@ -529,15 +694,29 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(
             "--cxx-compiler and --package-tool are required for same-build evidence"
         )
+    if (
+        args.evidence_binding == "same-build"
+        and args.package_tool == "pypa-build"
+        and not args.python_build_report
+    ):
+        parser.error(
+            "--python-build-report is required for same-build pypa-build evidence"
+        )
 
     try:
         ubuntu_packages = _parse_ubuntu_packages(args.ubuntu_package)
+        python_build_report = (
+            _load_python_build_report(Path(args.python_build_report))
+            if args.python_build_report
+            else None
+        )
         evidence = collect_build_evidence(
             Path(args.wheel),
             Path(args.source_root),
             args.evidence_binding,
             args.cxx_compiler,
             args.package_tool,
+            python_build_report,
             ubuntu_packages,
             args.cpython_source_commit,
         )

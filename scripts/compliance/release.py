@@ -258,6 +258,7 @@ def generate_sbom(
     root_ref = f"artifact:sha256:{artifact['sha256']}"
     product_refs = {_bom_ref(component): component for component in product}
     by_id = {str(component["id"]): component for component in product}
+    build_by_id = {str(component["id"]): component for component in build}
     root_component = next(
         (
             component
@@ -288,6 +289,18 @@ def generate_sbom(
             _bom_ref(candidate) for candidate in product if candidate["id"] in child_ids
         )
         dependencies.append({"ref": ref, "dependsOn": child_refs})
+    for component_id, component in sorted(build_by_id.items()):
+        child_ids = set(component.get("depends_on", []))
+        dependencies.append(
+            {
+                "ref": _bom_ref(component),
+                "dependsOn": sorted(
+                    _bom_ref(build_by_id[dependency_id])
+                    for dependency_id in child_ids
+                    if dependency_id in build_by_id
+                ),
+            }
+        )
     artifact_kind = str(artifact.get("artifact_kind", "wheel"))
     if artifact_kind == "github-source-snapshot":
         serial_identity = stable_json(

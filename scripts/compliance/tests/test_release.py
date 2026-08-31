@@ -92,6 +92,28 @@ class ReleaseEvidenceTests(unittest.TestCase):
         }
         self.assertFalse(product_refs & build_refs)
 
+    def test_build_formulation_preserves_resolved_dependency_graph(self) -> None:
+        builder = component("pypa-build", distribution="build-only")
+        builder["depends_on"] = ["packaging", "pyproject-hooks"]
+        packaging = component("packaging", distribution="build-only")
+        hooks = component("pyproject-hooks", distribution="build-only")
+
+        sbom = generate_sbom(
+            self.artifacts[0], [builder, packaging, hooks]
+        )
+
+        refs = {
+            item["name"]: item["bom-ref"]
+            for item in sbom["formulation"][0]["components"]
+        }
+        dependencies = {
+            item["ref"]: item["dependsOn"] for item in sbom["dependencies"]
+        }
+        self.assertEqual(
+            sorted([refs["packaging"], refs["pyproject-hooks"]]),
+            dependencies[refs["pypa-build"]],
+        )
+
     def test_dependency_graph_distinguishes_direct_and_transitive_components(self) -> None:
         root = component("triton-anchor")
         root["third_party"] = False

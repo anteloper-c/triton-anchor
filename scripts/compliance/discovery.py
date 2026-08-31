@@ -231,6 +231,25 @@ def reconcile_discoveries(
         for component_id in component_ids:
             component = by_id[component_id]
             component["observations"].append(attached)
+            if item.get("kind") == "build-component" and "depends_on" in item:
+                observed_dependencies = sorted(set(item["depends_on"]))
+                reviewed_dependencies = sorted(
+                    set(str(value) for value in component.get("depends_on", []))
+                )
+                if observed_dependencies != reviewed_dependencies:
+                    execution_issues.append(
+                        {
+                            "source": "build-evidence",
+                            "code": "build-dependency-graph-mismatch",
+                            "component_id": component_id,
+                            "reason": (
+                                "observed Python build dependencies do not match "
+                                "the reviewed component graph"
+                            ),
+                            "expected": reviewed_dependencies,
+                            "observed": observed_dependencies,
+                        }
+                    )
             if item.get("declaration_source") == "gitlink":
                 declared_version = _version_value(component)
                 observed_version = item.get("version")
@@ -598,6 +617,15 @@ def normalize_build_evidence(
                 f"build component {component.get('id')} has invalid presence: {presence}"
             )
             continue
+        depends_on = component.get("depends_on")
+        if depends_on is not None and (
+            not isinstance(depends_on, list)
+            or any(not isinstance(value, str) or not value for value in depends_on)
+        ):
+            issues.append(
+                f"build component {component.get('id')} has invalid depends_on"
+            )
+            continue
         item = {
             "kind": "build-component",
             "component_id": component["id"],
@@ -608,6 +636,8 @@ def normalize_build_evidence(
             "source": "build-evidence",
             "evidence": component.get("evidence"),
         }
+        if depends_on is not None:
+            item["depends_on"] = sorted(set(depends_on))
         if component.get("version") not in (None, ""):
             item["version"] = str(component["version"])
         items.append(item)

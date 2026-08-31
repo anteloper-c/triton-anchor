@@ -416,6 +416,34 @@ class ComponentAndLicenseTests(unittest.TestCase):
                 build = normalize_build_evidence(payload, "a" * 64)
                 self.assertEqual("failed", build["status"])
 
+    def test_build_dependency_graph_change_is_an_execution_issue(self) -> None:
+        builder = component("pypa-build", distribution="build-only")
+        builder["depends_on"] = ["packaging"]
+        packaging = component("packaging", distribution="build-only")
+        build = normalize_build_evidence(
+            {
+                "status": "success",
+                "artifact_sha256": "a" * 64,
+                "evidence_binding": "same-build",
+                "components": [
+                    {
+                        "id": "pypa-build",
+                        "version": "1.2.2",
+                        "usages": ["build-only"],
+                        "depends_on": [],
+                    }
+                ],
+            },
+            "a" * 64,
+        )
+
+        reconciled = reconcile_discoveries([builder, packaging], [build])
+
+        self.assertIn(
+            "build-dependency-graph-mismatch",
+            {issue["code"] for issue in reconciled["execution_issues"]},
+        )
+
     def test_declaration_patterns_map_declarations_without_claiming_file_ownership(self) -> None:
         dependency = component("pybind11", distribution="build-only")
         dependency["usages"][0]["path_patterns"] = ["vendor/pybind11/**"]
