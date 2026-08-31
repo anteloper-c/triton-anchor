@@ -1515,6 +1515,7 @@ fail_prepare_step() {
 
 discover_local_ci_runtime_paths() {
   local resolved_source=""
+  local resolved_backend_source=""
   local resolved_path=""
   local source_sha=""
 
@@ -1572,9 +1573,36 @@ discover_local_ci_runtime_paths() {
   if [[ "${RUN_BACKEND_STAGES}" != "true" || -z "${BACKEND_PATH}" ]]; then
     return 0
   fi
-  backend_source_dir="${BACKEND_PATH}"
-  backend_build_dir="${BACKEND_PATH}/build"
-  backend_dist_dir="${BACKEND_PATH}/dist"
+  if ! run_prepare_capture resolved_backend_source "resolve_backend_source" \
+    docker exec --user 0 "${ephemeral_container}" \
+      readlink -e -- "${BACKEND_PATH}"; then
+    if [[ "${prepare_timed_out}" == "true" ]]; then
+      fail_prepare_step "定位 Local CI backend 源码目录超时"
+    fi
+    return 0
+  fi
+  if [[ "${resolved_backend_source}" != /workspace/* ]]; then
+    return 0
+  fi
+  backend_source_dir="${resolved_backend_source}"
+  if run_prepare_capture resolved_path "resolve_backend_build" \
+    docker exec --user 0 "${ephemeral_container}" \
+      readlink -e -- "${resolved_backend_source}/build"; then
+    if [[ "${resolved_path}" == /workspace/* ]]; then
+      backend_build_dir="${resolved_path}"
+    fi
+  elif [[ "${prepare_timed_out}" == "true" ]]; then
+    fail_prepare_step "定位 Local CI backend build 目录超时"
+  fi
+  if run_prepare_capture resolved_path "resolve_backend_dist" \
+    docker exec --user 0 "${ephemeral_container}" \
+      readlink -e -- "${resolved_backend_source}/dist"; then
+    if [[ "${resolved_path}" == /workspace/* ]]; then
+      backend_dist_dir="${resolved_path}"
+    fi
+  elif [[ "${prepare_timed_out}" == "true" ]]; then
+    fail_prepare_step "定位 Local CI backend dist 目录超时"
+  fi
 }
 
 create_ephemeral_container() {

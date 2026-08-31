@@ -6,7 +6,7 @@ Codex 的独立 checkout 用于审查和生成测试，Local CI 已构建源码�
 
 ### 修改内容
 
-- runner 核对挂载源码树的目标 SHA，并分别导出 Local CI 前端源码、`build/`、`dist/` 以及已启用 backend 的对应目录；
+- runner 核对挂载源码树的目标 SHA，并分别导出 Local CI 前端源码、`build/`、`dist/` 以及已启用 backend 中实际存在的对应目录；backend wheel 构建未保留仓库根 `build/` 时将该目录标记为不可用；
 - success/failure prompt 区分审查 checkout 与只读构建源码树，要求构建依赖测试从后者执行；
 - 只读源码树中的 pytest 使用 `/tmp` basetemp，并关闭 repo-local cache 和 Python bytecode 写入；
 - 不复制构建树，不新增 artifact、报告 schema 或发布协议。

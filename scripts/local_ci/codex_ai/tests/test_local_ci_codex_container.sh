@@ -733,9 +733,10 @@ if program == "bash" and len(command_args) >= 2 and command_args[1] == "-lc":
         assert "不能仅因" in prompt and "下没有这些目录就判断构建产物缺失" in prompt
         if environment.get("AI_RUN_BACKEND_STAGES") == "true":
             assert environment.get("AI_BACKEND_SOURCE_DIR") == "/workspace/backend"
-            assert environment.get("AI_BACKEND_BUILD_DIR") == "/workspace/backend/build"
+            assert environment.get("AI_BACKEND_BUILD_DIR") == ""
             assert environment.get("AI_BACKEND_DIST_DIR") == "/workspace/backend/dist"
-            assert mapped("/workspace/backend/build/backend-marker.so").is_file()
+            assert not mapped("/workspace/backend/build").exists()
+            assert "- Backend Build Dir: 未启用或不可用" in prompt
     elif runtime_status == "not_required":
         assert environment.get("AI_LOCAL_CI_SOURCE_DIR") == ""
     if scenario in {"timeout", "startup_timeout"}:
@@ -862,7 +863,6 @@ run_case() {
     "${source_workspace}/triton-anchor/build/lib" \
     "${source_workspace}/triton-anchor/dist" \
     "${source_workspace}/triton-anchor/python/triton_anchor/include" \
-    "${source_workspace}/backend/build" \
     "${source_workspace}/backend/dist"
   printf 'frontend-native\n' \
     > "${source_workspace}/triton-anchor/build/lib/runtime-marker.so"
@@ -870,7 +870,6 @@ run_case() {
     > "${source_workspace}/triton-anchor/dist/runtime-marker.whl"
   printf 'generated-header\n' \
     > "${source_workspace}/triton-anchor/python/triton_anchor/include/generated-marker.h"
-  printf 'backend-native\n' > "${source_workspace}/backend/build/backend-marker.so"
   printf 'backend-wheel\n' > "${source_workspace}/backend/dist/backend-marker.whl"
   cp -a "${codex_home}" "${case_codex_home}"
   printf 'personal-config-sentinel\n' > "${host_home}/.codex/config.toml"
@@ -886,7 +885,6 @@ run_case() {
       "${source_workspace}/triton-anchor/build/lib/runtime-marker.so" \
       "${source_workspace}/triton-anchor/dist/runtime-marker.whl" \
       "${source_workspace}/triton-anchor/python/triton_anchor/include/generated-marker.h" \
-      "${source_workspace}/backend/build/backend-marker.so" \
       "${source_workspace}/backend/dist/backend-marker.whl"
   )"
   local credential_digest_before
@@ -947,7 +945,6 @@ run_case() {
       "${source_workspace}/triton-anchor/build/lib/runtime-marker.so" \
       "${source_workspace}/triton-anchor/dist/runtime-marker.whl" \
       "${source_workspace}/triton-anchor/python/triton_anchor/include/generated-marker.h" \
-      "${source_workspace}/backend/build/backend-marker.so" \
       "${source_workspace}/backend/dist/backend-marker.whl"
     )" == "${source_digest_before}" ]]
   [[ "$(sha256sum \
@@ -1028,11 +1025,12 @@ grep -Fq -- "--env AI_LOCAL_CI_SOURCE_DIR=/workspace/triton-anchor" \
   "${test_root}/success/docker-state/docker.log"
 grep -Fq -- "--env AI_LOCAL_CI_BUILD_DIR=/workspace/triton-anchor/build" \
   "${test_root}/success/docker-state/docker.log"
-grep -Fq -- "--env AI_BACKEND_BUILD_DIR=/workspace/backend/build" \
+grep -Fq -- "--env AI_BACKEND_BUILD_DIR=" \
   "${test_root}/success/docker-state/docker.log"
 grep -Fxq "local_ci_runtime_status: ready" "${success_output}/codex-ai-ci-summary.txt"
 grep -Fxq "local_ci_source_dir: /workspace/triton-anchor" \
   "${success_output}/codex-ai-ci-summary.txt"
+grep -Fxq "backend_build_dir: " "${success_output}/codex-ai-ci-summary.txt"
 grep -Fq "generated_tests/test_generated.py" "${success_output}/codex-workspace-status.txt"
 tar -tzf "${success_output}/codex-generated-files.tar.gz" | grep -Fxq "generated_tests/test_generated.py"
 grep -Fq "# Codex AI 自动审查报告" "${success_output}/codex-ai-report.md"

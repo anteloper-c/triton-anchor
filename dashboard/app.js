@@ -116,14 +116,25 @@ function formatBytes(bytes) {
   return `${scaled.toFixed(digits)} ${units[index]}`;
 }
 
-function formatPercent(value) {
-  const percent = Number.parseFloat(String(value ?? "").replace(/%$/, ""));
-  return Number.isFinite(percent) && percent >= 0 ? `${percent.toFixed(2)}%` : "--";
-}
+function formatCpuUsage(cpuPercent, cpuCapacity) {
+  const rawPercent = Number.parseFloat(String(cpuPercent ?? "").replace(/%$/, ""));
+  const availableCpus = Number(cpuCapacity);
+  if (!Number.isFinite(rawPercent) || rawPercent < 0) {
+    return { used: "--", utilization: "--", ratio: "--" };
+  }
 
-function formatCpuUse(value) {
-  const percent = Number.parseFloat(String(value ?? "").replace(/%$/, ""));
-  return Number.isFinite(percent) && percent >= 0 ? `${(percent / 100).toFixed(2)} CPU` : "--";
+  const usedCpus = rawPercent / 100;
+  const used = `${usedCpus.toFixed(2)} CPU`;
+  if (!Number.isFinite(availableCpus) || availableCpus <= 0) {
+    return { used, utilization: "--", ratio: `${usedCpus.toFixed(2)} / -- CPU` };
+  }
+
+  const capacity = Number.isInteger(availableCpus) ? availableCpus.toFixed(0) : availableCpus.toFixed(2);
+  return {
+    used,
+    utilization: `${((usedCpus / availableCpus) * 100).toFixed(2)}%`,
+    ratio: `${usedCpus.toFixed(2)} / ${capacity} CPU`,
+  };
 }
 
 function shortSha(value) {
@@ -449,11 +460,11 @@ function renderWorkerHealth() {
   const poller = health.poller || {};
   const task = health.active_task;
   const container = health.container || {};
+  const limits = container.limits || {};
   const stats = container.stats || {};
   const lastResult = health.last_result;
-  const cpuUse = formatCpuUse(stats.cpu_percent);
-  const cpuPercent = formatPercent(stats.cpu_percent);
-  const memoryPercent = formatPercent(stats.memory_percent);
+  const cpuUsage = formatCpuUsage(stats.cpu_percent, container.available_cpus ?? limits.cpus);
+  const memoryUsage = stats.memory_usage || "--";
 
   $("#workerProfile").textContent = health.profile || "unknown";
   $("#workerId").textContent = health.worker_id || "--";
@@ -483,13 +494,13 @@ function renderWorkerHealth() {
     },
     {
       label: "容器 CPU",
-      value: cpuPercent,
-      detail: "Docker 实时使用率",
+      value: cpuUsage.utilization,
+      detail: cpuUsage.ratio,
     },
     {
       label: "容器内存",
-      value: memoryPercent,
-      detail: stats.memory_usage || "Docker 实时使用率",
+      value: memoryUsage,
+      detail: "实际使用 / 可用内存",
     },
   ];
   $("#workerMetrics").innerHTML = metrics
@@ -554,9 +565,9 @@ function renderWorkerHealth() {
       "OOM killed",
       typeof container.oom_killed === "boolean" ? (container.oom_killed ? "是" : "否") : "--",
     ],
-    ["CPU 使用", cpuUse],
-    ["CPU 使用率", cpuPercent],
-    ["内存使用", stats.memory_usage || "--"],
+    ["CPU 使用", cpuUsage.used],
+    ["CPU 使用率", cpuUsage.utilization],
+    ["内存使用", memoryUsage],
     ["PID 数量", stats.pids || "--"],
     ["Block I/O", stats.block_io || "--"],
     ["Network I/O", stats.network_io || "--"],

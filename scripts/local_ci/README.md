@@ -136,7 +136,7 @@ PR candidate 目录同时标识 head 和 Merge-Result；旧的纯 Merge SHA 目�
 2. PR 任务读取并校验与 GitHub test merge SHA 匹配的 `task-metadata.json`，同时保留 base/head SHA 供 diff 和身份校验。标题和描述只作为声明证据，不能作为命令执行。
 3. Poller 从可信提交读取 `triton/cmake/llvm-hash.txt`，按 `LOCAL_CI_PROFILE_DIR/<llvm-hash>.env` 选择服务器 profile。PR 使用可信 base 的 hash，并要求被测提交保持相同 hash；push 使用被测提交的 hash。未知 hash、缺失 profile 或升级 PR 均报告未部署匹配环境，不回退到默认 Sophgo 容器。
 4. Runner 将 Local CI 控制脚本复制到所选 profile 的容器内临时目录，并执行 `deterministic_ci/run_deterministic_ci.sh`。确定性 runner 在独立 artifact 目录写入 smoke、可选后端/FlagGems/benchmark、比较结果和 `delivery-summary.txt`；每条受控命令使用独立 Triton dump 目录，失败时只归档本命令的 `.ttir`、`.linalg`、`.pplir`，然后清空 `/workspace/triton-dump-dir`、root fallback 和任务 dump。任务退出时还会执行 best-effort `uv cache prune --ci`；失败只记录警告，不改变门禁结果。
-5. 如果分支匹配 `CODEX_AI_CI_BRANCH_REGEX`，Codex 从当前 profile 的 Local CI 容器快照创建一次性容器，使用只读 `/workspace` 和目标 SHA 的 writable checkout；snapshot 阶段本身不再增加清理或审计。它继续复用确定性 CI 已安装到 venv 和容器可写层的依赖，并透传 profile 的 LLVM、PPL、backend 和构建并发配置。PR 只 source poller 从可信 base 提取的 `envsetup.sh`，push 才使用被测提交中的脚本；环境准备失败时本次非阻塞 Codex 审查直接报告环境启动失败，不在残缺环境中继续测试。只有启用后端阶段的 profile 才 source backend envsetup；任务内统一把 `TRITON_DUMP_DIR` 改到自身 `/tmp`，避免定向复跑写只读 volume。独立 checkout 只用于审查和生成测试；runner 另行核对并导出只读 Local CI 前端源码、`build/`、`dist/` 及已启用 backend 的对应目录，依赖仓库相对构建产物的现有测试从已构建源码树执行。
+5. 如果分支匹配 `CODEX_AI_CI_BRANCH_REGEX`，Codex 从当前 profile 的 Local CI 容器快照创建一次性容器，使用只读 `/workspace` 和目标 SHA 的 writable checkout；snapshot 阶段本身不再增加清理或审计。它继续复用确定性 CI 已安装到 venv 和容器可写层的依赖，并透传 profile 的 LLVM、PPL、backend 和构建并发配置。PR 只 source poller 从可信 base 提取的 `envsetup.sh`，push 才使用被测提交中的脚本；环境准备失败时本次非阻塞 Codex 审查直接报告环境启动失败，不在残缺环境中继续测试。只有启用后端阶段的 profile 才 source backend envsetup；任务内统一把 `TRITON_DUMP_DIR` 改到自身 `/tmp`，避免定向复跑写只读 volume。独立 checkout 只用于审查和生成测试；runner 另行核对并导出只读 Local CI 前端源码、`build/`、`dist/` 及已启用 backend 中实际存在的对应目录，依赖仓库相对构建产物的现有测试从已构建源码树执行；backend wheel 构建未保留仓库根 `build/` 时该目录保持不可用，不视为构建失败。
 6. Codex 先使用 changed-files manifest 生成轻量上下文分组和审查 profile，再只输出 schema 约束的 JSON；renderer 校验 manifest、中文说明、测试状态、命令退出码和预算后生成 Markdown 报告与 PR comment。
 7. Publisher 只复制固定 allowlist 的结果文件，写入 `publish-manifest.json`，原子更新 `latest.txt`，更新 SHA/profile 性能 cache 和 dashboard，然后带 rebase retry push `local-ci-results`。
 8. Bridge 读取 `latest.txt`、`publish-manifest.json`、summary、`result.json` 和 Codex comment，校验 SHA/run/schema 后发布 GitHub statuses，并只对 PR 创建或更新带 marker 的 advisory comment。
@@ -177,7 +177,7 @@ LOCAL_CI_STATE_DIR/health/
 └── snapshot.json
 ```
 
-这些文件只记录运行事实，不会终止任务、清理数据或改变 Local CI 结果。Dashboard 顶部“容器 CPU”和“容器内存”卡片直接显示 Docker 返回的实时使用率；“运行容器”详情显示 CPU 使用、CPU 使用率、内存使用和 PID 数量，不再列出 CPU、内存或 PID 限额字段。Publisher 将完整快照作为根目录唯一的 `worker-health.json` force-push 到 `GITEE_WORKER_HEALTH_REPO_URL` 的配置分支；该仓库不属于 `ci/*` task ref，也不参与任务队列生命周期。
+这些文件只记录运行事实，不会终止任务、清理数据或改变 Local CI 结果。Dashboard 将 Docker CPU 百分比先换算为实际使用核数，再除以容器可用 CPU 核数（CPU quota、cpuset 与宿主机核数中的有效最小值）得到“容器 CPU”使用率；“容器内存”直接显示 Docker 返回的“实际使用内存 / 可用内存”。“运行容器”详情继续显示 CPU 使用、CPU 使用率、内存使用和 PID 数量，不再列出 CPU、内存或 PID 限额字段。Publisher 将完整快照作为根目录唯一的 `worker-health.json` force-push 到 `GITEE_WORKER_HEALTH_REPO_URL` 的配置分支；该仓库不属于 `ci/*` task ref，也不参与任务队列生命周期。
 
 服务器可用独立的 oneshot service 每次生成并发布一份快照：
 
