@@ -2,7 +2,7 @@
 
 > 文档定位：这是 T8.2 的唯一系统设计说明，用于解释需求边界、代码职责、输入输出、数据流、门禁语义和后续接入方式。组件事实以 `compliance/component-registry.json` 为准，许可证政策和风险接受分别以同目录对应 JSON 为准；本文件不复制第二份可执行规则。实现或接线发生变化时，必须在同一变更中更新本文件。
 
-当前状态是“Wheel 与 GitHub commit 源码快照技术链已在 anteloper fork 完成 Hosted Runner 验证；提交 `f3474a0` 的普通推送已验证核心测试、Wheel 候选模拟和源码快照模拟，手工全量 `audit` 已进一步确认 dependency inventory 被实际消费且扫描、构建、精确 OSV 覆盖和证据上传正确执行，最终因真实合规缺口阻断；PR 声明差异/`admission` 接线也已真实运行；每周 `schedule` 仍只是在非默认分支实现，尚未发生周期触发；当前未提交增量只补充同次 Wheel 构建环境中固定直接工具及 pip 可解析间接依赖的证据和 SBOM 图，本地 115 项测试已通过但尚未 Hosted Runner 验证；按当前未解决事实，实际候选仍会被组件事实、许可证、漏洞覆盖和政策审批阻断；RACE 实际晋级步骤接线尚未完成”。文中必须继续区分：已经实现的核心能力、本地或远端模拟得到的技术验证，以及仍需实际流程或人工审批才能关闭的事项。
+当前状态是“Wheel 与 GitHub commit 源码快照技术链已在 anteloper fork 完成 Hosted Runner 验证；提交 `f3474a0` 的普通推送已验证核心测试、Wheel 候选模拟和源码快照模拟，手工全量 `audit` 已进一步确认 dependency inventory 被实际消费且扫描、构建、精确 OSV 覆盖和证据上传正确执行，最终因真实合规缺口阻断；PR 声明差异/`admission` 接线也已真实运行；每周 `schedule` 仍只是在非默认分支实现，尚未发生周期触发；提交 `ac072fe` 首次远端执行同次 Python 构建闭包采集，核心测试、源码模拟和 Wheel 构建/扫描成功，但 OSV 前置对账因未启用 extras 被误识别、且新版 `wheel → packaging` 关系未登记而失败，因此不能算端到端通过；当前本地修正已有 115 项测试通过，仍需新的 Hosted Runner 运行；按当前未解决事实，实际候选仍会被组件事实、许可证、漏洞覆盖和政策审批阻断；RACE 实际晋级步骤接线尚未完成”。文中必须继续区分：已经实现的核心能力、本地或远端模拟得到的技术验证，以及仍需实际流程或人工审批才能关闭的事项。
 
 ## 这项工作解决什么问题
 
@@ -152,7 +152,7 @@ GitHub 自动归档不递归包含 FlagGems 子模块源码。当前源码 inven
 | f2reduce | commit `949b91d022c001bbce19157f806013d37f05fbf5` 与 MIT 许可文件均可确认 |
 | LLVM/MLIR | `triton/cmake/llvm-hash.txt` 固定官方 commit `10dc3a8e916d73291269e5e2b82dd22681489aa1`，该提交声明 Apache-2.0 WITH LLVM-exception；同次构建证据以 commit 作为组件身份、另存 `llvm-config` 工具版本，静态/动态链接结果仍由 ELF 证据确认 |
 | pybind11 | 既是构建依赖，也有头文件模板编入原生模块；`2998f15` audit 构建观察到 3.1.0，官方 PyPI 元数据和该 tag LICENSE 均声明 BSD-3-Clause。项目构建声明没有固定全局版本，所以未来候选仍必须使用同次构建证据，concluded license 仍待审 |
-| Python Wheel 构建环境 | 当前工作流固定记录实际安装的 `build`、`pybind11`、`setuptools` 和 `wheel` 四个直接构建工具，并通过 pip 稳定版 installation report 解析这组固定版本的闭包；当前可识别的 `build → packaging, pyproject-hooks` 关系进入构建 formulation 和 OSV 输入。该能力只有本地验证，实际版本必须由每次同次构建证据提供，不能从开发机环境继承 |
+| Python Wheel 构建环境 | 当前工作流固定记录实际安装的 `build`、`pybind11`、`setuptools` 和 `wheel` 四个直接构建工具，并通过 pip 稳定版 installation report 解析这组固定版本的闭包；当前 Linux 构建可识别的 `build → packaging, pyproject-hooks` 和 `wheel → packaging` 关系进入构建 formulation 和 OSV 输入，未启用 extras 不形成依赖边。该能力的首次远端运行暴露依赖图对账问题，修正仍需新运行验证；实际版本必须由每次同次构建证据提供，不能从开发机环境继承 |
 | TTGPU 变体源码 | 17 个文件均能映射到固定 Triton `757b6a6` 文件且包含本地修改，当前两个子树已有 Git tree 身份；这只确认本地派生关系，修改权属、独立版本和许可证结论仍未解决，详见 [`ttgpu_provenance_audit.md`](ttgpu_provenance_audit.md) |
 | FlagGems | gitlink 固定在 `633d9111528d37e60d9804d2f4ac8d9e00c3af5c`，该提交官方 LICENSE 为 Apache-2.0；其 `setup.py` 已确认 Triton/PyTorch/PyYAML、测试 extras 和 example extra 等直接约束，但没有锁文件可证明间接版本；当前仅用于兼容性测试，不属于核心 Wheel，详见 [`flaggems_dependency_audit.md`](flaggems_dependency_audit.md) |
 | zlib | CMake 与当前 Wheel ELF 确认构建/外部运行时关系；官方 v1.3.1 LICENSE 可固定 Zlib 声明，但它不能代替候选实际 Ubuntu 源包、版本和许可证结论 |
@@ -252,7 +252,9 @@ High/Critical 漏洞默认阻断。只有 [`compliance/risk-acceptances.json`](.
 
 提交 `2998f15` 的 [最终手工 audit](https://github.com/anteloper-c/triton-anchor/actions/runs/32741572764) 已验证上述修正：源码扫描、Wheel 构建和同次证据、Wheel 扫描、OSV 以及证据上传均成功，`execution_status=pass` 且执行问题为 0；CMake、GCC、Ninja 和 CPython 都取得精确覆盖。最终 `audit_status=blocked`、`compliance_status=fail`，阻断由 25 项组件事实、27 项许可证审查、1 项 pending policy 和 1 项 zstd ABI-only coverage gap 构成。该结果是远端技术验证和正确阻断，不是合规通过。
 
-提交 `f3474a0` 的 [普通推送运行](https://github.com/anteloper-c/triton-anchor/actions/runs/33368620800) 已通过核心测试、Wheel 候选模拟和源码快照模拟；模拟晋级仍因候选被正确阻断而跳过。随后 [手工 audit](https://github.com/anteloper-c/triton-anchor/actions/runs/33369760635) 完成源码/Wheel 扫描、构建证据、OSV、dependency inventory 对账和证据上传，报告为 `execution_status=pass`、执行问题和未映射发现均为 0，最终 `audit_status=blocked`、`compliance_status=fail`，共保留 60 个真实合规阻断项。由此，audit 消费 dependency inventory 及当时登记事实的接线已经远端验证；阻断仍然不等于 T8.2 完成。当前在 `f3474a0` 之后增加的 Python 构建环境闭包采集与依赖图只有本地验证，不能沿用这两个运行的结论。
+提交 `f3474a0` 的 [普通推送运行](https://github.com/anteloper-c/triton-anchor/actions/runs/33368620800) 已通过核心测试、Wheel 候选模拟和源码快照模拟；模拟晋级仍因候选被正确阻断而跳过。随后 [手工 audit](https://github.com/anteloper-c/triton-anchor/actions/runs/33369760635) 完成源码/Wheel 扫描、构建证据、OSV、dependency inventory 对账和证据上传，报告为 `execution_status=pass`、执行问题和未映射发现均为 0，最终 `audit_status=blocked`、`compliance_status=fail`，共保留 60 个真实合规阻断项。由此，audit 消费 dependency inventory 及当时登记事实的接线已经远端验证；阻断仍然不等于 T8.2 完成。`f3474a0` 本身不包含后续 Python 构建环境闭包，不能用这两个运行验证该新增能力。
+
+提交 `ac072fe` 的 [普通推送运行](https://github.com/anteloper-c/triton-anchor/actions/runs/33373236891) 已通过核心测试和源码快照模拟；Wheel job 的源码扫描、真实 Wheel 构建、同次 Python 构建闭包证据、Wheel ScanCode/Syft 和证据上传也成功，但 `Query current vulnerabilities` 在调用 OSV-Scanner 前因构建依赖图对账失败而终止。原因是解析器把 `setuptools` 未启用的 extras 误当成实际依赖，同时登记表缺少当前 `wheel → packaging` 关系。该 run 是失败诊断证据，不是漏洞扫描成功、候选正确阻断或远端端到端通过；对应最小修正仍需新运行验证。
 
 以下情况至少有一项出现时，候选不得晋级：
 

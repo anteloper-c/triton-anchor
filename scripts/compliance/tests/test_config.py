@@ -104,6 +104,7 @@ class CheckedInConfigurationTests(unittest.TestCase):
         self.assertEqual(
             ["packaging", "pyproject-hooks"], by_id["pypa-build"]["depends_on"]
         )
+        self.assertEqual(["packaging"], by_id["wheel-build-package"]["depends_on"])
 
     def test_canonical_notice_matches_the_component_registry(self) -> None:
         expected = render_notices(notice_entries(self.registry, None))

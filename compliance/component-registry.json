@@ -1281,6 +1281,9 @@
         "status": "pending-build-evidence",
         "evidence_ids": []
       },
+      "depends_on": [
+        "packaging"
+      ],
       "usages": [
         {
           "category": "build-only",

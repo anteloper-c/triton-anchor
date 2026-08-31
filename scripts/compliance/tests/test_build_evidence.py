@@ -41,12 +41,21 @@ class BuildEvidenceTests(unittest.TestCase):
     @staticmethod
     def python_build_report(package_versions: dict[str, str]) -> dict[str, object]:
         requirements = {
-            "build": ["packaging>=19.1", "pyproject_hooks"],
+            "build": [
+                "packaging>=19.1",
+                "pyproject_hooks",
+                'colorama; os_name == "nt"',
+            ],
             "packaging": [],
             "pybind11": [],
             "pyproject_hooks": [],
-            "setuptools": [],
-            "wheel": [],
+            "setuptools": [
+                'build[virtualenv]>=1.0.3; extra == "test"',
+                'packaging>=24.2; extra == "core"',
+                'pyproject-hooks; extra == "doc"',
+                'wheel>=0.44.0; extra == "test"',
+            ],
+            "wheel": ["packaging>=24.0"],
         }
         roots = {"build", "pybind11", "setuptools", "wheel"}
         return {
@@ -228,6 +237,10 @@ class BuildEvidenceTests(unittest.TestCase):
             self.assertEqual(
                 ["packaging", "pyproject-hooks"],
                 components["pypa-build"]["depends_on"],
+            )
+            self.assertEqual([], components["setuptools"]["depends_on"])
+            self.assertEqual(
+                ["packaging"], components["wheel-build-package"]["depends_on"]
             )
             self.assertEqual("24.1", components["packaging"]["version"])
             self.assertFalse(components["packaging"]["evidence"]["requested"])

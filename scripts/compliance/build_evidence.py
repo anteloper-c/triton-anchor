@@ -151,7 +151,10 @@ def _python_build_components(report: Mapping[str, Any]) -> list[dict[str, Any]]:
     for canonical, item in sorted(resolved.items()):
         dependency_names: set[str] = set()
         for requirement in item["requires_dist"]:
-            match = _REQUIREMENT_NAME_PATTERN.match(requirement)
+            requirement_spec, separator, marker = requirement.partition(";")
+            if separator and re.search(r"\bextra\b", marker, re.IGNORECASE):
+                continue
+            match = _REQUIREMENT_NAME_PATTERN.match(requirement_spec)
             if match:
                 dependency = _canonical_distribution_name(match.group(1))
                 if dependency in resolved and dependency != canonical:
