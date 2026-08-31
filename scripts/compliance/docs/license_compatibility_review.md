@@ -26,6 +26,11 @@
 |---|---|---|
 | f2reduce | vendored commit `949b91d022c001bbce19157f806013d37f05fbf5`，本地 `LICENCE.txt` 为 MIT，代码嵌入原生库 | ScanCode 的 GPL 命中只来自 README 中“MIT-licenced rather than GPL-licenced”的比较文字，源码文件没有对应 GPL 命中；该路径级事实已核实，但正式处置仍须审查记录，不能添加静默忽略或由工具自动批准 |
 | pybind11 | 构建依赖且头文件模板编入原生库；2026-08-24 Hosted audit 观察到 3.1.0，官方 PyPI 元数据和该 tag LICENSE 均声明 BSD-3-Clause | `pyproject.toml` 没有固定全局版本，未来候选仍取同次构建证据；concluded license 和随包文本待审 |
+| build | 手工 audit `33377618999` 观察到 1.6.0；该版本官方 PyPI `License-Expression` 和 tag LICENSE 均为 MIT | 仅确认本次构建工具的上游声明；版本继续由同次构建证据确定，concluded license 待审 |
+| setuptools | 同一 audit 观察到 84.0.0；该版本官方 PyPI `License-Expression` 和 tag LICENSE 均为 MIT；仓库还确认源码中的可选运行时导入 | 包级声明不代替其 bundled 第三方归属审查，也不说明运行环境一定安装；concluded license 待审 |
+| wheel | 同一 audit 观察到 0.48.0；该版本官方 PyPI `License-Expression` 和 tag `LICENSE.txt` 均为 MIT | 当前是构建期组件，不进入分发 Notice；未来候选版本和 concluded license 待审 |
+| packaging | 同一 audit 观察到 26.3；官方 PyPI 声明 `Apache-2.0 OR BSD-2-Clause`，tag 同时提供总说明、Apache-2.0 和 BSD-2-Clause 文本 | 双许可证选择、项目策略 expression 和 concluded license 待人工审查；当前是构建期间接依赖，不进入分发 Notice |
+| pyproject-hooks | 同一 audit 观察到 1.2.0；PyPI 只有 MIT classifier、没有 SPDX `License-Expression`，tag LICENSE 为 MIT | 登记的 declared MIT 同时依赖 classifier 和固定 tag 文本；未来候选版本及 concluded license 待审 |
 | zlib | CMake 链接，当前 audit Wheel 的 ELF 显示 `libz.so.1` 为外部运行依赖；官方 v1.3.1 LICENSE 固定为 Zlib 参考证据 | 官方参考版本不能代替候选使用的 Ubuntu 源包、版本覆盖和许可证结论 |
 | zstd | 较早候选出现 `libzstd.so.1`，2026-08-24 audit Wheel 明确 absent | 每份候选必须按自身 ELF 分类；SONAME 不等于包版本或来源，需要人工覆盖记录，不能伪造 OSV 查询版本 |
 | TTGPU 变体源码 | 17 个文件均能映射到固定 Triton `757b6a6` 文件且包含本地修改，详见 [ttgpu_provenance_audit.md](ttgpu_provenance_audit.md)；头文件会被复制，开关启用时还会嵌入原生库 | 已确认本地派生关系，但修改权属、独立版本、许可证结论和 Notice 仍未解决，是当前明确阻断项 |

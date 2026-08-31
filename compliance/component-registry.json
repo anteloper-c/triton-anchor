@@ -1173,7 +1173,7 @@
       "third_party": true,
       "origin": {
         "url": "https://github.com/pypa/setuptools",
-        "status": "pending-candidate-evidence"
+        "status": "resolved"
       },
       "version": {
         "value": ">=64",
@@ -1184,10 +1184,15 @@
         ]
       },
       "license": {
-        "declared": null,
+        "declared": "MIT",
         "concluded": null,
-        "status": "pending-candidate-evidence",
-        "evidence_ids": []
+        "expected_expression": "MIT",
+        "status": "official-package-declaration-confirmed-review-pending",
+        "text_location": "https://github.com/pypa/setuptools/blob/v84.0.0/LICENSE",
+        "evidence_ids": [
+          "setuptools-84.0.0-package-metadata",
+          "setuptools-84.0.0-upstream-license"
+        ]
       },
       "usages": [
         {
@@ -1253,10 +1258,24 @@
           "location": "triton/python/triton/runtime/build.py",
           "line_start": 8,
           "value": "setuptools"
+        },
+        {
+          "id": "setuptools-84.0.0-package-metadata",
+          "kind": "package-metadata",
+          "location": "https://pypi.org/pypi/setuptools/84.0.0/json",
+          "value": "version 84.0.0; source https://github.com/pypa/setuptools; license_expression MIT; license file LICENSE"
+        },
+        {
+          "id": "setuptools-84.0.0-upstream-license",
+          "kind": "upstream-license",
+          "location": "https://github.com/pypa/setuptools/blob/v84.0.0/LICENSE",
+          "value": "MIT; annotated tag v84.0.0 resolves to commit 72e919a8b10aaafc041205d4e3ae0e6a2e1e5f87; sha256:86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741"
         }
       ],
       "notes": [
-        "install_requires=[] does not remove this runtime import."
+        "install_requires=[] does not remove this runtime import.",
+        "The 84.0.0 evidence matches hosted manual audit run 33377618999; later candidates still require same-build version evidence.",
+        "The package-level MIT declaration is not a concluded license or a review of bundled third-party attribution."
       ]
     },
     {
@@ -1267,7 +1286,7 @@
       "third_party": true,
       "origin": {
         "url": "https://github.com/pypa/wheel",
-        "status": "pending-build-evidence"
+        "status": "resolved"
       },
       "version": {
         "value": null,
@@ -1276,10 +1295,15 @@
         "evidence_ids": []
       },
       "license": {
-        "declared": null,
+        "declared": "MIT",
         "concluded": null,
-        "status": "pending-build-evidence",
-        "evidence_ids": []
+        "expected_expression": "MIT",
+        "status": "official-package-declaration-confirmed-review-pending",
+        "text_location": "https://github.com/pypa/wheel/blob/0.48.0/LICENSE.txt",
+        "evidence_ids": [
+          "wheel-0.48.0-package-metadata",
+          "wheel-0.48.0-upstream-license"
+        ]
       },
       "depends_on": [
         "packaging"
@@ -1315,9 +1339,23 @@
           "location": "pyproject.toml",
           "line_start": 2,
           "value": "unconstrained"
+        },
+        {
+          "id": "wheel-0.48.0-package-metadata",
+          "kind": "package-metadata",
+          "location": "https://pypi.org/pypi/wheel/0.48.0/json",
+          "value": "version 0.48.0; source https://github.com/pypa/wheel; license_expression MIT; license file LICENSE.txt"
+        },
+        {
+          "id": "wheel-0.48.0-upstream-license",
+          "kind": "upstream-license",
+          "location": "https://github.com/pypa/wheel/blob/0.48.0/LICENSE.txt",
+          "value": "MIT; tag 0.48.0 resolves to commit 21c4da4c54c3b354cc22dc7f6f6374ffcd560e84; sha256:30c23618679108f3e8ea1d2a658c7ca417bdfc891c98ef1a89fa4ff0c9828654"
         }
       ],
-      "notes": []
+      "notes": [
+        "The 0.48.0 evidence matches hosted manual audit run 33377618999; later candidates still require same-build version evidence."
+      ]
     },
     {
       "id": "pypa-build",
@@ -1336,10 +1374,15 @@
         "evidence_ids": []
       },
       "license": {
-        "declared": null,
+        "declared": "MIT",
         "concluded": null,
-        "status": "pending-build-evidence",
-        "evidence_ids": []
+        "expected_expression": "MIT",
+        "status": "official-package-declaration-confirmed-review-pending",
+        "text_location": "https://github.com/pypa/build/blob/1.6.0/LICENSE",
+        "evidence_ids": [
+          "build-1.6.0-package-metadata",
+          "build-1.6.0-upstream-license"
+        ]
       },
       "depends_on": [
         "packaging",
@@ -1372,10 +1415,23 @@
           "id": "dependency-compliance-build-tool",
           "kind": "workflow-build-requirement",
           "location": ".github/workflows/dependency-compliance.yml"
+        },
+        {
+          "id": "build-1.6.0-package-metadata",
+          "kind": "package-metadata",
+          "location": "https://pypi.org/pypi/build/1.6.0/json",
+          "value": "version 1.6.0; source https://github.com/pypa/build; license_expression MIT; license file LICENSE"
+        },
+        {
+          "id": "build-1.6.0-upstream-license",
+          "kind": "upstream-license",
+          "location": "https://github.com/pypa/build/blob/1.6.0/LICENSE",
+          "value": "MIT; annotated tag 1.6.0 resolves to commit 7ac9efe7e943b543f6deccd0cba775ab7404046f; sha256:aaf9a29ca5907971ccf07de025375db34539a8d5eeebce20b46099805722106f"
         }
       ],
       "notes": [
-        "This component is supplied by CI build environments, not the main source tree."
+        "This component is supplied by CI build environments, not the main source tree.",
+        "The 1.6.0 evidence matches hosted manual audit run 33377618999; later candidates still require same-build version evidence."
       ]
     },
     {
@@ -1395,10 +1451,15 @@
         "evidence_ids": []
       },
       "license": {
-        "declared": null,
+        "declared": "Apache-2.0 OR BSD-2-Clause",
         "concluded": null,
-        "status": "pending-candidate-evidence",
-        "evidence_ids": []
+        "expected_expression": "Apache-2.0 OR BSD-2-Clause",
+        "status": "official-package-declaration-confirmed-review-pending",
+        "text_location": "https://github.com/pypa/packaging/blob/26.3/LICENSE",
+        "evidence_ids": [
+          "packaging-26.3-package-metadata",
+          "packaging-26.3-upstream-licenses"
+        ]
       },
       "usages": [
         {
@@ -1409,9 +1470,23 @@
           "evidence_ids": []
         }
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "id": "packaging-26.3-package-metadata",
+          "kind": "package-metadata",
+          "location": "https://pypi.org/pypi/packaging/26.3/json",
+          "value": "version 26.3; source https://github.com/pypa/packaging; license_expression Apache-2.0 OR BSD-2-Clause; license files LICENSE, LICENSE.APACHE, LICENSE.BSD"
+        },
+        {
+          "id": "packaging-26.3-upstream-licenses",
+          "kind": "upstream-license",
+          "location": "https://github.com/pypa/packaging/tree/26.3",
+          "value": "Apache-2.0 OR BSD-2-Clause; annotated tag 26.3 resolves to commit 929fd4b1410ac7ef61ef3f45b2f5d7e87711a9b5; LICENSE sha256:cad1ef5bd340d73e074ba614d26f7deaca5c7940c3d8c34852e65c4909686c48; LICENSE.APACHE sha256:0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594; LICENSE.BSD sha256:b70e7e9b742f1cc6f948b34c16aa39ffece94196364bc88ff0d2180f0028fac5"
+        }
+      ],
       "notes": [
-        "The exact version, dependency relation, and package metadata must come from the same-run pip installation report."
+        "The exact version and dependency relation must come from the same-run pip installation report.",
+        "The 26.3 license evidence matches hosted manual audit run 33377618999; later candidates still require same-build version evidence."
       ]
     },
     {
@@ -1434,10 +1509,15 @@
         "evidence_ids": []
       },
       "license": {
-        "declared": null,
+        "declared": "MIT",
         "concluded": null,
-        "status": "pending-candidate-evidence",
-        "evidence_ids": []
+        "expected_expression": "MIT",
+        "status": "official-package-declaration-confirmed-review-pending",
+        "text_location": "https://github.com/pypa/pyproject-hooks/blob/v1.2.0/LICENSE",
+        "evidence_ids": [
+          "pyproject-hooks-1.2.0-package-metadata",
+          "pyproject-hooks-1.2.0-upstream-license"
+        ]
       },
       "usages": [
         {
@@ -1448,9 +1528,24 @@
           "evidence_ids": []
         }
       ],
-      "evidence": [],
+      "evidence": [
+        {
+          "id": "pyproject-hooks-1.2.0-package-metadata",
+          "kind": "package-metadata",
+          "location": "https://pypi.org/pypi/pyproject-hooks/1.2.0/json",
+          "value": "version 1.2.0; source https://github.com/pypa/pyproject-hooks; classifier License :: OSI Approved :: MIT License; no license_expression or license_files"
+        },
+        {
+          "id": "pyproject-hooks-1.2.0-upstream-license",
+          "kind": "upstream-license",
+          "location": "https://github.com/pypa/pyproject-hooks/blob/v1.2.0/LICENSE",
+          "value": "MIT; tag v1.2.0 resolves to commit 4b7c6d113fb89b755d762a88712c8a6873cddd47; sha256:1b22b049b5267d6dfc23a67bf4a84d8ec04b9fdfb1a51d360e42b4342c8b4154"
+        }
+      ],
       "notes": [
-        "The exact version, dependency relation, and package metadata must come from the same-run pip installation report."
+        "The exact version and dependency relation must come from the same-run pip installation report.",
+        "PyPI 1.2.0 has an MIT classifier but no SPDX License-Expression; the declared MIT value is additionally anchored to the tagged upstream LICENSE.",
+        "The 1.2.0 license evidence matches hosted manual audit run 33377618999; later candidates still require same-build version evidence."
       ]
     },
     {

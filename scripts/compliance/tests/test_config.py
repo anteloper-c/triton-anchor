@@ -105,6 +105,26 @@ class CheckedInConfigurationTests(unittest.TestCase):
             ["packaging", "pyproject-hooks"], by_id["pypa-build"]["depends_on"]
         )
         self.assertEqual(["packaging"], by_id["wheel-build-package"]["depends_on"])
+        expected_declared_licenses = {
+            "pypa-build": "MIT",
+            "setuptools": "MIT",
+            "wheel-build-package": "MIT",
+            "packaging": "Apache-2.0 OR BSD-2-Clause",
+            "pyproject-hooks": "MIT",
+        }
+        self.assertEqual(
+            expected_declared_licenses,
+            {
+                component_id: by_id[component_id]["license"]["declared"]
+                for component_id in expected_declared_licenses
+            },
+        )
+        self.assertTrue(
+            all(
+                by_id[component_id]["license"]["concluded"] is None
+                for component_id in expected_declared_licenses
+            )
+        )
 
     def test_canonical_notice_matches_the_component_registry(self) -> None:
         expected = render_notices(notice_entries(self.registry, None))
