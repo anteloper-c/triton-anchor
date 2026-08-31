@@ -2,7 +2,7 @@
 
 > 文档定位：这是 T8.2 的唯一系统设计说明，用于解释需求边界、代码职责、输入输出、数据流、门禁语义和后续接入方式。组件事实以 `compliance/component-registry.json` 为准，许可证政策和风险接受分别以同目录对应 JSON 为准；本文件不复制第二份可执行规则。实现或接线发生变化时，必须在同一变更中更新本文件。
 
-当前状态是“Wheel 与 GitHub commit 源码快照技术链已在 anteloper fork 完成 Hosted Runner 验证；提交 `f3474a0` 的手工全量 `audit` 已确认 dependency inventory、扫描、构建、精确 OSV 覆盖和证据上传正确执行并因真实合规缺口阻断；提交 `4a2507f` 的普通推送进一步验证同次 Python 构建闭包、依赖图、OSV 和候选模拟，核心测试、Wheel 与源码三个必需 job 均成功，候选保持技术执行通过且政策阻断；PR 声明差异/`admission` 接线也已真实运行；每周 `schedule` 仍只是在非默认分支实现，尚未发生周期触发；按当前未解决事实，实际候选仍会被组件事实、许可证、漏洞覆盖和政策审批阻断；RACE 实际晋级步骤接线尚未完成”。文中必须继续区分：已经实现的核心能力、本地或远端模拟得到的技术验证，以及仍需实际流程或人工审批才能关闭的事项。
+当前状态是“Wheel 与 GitHub commit 源码快照技术链已在 anteloper fork 完成 Hosted Runner 验证；提交 `4a2507f` 的普通推送已验证同次 Python 构建闭包、依赖图、OSV 和候选模拟，最终文档 HEAD `88fd22c` 的普通推送也通过核心测试、Wheel 与源码三个必需 job；`88fd22c` 的手工全量 `audit` 已进一步确认新构建闭包、dependency inventory、扫描、精确 OSV 覆盖和证据上传正确执行并因真实合规缺口阻断；PR 声明差异/`admission` 接线也已真实运行；每周 `schedule` 仍只是在非默认分支实现，尚未发生周期触发；按当前未解决事实，实际候选仍会被组件事实、许可证、zstd 覆盖和政策审批阻断；RACE 实际晋级步骤接线尚未完成”。文中必须继续区分：已经实现的核心能力、本地或远端模拟得到的技术验证，以及仍需实际流程或人工审批才能关闭的事项。
 
 ## 这项工作解决什么问题
 
@@ -258,6 +258,8 @@ High/Critical 漏洞默认阻断。只有 [`compliance/risk-acceptances.json`](.
 
 提交 `4a2507f` 的 [修正后普通推送运行](https://github.com/anteloper-c/triton-anchor/actions/runs/33374983083) 已通过 115 项核心测试、源码快照模拟和 Wheel 候选模拟。Wheel job 的真实构建、同次 Python 构建闭包、源码/Wheel 扫描、OSV 查询、候选评估、证据清单和上传均成功；候选步骤还确认 `execution_status=pass`、`evidence_status=complete`、`same-build` 绑定及 Wheel SHA256 一致，并因政策仍为 `pending` 保持 `promotion_status=blocked`。这验证了修正后的技术链和正确阻断，不表示候选合规通过或 T8.2 已完成。
 
+最终文档 HEAD `88fd22c` 的 [普通推送运行](https://github.com/anteloper-c/triton-anchor/actions/runs/33376289755) 再次通过三个必需 job；随后 [手工 audit](https://github.com/anteloper-c/triton-anchor/actions/runs/33377618999) 的真实 Wheel 构建、同次构建闭包、源码/Wheel 扫描、OSV、dependency inventory、证据清单和上传均成功。报告为 `execution_status=pass`、执行问题和未映射发现均为 0，`audit_status=blocked`、`compliance_status=fail`；64 个阻断项由 30 个库存事实、32 个许可证审查、1 个 pending policy 和 1 个 zstd reviewed-coverage 缺口构成，漏洞发现为 0。`build 1.6.0`、`wheel 0.48.0`、`packaging 26.3`、`pyproject-hooks 1.2.0` 和 `setuptools 84.0.0` 均取得精确 OSV `scanned` 覆盖。该结果完成了新构建闭包的手工 audit 技术验证，但仍不是合规通过。
+
 以下情况至少有一项出现时，候选不得晋级：
 
 - 合规策略仍未批准；
@@ -277,7 +279,7 @@ High/Critical 漏洞默认阻断。只有 [`compliance/risk-acceptances.json`](.
 |---|---|---|
 | 扫描 Python、C++、子模块和构建环境的直接及间接依赖 | Wheel fork 远端运行已递归拉取子模块并运行源码/Wheel ScanCode、Wheel Syft、OSV、同次构建组件、GNU C++ 与 ELF 采集；源码 fork 远端运行已扫描真实 GitHub 快照的文件、Python/CMake/vendored/子模块声明并完成对账；`f3474a0` audit 已远端验证 dependency inventory 对账和 FlagGems 直接依赖登记；`4a2507f` 已远端验证以固定直接根解析 Python Wheel 构建环境闭包及依赖边 | GitHub 自动归档不递归包含 FlagGems 子模块源码，当前声明扫描也尚未自动递归解析其动态 `setup.py`；FlagGems 没有 lock，间接版本及部分组件事实仍未解析 |
 | 为发布产物生成 CycloneDX 或 SPDX SBOM | 远端 Wheel 已按文件名、版本、平台和 SHA256 生成独立 CycloneDX 1.7；源码核心已为真实 GitHub ZIP/TAR.GZ 建立一份以规范树 digest 为根、同时记录两种 representation 的独立 SBOM link | 当前库存因真实未解决组件事实保持 incomplete；正式 tag 候选和实际 release 入口尚未形成 |
-| CI 定期漏洞扫描并跟踪依赖更新 | 手工 `audit` 已在 Hosted Runner 真实构建/扫描 Wheel并正确阻断；每周定时定义已接入；精确 PyPI version、Git commit、Ubuntu 源包版本和 CPython release commit 查询及 dependency inventory 对账均已有远端执行证据；`4a2507f` 还已远端验证解析到的 Python 构建环境间接组件进入精确 OSV 输入 | 新构建闭包尚未执行完整手工 `audit`；zstd ABI-only 仍需经审查的覆盖结论；`schedule` 尚未在默认分支周期触发；自动跨期比较、通知和正式保留期尚未落地 |
+| CI 定期漏洞扫描并跟踪依赖更新 | 手工 `audit` 已在 Hosted Runner 真实构建/扫描 Wheel并正确阻断；每周定时定义已接入；精确 PyPI version、Git commit、Ubuntu 源包版本、CPython release commit、dependency inventory 对账和 Python 构建闭包均已有远端执行证据；`88fd22c` audit 中 5 个 Python 构建组件均为 `scanned` | zstd ABI-only 仍需经审查的覆盖结论；`schedule` 尚未在默认分支周期触发；自动跨期比较、通知和正式保留期尚未落地 |
 | 核对指定组件许可证及兼容性 | 已固定官方许可证证据并形成 [许可证核对记录](license_compatibility_review.md)；triton-linalg 另有 tree 对账 | concluded license、组合兼容性和分发义务仍待 leader/许可证审查人批准 |
 | 生成并维护 THIRD_PARTY_NOTICES.md | 根 Notice 由唯一登记表确定性生成，并有漂移测试；源码候选还核对归档内实际 Notice 的字节摘要 | 6 个分发/嵌入组件仍缺最终版本、许可文本或归属，当前文件不是 release-ready |
 | 新增依赖许可证和高风险漏洞准入 | 个人 fork PR 已真实比较 base/merge-result 声明、对两个 target 调用 `admission` 并因未登记依赖正确阻断；登记表中新增/更新精确组件的 OSV 查询已有针对性测试 | 本次远端样例没有语义修改登记表，因此该 OSV 分支尚未远端执行；首次引入 T8.2 且 base 无登记表时只能记录不可适用；子模块内部及其他间接依赖仍需可信 scanner delta 输入 |
@@ -299,7 +301,7 @@ T8.2 不等待 T3.8/T4.1 形成新的 tag/release 流程，而是直接复用现
 
 开发阶段向 `t82-dependency-compliance` 推送合规文件或会改变 Wheel 的源码/构建文件会触发该 workflow；手工触发时可用 `run_audit=true` 复用同一 Wheel 构建/扫描链运行全量 `audit`，否则保持现有 Wheel 候选和 commit 源码快照模拟。手工 audit 已完成远端验证。每周一 03:17 UTC 的 `schedule` 只从仓库默认分支运行，因此当前分支尚不能证明周期执行。面向 `main`、`CI_dev` 或个人实验基线的依赖相关 PR 会运行独立 `dependency-admission`；普通 push 不借此获得候选身份。相同 ref 上的新运行会取消旧运行。fork 分支名和模拟 job 的仓库判断只用于当前实验，不能把个人开发入口固化到长期流程中。
 
-`audit` 的退出码不会被工作流改写。提交 `f3474a0` 的手工运行 [33369760635](https://github.com/anteloper-c/triton-anchor/actions/runs/33369760635) 中，源码扫描、Wheel 同次构建/扫描、精确 OSV 查询、dependency inventory 对账和证据上传均成功；报告为 `execution_status=pass`、执行问题和未映射发现均为 0，`audit` 因 `pending` 政策、未解决组件/许可证事实和 1 个 zstd 覆盖缺口返回非零。该结果验证的是扫描链、`compliance-audit.json`、依赖库存、阻断原因和证据上传，而不是绿色 CI；正确阻断也不代表 T8.2 已完成。Python 构建环境闭包已由 `4a2507f` 的候选模拟远端验证，但尚未执行包含该闭包的完整手工 `audit`。
+`audit` 的退出码不会被工作流改写。提交 `88fd22c` 的手工运行 [33377618999](https://github.com/anteloper-c/triton-anchor/actions/runs/33377618999) 中，源码扫描、Wheel 同次构建/扫描、Python 构建闭包、精确 OSV 查询、dependency inventory 对账和证据上传均成功；报告为 `execution_status=pass`、执行问题和未映射发现均为 0，`audit` 因 `pending` 政策、未解决组件/许可证事实和 1 个 zstd 覆盖缺口返回非零。该结果验证的是扫描链、`compliance-audit.json`、依赖库存、阻断原因和证据上传，而不是绿色 CI；正确阻断也不代表 T8.2 已完成。
 
 PR job 使用 base commit 与 GitHub merge-result 的只读 Git 归档生成声明差异，并比较两端组件登记表。声明扫描、OSV 归一化、`admission` 逻辑、policy 和风险接受都取自 base；merge-result 只作为待审源码与 proposed registry 输入，不能通过同时修改自身门禁来放行。声明 delta 非空或登记表文件变化时才安装 base 固定的 OSV-Scanner；runner 只对登记表中语义新增/更新、属于当前 target 且身份精确的组件查询 PyPI version 或 Git commit，然后分别对 `core-wheel`、`source-snapshot` 调用 `admission`。不属于某 target 的变更明确记录 `scanner_execution.status=not-applicable`，不伪造覆盖。若 base 还没有组件登记表和合规核心（首次引入 T8.2），job 只在 step summary 标记 baseline registry unavailable 并跳过准入，不能把它算作通过；个人实验分支可作为已有登记表的验证基线。当前 base policy 为 `pending`，真正进入 admission 的 PR 预期非零阻断并上传报告。该接线覆盖可静态识别的 Python、pyproject、setup、CMake、vendored、`.gitmodules` 声明和登记表变化，不宣称已覆盖子模块内部或 scanner 才能识别的全部间接变化。
 
@@ -321,7 +323,7 @@ registry delta          模拟仍限实验分支          └─ commit 源码�
               candidate 只记录门禁结果，不执行发布动作
 ```
 
-`core-test` 用小型夹具验证 Wheel、源码双归档、target 隔离、组件对账、OSV exact-commit/变更组件输入、SBOM/Notice 和 CLI 门禁；它本身不扫描真实项目。`dependency-admission` 只在 PR 上比较受信 base 与 merge-result，并按需要安装 OSV；`candidate-simulation` 这个历史 job id 复用同一 Wheel 真实数据流：定时或手工审计时调用 `audit`，个人实验分支的普通触发才调用模拟 `candidate`；两种模式都使用与 `triton/cmake/llvm-hash.txt` 匹配的公开 LLVM 归档。`source-snapshot-simulation` 不构建 Wheel或 LLVM：它下载当前 `GITHUB_SHA` 的 GitHub API zipball/tarball，与 checkout commit 树对照，只解包一份等价表示后运行独立的 ScanCode、Syft、dependency inventory 和 OSV。固定扫描器、任一证据或对账失败都会使相应执行失败，不能用另一产物报告或空报告替代。源码、手工 audit、声明差异/admission 和非 audit 回归都已在 anteloper fork 运行；它们仍是 commit 或 fork 验证，不是 RACE tag/release 验收。Ubuntu 源包、CPython release commit 及 dependency inventory audit 接线已在 `f3474a0` 的 Hosted Runner audit 验证；Python 构建环境闭包接线已在 `4a2507f` 的候选模拟验证。
+`core-test` 用小型夹具验证 Wheel、源码双归档、target 隔离、组件对账、OSV exact-commit/变更组件输入、SBOM/Notice 和 CLI 门禁；它本身不扫描真实项目。`dependency-admission` 只在 PR 上比较受信 base 与 merge-result，并按需要安装 OSV；`candidate-simulation` 这个历史 job id 复用同一 Wheel 真实数据流：定时或手工审计时调用 `audit`，个人实验分支的普通触发才调用模拟 `candidate`；两种模式都使用与 `triton/cmake/llvm-hash.txt` 匹配的公开 LLVM 归档。`source-snapshot-simulation` 不构建 Wheel或 LLVM：它下载当前 `GITHUB_SHA` 的 GitHub API zipball/tarball，与 checkout commit 树对照，只解包一份等价表示后运行独立的 ScanCode、Syft、dependency inventory 和 OSV。固定扫描器、任一证据或对账失败都会使相应执行失败，不能用另一产物报告或空报告替代。源码、手工 audit、声明差异/admission 和非 audit 回归都已在 anteloper fork 运行；它们仍是 commit 或 fork 验证，不是 RACE tag/release 验收。Ubuntu 源包、CPython release commit、dependency inventory 和 Python 构建环境闭包均已由 `88fd22c` 的 Hosted Runner audit 验证。
 
 模拟 job 从自己的构建步骤取得唯一 `dist/triton_anchor-*.whl`，而不是假定一个固定文件名。构建后立即调用 `build_evidence.py`，所以 `same-build` 声明与当前 Wheel SHA256 对应；实际 package tool 和 ELF 条件依赖也在同一时点分类。选择 `pypa-build` 时，工作流在构建前以四个实际安装工具的固定版本生成 pip installation report；核心校验报告解释器、直接根和本机已安装版本，只把报告闭包纳入构建证据、SBOM formulation 与 OSV 输入，不读取 runner 的其他 Python 包。Ubuntu Hosted Runner 对 GCC、CMake 和 Ninja 记录 `dpkg-query` 返回的源包名/源包版本并以 `Ubuntu:<release>` 生态查询 OSV；CPython 记录解释器精确版本，并把对应官方 release tag 解析为 commit 后做 Git 查询。Ubuntu 与 CPython 路径已由 `f3474a0` 的手工 audit 验证，pip 构建闭包仍只有本地验证。该 tag 映射只用于漏洞查询身份，不证明 `setup-python` 二进制的构建 provenance。工具显示版本、二进制包版本和 OSV 查询身份分别保留，不能用任意相同名称代替实际构建包。`present` 才激活组件，`absent` 只证明条件已经检查，缺少分类继续阻断；当前 audit Wheel 的 zstd 为 absent，不能拿 runner 上的 `libzstd1` 代替候选证据。核心仍保留任意路径接口；本地、服务器或未来 release job 可以使用同一命令，把 `--wheel` 换成该执行环境实际可见的路径：
 
