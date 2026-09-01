@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -90,6 +91,8 @@ class ComplianceCliTests(unittest.TestCase):
             registry_path = root / "registry.json"
             policy_path = root / "policy.json"
             risk_path = root / "risk.json"
+            scancode_path = root / "scancode-wheel.json"
+            syft_path = root / "syft-wheel.cdx.json"
             output = root / "output"
             registry_path.write_text(
                 json.dumps(
@@ -120,6 +123,19 @@ class ComplianceCliTests(unittest.TestCase):
                 json.dumps({"schema_version": 1, "records": []}),
                 encoding="utf-8",
             )
+            scancode_path.write_text(
+                json.dumps({"headers": [], "files": []}), encoding="utf-8"
+            )
+            syft_path.write_text(
+                json.dumps(
+                    {
+                        "bomFormat": "CycloneDX",
+                        "specVersion": "1.6",
+                        "components": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             exit_code = main(
                 [
@@ -132,6 +148,10 @@ class ComplianceCliTests(unittest.TestCase):
                     str(policy_path),
                     "--risk-acceptances",
                     str(risk_path),
+                    "--scancode-wheel",
+                    str(scancode_path),
+                    "--syft",
+                    str(syft_path),
                     "--output-dir",
                     str(output),
                 ]
@@ -144,6 +164,20 @@ class ComplianceCliTests(unittest.TestCase):
             self.assertEqual("technical-artifact", report["evaluation_context"])
             self.assertEqual("not-applicable", report["promotion_status"])
             self.assertEqual("incomplete", report["evidence_status"])
+            binding = report["artifact_scan_evidence"]
+            self.assertEqual(
+                report["artifact"]["sha256"],
+                binding["artifact"]["sha256"],
+            )
+            self.assertEqual(
+                {
+                    "scancode-wheel": hashlib.sha256(
+                        scancode_path.read_bytes()
+                    ).hexdigest(),
+                    "syft": hashlib.sha256(syft_path.read_bytes()).hexdigest(),
+                },
+                {item["source"]: item["sha256"] for item in binding["reports"]},
+            )
             self.assertTrue((output / "artifact-sbom-link.json").is_file())
             self.assertEqual(
                 1,

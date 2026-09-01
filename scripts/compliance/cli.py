@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import sys
 from datetime import date
 from pathlib import Path
@@ -115,6 +116,41 @@ def _normalize_dependency_inventory(report: Mapping[str, Any]) -> dict[str, Any]
         "status": "failed" if issues else "success",
         "items": items,
         "issues": issues,
+    }
+
+
+def _wheel_scan_evidence(
+    artifact: Mapping[str, Any],
+    scancode_path: str | None,
+    syft_path: str | None,
+) -> dict[str, Any] | None:
+    """Bind raw Wheel scanner reports to the inspected artifact bytes."""
+
+    inputs = (
+        ("scancode-wheel", scancode_path),
+        ("syft", syft_path),
+    )
+    if any(path is None for _, path in inputs):
+        return None
+    reports = []
+    try:
+        for source, value in inputs:
+            path = Path(str(value))
+            reports.append(
+                {
+                    "source": source,
+                    "filename": path.name,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            )
+    except OSError:
+        return None
+    return {
+        "artifact": {
+            "filename": artifact["filename"],
+            "sha256": artifact["sha256"],
+        },
+        "reports": reports,
     }
 
 
@@ -273,6 +309,13 @@ def _artifact_command(
         report["compliance_status"] = "fail"
         if evaluation_context == "formal-candidate":
             report["promotion_status"] = "blocked"
+
+    if artifact["artifact_kind"] == "wheel":
+        report["artifact_scan_evidence"] = _wheel_scan_evidence(
+            artifact,
+            args.scancode_wheel,
+            args.syft,
+        )
 
     sbom_name = f"{artifact['filename']}.cdx.json"
     link = copy.deepcopy(link)

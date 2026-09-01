@@ -654,6 +654,15 @@ jobs:
       - name: Scan the built Wheel
         run: |
           source "${TOOLS_DIR}/tools.env"
+          wheel_scan_sha256="$(sha256sum -- "${WHEEL_PATH}" | cut -d ' ' -f 1)"
+          build_sha256="$(
+            python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["artifact_sha256"])' \
+              "${EVIDENCE_DIR}/build-evidence.json"
+          )"
+          if [[ "${wheel_scan_sha256}" != "${build_sha256}" ]]; then
+            echo "Wheel changed after same-build evidence was recorded" >&2
+            exit 1
+          fi
           unpacked="${RUNNER_TEMP}/t82-wheel-unpacked"
           mkdir -p "${unpacked}"
           python -m zipfile -e "${WHEEL_PATH}" "${unpacked}"
@@ -668,6 +677,12 @@ jobs:
           SYFT_CHECK_FOR_APP_UPDATE=false "${SYFT}" scan "dir:${unpacked}" \
             --quiet \
             --output "cyclonedx-json=${EVIDENCE_DIR}/syft-wheel.cdx.json"
+          post_scan_sha256="$(sha256sum -- "${WHEEL_PATH}" | cut -d ' ' -f 1)"
+          if [[ "${post_scan_sha256}" != "${wheel_scan_sha256}" ]]; then
+            echo "Wheel changed while its scanner reports were generated" >&2
+            exit 1
+          fi
+          echo "WHEEL_SCAN_SHA256=${wheel_scan_sha256}" >> "${GITHUB_ENV}"
 
       - name: Query current vulnerabilities
         run: |
@@ -864,6 +879,7 @@ jobs:
               "repository": os.environ.get("GITHUB_REPOSITORY"),
               "source_commit": os.environ.get("GITHUB_SHA"),
               "wheel": None,
+              "wheel_scan": None,
               "reports": reports,
           }
           wheel_value = os.environ.get("WHEEL_PATH")
@@ -872,6 +888,31 @@ jobs:
               manifest["wheel"] = {
                   "filename": wheel.name,
                   "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+              }
+          scan_sha256 = os.environ.get("WHEEL_SCAN_SHA256")
+          report_path = evidence / (
+              "audit/artifact-evaluation/compliance-report.json"
+              if audit_mode
+              else "candidate/compliance-report.json"
+          )
+          if scan_sha256 and report_path.is_file():
+              report = json.loads(report_path.read_text(encoding="utf-8"))
+              binding = report.get("artifact_scan_evidence")
+              if not isinstance(binding, dict):
+                  raise SystemExit("Wheel scan evidence binding is missing")
+              artifact = binding.get("artifact")
+              if artifact != manifest["wheel"] or artifact.get("sha256") != scan_sha256:
+                  raise SystemExit("Wheel scan evidence identifies a different artifact")
+              for item in binding.get("reports", []):
+                  filename = item.get("filename")
+                  if reports.get(filename) != item.get("sha256"):
+                      raise SystemExit(
+                          f"Wheel scan report digest does not match: {filename}"
+                      )
+              manifest["wheel_scan"] = {
+                  **binding,
+                  "pre_scan_sha256": scan_sha256,
+                  "post_scan_sha256": manifest["wheel"]["sha256"],
               }
           evidence.mkdir(parents=True, exist_ok=True)
           (evidence / "evidence-manifest.json").write_text(

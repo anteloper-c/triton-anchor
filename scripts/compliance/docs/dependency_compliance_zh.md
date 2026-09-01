@@ -91,7 +91,7 @@ T3.8 和 T4.1 可能不再继续实施，也不作为 T8.2 后续开发的前置
 
 “路径解耦”不等于“证据解耦”。源码扫描、Wheel 扫描、Syft、OSV 和构建证据仍必须对应同一份内容；构建证据中的产物 SHA256 必须与入口实际读取值一致，正式候选还必须声明 `same-build`。
 
-当前实现已经显式校验 build evidence 的 Wheel SHA256；ScanCode 和 Syft 的原始格式尚未显式携带被扫描 Wheel 的 SHA256。正式自动化接入前，调用流程必须先冻结 Wheel，在扫描前后复核 SHA256，并用带该 SHA256 和原始报告摘要的证据清单把两类报告绑定到同一文件。在这项绑定落地前，相关重放只能算技术验证，不能把“报告路径相邻”当成同一产物的证明。
+当前实现已经显式校验 build evidence 的 Wheel SHA256。Hosted Runner 调用流程还会在 ScanCode/Syft 扫描前后复核该 SHA256；`compliance-report.json` 将实际读取的 Wheel 与两份原始报告摘要关联，现有 `evidence-manifest.json` 再复核并保存同一关联，不用“报告路径相邻”代替同一产物证明。该绑定只关闭扫描输入一致性缺口，不证明许可证已批准、风险已接受或产物可晋级。
 
 Wheel basename 不是父目录路径的一部分，而是 Wheel 格式的语义输入。当前实现从 basename 解析名称、版本和 Python/ABI/平台标签，并要求它们分别与内部 `METADATA` 的 Name/Version 和 `WHEEL` 的完整 Tag 集合一致；压缩标签按其笛卡尔积展开后比较。调用者仍必须保留构建器产生的原始 basename，不能通过改名改变组件或平台判断。
 
