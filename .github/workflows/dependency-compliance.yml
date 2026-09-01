@@ -656,7 +656,7 @@ jobs:
           source "${TOOLS_DIR}/tools.env"
           wheel_scan_sha256="$(sha256sum -- "${WHEEL_PATH}" | cut -d ' ' -f 1)"
           build_sha256="$(
-            python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["artifact_sha256"])' \
+            python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["compliance_build"]["artifact_sha256"])' \
               "${EVIDENCE_DIR}/build-evidence.json"
           )"
           if [[ "${wheel_scan_sha256}" != "${build_sha256}" ]]; then
