@@ -645,6 +645,8 @@ jobs:
             --ubuntu-package "gcc-toolchain=g++-${gcc_major}" \
             --ubuntu-package cmake=cmake \
             --ubuntu-package ninja=ninja-build \
+            --ubuntu-package zlib=zlib1g \
+            --ubuntu-package zstd=libzstd1 \
             --cpython-source-commit "${cpython_source_commit}" \
             --output "${EVIDENCE_DIR}/build-evidence.json"
 

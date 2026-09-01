@@ -88,8 +88,16 @@ class BuildEvidenceTests(unittest.TestCase):
         ubuntu_queries = {
             "cmake": "3.30.4-1ubuntu1",
             "g++-13": "13.3.0-6ubuntu2~24.04",
+            "zlib1g": "1:1.3.dfsg-3.1ubuntu2",
             "libzstd1": "1.5.5+dfsg2-2build1.1",
             "ninja-build": "1.12.1-1",
+        }
+        ubuntu_sources = {
+            "cmake": "cmake",
+            "g++-13": "gcc-13",
+            "zlib1g": "zlib",
+            "libzstd1": "libzstd",
+            "ninja-build": "ninja-build",
         }
         sonames = [
             "libLLVM.so.19.1",
@@ -148,13 +156,13 @@ class BuildEvidenceTests(unittest.TestCase):
                     "_ubuntu_package_query",
                     side_effect=lambda package: (
                         {
-                            "name": package,
+                            "name": ubuntu_sources[package],
                             "version": ubuntu_queries[package],
                             "ecosystem": "Ubuntu:24.04:LTS",
                         },
                         {
                             "source": "dpkg-query",
-                            "source_package": package,
+                            "source_package": ubuntu_sources[package],
                             "source_version": ubuntu_queries[package],
                             "binary_package": package,
                             "binary_version": ubuntu_queries[package],
@@ -178,6 +186,8 @@ class BuildEvidenceTests(unittest.TestCase):
                         "pypa-build",
                         "--python-build-report",
                         str(python_build_report),
+                        "--ubuntu-package",
+                        "zlib=zlib1g",
                         "--ubuntu-package",
                         "zstd=libzstd1",
                         "--ubuntu-package",
@@ -227,11 +237,19 @@ class BuildEvidenceTests(unittest.TestCase):
                 components["cmake"]["osv_query"]["ecosystem"],
             )
             self.assertEqual(
+                ["libz.so.1"], components["zlib"]["evidence"]["matching_sonames"]
+            )
+            self.assertEqual(
+                "1:1.3.dfsg-3.1ubuntu2", components["zlib"]["version"]
+            )
+            self.assertEqual("zlib", components["zlib"]["osv_query"]["name"])
+            self.assertEqual(
                 ["libzstd.so.1"], components["zstd"]["evidence"]["sonames"]
             )
             self.assertEqual(
                 "1.5.5+dfsg2-2build1.1", components["zstd"]["version"]
             )
+            self.assertEqual("libzstd", components["zstd"]["osv_query"]["name"])
             self.assertEqual("present", components["zstd"]["presence"])
             self.assertEqual("absent", components["uv"]["presence"])
             self.assertEqual(
