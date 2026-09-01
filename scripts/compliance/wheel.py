@@ -128,16 +128,38 @@ def _python_import_inventory(
     return inventory, issues
 
 
-def _filename_tags(filename: str) -> dict[str, str]:
+def _filename_identity(filename: str) -> dict[str, str]:
     if not filename.endswith(".whl"):
         raise WheelValidationError(f"Candidate is not a .whl file: {filename}")
     parts = filename[:-4].split("-")
-    if len(parts) < 5:
+    if len(parts) not in (5, 6) or any(not part for part in parts):
         raise WheelValidationError(f"Malformed Wheel filename: {filename}")
     return {
+        "distribution": parts[0],
+        "version": parts[1],
         "python_tag": parts[-3],
         "abi_tag": parts[-2],
         "platform_tag": parts[-1],
+    }
+
+
+def _normalized_distribution(value: str) -> str:
+    return re.sub(r"[-_.]+", "_", value).casefold()
+
+
+def _expanded_filename_tags(identity: dict[str, str]) -> set[str]:
+    groups = [
+        identity["python_tag"].split("."),
+        identity["abi_tag"].split("."),
+        identity["platform_tag"].split("."),
+    ]
+    if any(not value for group in groups for value in group):
+        raise WheelValidationError("Wheel filename contains an empty compatibility tag")
+    return {
+        f"{python_tag}-{abi_tag}-{platform_tag}"
+        for python_tag in groups[0]
+        for abi_tag in groups[1]
+        for platform_tag in groups[2]
     }
 
 
@@ -256,7 +278,7 @@ def inspect_wheel(path: str | Path) -> dict[str, object]:
     wheel_path = Path(path).resolve()
     if not wheel_path.is_file():
         raise WheelValidationError(f"Wheel does not exist: {wheel_path}")
-    tags = _filename_tags(wheel_path.name)
+    filename_identity = _filename_identity(wheel_path.name)
     archive, files = _read_archive(wheel_path)
     try:
         record = _validate_record_in_archive(archive, files)
@@ -270,6 +292,35 @@ def inspect_wheel(path: str | Path) -> dict[str, object]:
         version = metadata.get("Version")
         if not project_name or not version:
             raise WheelValidationError("Wheel METADATA must contain Name and Version")
+        if _normalized_distribution(project_name) != _normalized_distribution(
+            filename_identity["distribution"]
+        ):
+            raise WheelValidationError(
+                "Wheel filename distribution does not match METADATA Name"
+            )
+        if version.casefold() != filename_identity["version"].casefold():
+            raise WheelValidationError(
+                "Wheel filename version does not match METADATA Version"
+            )
+
+        wheel_paths = [name for name in files if name.endswith(".dist-info/WHEEL")]
+        if len(wheel_paths) != 1:
+            raise WheelValidationError(
+                f"Wheel must contain exactly one .dist-info/WHEEL; found {len(wheel_paths)}"
+            )
+        wheel_metadata = BytesParser().parsebytes(archive.read(wheel_paths[0]))
+        wheel_tags = {
+            str(value).strip() for value in wheel_metadata.get_all("Tag", [])
+        }
+        if not wheel_tags or any(
+            len(tag.split("-")) != 3 or any(not part for part in tag.split("-"))
+            for tag in wheel_tags
+        ):
+            raise WheelValidationError("Wheel WHEEL metadata contains invalid Tag fields")
+        if wheel_tags != _expanded_filename_tags(filename_identity):
+            raise WheelValidationError(
+                "Wheel filename compatibility tags do not match WHEEL Tag fields"
+            )
 
         python_imports, python_import_issues = _python_import_inventory(archive, files)
 
@@ -295,7 +346,9 @@ def inspect_wheel(path: str | Path) -> dict[str, object]:
         "filename": wheel_path.name,
         "name": project_name,
         "version": version,
-        **tags,
+        "python_tag": filename_identity["python_tag"],
+        "abi_tag": filename_identity["abi_tag"],
+        "platform_tag": filename_identity["platform_tag"],
         "sha256": _wheel_sha256(wheel_path),
         "size": wheel_path.stat().st_size,
         "record": record,

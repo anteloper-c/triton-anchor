@@ -10,14 +10,57 @@ from scripts.compliance.tests.helpers import DIST_INFO, make_wheel
 
 
 class WheelValidationTests(unittest.TestCase):
+    def test_filename_identity_matches_metadata_and_expanded_tags(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            wheel = make_wheel(
+                Path(temporary),
+                filename="demo_project-1.0-py2.py3-none-any.whl",
+                members=[
+                    ("demo_project/__init__.py", b""),
+                    (
+                        f"{DIST_INFO}/METADATA",
+                        b"Metadata-Version: 2.1\nName: demo-project\nVersion: 1.0\n",
+                    ),
+                    (
+                        f"{DIST_INFO}/WHEEL",
+                        b"Wheel-Version: 1.0\nTag: py2-none-any\nTag: py3-none-any\n",
+                    ),
+                ],
+            )
+
+            report = inspect_wheel(wheel)
+
+            self.assertEqual("demo-project", report["name"])
+            self.assertEqual("1.0", report["version"])
+            self.assertEqual("py2.py3", report["python_tag"])
+
+    def test_filename_identity_mismatches_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cases = {
+                "distribution": make_wheel(
+                    root, filename="other-1.0-py3-none-any.whl"
+                ),
+                "version": make_wheel(
+                    root, filename="demo-2.0-py3-none-any.whl"
+                ),
+                "tag": make_wheel(
+                    root, filename="demo-1.0-py2-none-any.whl"
+                ),
+            }
+            for name, wheel in cases.items():
+                with self.subTest(case=name), self.assertRaises(ValueError):
+                    inspect_wheel(wheel)
+
     def test_record_accepts_sha256_and_stronger_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for algorithm in ("sha256", "sha512"):
                 with self.subTest(algorithm=algorithm):
+                    algorithm_root = root / algorithm
+                    algorithm_root.mkdir()
                     wheel = make_wheel(
-                        root,
-                        filename=f"demo_{algorithm}-1.0-py3-none-any.whl",
+                        algorithm_root,
                         algorithm=algorithm,
                     )
                     report = inspect_wheel(wheel)["record"]

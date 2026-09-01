@@ -93,7 +93,7 @@ T3.8 和 T4.1 可能不再继续实施，也不作为 T8.2 后续开发的前置
 
 当前实现已经显式校验 build evidence 的 Wheel SHA256；ScanCode 和 Syft 的原始格式尚未显式携带被扫描 Wheel 的 SHA256。正式自动化接入前，调用流程必须先冻结 Wheel，在扫描前后复核 SHA256，并用带该 SHA256 和原始报告摘要的证据清单把两类报告绑定到同一文件。在这项绑定落地前，相关重放只能算技术验证，不能把“报告路径相邻”当成同一产物的证明。
 
-Wheel basename 不是父目录路径的一部分，而是 Wheel 格式的语义输入。当前实现从 basename 解析 Python/ABI/平台标签、从内部 `METADATA` 读取名称和版本，但尚未完整交叉校验 basename 与内部 `METADATA`/`WHEEL Tag`。因此现阶段必须保留构建器产生的原始 basename；完成正式候选接线前还应补齐该一致性校验，不能通过改名改变组件判断。
+Wheel basename 不是父目录路径的一部分，而是 Wheel 格式的语义输入。当前实现从 basename 解析名称、版本和 Python/ABI/平台标签，并要求它们分别与内部 `METADATA` 的 Name/Version 和 `WHEEL` 的完整 Tag 集合一致；压缩标签按其笛卡尔积展开后比较。调用者仍必须保留构建器产生的原始 basename，不能通过改名改变组件或平台判断。
 
 ## GitHub 自动源码快照契约
 
