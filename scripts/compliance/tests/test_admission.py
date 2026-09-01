@@ -208,6 +208,57 @@ class DependencyAdmissionTests(unittest.TestCase):
         )
         self.assertEqual("pass", passed["audit_status"], passed)
 
+    def test_full_audit_excludes_components_fully_classified_absent(self) -> None:
+        components = []
+        for component_id, category in (
+            ("zstd", "runtime-external"),
+            ("uv", "build-only"),
+        ):
+            dependency = component(component_id, distribution=category)
+            dependency["version"] = {
+                "value": None,
+                "status": "candidate-evidence-required",
+            }
+            dependency["license"] = {"concluded": None, "status": "pending"}
+            dependency["usages"][0]["status"] = "candidate-evidence-required"
+            if component_id == "zstd":
+                dependency["runtime_constraint"] = "libzstd.so.1"
+            components.append(dependency)
+
+        root = component("triton-anchor")
+        root["third_party"] = False
+        root["depends_on"] = [component["id"] for component in components]
+        registry = {"schema_version": 1, "components": [root, *components]}
+        report = evaluate_inventory_audit(
+            registry=registry,
+            policy=self.policy,
+            discovery_reports=[
+                {
+                    "source": "build-evidence",
+                    "status": "success",
+                    "issues": [],
+                    "items": [
+                        {
+                            "kind": "build-component",
+                            "component_id": component["id"],
+                            "candidate_usages": [component["usages"][0]["category"]],
+                            "presence": "absent",
+                            "source": "build-evidence",
+                        }
+                        for component in components
+                    ],
+                }
+            ],
+            vulnerabilities=[],
+            vulnerability_coverage=[],
+            today=TODAY,
+        )
+
+        self.assertEqual("pass", report["audit_status"], report)
+        self.assertEqual([], report["inventory_findings"])
+        self.assertEqual([], report["license_findings"])
+        self.assertEqual([], report["vulnerability_coverage_findings"])
+
     def test_full_audit_rejects_vulnerability_for_an_unknown_component(self) -> None:
         dependency = component("pybind11", distribution="build-only")
         registry = self._registry_with_root(dependency)

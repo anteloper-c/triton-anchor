@@ -516,7 +516,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             binutils build-essential cmake curl libgomp1 libxml2-dev libz-dev \
             libzstd-dev ninja-build pkg-config python3-dev unzip xz-utils
-          python -m pip install --upgrade build pip pybind11 setuptools wheel
+          python -m pip install --upgrade pip uv==0.12.8
+          uv pip install --system --upgrade pybind11 setuptools wheel
           mkdir -p "${EVIDENCE_DIR}"
           python - <<'PY'
           import importlib.metadata
@@ -525,7 +526,7 @@ jobs:
           import subprocess
           import sys
 
-          roots = ("build", "pybind11", "setuptools", "wheel")
+          roots = ("pybind11", "setuptools", "uv", "wheel")
           requirements = [
               f"{name}=={importlib.metadata.version(name)}" for name in roots
           ]
@@ -624,7 +625,7 @@ jobs:
             echo "Cannot determine the configured GCC package" >&2
             exit 1
           fi
-          python -m build --wheel --no-isolation
+          uv build --wheel --no-build-isolation
           mapfile -d '' -t wheels < <(
             find dist -maxdepth 1 -type f -name 'triton_anchor-*.whl' -print0
           )
@@ -640,7 +641,7 @@ jobs:
             --source-root "${GITHUB_WORKSPACE}" \
             --evidence-binding same-build \
             --cxx-compiler "${CXX}" \
-            --package-tool pypa-build \
+            --package-tool uv \
             --python-build-report "${EVIDENCE_DIR}/python-build-environment.json" \
             --ubuntu-package "gcc-toolchain=g++-${gcc_major}" \
             --ubuntu-package cmake=cmake \
@@ -698,6 +699,51 @@ jobs:
             --target core-wheel \
             --output "${EVIDENCE_DIR}/audit/compliance-audit.json"
 
+      - name: Generate the audited Wheel SBOM
+        if: >-
+          always() &&
+          (github.event_name == 'schedule' || inputs.run_audit == true)
+        run: |
+          set +e
+          python -B -m scripts.compliance.cli artifact-evaluation \
+            --wheel "${WHEEL_PATH}" \
+            --registry compliance/component-registry.json \
+            --policy compliance/license-policy.json \
+            --risk-acceptances compliance/risk-acceptances.json \
+            --scancode-source "${EVIDENCE_DIR}/scancode-source.json" \
+            --scancode-wheel "${EVIDENCE_DIR}/scancode-wheel.json" \
+            --syft "${EVIDENCE_DIR}/syft-wheel.cdx.json" \
+            --osv "${EVIDENCE_DIR}/osv-results.json" \
+            --build-evidence "${EVIDENCE_DIR}/build-evidence.json" \
+            --notices THIRD_PARTY_NOTICES.md \
+            --target core-wheel \
+            --output-dir "${EVIDENCE_DIR}/audit/artifact-evaluation"
+          evaluation_rc=$?
+          set -e
+          python - "${evaluation_rc}" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          evaluation_rc = int(sys.argv[1])
+          output = (
+              Path(os.environ["EVIDENCE_DIR"])
+              / "audit"
+              / "artifact-evaluation"
+          )
+          report = json.loads((output / "compliance-report.json").read_text())
+          sboms = list(output.glob("*.whl.cdx.json"))
+          if evaluation_rc not in (0, 1):
+              raise SystemExit("artifact evaluation returned an invalid exit code")
+          if report.get("execution_status") != "pass":
+              raise SystemExit("the audited Wheel SBOM evaluation did not execute")
+          if report.get("evidence_status") != "complete":
+              raise SystemExit("the audited Wheel SBOM evidence is incomplete")
+          if len(sboms) != 1 or not (output / "artifact-sbom-link.json").is_file():
+              raise SystemExit("the audited Wheel SBOM outputs are incomplete")
+          PY
+
       - name: Evaluate the simulated candidate
         if: github.event_name != 'schedule' && inputs.run_audit != true
         run: |
@@ -730,6 +776,8 @@ jobs:
           report = json.loads(
               (evidence / "candidate" / "compliance-report.json").read_text()
           )
+          candidate_output = evidence / "candidate"
+          sboms = list(candidate_output.glob("*.whl.cdx.json"))
           policy = json.loads(Path("compliance/license-policy.json").read_text())
           wheel_sha256 = hashlib.sha256(wheel.read_bytes()).hexdigest()
           reported_sha256 = report.get("artifact", {}).get("sha256")
@@ -776,6 +824,10 @@ jobs:
               raise SystemExit("same-build binding was not established")
           if reported_sha256 != wheel_sha256:
               raise SystemExit("candidate report does not identify the built Wheel")
+          if len(sboms) != 1 or not (
+              candidate_output / "artifact-sbom-link.json"
+          ).is_file():
+              raise SystemExit("candidate SBOM outputs are incomplete")
           if policy.get("status") != "approved":
               policy_blocked = any(
                   blocker.get("reason")

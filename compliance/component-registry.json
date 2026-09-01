@@ -1391,15 +1391,14 @@
       "usages": [
         {
           "category": "build-only",
-          "status": "confirmed",
+          "status": "candidate-evidence-required",
+          "condition": "the selected Wheel build frontend is pypa-build",
           "target": "core-wheel",
           "declaration_patterns": [
-            "CI_dev:scripts/ci/build_frontend.sh",
-            ".github/workflows/dependency-compliance.yml"
+            "CI_dev:scripts/ci/build_frontend.sh"
           ],
           "evidence_ids": [
-            "build-frontend-tool",
-            "dependency-compliance-build-tool"
+            "build-frontend-tool"
           ]
         }
       ],
@@ -1410,11 +1409,6 @@
           "location": "CI_dev:scripts/ci/build_frontend.sh",
           "line_start": 32,
           "line_end": 50
-        },
-        {
-          "id": "dependency-compliance-build-tool",
-          "kind": "workflow-build-requirement",
-          "location": ".github/workflows/dependency-compliance.yml"
         },
         {
           "id": "build-1.6.0-package-metadata",
@@ -1465,7 +1459,7 @@
         {
           "category": "build-only",
           "status": "candidate-evidence-required",
-          "condition": "the selected pypa-build distribution resolves packaging",
+          "condition": "the selected Python build environment resolves packaging",
           "target": "core-wheel",
           "evidence_ids": []
         }
@@ -1523,7 +1517,7 @@
         {
           "category": "build-only",
           "status": "candidate-evidence-required",
-          "condition": "the selected pypa-build distribution resolves pyproject_hooks",
+          "condition": "the selected Python build environment resolves pyproject_hooks",
           "target": "core-wheel",
           "evidence_ids": []
         }
@@ -1551,6 +1545,7 @@
     {
       "id": "uv",
       "name": "uv",
+      "purl": "pkg:pypi/uv",
       "kind": "application",
       "third_party": true,
       "origin": {
@@ -1564,22 +1559,29 @@
         "evidence_ids": []
       },
       "license": {
-        "declared": null,
+        "declared": "MIT OR Apache-2.0",
         "concluded": null,
-        "status": "pending-build-evidence",
-        "evidence_ids": []
+        "expected_expression": "MIT OR Apache-2.0",
+        "status": "official-package-declaration-confirmed-review-pending",
+        "text_location": "https://github.com/astral-sh/uv/tree/0.12.8",
+        "evidence_ids": [
+          "uv-0.12.8-package-metadata",
+          "uv-0.12.8-upstream-licenses"
+        ]
       },
       "usages": [
         {
           "category": "build-only",
           "status": "candidate-evidence-required",
-          "condition": "the delivery worker selects PACKAGE_TOOL=uv",
+          "condition": "the selected Wheel build frontend is uv",
           "target": "core-wheel",
           "declaration_patterns": [
-            "CI_dev:scripts/ci/build_frontend.sh"
+            "CI_dev:scripts/ci/build_frontend.sh",
+            ".github/workflows/dependency-compliance.yml"
           ],
           "evidence_ids": [
-            "uv-build-tool"
+            "uv-build-tool",
+            "dependency-compliance-uv-build-tool"
           ]
         }
       ],
@@ -1590,10 +1592,28 @@
           "location": "CI_dev:scripts/ci/build_frontend.sh",
           "line_start": 17,
           "line_end": 49
+        },
+        {
+          "id": "dependency-compliance-uv-build-tool",
+          "kind": "workflow-build-requirement",
+          "location": ".github/workflows/dependency-compliance.yml"
+        },
+        {
+          "id": "uv-0.12.8-package-metadata",
+          "kind": "package-metadata",
+          "location": "https://pypi.org/pypi/uv/0.12.8/json",
+          "value": "version 0.12.8; source https://github.com/astral-sh/uv; license_expression MIT OR Apache-2.0; license files LICENSE-MIT, LICENSE-APACHE; no requires_dist"
+        },
+        {
+          "id": "uv-0.12.8-upstream-licenses",
+          "kind": "upstream-license",
+          "location": "https://github.com/astral-sh/uv/tree/0.12.8",
+          "value": "MIT OR Apache-2.0; tag 0.12.8 resolves to commit 68209e5c61ce4b76c2e685bea7913876bc929dc9; LICENSE-MIT sha256:860e3d7a86b84e6a7012c7a635fc64df475cebc6cce34dfeb73a5982ec58176c; LICENSE-APACHE sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
         }
       ],
       "notes": [
-        "This component is active only when the CI_dev delivery worker uses uv."
+        "The T8.2 Hosted Runner Wheel build pins uv 0.12.8; each later candidate still requires same-build version and dependency-closure evidence.",
+        "The official license declaration is recorded, but compatibility conclusion remains a human review decision."
       ]
     },
     {

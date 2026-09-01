@@ -26,12 +26,27 @@ _VERSION_PATTERN = re.compile(
 _NEEDED_PATTERN = re.compile(r"\(NEEDED\).*Shared library: \[([^\]]+)\]")
 _PYPI_NAME_SEPARATOR = re.compile(r"[-_.]+")
 _REQUIREMENT_NAME_PATTERN = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
-_PYTHON_BUILD_ROOTS = {
+_PYTHON_BUILD_COMPONENT_IDS = {
     "build": "pypa-build",
+    "packaging": "packaging",
     "pybind11": "pybind11",
+    "pyproject-hooks": "pyproject-hooks",
     "setuptools": "setuptools",
+    "uv": "uv",
     "wheel": "wheel-build-package",
 }
+_PYTHON_BUILD_ROOTS = {
+    "pypa-build": {"build", "pybind11", "setuptools", "wheel"},
+    "uv": {"pybind11", "setuptools", "uv", "wheel"},
+}
+_PYTHON_BUILD_ROOT_COMPONENTS = {
+    _PYTHON_BUILD_COMPONENT_IDS[root]
+    for roots in _PYTHON_BUILD_ROOTS.values()
+    for root in roots
+}
+_OPTIONAL_PYTHON_BUILD_COMPONENTS = (
+    set(_PYTHON_BUILD_COMPONENT_IDS.values()) - _PYTHON_BUILD_ROOT_COMPONENTS
+)
 
 
 class BuildEvidenceError(RuntimeError):
@@ -62,7 +77,7 @@ def _canonical_distribution_name(name: str) -> str:
 
 def _component_id_for_distribution(name: str) -> str:
     canonical = _canonical_distribution_name(name)
-    return _PYTHON_BUILD_ROOTS.get(canonical, canonical)
+    return _PYTHON_BUILD_COMPONENT_IDS.get(canonical, canonical)
 
 
 def _load_python_build_report(path: Path) -> dict[str, Any]:
@@ -75,7 +90,9 @@ def _load_python_build_report(path: Path) -> dict[str, Any]:
     return report
 
 
-def _python_build_components(report: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _python_build_components(
+    report: Mapping[str, Any], package_tool: str
+) -> list[dict[str, Any]]:
     if report.get("version") != "1":
         raise BuildEvidenceError("pip installation report must use stable format version 1")
     pip_version = report.get("pip_version")
@@ -140,7 +157,9 @@ def _python_build_components(report: Mapping[str, Any]) -> list[dict[str, Any]]:
     requested_names = {
         name for name, item in resolved.items() if item["requested"] is True
     }
-    expected_roots = set(_PYTHON_BUILD_ROOTS)
+    expected_roots = _PYTHON_BUILD_ROOTS.get(package_tool)
+    if expected_roots is None:
+        raise BuildEvidenceError(f"unsupported Python package tool: {package_tool}")
     if requested_names != expected_roots:
         raise BuildEvidenceError(
             "pip installation report requested roots do not match the reviewed build "
@@ -203,6 +222,19 @@ def _merge_python_build_components(
         existing["evidence"] = evidence
         existing["purl"] = observed["purl"]
         existing["depends_on"] = observed["depends_on"]
+
+    observed_ids = {str(component["id"]) for component in python_components}
+    for component_id in sorted(_OPTIONAL_PYTHON_BUILD_COMPONENTS - observed_ids):
+        if component_id not in by_id:
+            components.append(
+                _component(
+                    component_id,
+                    None,
+                    ["build-only"],
+                    {"source": "pip-install-report", "resolved": False},
+                    "absent",
+                )
+            )
 
 
 def _command_version(command: list[str]) -> str | None:
@@ -523,9 +555,18 @@ def collect_build_evidence(
         ),
         _component(
             "pypa-build",
-            _distribution_version("build"),
+            _distribution_version("build") if package_tool != "uv" else None,
             ["build-only"],
-            {"source": "python-distribution", "distribution": "build"},
+            {
+                "source": (
+                    "package-tool-selection"
+                    if package_tool
+                    else "python-distribution"
+                ),
+                "distribution": "build",
+                "selected": package_tool,
+            },
+            "absent" if package_tool == "uv" else "present",
         ),
         _component(
             "cmake",
@@ -643,9 +684,13 @@ def collect_build_evidence(
             )
 
     if python_build_report is not None:
+        if not package_tool:
+            raise BuildEvidenceError(
+                "Python build report requires the selected package tool"
+            )
         _merge_python_build_components(
             components,
-            _python_build_components(python_build_report),
+            _python_build_components(python_build_report, package_tool),
         )
 
     _attach_vulnerability_queries(
@@ -699,11 +744,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     if (
         args.evidence_binding == "same-build"
-        and args.package_tool == "pypa-build"
         and not args.python_build_report
     ):
         parser.error(
-            "--python-build-report is required for same-build pypa-build evidence"
+            "--python-build-report is required for same-build package-tool evidence"
         )
 
     try:

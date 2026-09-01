@@ -39,16 +39,12 @@ class BuildEvidenceTests(unittest.TestCase):
         return root
 
     @staticmethod
-    def python_build_report(package_versions: dict[str, str]) -> dict[str, object]:
-        requirements = {
-            "build": [
-                "packaging>=19.1",
-                "pyproject_hooks",
-                'colorama; os_name == "nt"',
-            ],
+    def python_build_report(
+        package_versions: dict[str, str], package_tool: str = "pypa-build"
+    ) -> dict[str, object]:
+        requirements: dict[str, list[str]] = {
             "packaging": [],
             "pybind11": [],
-            "pyproject_hooks": [],
             "setuptools": [
                 'build[virtualenv]>=1.0.3; extra == "test"',
                 'packaging>=24.2; extra == "core"',
@@ -57,7 +53,21 @@ class BuildEvidenceTests(unittest.TestCase):
             ],
             "wheel": ["packaging>=24.0"],
         }
-        roots = {"build", "pybind11", "setuptools", "wheel"}
+        if package_tool == "pypa-build":
+            requirements.update(
+                {
+                    "build": [
+                        "packaging>=19.1",
+                        "pyproject_hooks",
+                        'colorama; os_name == "nt"',
+                    ],
+                    "pyproject_hooks": [],
+                }
+            )
+            roots = {"build", "pybind11", "setuptools", "wheel"}
+        else:
+            requirements["uv"] = []
+            roots = {"pybind11", "setuptools", "uv", "wheel"}
         return {
             "version": "1",
             "pip_version": "25.2",
@@ -312,7 +322,60 @@ class BuildEvidenceTests(unittest.TestCase):
                 build_evidence.BuildEvidenceError, "requested roots"
             ),
         ):
-            build_evidence._python_build_components(report)
+            build_evidence._python_build_components(report, "pypa-build")
+
+    def test_uv_selection_excludes_pypa_build_and_unresolved_optional_tools(
+        self,
+    ) -> None:
+        versions = {
+            "packaging": "24.1",
+            "pybind11": "2.13.6",
+            "setuptools": "75.1.0",
+            "uv": "0.12.8",
+            "wheel": "0.44.0",
+        }
+        report = self.python_build_report(versions, "uv")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            wheel = self.make_wheel(directory)
+            source_root = self.make_source_root(directory)
+            with (
+                mock.patch.object(
+                    build_evidence, "_inspect_native_dependencies", return_value=[]
+                ),
+                mock.patch.object(
+                    build_evidence,
+                    "_distribution_version",
+                    side_effect=lambda name: versions.get(name),
+                ),
+                mock.patch.object(
+                    build_evidence,
+                    "_command_version",
+                    side_effect=lambda command: versions.get("uv")
+                    if Path(command[0]).name == "uv"
+                    else None,
+                ),
+                mock.patch.object(build_evidence, "_llvm_version", return_value=None),
+            ):
+                evidence = build_evidence.collect_build_evidence(
+                    wheel,
+                    source_root,
+                    "same-build",
+                    package_tool="uv",
+                    python_build_report=report,
+                )
+
+        components = {
+            component["id"]: component
+            for component in evidence["compliance_build"]["components"]
+        }
+        self.assertEqual("present", components["uv"]["presence"])
+        self.assertEqual("0.12.8", components["uv"]["version"])
+        self.assertEqual("pkg:pypi/uv", components["uv"]["purl"])
+        self.assertEqual("absent", components["pypa-build"]["presence"])
+        self.assertEqual("absent", components["pyproject-hooks"]["presence"])
+        self.assertEqual("present", components["packaging"]["presence"])
 
     def test_ubuntu_package_query_uses_source_package_identity(self) -> None:
         completed = subprocess.CompletedProcess(

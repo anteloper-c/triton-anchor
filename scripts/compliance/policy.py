@@ -292,10 +292,53 @@ def evaluate_inventory_audit(
         registry, discovery_reports, target=target
     )
     components = reconciliation["components"]
+
+    def fully_classified_absent(component: Mapping[str, Any]) -> bool:
+        audited_usages = [
+            usage
+            for usage in component.get("usages", [])
+            if isinstance(usage, Mapping)
+            and usage.get("category") in AUDITED_USAGE
+        ]
+        if not audited_usages or any(
+            usage.get("target", "*") not in ("*", target)
+            for usage in audited_usages
+        ):
+            return False
+        if any(
+            usage.get("status")
+            not in {
+                "candidate-evidence-required",
+                "conditional",
+                "confirmed-optional",
+            }
+            for usage in audited_usages
+        ):
+            return False
+        declared = {str(usage["category"]) for usage in audited_usages}
+        absent: set[str] = set()
+        present: set[str] = set()
+        for observation in component.get("observations", []):
+            if (
+                observation.get("source") != "build-evidence"
+                or observation.get("kind") != "build-component"
+            ):
+                continue
+            categories = {
+                str(category)
+                for category in observation.get("candidate_usages", [])
+            } & AUDITED_USAGE
+            if observation.get("presence", "present") == "absent":
+                absent.update(categories)
+            else:
+                present.update(categories)
+        return bool(declared) and declared <= absent and not (declared & present)
+
     audit_inventory_components = [
         component
         for component in components
         if _usage_categories(component) & AUDITED_USAGE
+        and not fully_classified_absent(component)
     ]
     audited_components = [
         component
