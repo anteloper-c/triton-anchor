@@ -422,8 +422,8 @@ def _ubuntu_package_query(
     return query, evidence
 
 
-def _parse_ubuntu_packages(values: list[str]) -> dict[str, str]:
-    packages: dict[str, str] = {}
+def _parse_ubuntu_packages(values: list[str]) -> dict[str, list[str]]:
+    packages: dict[str, list[str]] = {}
     for value in values:
         component_id, separator, binary_package = value.partition("=")
         if (
@@ -434,17 +434,18 @@ def _parse_ubuntu_packages(values: list[str]) -> dict[str, str]:
             raise BuildEvidenceError(
                 "--ubuntu-package must use component-id=binary-package"
             )
-        if component_id in packages:
+        component_packages = packages.setdefault(component_id, [])
+        if binary_package in component_packages:
             raise BuildEvidenceError(
-                f"duplicate Ubuntu package mapping for {component_id}"
+                f"duplicate Ubuntu package mapping for {component_id}={binary_package}"
             )
-        packages[component_id] = binary_package
+        component_packages.append(binary_package)
     return packages
 
 
 def _attach_vulnerability_queries(
     components: list[dict[str, Any]],
-    ubuntu_packages: Mapping[str, str],
+    ubuntu_packages: Mapping[str, list[str]],
     cpython_source_commit: str | None,
 ) -> None:
     by_id = {str(component["id"]): component for component in components}
@@ -453,18 +454,30 @@ def _attach_vulnerability_queries(
         raise BuildEvidenceError(
             "Ubuntu package mapping names unknown components: " + ", ".join(unknown)
         )
-    for component_id, binary_package in sorted(ubuntu_packages.items()):
+    for component_id, binary_packages in sorted(ubuntu_packages.items()):
         component = by_id[component_id]
         if component.get("presence", "present") == "absent":
             continue
-        query, package_evidence = _ubuntu_package_query(binary_package)
+        package_results = [
+            _ubuntu_package_query(binary_package)
+            for binary_package in binary_packages
+        ]
+        query = package_results[0][0]
+        if any(item[0] != query for item in package_results[1:]):
+            raise BuildEvidenceError(
+                f"Ubuntu packages for {component_id} do not share one source identity"
+            )
+        package_evidence = [item[1] for item in package_results]
         tool_version = component.get("version")
         component["version"] = query["version"]
         component["osv_query"] = query
         evidence = dict(component.get("evidence") or {})
         if tool_version not in (None, ""):
             evidence["tool_version"] = str(tool_version)
-        evidence["ubuntu_package"] = package_evidence
+        if len(package_evidence) == 1:
+            evidence["ubuntu_package"] = package_evidence[0]
+        else:
+            evidence["ubuntu_packages"] = package_evidence
         component["evidence"] = evidence
 
     if cpython_source_commit is None:
@@ -492,7 +505,7 @@ def collect_build_evidence(
     cxx_compiler: str | None = None,
     package_tool: str | None = None,
     python_build_report: Mapping[str, Any] | None = None,
-    ubuntu_packages: Mapping[str, str] | None = None,
+    ubuntu_packages: Mapping[str, list[str]] | None = None,
     cpython_source_commit: str | None = None,
 ) -> dict[str, Any]:
     """Return core-consumable evidence for a Wheel built from ``source_root``."""

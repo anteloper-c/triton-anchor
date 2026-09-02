@@ -98,6 +98,8 @@ class BuildEvidenceTests(unittest.TestCase):
         ubuntu_queries = {
             "cmake": "3.30.4-1ubuntu1",
             "g++-13": "13.3.0-6ubuntu2~24.04",
+            "libgcc-s1": "14.2.0-4ubuntu2~24.04",
+            "libstdc++6": "14.2.0-4ubuntu2~24.04",
             "libc6": "2.39-0ubuntu8.6",
             "zlib1g": "1:1.3.dfsg-3.1ubuntu2",
             "libzstd1": "1.5.5+dfsg2-2build1.1",
@@ -106,6 +108,8 @@ class BuildEvidenceTests(unittest.TestCase):
         ubuntu_sources = {
             "cmake": "cmake",
             "g++-13": "gcc-13",
+            "libgcc-s1": "gcc-14",
+            "libstdc++6": "gcc-14",
             "libc6": "glibc",
             "zlib1g": "zlib",
             "libzstd1": "libzstd",
@@ -205,6 +209,10 @@ class BuildEvidenceTests(unittest.TestCase):
                         "--ubuntu-package",
                         "gcc-toolchain=g++-13",
                         "--ubuntu-package",
+                        "gcc-runtime=libgcc-s1",
+                        "--ubuntu-package",
+                        "gcc-runtime=libstdc++6",
+                        "--ubuntu-package",
                         "glibc=libc6",
                         "--ubuntu-package",
                         "cmake=cmake",
@@ -238,6 +246,19 @@ class BuildEvidenceTests(unittest.TestCase):
             self.assertEqual(
                 "13.3.0",
                 components["gcc-toolchain"]["evidence"]["tool_version"],
+            )
+            self.assertEqual(
+                "14.2.0-4ubuntu2~24.04", components["gcc-runtime"]["version"]
+            )
+            self.assertEqual("gcc-14", components["gcc-runtime"]["osv_query"]["name"])
+            self.assertEqual(
+                ["libgcc-s1", "libstdc++6"],
+                [
+                    item["binary_package"]
+                    for item in components["gcc-runtime"]["evidence"][
+                        "ubuntu_packages"
+                    ]
+                ],
             )
             self.assertEqual("2.39-0ubuntu8.6", components["glibc"]["version"])
             self.assertEqual("glibc", components["glibc"]["osv_query"]["name"])
