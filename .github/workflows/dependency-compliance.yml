@@ -644,6 +644,7 @@ jobs:
             --package-tool uv \
             --python-build-report "${EVIDENCE_DIR}/python-build-environment.json" \
             --ubuntu-package "gcc-toolchain=g++-${gcc_major}" \
+            --ubuntu-package glibc=libc6 \
             --ubuntu-package cmake=cmake \
             --ubuntu-package ninja=ninja-build \
             --ubuntu-package zlib=zlib1g \

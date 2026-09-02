@@ -98,6 +98,7 @@ class BuildEvidenceTests(unittest.TestCase):
         ubuntu_queries = {
             "cmake": "3.30.4-1ubuntu1",
             "g++-13": "13.3.0-6ubuntu2~24.04",
+            "libc6": "2.39-0ubuntu8.6",
             "zlib1g": "1:1.3.dfsg-3.1ubuntu2",
             "libzstd1": "1.5.5+dfsg2-2build1.1",
             "ninja-build": "1.12.1-1",
@@ -105,6 +106,7 @@ class BuildEvidenceTests(unittest.TestCase):
         ubuntu_sources = {
             "cmake": "cmake",
             "g++-13": "gcc-13",
+            "libc6": "glibc",
             "zlib1g": "zlib",
             "libzstd1": "libzstd",
             "ninja-build": "ninja-build",
@@ -203,6 +205,8 @@ class BuildEvidenceTests(unittest.TestCase):
                         "--ubuntu-package",
                         "gcc-toolchain=g++-13",
                         "--ubuntu-package",
+                        "glibc=libc6",
+                        "--ubuntu-package",
                         "cmake=cmake",
                         "--ubuntu-package",
                         "ninja=ninja-build",
@@ -235,6 +239,8 @@ class BuildEvidenceTests(unittest.TestCase):
                 "13.3.0",
                 components["gcc-toolchain"]["evidence"]["tool_version"],
             )
+            self.assertEqual("2.39-0ubuntu8.6", components["glibc"]["version"])
+            self.assertEqual("glibc", components["glibc"]["osv_query"]["name"])
             self.assertEqual(
                 {
                     "name": "github.com/python/cpython",
@@ -284,6 +290,9 @@ class BuildEvidenceTests(unittest.TestCase):
             self.assertEqual(
                 ["packaging", "pyproject-hooks"],
                 normalized_by_id["pypa-build"]["depends_on"],
+            )
+            self.assertEqual(
+                "2.39-0ubuntu8.6", normalized_by_id["glibc"]["version"]
             )
 
             payload["native"]["unmapped_sonames"] = ["libcrypto.so.3"]
