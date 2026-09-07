@@ -190,6 +190,9 @@ def measure_once(
 ) -> dict[str, Any]:
     from triton._C.libtriton import ir
 
+    if not modules or len(output_files) != len(modules):
+        raise RuntimeError("IR round-trip requires a nonempty module/output pair list")
+
     serialize_ms, texts = elapsed_ms(lambda: [str(module) for module in modules])
 
     def write_all() -> None:
@@ -209,6 +212,14 @@ def measure_once(
     deserialize_ms, parsed_modules = elapsed_ms(parse_all)
     if len(parsed_modules) != len(modules) or len(read_texts) != len(modules):
         raise RuntimeError("IR round-trip changed the module count")
+    # Check correctness outside the timed parser/serialization intervals.
+    for original, written, parsed in zip(texts, read_texts, parsed_modules):
+        if original != written:
+            raise RuntimeError("IR round-trip changed serialized file contents")
+        if not parsed.verify():
+            raise RuntimeError("IR round-trip produced an invalid MLIR module")
+        if original.strip() != str(parsed).strip():
+            raise RuntimeError("IR round-trip changed canonical module contents")
 
     parse_estimate_ms = max(0.0, deserialize_ms - read_text_ms)
     roundtrip_ms = serialize_ms + write_text_ms + deserialize_ms
@@ -224,6 +235,7 @@ def measure_once(
         "deserialize_ms": deserialize_ms,
         "parse_estimate_ms": parse_estimate_ms,
         "roundtrip_ms": roundtrip_ms,
+        "roundtrip_verified": True,
     }
 
 

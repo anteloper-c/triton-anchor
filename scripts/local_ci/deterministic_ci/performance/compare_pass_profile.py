@@ -100,11 +100,9 @@ def compare(
         warnings.append(f"No cached pass-profile baseline is available for base SHA {base_sha or '<unknown>'}.")
 
     for kernel in kernels:
-        try:
-            candidate_passes = pass_map(candidate, kernel)
-        except ValueError as exc:
-            warnings.append(str(exc))
-            continue
+        candidate_passes = pass_map(candidate, kernel)
+        if not candidate_passes:
+            raise ValueError(f"No candidate pass measurements for kernel {kernel!r}")
         baseline_passes: dict[str, Any] = {}
         if baseline is not None:
             try:

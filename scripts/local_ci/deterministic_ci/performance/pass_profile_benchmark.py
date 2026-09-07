@@ -416,8 +416,8 @@ def run_parent(args: argparse.Namespace) -> int:
                 run_results.append(result)
                 all_events.extend(events)
                 repeat_events[(kernel, str(run_idx))] = events
-                if not events:
-                    warnings.append(f"No MLIR timing rows parsed for {kernel} repeat {run_idx}.")
+                if not any(event.get("kind") == "pass" for event in events):
+                    raise RuntimeError(f"No MLIR pass timing rows parsed for {kernel} repeat {run_idx}.")
 
         summary = build_summary(kernels, run_results, repeat_events, args.top_n)
         document = {

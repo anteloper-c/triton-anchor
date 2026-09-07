@@ -127,25 +127,4 @@ def test_owned_cleanup_rejects_paths_outside_one_dump_stage(tmp_path: Path):
     TASK_TMP.cleanup_task_root(task_root, TARGET_SHA, parent=tmp_path)
 
 
-def test_runners_route_ephemeral_state_into_one_task_root():
-    runner = (
-        LOCAL_CI_ROOT / "deterministic_ci/run_deterministic_ci.sh"
-    ).read_text(encoding="utf-8")
-    container_entry = (
-        LOCAL_CI_ROOT / "orchestration/run_deterministic_ci_in_container.sh"
-    ).read_text(encoding="utf-8")
-
-    assert "/tmp/triton-anchor-local-ci-task.${sha:0:12}.XXXXXX" in container_entry
-    assert '-e LOCAL_CI_SCRIPT_STAGED="1"' in container_entry
-    assert '-e TMPDIR="${CONTAINER_CI_TASK_TMP_ROOT}/tmp"' in container_entry
-    assert "cleanup_container_task_tmp" in container_entry
-    assert 'LOCAL_CI_TASK_DUMP_ROOT="${LOCAL_CI_TASK_TMP_ROOT}/dump"' in runner
-    assert 'TMPDIR="${LOCAL_CI_TASK_TMP_DIR}"' in runner
-    assert 'mktemp "${LOCAL_CI_TASK_CREDENTIAL_DIR}/gitee-askpass.XXXXXX"' in runner
-    assert '--cache-root "${LOCAL_CI_TASK_BENCHMARK_ROOT}/compile/cache"' in runner
-    assert '--cache-root "${LOCAL_CI_TASK_BENCHMARK_ROOT}/pass-profile/cache"' in runner
-    assert '--work-root "${LOCAL_CI_TASK_BENCHMARK_ROOT}/ir-serialization"' in runner
-    assert 'local command_tmp_dir="${TMPDIR}"' in runner
-    assert runner.count('export TMPDIR="${command_tmp_dir}"') == 2
-    assert "rm -rf /tmp" not in runner
-    assert "/tmp/[0-9]" not in runner
+# v3 snapshot assertion retired; v4 executor isolation is tested in agent_ci/tests.

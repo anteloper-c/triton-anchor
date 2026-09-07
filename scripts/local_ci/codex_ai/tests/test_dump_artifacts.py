@@ -147,20 +147,4 @@ def test_deterministic_runner_owns_dump_lifecycle():
     assert "triton_dump_cleanup_status:" in runner
 
 
-def test_codex_snapshot_does_not_clean_or_audit_source_container():
-    runner = CODEX_RUNNER.read_text(encoding="utf-8")
-    failure_prompt = (
-        LOCAL_CI_ROOT / "codex_ai" / "prompts" / "codex_ai_failure.md"
-    ).read_text(encoding="utf-8")
-
-    assert "dump_artifacts.py" not in runner
-    assert "snapshot_prune" not in runner
-    assert "snapshot_hygiene" not in runner
-    assert "docker commit \\" in runner
-    assert '"${LOCAL_CI_CONTAINER}" "${ephemeral_image}"' in runner
-    assert "LABEL triton-anchor.role=codex-ai-snapshot" in runner
-    assert "export TRITON_DUMP_DIR=/tmp/triton-anchor-codex-dump" in runner
-    assert "`${ARTIFACT_DIR}/failure-ir/`" in failure_prompt
-    assert "不要搜索" in failure_prompt
-    assert "`/root/.triton/dump`" in failure_prompt
-    assert "`/workspace/triton-dump-dir`" in failure_prompt
+# v3 snapshot assertion retired; v4 executor isolation is tested in agent_ci/tests.

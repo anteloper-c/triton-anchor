@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import csv
 import json
 import os
@@ -64,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-size", type=int, default=6)
     parser.add_argument("--seed", default="")
     parser.add_argument("--op", default="")
+    parser.add_argument("--affected-ops", default="")
     parser.add_argument("--whitelist", required=True)
     parser.add_argument("--full-list", default="")
     parser.add_argument("--flaggems-dir", required=True)
@@ -209,6 +211,22 @@ def terminate_process_group(process: subprocess.Popen[bytes]) -> None:
         return
 
 
+def task_cache_paths(dump_dir: Path) -> list[Path]:
+    """New tool invocations may clear only their task-owned cache and dumps."""
+    task_text = os.environ.get("LOCAL_CI_TASK_ROOT", "")
+    if not task_text:
+        return [Path.home() / ".triton/cache", Path.home() / ".flaggems/code_cache", dump_dir]
+    task = Path(task_text).resolve(strict=True)
+    cache_text = os.environ.get("TRITON_CACHE_DIR", "")
+    if not cache_text:
+        raise ValueError("Task FlagGems requires an owned TRITON_CACHE_DIR")
+    paths = [Path(cache_text), dump_dir]
+    for path in paths:
+        if path.is_symlink() or not path.is_absolute() or path.resolve() == task or not path.resolve().is_relative_to(task):
+            raise ValueError(f"FlagGems cache/dump escaped task root: {path}")
+    return paths
+
+
 def count_observed_completed_tests(output: str) -> int:
     completed = 0
     for line in output.splitlines():
@@ -274,9 +292,8 @@ def run_operator(
     timeout_extensions = 0
 
     if args.clear_cache == "1":
-        clear_cache_dir(Path.home() / ".triton" / "cache")
-        clear_cache_dir(Path.home() / ".flaggems" / "code_cache")
-        clear_cache_dir(dump_dir)
+        for cache_path in task_cache_paths(dump_dir):
+            clear_cache_dir(cache_path)
 
     before = snapshot_dump_dir(dump_dir)
     environment = os.environ.copy()
@@ -315,6 +332,14 @@ def run_operator(
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+        atexit.register(terminate_process_group, process)
+        previous_handlers = {}
+        def cancel_operator(signum, _frame):
+            terminate_process_group(process)
+            process.wait()
+            raise SystemExit(128 + signum)
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.signal(signum, cancel_operator)
         last_size = log_path.stat().st_size
         last_activity = time.monotonic()
         while process.poll() is None:
@@ -368,6 +393,9 @@ def run_operator(
                     progress_checkpoint = completed_tests
                     soft_deadline = next_deadline
         exit_code = process.wait()
+        atexit.unregister(terminate_process_group)
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
 
     output = log_path.read_text(encoding="utf-8", errors="replace")
     completed_tests = count_observed_completed_tests(output)
@@ -443,12 +471,13 @@ def write_reports(
         "mode": args.mode,
         "sample_size": args.sample_size,
         "seed": args.seed,
+        "affected_ops": [op.strip() for op in getattr(args, "affected_ops", "").split(",") if op.strip()],
         "summary": {
             "total": len(results),
             "passed": passed,
             "failed": failed,
             "timed_out": timed_out,
-            "status": "pass" if failed == 0 and timed_out == 0 else "fail",
+            "status": "pass" if results and failed == 0 and timed_out == 0 else "fail",
         },
         "results": [asdict(result) for result in results],
     }
@@ -506,10 +535,13 @@ def main() -> int:
         raise ValueError(f"Refusing to use unsafe TRITON_DUMP_DIR: {dump_dir}")
     dump_dir.mkdir(parents=True, exist_ok=True)
     if args.clear_cache == "1":
-        clear_cache_dir(dump_dir)
+        for cache_path in task_cache_paths(dump_dir):
+            clear_cache_dir(cache_path)
 
     selected_entries = select_entries(args)
     selected = group_selected_entries(selected_entries)
+    if not selected:
+        raise ValueError("FlagGems selection must contain at least one operator")
     write_selected(
         args.selected_output,
         selected_entries,

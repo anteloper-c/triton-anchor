@@ -1,0 +1,251 @@
+{
+  "schema": "triton-anchor-local-ci-preflight/v1",
+  "ready": false,
+  "checks": [
+    {
+      "check": "state_dir",
+      "status": "pass",
+      "message": "Configure an absolute dedicated server path"
+    },
+    {
+      "check": "control_root",
+      "status": "pass",
+      "message": "Configure an absolute dedicated server path"
+    },
+    {
+      "check": "codex_sessions_root",
+      "status": "pass",
+      "message": "Configure an absolute dedicated server path"
+    },
+    {
+      "check": "session_state_separation",
+      "status": "pass",
+      "message": "Codex sessions and trusted worker state must use independent, non-overlapping directories"
+    },
+    {
+      "check": "trusted_control",
+      "status": "fail",
+      "message": "Trusted worker and tools must exist in control_root"
+    },
+    {
+      "check": "gitee_repo_url",
+      "status": "fail",
+      "message": "gitee_repo_url is required"
+    },
+    {
+      "check": "health_repo_url",
+      "status": "fail",
+      "message": "health_repo_url is required"
+    },
+    {
+      "check": "profiles",
+      "status": "pass",
+      "message": "At least one explicit target-branch recipe is required"
+    },
+    {
+      "check": "profile:triton_v3.0:name",
+      "status": "pass",
+      "message": "Profile names must be unique safe identifiers"
+    },
+    {
+      "check": "profile:triton_v3.0:llvm_hash",
+      "status": "pass",
+      "message": "Current exact LLVM revision is required"
+    },
+    {
+      "check": "profile:triton_v3.0:backend",
+      "status": "pass",
+      "message": "Only current Triton 3.0 may enable backend capability"
+    },
+    {
+      "check": "profile:triton_v3.0:image",
+      "status": "fail",
+      "message": "Provide an actual approved image; daily rotation has no guessed image fallback"
+    },
+    {
+      "check": "profile:triton_v3.0:execution_user",
+      "status": "fail",
+      "message": "Configure the actual non-root user present in the candidate image"
+    },
+    {
+      "check": "profile:triton_v3.0:workspace_root",
+      "status": "pass",
+      "message": "Use an absolute dedicated generation workspace root"
+    },
+    {
+      "check": "profile:triton_v3.0:seed_python",
+      "status": "pass",
+      "message": "Provide an absolute seed Python or venv activation path; manager verifies build/setuptools/wheel/pybind11/PyYAML/pytest imports as the task user"
+    },
+    {
+      "check": "profile:triton_v3.0:llvm_mode",
+      "status": "pass",
+      "message": "Daily/new-LLVM preparation requires an archive or source recipe"
+    },
+    {
+      "check": "profile:triton_v3.0:llvm_source",
+      "status": "fail",
+      "message": "profile:triton_v3.0:llvm_source is required"
+    },
+    {
+      "check": "profile:triton_v3.0:backend_env",
+      "status": "fail",
+      "message": "3.0 requires actual backend/FlagGems/PPL paths, profile, wheel filename pattern, discovery name and smoke/JIT command"
+    },
+    {
+      "check": "profile:triton_v3.0:backend_workspace",
+      "status": "fail",
+      "message": "Backend source must be inside the generation workspace for isolated task checkouts"
+    },
+    {
+      "check": "profile:triton_v3.0:daily_validation",
+      "status": "fail",
+      "message": "Daily candidates must run required validation commands before promotion"
+    },
+    {
+      "check": "profile:triton_v3.0:daily_calendar",
+      "status": "pass",
+      "message": "Provide a staggered systemd OnCalendar value"
+    },
+    {
+      "check": "profile:triton_v3.0:credential_boundary",
+      "status": "pass",
+      "message": "Model/publishing credentials must stay outside candidate containers"
+    },
+    {
+      "check": "profile:triton_v3.3:name",
+      "status": "pass",
+      "message": "Profile names must be unique safe identifiers"
+    },
+    {
+      "check": "profile:triton_v3.3:llvm_hash",
+      "status": "pass",
+      "message": "Current exact LLVM revision is required"
+    },
+    {
+      "check": "profile:triton_v3.3:backend",
+      "status": "pass",
+      "message": "Only current Triton 3.0 may enable backend capability"
+    },
+    {
+      "check": "profile:triton_v3.3:image",
+      "status": "fail",
+      "message": "Provide an actual approved image; daily rotation has no guessed image fallback"
+    },
+    {
+      "check": "profile:triton_v3.3:execution_user",
+      "status": "fail",
+      "message": "Configure the actual non-root user present in the candidate image"
+    },
+    {
+      "check": "profile:triton_v3.3:workspace_root",
+      "status": "pass",
+      "message": "Use an absolute dedicated generation workspace root"
+    },
+    {
+      "check": "profile:triton_v3.3:seed_python",
+      "status": "pass",
+      "message": "Provide an absolute seed Python or venv activation path; manager verifies build/setuptools/wheel/pybind11/PyYAML/pytest imports as the task user"
+    },
+    {
+      "check": "profile:triton_v3.3:llvm_mode",
+      "status": "pass",
+      "message": "Daily/new-LLVM preparation requires an archive or source recipe"
+    },
+    {
+      "check": "profile:triton_v3.3:llvm_source",
+      "status": "fail",
+      "message": "profile:triton_v3.3:llvm_source is required"
+    },
+    {
+      "check": "profile:triton_v3.3:daily_validation",
+      "status": "fail",
+      "message": "Daily candidates must run required validation commands before promotion"
+    },
+    {
+      "check": "profile:triton_v3.3:daily_calendar",
+      "status": "pass",
+      "message": "Provide a staggered systemd OnCalendar value"
+    },
+    {
+      "check": "profile:triton_v3.3:credential_boundary",
+      "status": "pass",
+      "message": "Model/publishing credentials must stay outside candidate containers"
+    },
+    {
+      "check": "profile:triton_v3.6:name",
+      "status": "pass",
+      "message": "Profile names must be unique safe identifiers"
+    },
+    {
+      "check": "profile:triton_v3.6:llvm_hash",
+      "status": "pass",
+      "message": "Current exact LLVM revision is required"
+    },
+    {
+      "check": "profile:triton_v3.6:backend",
+      "status": "pass",
+      "message": "Only current Triton 3.0 may enable backend capability"
+    },
+    {
+      "check": "profile:triton_v3.6:image",
+      "status": "fail",
+      "message": "Provide an actual approved image; daily rotation has no guessed image fallback"
+    },
+    {
+      "check": "profile:triton_v3.6:execution_user",
+      "status": "fail",
+      "message": "Configure the actual non-root user present in the candidate image"
+    },
+    {
+      "check": "profile:triton_v3.6:workspace_root",
+      "status": "pass",
+      "message": "Use an absolute dedicated generation workspace root"
+    },
+    {
+      "check": "profile:triton_v3.6:seed_python",
+      "status": "pass",
+      "message": "Provide an absolute seed Python or venv activation path; manager verifies build/setuptools/wheel/pybind11/PyYAML/pytest imports as the task user"
+    },
+    {
+      "check": "profile:triton_v3.6:llvm_mode",
+      "status": "pass",
+      "message": "Daily/new-LLVM preparation requires an archive or source recipe"
+    },
+    {
+      "check": "profile:triton_v3.6:llvm_source",
+      "status": "fail",
+      "message": "profile:triton_v3.6:llvm_source is required"
+    },
+    {
+      "check": "profile:triton_v3.6:daily_validation",
+      "status": "fail",
+      "message": "Daily candidates must run required validation commands before promotion"
+    },
+    {
+      "check": "profile:triton_v3.6:daily_calendar",
+      "status": "pass",
+      "message": "Provide a staggered systemd OnCalendar value"
+    },
+    {
+      "check": "profile:triton_v3.6:credential_boundary",
+      "status": "pass",
+      "message": "Model/publishing credentials must stay outside candidate containers"
+    },
+    {
+      "check": "staggered_rotation",
+      "status": "pass",
+      "message": "Profiles must have distinct daily rebuild times; the resource lock also serializes builds"
+    },
+    {
+      "check": "smtp",
+      "status": "fail",
+      "message": "Mail configuration is incomplete: LOCAL_CI_SMTP_HOST, LOCAL_CI_SMTP_FROM, LOCAL_CI_SMTP_TO"
+    },
+    {
+      "check": "health_publish_auth",
+      "status": "fail",
+      "message": "Set the configured health publishing credential environment variable"
+    }
+  ]
+}

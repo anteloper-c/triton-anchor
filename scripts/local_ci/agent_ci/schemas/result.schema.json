@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "triton-anchor-local-ci/v4",
+  "type": "object",
+  "required": ["schema", "task", "run_id", "status", "required_checks", "checks", "reviews", "findings", "blockers", "performance", "unfinished", "environment"],
+  "properties": {
+    "schema": {"const": "triton-anchor-local-ci/v4"},
+    "task": {"type": "object", "required": ["task_id", "tested_sha", "base_sha", "head_sha", "worker_revision_sha", "metadata_digest"]},
+    "run_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["pass", "fail", "infra_error", "cancelled"]},
+    "required_checks": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "checks": {"type": "array", "items": {"type": "object", "required": ["tool_id", "status"], "properties": {
+      "tool_id": {"type": "string"}, "variant": {"enum": ["base", "candidate"]},
+      "status": {"enum": ["pass", "fail", "infra_error", "cancelled", "not_applicable", "not_selected", "blocked_dependency"]}
+    }}},
+    "reviews": {"type": "object"}, "findings": {"type": "array"}, "blockers": {"type": "array"},
+    "performance": {"type": "array"}, "unfinished": {"type": "array"}, "environment": {"type": "object"}
+  }
+}

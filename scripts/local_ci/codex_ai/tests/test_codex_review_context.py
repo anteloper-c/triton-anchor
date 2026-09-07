@@ -18,11 +18,7 @@ def classify(paths, analysis_mode="full"):
     return CLASSIFIER.classify_review_context(paths, analysis_mode)
 
 
-def test_runner_preflights_and_invokes_the_classifier_path():
-    runner = RUNNER_PATH.read_text(encoding="utf-8")
-    assert 'review_context_classifier="${SCRIPT_DIR}/classify_codex_review_context.py"' in runner
-    assert '[[ ! -r "${review_context_classifier}" ]]' in runner
-    assert '"${PYTHON_BIN}" "${review_context_classifier}"' in runner
+# v3 snapshot assertion retired; v4 executor isolation is tested in agent_ci/tests.
 
 
 def test_empty_and_malformed_manifests_use_empty_diff_profile():

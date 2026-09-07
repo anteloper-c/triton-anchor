@@ -1,0 +1,12 @@
+# EXAMPLE ONLY: regenerate with install.py and actual server configuration.
+[Unit]
+Description=Publish independent Local CI worker health
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile="/etc/triton-anchor-local-ci/credentials.env"
+WorkingDirectory="/opt/local-ci/control/triton-anchor"
+UMask=0077
+ExecStart="/usr/bin/python3" "/opt/local-ci/control/triton-anchor/scripts/local_ci/deploy/health.py" --config "/etc/triton-anchor-local-ci/config.json" --publish
+TimeoutStartSec=10min

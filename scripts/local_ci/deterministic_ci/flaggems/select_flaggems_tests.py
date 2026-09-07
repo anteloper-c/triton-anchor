@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-size", type=int, default=6)
     parser.add_argument("--seed", default="")
     parser.add_argument("--op", default="")
+    parser.add_argument("--affected-ops", default="", help="Comma-separated additional required operators")
     parser.add_argument("--whitelist", required=True)
     parser.add_argument("--full-list", default="")
     parser.add_argument("--flaggems-dir", required=True)
@@ -156,6 +157,10 @@ def select_entries(args: argparse.Namespace) -> list[Entry]:
         if not args.full_list:
             raise ValueError("--full-list is required in full mode")
         selected = read_entries(Path(args.full_list))
+        affected = [value.strip() for value in getattr(args, "affected_ops", "").split(",") if value.strip()]
+        missing = [op for op in affected if not any(op in (entry.op, entry.marker) for entry in selected)]
+        if missing:
+            raise ValueError(f"Affected operators missing from full list: {missing}")
         return attach_discovered_files(selected, marker_files)
 
     entries = read_entries(Path(args.whitelist))
@@ -165,6 +170,17 @@ def select_entries(args: argparse.Namespace) -> list[Entry]:
             raise ValueError(f"FlagGems op {args.op!r} was not found in the pass whitelist")
     else:
         selected = select_sample_entries(entries, args.sample_size, args.seed)
+
+    affected = [value.strip() for value in getattr(args, "affected_ops", "").split(",") if value.strip()]
+    # An affected operator may be outside the known passing sample whitelist.
+    all_entries = read_entries(Path(args.full_list)) if affected and args.full_list else entries
+    for op in affected:
+        matches = [entry for entry in all_entries if op in (entry.op, entry.marker)]
+        if not matches:
+            raise ValueError(f"Affected FlagGems operator {op!r} has no trusted test mapping")
+        for entry in matches:
+            if entry not in selected:
+                selected.append(entry)
 
     return attach_discovered_files(selected, marker_files)
 
@@ -192,6 +208,7 @@ def write_selected(path_text: str, selected: list[Entry], args: argparse.Namespa
         f"mode: {args.mode}",
         f"sample_size: {args.sample_size}",
         f"seed: {args.seed}",
+        f"affected_ops: {getattr(args, 'affected_ops', '')}",
         f"selected_op_count: {len(unique_ops)}",
         f"selected_marker_count: {len(unique_markers)}",
         f"selected_category_count: {len(unique_categories)}",

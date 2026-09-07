@@ -1,0 +1,19 @@
+# EXAMPLE ONLY: regenerate with install.py and actual server configuration.
+[Unit]
+Description=Triton Anchor AI-driven Local CI worker
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile="/etc/triton-anchor-local-ci/credentials.env"
+WorkingDirectory="/opt/local-ci/control/triton-anchor"
+UMask=0077
+ExecStart="/usr/bin/python3" "/opt/local-ci/control/triton-anchor/scripts/local_ci/agent_ci/worker.py" --config "/etc/triton-anchor-local-ci/config.json"
+Restart=always
+RestartSec=15
+TimeoutStopSec=60
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

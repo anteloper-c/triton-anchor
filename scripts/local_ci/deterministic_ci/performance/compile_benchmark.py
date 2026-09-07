@@ -407,6 +407,8 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def run_parent(args: argparse.Namespace) -> int:
     kernels = [k.strip() for k in args.kernels.split(",") if k.strip()]
+    if not kernels or args.repeat < 1 or args.warmup < 0:
+        raise ValueError("kernels must not be empty; repeat must be positive and warmup non-negative")
     unknown = [k for k in kernels if k not in DEFAULT_KERNELS]
     if unknown:
         raise ValueError(f"Unknown kernels: {unknown}. Supported: {DEFAULT_KERNELS}")

@@ -1,3 +1,5 @@
+> 历史 CI 设计文档：当前 v4 实现与部署入口见 [CI v4 说明](ci_v4_implementation.md)。本文保留用于追溯，不作为当前执行规范。
+
 # triton-anchor CI 说明
 
 ## 1. 文档目的

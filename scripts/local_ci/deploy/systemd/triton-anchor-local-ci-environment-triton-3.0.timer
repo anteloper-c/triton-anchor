@@ -1,0 +1,11 @@
+# EXAMPLE ONLY: regenerate with install.py and actual server configuration.
+[Unit]
+Description=Staggered daily Local CI environment rotation
+
+[Timer]
+OnCalendar=*-*-* 02:00:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

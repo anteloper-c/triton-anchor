@@ -1,289 +1,353 @@
 from __future__ import annotations
 
+import copy
+import hashlib
+import importlib.util
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import os
+from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import unittest
-from pathlib import Path
-
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
-GATEWAY = ROOT / ".github/workflows/ci-gateway.yml"
-MANIFEST = ROOT / ".github/ci-gateway-manifest.json"
-
-CONTRACT_INPUTS = {
-    "gateway_contract_version",
-    "mode",
-    "pr_number",
-    "expected_head_sha",
-    "comparison_base_sha",
-    "tested_sha",
-    "requested_sha",
-    "worker_revision_sha",
-    "authorization_source",
-    "source_branch",
-    "target_branch",
-    "task_ref",
-    "context",
-    "attempt",
-    "started_at",
-    "wait_seconds",
-    "cancellation_reason",
-    "delete_task_ref",
-    "run_title",
-}
+spec = importlib.util.spec_from_file_location("gateway_v4", ROOT / "scripts/ci/gateway_v4.py")
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
 
 
-def workflow_dispatch_inputs(text: str) -> set[str]:
-    lines = text.splitlines()
-    start = lines.index("  workflow_dispatch:")
-    inputs_line = lines.index("    inputs:", start)
-    names: set[str] = set()
-    for line in lines[inputs_line + 1 :]:
-        if line and not line.startswith("      "):
-            break
-        if line.startswith("      ") and not line.startswith("        "):
-            names.add(line.strip().removesuffix(":"))
-    return names
+def git(root, *args):
+    return subprocess.check_output(["git", *args], cwd=root, stderr=subprocess.DEVNULL).decode().strip()
 
 
-def workflow_step_script(text: str, name: str) -> str:
-    marker = f"      - name: {name}\n"
-    start = text.index(marker)
-    body_start = text.index("        run: |\n", start) + len("        run: |\n")
-    body_end = text.index("\n      - name:", body_start)
-    return "\n".join(
-        line[10:] if line.startswith("          ") else line
-        for line in text[body_start:body_end].splitlines()
-    )
+def body(types="docs"):
+    fields = {"types": types, "purpose": "Correct documented behavior", "scope": "README",
+              "validation": "Reviewed the actual implementation", "subject": "Public README",
+              "consistency": "Names match source", "reproduction": "Run the regression case",
+              "expected_actual": "Expected 2, actual 1", "behavior": "New behavior is documented",
+              "compatibility": "Existing callers continue to work", "baseline": "Base commit",
+              "measurement": "Repeat the same inputs five times", "expected_change": "Lower compile time",
+              "versions": "Old and new versions recorded", "sources": "Trusted mirror",
+              "environment": "Frontend dependency changes", "recovery": "Restore known-good generation",
+              "ci_impact": "Triggers and permissions stay scoped", "coverage": "Regression behavior",
+              "execution": "pytest regression case"}
+    return "\n".join("<!-- field:" + key + " -->\n" + value for key, value in fields.items())
 
 
-class GatewayV3ContractTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.gateway = GATEWAY.read_text(encoding="utf-8")
-        cls.manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-        cls.security = (ROOT / ".github/workflows/security-gate.yml").read_text()
-        cls.dispatcher = (ROOT / ".github/workflows/dispatch-local-ci.yml").read_text()
-        cls.receiver = (ROOT / ".github/workflows/receive-local-ci-result.yml").read_text()
-        cls.pages = (ROOT / ".github/workflows/backend-status-pages.yml").read_text()
-        cls.poller = (ROOT / "scripts/local_ci/poll_gitee_and_run.sh").read_text()
+class FakeGitHub:
+    repository = g.REPOSITORY
 
-    def test_contract_v3_interface(self) -> None:
-        self.assertEqual(workflow_dispatch_inputs(self.gateway), CONTRACT_INPUTS)
-        self.assertIn('GATEWAY_CONTRACT_VERSION: "3"', self.gateway)
-        self.assertNotIn("expected_base_sha", self.gateway)
-        self.assertNotIn("inputs.sha", self.gateway)
+    def __init__(self, base, head, tested):
+        self.base, self.head, self.tested = base, head, tested
+        self.pull = {"state": "open", "draft": False, "title": "Document the public behavior",
+                     "body": body(), "labels": [{"name": "docs"}],
+                     "head": {"sha": head, "ref": "docs-topic", "repo": {"full_name": "anteloper-c/triton-anchor"}},
+                     "base": {"ref": "main"}}
+        self.statuses, self.comments = [], []
+        self.environment = {"protection_rules": [{"type": "required_reviewers", "reviewers": [{"type": "User", "reviewer": {"login": "maintainer"}}]}]}
 
-    def test_manifest_describes_merge_result_worker(self) -> None:
-        self.assertEqual(self.manifest["schema_version"], 1)
-        self.assertEqual(self.manifest["gateway_contract_version"], "3")
-        self.assertEqual(self.manifest["role"], "worker")
-        self.assertEqual(self.manifest["tested_revision"], "merge-result")
-        self.assertTrue(
-            {
-                "security-scan", "codeql", "dispatch", "receive", "pages",
-                "cancel", "cross-branch-pr", "cross-branch-push", "merge-result",
-            }.issubset(self.manifest["capabilities"])
-        )
+    def request(self, path, method="GET", data=None):
+        if path == "environments/local-ci-fork-approval":
+            return self.environment
+        if path == "pulls/7":
+            return copy.deepcopy(self.pull)
+        if path == "git/ref/pull/7/merge":
+            return {"object": {"sha": self.tested}}
+        if path == "git/commits/" + self.tested:
+            return {"parents": [{"sha": self.base}, {"sha": self.head}]}
+        if path == "branches/main":
+            return {"commit": {"sha": self.head}}
+        raise AssertionError(path)
 
-    def test_merge_result_is_frozen_and_revalidated(self) -> None:
-        self.assertGreaterEqual(self.gateway.count("pull/${prNumber}/merge"), 3)
-        self.assertIn("parents[0]", self.gateway)
-        self.assertIn("parents[1]", self.gateway)
-        self.assertIn("tested_sha: process.env.TESTED_SHA", self.gateway)
-        self.assertIn("TESTED_SHA_KIND=\"pr_merge\"", self.dispatcher)
-        self.assertIn("refs/pull/${PR_NUMBER}/merge", self.dispatcher)
+    optional = request
 
-    def test_dispatch_metadata_v2_records_text_truncation(self) -> None:
-        self.assertIn(
-            "title_truncated:(($title|length)>500)", self.dispatcher
-        )
-        self.assertIn(
-            "description_truncated:(($description|length)>8000)",
-            self.dispatcher,
-        )
+    def content(self, path, ref):
+        assert ref == self.tested
+        return b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
 
-    def test_dispatch_classifies_only_existing_codex_docs_paths(self) -> None:
-        script = workflow_step_script(self.dispatcher, "Classify PR execution mode")
-        cases = (
-            ("docs/guide.md", "codex_only"),
-            ("README.md", "codex_only"),
-            ("python/triton_anchor/example.py", "full"),
-            (".github/workflows/ci.yml", "full"),
-            ("scripts/local_ci/codex_ai/prompts/review.md", "full"),
-            ("python/old.py\ndocs/new.md", "full"),
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            fake_git = root / "git"
-            fake_git.write_text(
-                '#!/bin/sh\nprintf "%s\\n" "$CHANGED_PATHS" | tr "\\n" "\\0"\n',
-                encoding="utf-8",
-            )
-            fake_git.chmod(0o700)
-            for changed_paths, expected in cases:
-                with self.subTest(changed_paths=changed_paths):
-                    output = root / "github-output"
-                    output.unlink(missing_ok=True)
-                    env = os.environ.copy()
-                    env.update(
-                        {
-                            "BASE_SHA": "a" * 40,
-                            "HEAD_SHA": "b" * 40,
-                            "CHANGED_PATHS": changed_paths,
-                            "GITHUB_OUTPUT": str(output),
-                            "PATH": f"{root}:{env['PATH']}",
-                        }
-                    )
-                    subprocess.run(["bash", "-c", script], env=env, check=True)
-                    self.assertEqual(
-                        output.read_text(encoding="utf-8").strip(),
-                        f"execution_mode={expected}",
-                    )
+    def status(self, task, state, description, url=""):
+        self.statuses.append((task["task_id"], state))
 
-    def test_receiver_reports_explicitly_skipped_stages_as_success(self) -> None:
-        script = workflow_step_script(self.receiver, "Report ${{ matrix.name }}")
-        with tempfile.TemporaryDirectory() as directory:
-            env = os.environ.copy()
-            env.update(
-                {
-                    "STAGE_KEY": "frontend_build",
-                    "STAGE_NAME": "Frontend build",
-                    "REQUIRED_STAGE": "true",
-                    "STAGE_RESULTS": json.dumps({"frontend_build": "skipped"}),
-                    "TARGET_URL": "",
-                    "GITHUB_STEP_SUMMARY": str(Path(directory) / "summary.md"),
-                }
-            )
-            result = subprocess.run(["bash", "-c", script], env=env, check=False)
-        self.assertEqual(result.returncode, 0)
+    def comment(self, task, content):
+        self.comments.append(content)
 
-    def test_poller_routes_codex_only_without_deterministic_ci(self) -> None:
-        self.assertIn('execution_mode="full"', self.poller)
-        self.assertIn('"${execution_mode}" == "codex_only"', self.poller)
-        self.assertIn("frontend_build_status: skipped", self.poller)
-        self.assertIn('.get("execution_mode", "full")', self.poller)
-        codex_at = self.poller.rindex("run_codex_ai_ci_for_run")
-        artifact_at = self.poller.index(
-            'echo "Artifact dir: ${nonexecuted_artifact_dir}"', codex_at
-        )
-        publish_at = self.poller.index('publish_result "${sha}"', artifact_at)
-        self.assertLess(codex_at, artifact_at)
-        self.assertLess(artifact_at, publish_at)
 
-    def test_external_fork_requires_live_maintainer_authorization(self) -> None:
-        self.assertIn("getCollaboratorPermissionLevel", self.gateway)
-        self.assertIn("write', 'maintain', 'admin", self.gateway)
-        self.assertIn("approve-external-fork:", self.gateway)
-        self.assertIn("local-ci-fork-approval", self.gateway)
-        self.assertIn("external-fork-environment", self.gateway)
-        self.assertIn("manual-maintainer:", self.gateway)
-        self.assertIn("pull.head.sha !== process.env.EXPECTED_HEAD_SHA", self.gateway)
+class GatewayBehaviorTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.source = self.root / "source"
+        self.source.mkdir()
+        git(self.source, "init", "-q")
+        git(self.source, "config", "user.name", "Test")
+        git(self.source, "config", "user.email", "test@example.invalid")
+        version = self.source / "triton/python/triton/__init__.py"
+        version.parent.mkdir(parents=True)
+        version.write_text("__version__ = '3.0.0'\n")
+        (self.source / "README.md").write_text("old\n")
+        git(self.source, "add", ".")
+        git(self.source, "commit", "-qm", "base")
+        self.base = git(self.source, "rev-parse", "HEAD")
+        (self.source / "README.md").write_text("new\n")
+        git(self.source, "add", ".")
+        git(self.source, "commit", "-qm", "head")
+        self.head = git(self.source, "rev-parse", "HEAD")
+        tree = git(self.source, "rev-parse", "HEAD^{tree}")
+        self.tested = subprocess.check_output(["git", "commit-tree", tree, "-p", self.base, "-p", self.head],
+                                             cwd=self.source, input=b"merge\n").decode().strip()
+        git(self.source, "checkout", "--detach", self.tested)
+        self.remote = self.root / "gitee.git"
+        git(self.root, "init", "--bare", "-q", str(self.remote))
+        self.gh = FakeGitHub(self.base, self.head, self.tested)
+        self.task = g.prepare_task(self.gh, self.base, 7)
+        self.stores = []
 
-    def test_merge_result_base_comes_from_first_parent(self) -> None:
-        self.assertIn("const comparisonBaseSha = parents[0]", self.gateway)
-        self.assertIn("core.setOutput('base_sha', comparisonBaseSha)", self.gateway)
-        self.assertIn(
-            "h:${pull.head.sha.slice(0, 7)} m:${testedSha.slice(0, 7)} | dispatch",
-            self.gateway,
-        )
-        self.assertNotIn(
-            "parents[0].toLowerCase() !== pull.base.sha.toLowerCase()",
-            self.gateway,
-        )
+    def tearDown(self):
+        for store in self.stores:
+            store.close()
+        self.tmp.cleanup()
 
-    def test_security_gate_is_reusable_and_blocks_dispatch(self) -> None:
-        self.assertIn("workflow_call:", self.security)
-        self.assertNotIn("pull_request_target:", self.security)
-        self.assertIn("trusted_ref:", self.security)
-        self.assertIn("CodeQL", self.security)
-        self.assertNotIn("authorize-local-ci", self.security)
-        security_at = self.gateway.index("\n  security-gate:")
-        dispatch_at = self.gateway.index("\n  dispatch:", security_at)
-        self.assertLess(security_at, dispatch_at)
-        self.assertIn("- security-gate", self.gateway[dispatch_at:])
-        self.assertNotIn("workflow_run:", self.dispatcher)
+    def store(self, branch):
+        result = g.GitStore(str(self.remote), branch)
+        self.stores.append(result)
+        return result
 
-    def test_fallback_is_only_for_missing_manifest(self) -> None:
-        self.assertIn("let worker = await inspectWorker(pull.base.ref, true)", self.gateway)
-        self.assertIn("if (worker === null)", self.gateway)
-        self.assertIn("invalid JSON", self.gateway)
-        self.assertIn("incompatible manifest", self.gateway)
+    def result(self):
+        return {"schema": g.RESULT_SCHEMA, "task": self.task, "run_id": "20260907T120000Z-1", "status": "pass",
+                "required_checks": ["environment", "contract_tests"],
+                "checks": [{"tool_id": key, "status": "pass", "required": True, "reason": "",
+                            "execution_id": key + "-1", "exit_code": 0}
+                           for key in ("environment", "contract_tests")],
+                "reviews": {"pr_info": {"status": "pass", "summary": "clear", "evidence": []},
+                            "architecture": {"status": "pass", "summary": "compatible", "evidence": ["README.md"]}},
+                "findings": [], "blockers": [], "unfinished": [], "performance": [],
+                "environment": {"backend_enabled": True}}
 
-    def test_fallback_switches_default_to_enabled(self) -> None:
-        self.assertIn(
-            "FALLBACK_PR_ENABLED: ${{ vars.LOCAL_CI_FALLBACK_PR_ENABLED || 'true' }}",
-            self.gateway,
-        )
-        self.assertIn(
-            "FALLBACK_PUSH_ENABLED: ${{ vars.LOCAL_CI_FALLBACK_PUSH_ENABLED || 'true' }}",
-            self.gateway,
-        )
-        self.assertIn("PR fallback is disabled", self.gateway)
-        self.assertIn("Cross-branch push fallback is disabled", self.gateway)
+    def test_exact_identity_metadata_and_worker_revision(self):
+        self.assertEqual(g.validate_task(self.task), self.task)
+        self.assertTrue(self.task["external_fork"])
+        for field, value in (("title", "different"), ("worker_revision_sha", "f" * 40), ("full", True)):
+            changed = {**self.task, field: value}
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                g.validate_task(changed)
+        self.gh.pull["head"]["sha"] = "e" * 40
+        with self.assertRaises(ValueError):
+            g.prepare_task(self.gh, self.base, 7, requested_sha=self.head)
+        task_file = self.root / "task.json"
+        changed = {**self.task, "llvm_hash": "e" * 40}
+        task_file.write_bytes(g.canonical(changed))
+        with self.assertRaises(ValueError):
+            g.load_task(task_file, g.digest(self.task))
 
-    def test_manual_push_and_receiver_use_explicit_sha_fields(self) -> None:
-        self.assertIn("REQUESTED_SHA: ${{ inputs.requested_sha }}", self.gateway)
-        self.assertIn("TESTED_SHA: ${{ inputs.tested_sha }}", self.gateway)
-        pr_match_at = self.gateway.index("if (prMatch) {")
-        distinct_sha_at = self.gateway.index(
-            "PR receiver must distinguish head SHA from merge-result SHA"
-        )
-        self.assertLess(pr_match_at, distinct_sha_at)
-        self.assertIn("mode=receive", self.dispatcher)
-        self.assertIn("--status-sha", self.receiver)
-        self.assertIn("--comparison-base-sha", self.receiver)
+    def test_type_specific_information_and_multi_type_union(self):
+        for kind in g.TYPE_FIELDS:
+            with self.subTest(kind=kind):
+                self.assertEqual(g.validate_pr_info({**self.task, "description": body(kind)}), [])
+                missing = body(kind).replace("<!-- field:" + g.TYPE_FIELDS[kind][0] + " -->", "<!-- field:unused -->")
+                self.assertTrue(g.validate_pr_info({**self.task, "description": missing}))
+        self.assertEqual(g.validate_pr_info({**self.task, "description": body("fix, ci")}), [])
+        self.assertTrue(g.validate_pr_info({**self.task, "description": body().replace("docs", "- [ ] docs", 1)}))
+        self.assertEqual(g.validate_pr_info({**self.task, "description": body().replace("docs", "- [x] docs", 1)}), [])
 
-    def test_direct_push_dispatch_title_omits_full_sha(self) -> None:
-        run_name = self.dispatcher.splitlines()[1]
-        self.assertIn("format('Push {0} | dispatch'", run_name)
-        self.assertNotIn("inputs.commit_sha || github.sha", run_name)
+    def test_external_fork_cannot_use_an_unprotected_environment(self):
+        g.validate_approval_environment(self.gh)
+        for environment in ({}, {"protection_rules": []}, {"protection_rules": [{"type": "required_reviewers", "reviewers": []}]}):
+            self.gh.environment = environment
+            with self.subTest(environment=environment), self.assertRaises(ValueError):
+                g.validate_approval_environment(self.gh)
 
-    def test_required_statuses_target_the_tested_revision(self) -> None:
-        self.assertIn("`${process.env.STATUS_CONTEXT}/routing`", self.gateway)
-        self.assertIn("sha: process.env.TESTED_SHA", self.gateway)
-        self.assertNotIn(
-            "sha: process.env.EXPECTED_HEAD_SHA || process.env.TESTED_SHA",
-            self.gateway,
-        )
-        self.assertGreaterEqual(
-            self.dispatcher.count(
-                "STATUS_SHA: ${{ steps.meta.outputs.tested_sha }}"
-            ),
-            2,
-        )
-        self.assertNotIn(
-            "STATUS_SHA: ${{ steps.meta.outputs.head_sha }}", self.dispatcher
-        )
-        self.assertIn('--status-sha "${TESTED_SHA}"', self.receiver)
-        self.assertNotIn("EXPECTED_HEAD_SHA:-${TESTED_SHA}", self.receiver)
+    def test_real_git_enqueue_manifest_last_and_idempotent_retry(self):
+        control = self.store(g.CONTROL_BRANCH)
+        g.enqueue(self.task, self.gh, control, self.source)
+        self.assertEqual(control.get("tasks/" + self.task["task_id"] + ".json"), self.task)
+        self.assertEqual(control.get("current/" + g.current_key(self.task) + ".json")["task_id"], self.task["task_id"])
+        for key, ref in (("tested_sha", "task_ref"), ("base_sha", "base_task_ref"), ("head_sha", "head_task_ref")):
+            actual = git(self.root, "--git-dir=" + str(self.remote), "rev-parse", "refs/heads/" + self.task[ref])
+            self.assertEqual(actual, self.task[key])
+        retry = {**self.task, "captured_at": "2099-01-01T00:00:00Z"}
+        g.enqueue(retry, self.gh, control, self.source)
+        self.assertEqual(control.get("tasks/" + self.task["task_id"] + ".json"), self.task)
 
-    def test_pages_are_branch_isolated(self) -> None:
-        guard = "github.ref_name == (vars.LOCAL_CI_PAGES_BRANCH || 'CI_dev')"
-        self.assertIn(guard, self.pages)
-        self.assertIn("Cross-branch result only updates commit status", self.receiver)
+    def test_lifecycle_cancellation_reaches_gitee(self):
+        control = self.store(g.CONTROL_BRANCH)
+        g.enqueue(self.task, self.gh, control, self.source)
+        for update in ({"draft": True}, {"state": "closed"}, {"body": body("fix")}):
+            self.gh.pull.update(update)
+            self.assertFalse(g.is_current(self.gh, self.task))
+        self.assertEqual(g.cancel_obsolete(self.gh, control, 7), 1)
+        self.assertEqual(g.cancel_obsolete(self.gh, control, 7), 0)
+        self.assertEqual(control.get("cancel/" + self.task["task_id"] + ".json")["task_id"], self.task["task_id"])
 
-    def test_pages_use_gitee_username_for_authentication(self) -> None:
-        self.assertIn(
-            "GITEE_USERNAME: ${{ vars.GITEE_USERNAME || 'likehupochuan' }}",
-            self.pages,
-        )
-        self.assertIn(
-            '*Username*) printf \'%s\\n\' "${GITEE_USERNAME}"', self.pages
-        )
-        self.assertNotIn(
-            '*Username*) printf \'%s\\n\' "${GITEE_RESULTS_OWNER}"', self.pages
-        )
+    def test_result_receipt_requires_status_comment_then_dashboard_success(self):
+        control = self.store(g.CONTROL_BRANCH)
+        g.enqueue(self.task, self.gh, control, self.source)
+        results = self.store(g.RESULTS_BRANCH)
+        result = self.result()
+        name = "runs/v4/" + self.task["task_id"] + "/" + result["run_id"] + "/result.json"
+        results.put({name: result})
+        receipts = g.collect_results(self.gh, control, results, self.root / "dashboard")
+        receipt_name = "receipts/" + self.task["task_id"] + "/" + result["run_id"] + ".json"
+        self.assertIsNone(control.get(receipt_name))
+        self.assertEqual(receipts[0]["result_digest"], hashlib.sha256((results.root / name).read_bytes()).hexdigest())
+        self.assertEqual(self.gh.statuses[-1][1], "success")
+        self.assertIn("Local CI", self.gh.comments[-1])
+        g.acknowledge(self.gh, control, results, receipts)
+        self.assertEqual(control.get(receipt_name)["status"], "complete")
+        again = g.collect_results(self.gh, control, results, self.root / "dashboard")
+        self.assertEqual(again, [])
+        self.gh.pull["draft"] = True
+        self.assertEqual(g.collect_results(self.gh, control, results, self.root / "dashboard"), [])
 
-    def test_cancellation_removes_every_pr_ref(self) -> None:
-        for prefix in ("ci/base/", "ci/head/", "ci/meta/"):
-            self.assertIn(prefix, self.gateway)
+    def test_comment_failure_does_not_acknowledge(self):
+        control = self.store(g.CONTROL_BRANCH)
+        g.enqueue(self.task, self.gh, control, self.source)
+        results = self.store(g.RESULTS_BRANCH)
+        result = self.result()
+        results.put({"runs/v4/" + self.task["task_id"] + "/" + result["run_id"] + "/result.json": result})
+        with patch.object(self.gh, "comment", side_effect=RuntimeError("comment unavailable")):
+            self.assertEqual(g.collect_results(self.gh, control, results, self.root / "dashboard"), [])
+        snapshot = json.loads((self.root / "dashboard/v4-tasks.json").read_text())
+        self.assertEqual(snapshot["tasks"][0]["status"], "infra_error")
+        self.assertFalse((control.root / "receipts").exists())
 
-    def test_api_compatible_resolves_old_comment(self) -> None:
-        notify = (ROOT / ".github/workflows/api-breaking-notify.yml").read_text()
-        self.assertIn("Resolved: the latest public API compatibility result is compatible.", notify)
+    def test_infrastructure_failure_can_report_but_cancelled_receipt_cannot_complete(self):
+        control = self.store(g.CONTROL_BRANCH)
+        g.enqueue(self.task, self.gh, control, self.source)
+        results = self.store(g.RESULTS_BRANCH)
+        result = self.result()
+        result.update(status="infra_error", checks=[], required_checks=[], reviews={}, unfinished=["environment failed"])
+        results.put({"runs/v4/" + self.task["task_id"] + "/" + result["run_id"] + "/result.json": result})
+        with patch.object(g, "trusted_minimum", side_effect=AssertionError("broken version need not be read for a failing result")):
+            receipts = g.collect_results(self.gh, control, results, self.root / "dashboard")
+        self.assertEqual(len(receipts), 1)
+        with self.assertRaises(ValueError):
+            g.acknowledge(self.gh, control, results, [{**receipts[0], "tested_sha": "e" * 40}])
+        control.put({"cancel/" + self.task["task_id"] + ".json": {"task_id": self.task["task_id"], "reason": "cancel after collection"}})
+        g.acknowledge(self.gh, control, results, receipts)
+        self.assertIsNone(control.get("receipts/" + self.task["task_id"] + "/" + result["run_id"] + ".json"))
+
+    def test_invalid_results_cannot_claim_success(self):
+        for mutate in (
+            lambda r: r.update(required_checks=[]),
+            lambda r: r["checks"][0].update(status="not_applicable", reason="AI chose to skip"),
+            lambda r: r["reviews"]["architecture"].update(evidence=[]),
+            lambda r: r.update(blockers=["deterministic regression"]),
+            lambda r: r.update(run_id="../../escape"),
+            lambda r: r["task"].update(worker_revision_sha="e" * 40),
+        ):
+            result = copy.deepcopy(self.result())
+            mutate(result)
+            with self.subTest(mutation=mutate), self.assertRaises(ValueError):
+                g.validate_result(result, self.task)
+
+    def test_optimistic_control_writes_preserve_other_writer(self):
+        first, second = self.store(g.CONTROL_BRANCH), self.store(g.CONTROL_BRANCH)
+        first.put({"a.json": {"a": 1}})
+        second.put({"b.json": {"b": 2}})
+        first.refresh()
+        self.assertEqual(first.get("a.json"), {"a": 1})
+        self.assertEqual(first.get("b.json"), {"b": 2})
+        with self.assertRaises(ValueError):
+            first.put({"a.json": {"a": 3}}, ("a.json",))
+
+    def test_security_scans_real_git_diff(self):
+        (self.source / "unsafe.py").write_text("import socket\n")
+        git(self.source, "add", ".")
+        git(self.source, "commit", "-qm", "unsafe")
+        tested = git(self.source, "rev-parse", "HEAD")
+        with tempfile.TemporaryDirectory() as output:
+            original = Path.cwd()
+            try:
+                import os
+                os.chdir(output)
+                self.assertEqual(g.security_diff(self.source, self.base, tested), 1)
+            finally:
+                os.chdir(original)
+
+    def test_sarif_severity_gate_executes(self):
+        folder = self.root / "sarif"
+        folder.mkdir()
+        document = {"runs": [{"tool": {"driver": {"rules": [{"id": "r", "properties": {"security-severity": "7.5"}}]}},
+                              "results": [{"ruleId": "r", "level": "warning"}]}]}
+        (folder / "result.sarif").write_text(json.dumps(document))
+        self.assertEqual(len(g.sarif_failures(folder)), 1)
+        document["runs"][0]["results"] = []
+        (folder / "result.sarif").write_text(json.dumps(document))
+        self.assertEqual(g.sarif_failures(folder), [])
+
+    def test_production_transport_allowlists(self):
+        with self.assertRaises(ValueError):
+            g.GitHub("RACE-org/triton-anchor")
+        with self.assertRaises(ValueError):
+            g.GitStore("https://github.com/RACE-org/triton-anchor", g.CONTROL_BRANCH)
+
+    def test_http_status_and_idempotent_comment_writeback(self):
+        calls, comments = [], []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps(comments).encode())
+
+            def do_POST(self):
+                data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                calls.append(("POST", self.path, data))
+                if self.path.endswith("/comments"):
+                    comments.append({"id": 11, "user": {"type": "Bot"}, **data})
+                self.send_response(201)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def do_PATCH(self):
+                data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                calls.append(("PATCH", self.path, data))
+                comments[0].update(data)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = g.GitHub(g.REPOSITORY, f"http://127.0.0.1:{server.server_port}", token="fake-local-token")
+            client.status(self.task, "pending", "Queued")
+            client.comment(self.task, "first report")
+            client.comment(self.task, "first report")
+            client.comment(self.task, "updated report")
+            self.assertEqual(len(calls), 4)
+            self.assertEqual(calls[-1][0], "PATCH")
+            self.assertTrue(comments[0]["body"].startswith(g.MARKER))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+
+class WorkflowStructureTests(unittest.TestCase):
+    def test_reusable_dag_and_router_contract(self):
+        import yaml
+        worker_text = (ROOT / ".github/workflows/ci-gateway.yml").read_text()
+        data = yaml.load(worker_text, Loader=yaml.BaseLoader)
+        jobs = data["jobs"]
+        self.assertEqual(jobs["basic"]["needs"], "prepare")
+        self.assertIn("basic", jobs["api"]["needs"])
+        self.assertIn("api", jobs["security"]["needs"])
+        self.assertIn("security", jobs["review-card"]["needs"])
+        self.assertIn("review-card", jobs["approve-external-fork"]["needs"])
+        self.assertIn("approve-external-fork", jobs["enqueue"]["needs"])
+        for name in ("ci_basic.yml", "api-compat.yml", "security-gate.yml"):
+            workflow = yaml.load((ROOT / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
+            self.assertEqual(set(workflow["on"]), {"workflow_call"})
+        router = ROOT.parent / "triton-anchor-main/.github/workflows/ci-gateway.yml"
+        if router.exists():
+            self.assertEqual(router.read_text().rstrip(), worker_text.split("\n  cancel-obsolete:", 1)[0].rstrip())
 
 
 if __name__ == "__main__":
