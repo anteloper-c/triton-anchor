@@ -17,3 +17,5 @@
 | main 本地提交 | 4fc20aecb82113ca94c2043710cc6970b222eedf：仅统一路由、PR 模板和旧重复入口清理。未推送。 |
 
 未验证：真实公司模型响应、LLVM/厂商后端编译、硬件/仿真运行、真实邮件、线上 GitHub/Gitee 回写及服务器部署。所有 fixture 日志明确标为 simulation。
+
+本地 CI_dev 实施提交：`93f869f6a7523d1b6acb129886da552c24133425`；main 调度提交：`4fc20aecb82113ca94c2043710cc6970b222eedf`。本文件后的审计提交仅登记交付关联，不改变经过验收的执行代码。各项要求、实现与测试证据对应关系见 [验收覆盖](ci_v4_verification/coverage.md)，机器可读提交记录见 [commits.json](ci_v4_verification/commits.json)。
