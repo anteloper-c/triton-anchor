@@ -53,7 +53,8 @@ jobs:
           WATCHDOG_WORKER: ${{ vars.LOCAL_CI_WORKER_ID }}
           WATCHDOG_MAX_AGE: ${{ vars.LOCAL_CI_HEARTBEAT_MAX_AGE_SECONDS || '1800' }}
           SMTP_HOST: ${{ vars.LOCAL_CI_SMTP_HOST }}
-          SMTP_PORT: ${{ vars.LOCAL_CI_SMTP_PORT || '587' }}
+          SMTP_SSL: ${{ vars.LOCAL_CI_SMTP_SSL == 'true' }}
+          SMTP_PORT: ${{ vars.LOCAL_CI_SMTP_PORT }}
           SMTP_FROM: ${{ secrets.LOCAL_CI_SMTP_FROM }}
           EMAIL_HERON_MC: ${{ secrets.LOCAL_CI_EMAIL_HERON_MC }}
           EMAIL_LIKEHUPOCHUAN: ${{ secrets.LOCAL_CI_EMAIL_LIKEHUPOCHUAN }}
@@ -65,6 +66,7 @@ jobs:
           missing = [name for name in required if not os.environ.get(name)]
           if missing:
               raise SystemExit('Watchdog configuration is incomplete: ' + ', '.join(missing))
+          smtp_ssl = os.environ.get('SMTP_SSL') == 'true'
           config = {
               'worker_id': os.environ['WATCHDOG_WORKER'],
               'state_dir': str(Path('.watchdog-state').resolve()),
@@ -74,8 +76,8 @@ jobs:
               'smtp': {
                   'accounts': ['heron-mc', 'likehupochuan'],
                   'account_emails': {'heron-mc': os.environ['EMAIL_HERON_MC'], 'likehupochuan': os.environ['EMAIL_LIKEHUPOCHUAN']},
-                  'host': os.environ['SMTP_HOST'], 'port': int(os.environ['SMTP_PORT']),
-                  'from': os.environ['SMTP_FROM'], 'starttls': True,
+                  'host': os.environ['SMTP_HOST'], 'port': int(os.environ.get('SMTP_PORT') or (465 if smtp_ssl else 587)),
+                  'from': os.environ['SMTP_FROM'], 'ssl': smtp_ssl, 'starttls': not smtp_ssl,
                   'username_env': 'LOCAL_CI_SMTP_USERNAME', 'password_env': 'LOCAL_CI_SMTP_PASSWORD'
               }
           }
