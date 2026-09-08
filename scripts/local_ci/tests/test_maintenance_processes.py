@@ -227,6 +227,33 @@ raise SystemExit(module.main(['run',sys.argv[2]]))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_dead(int(result.stdout.strip()))
 
+    def test_internal_timeout_stops_registered_group(self):
+        # Even a regressed launcher leaves no long-lived fixture processes.
+        child = 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(5)'
+        code = ('import os,signal,subprocess,sys,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); '
+                'p=subprocess.Popen([sys.executable,"-c",' + repr(child) + ']); '
+                'print(os.getpid(),p.pid,flush=True); time.sleep(5)')
+        spec = json.loads(base64.urlsafe_b64decode(self.spec([sys.executable, '-c', code])))
+        spec['timeout'] = 0.5
+        self.payload = base64.urlsafe_b64encode(json.dumps(spec).encode()).decode()
+        result = subprocess.run(self.command('run', self.payload), capture_output=True, text=True, timeout=12)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('TimeoutExpired', result.stderr)
+        for pid in result.stdout.split():
+            self.assert_dead(int(pid))
+        self.assertEqual(len(result.stdout.split()), 2)
+        self.assertFalse((Path('/tmp') / f'anchor-ci-processes-{os.geteuid()}' / (self.ident + '.json')).exists())
+
+    def test_invalid_internal_timeout_cannot_start_a_child(self):
+        for timeout in (0, -1, True, None, float('nan'), float('inf')):
+            with self.subTest(timeout=timeout):
+                spec = json.loads(base64.urlsafe_b64decode(self.spec([sys.executable, '-c', 'print("must not run")'])))
+                spec['timeout'] = timeout
+                payload = base64.urlsafe_b64encode(json.dumps(spec).encode()).decode()
+                result = subprocess.run(self.command('run', payload), capture_output=True, text=True, timeout=5)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, '')
+
     @unittest.skipUnless(hasattr(os, 'geteuid') and os.geteuid() == 0 and os.environ.get('LOCAL_CI_PROCESS_CLEANUP_TEST') == '1', 'requires an explicitly reserved idle acceptance worker')
     def test_root_sweep_catches_setsid_escape_and_uid_directories_are_separate(self):
         for uid in (1000, 1001):

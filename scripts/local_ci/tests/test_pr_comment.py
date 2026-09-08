@@ -130,6 +130,27 @@ class PRCommentTests(unittest.TestCase):
         self.assertIn('尚未确认由本次改动引入', body)
         self.assertEqual(result, before)
 
+    def test_preparation_failure_explains_the_action_without_internal_commands(self):
+        for diagnostic in (
+            "Command '['docker', 'exec', '--user', '0', 'anchor-ci-production-3-0', "
+            "'cp', '-a', '/opt/ci-venv', '/workspace/tasks/example/run/venv']' timed out after 60 seconds",
+            'worker preparation failed: subprocess.TimeoutExpired: cp /opt/ci-venv',
+            'task environment copy is incomplete; preserve this run and dispatch a new task',
+            'worker cleanup failed; lease retained: root preparation cleanup is unconfirmed',
+        ):
+            with self.subTest(diagnostic=diagnostic):
+                _, _, result = result_fixture()
+                result.update(conclusion='error', ai_review={}, evidence=[],
+                              blocking_reasons=[diagnostic])
+                result['checks'] = []
+                before = copy.deepcopy(result)
+                body = receiver.render_comment(result, 'https://example.test/report')
+                self.assertIn('需要维护者处理后重新执行', body)
+                self.assertIn('尚无可核对的检查或审查记录', body)
+                for internal in ('docker', '/opt/', '/workspace/', 'lease', 'dispatch', 'TimeoutExpired'):
+                    self.assertNotIn(internal, body)
+                self.assertEqual(result, before)
+
     def test_legacy_codes_and_markup_do_not_leak_into_public_prose(self):
         text = receiver.comment_text('context.changed_paths 与冻结 diff 一致。预检 pr_information/basic/api/security 均为 success。'
                                      '<script>alert(1)</script> @reviewer [click](https://evil.test) command-0003 ' + 'a' * 40)

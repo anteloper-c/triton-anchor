@@ -114,6 +114,9 @@ class Engine:
         self.workspace = Path(config['workspace_host'])
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.docker = config.get('docker', 'docker')
+        self.preparation_record = None
+        self.preparation_task_id = None
+        self.preparation_cleanup_failed = False
 
     def heartbeat(self, phase, task_id=None, error=None):
         record = {'heartbeat_at': time.time(), 'state': phase, 'task_id': task_id, 'error': error}
@@ -122,13 +125,64 @@ class Engine:
             write_json(self.state / 'health/task.json', {**record, 'phase': phase,
                        'started_at': getattr(self, 'task_started', time.time())})
 
+    def stop_preparation(self, profile, saved):
+        """Stop only this trusted invocation, including a delayed Docker exec."""
+        if saved['container'] != profile['container']['name'] or saved['profile_id'] != profile['id']:
+            raise RuntimeError('saved preparation belongs to another worker')
+        payload = base64.urlsafe_b64encode(json.dumps(saved['spec']).encode()).decode()
+        stopped = subprocess.run([self.docker, 'exec', '--user', saved['user'], saved['container'],
+            '/usr/bin/python3', '-I', '/opt/anchor-ci/runtime/container_process.py', 'stop', payload],
+            capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        if stopped.returncode:
+            raise RuntimeError('worker preparation cleanup could not be confirmed')
+
     def docker_run(self, profile, *args, user='0'):
-        result = subprocess.run([self.docker, 'exec', '--user', user,
-                  profile['container']['name'], *args], capture_output=True, text=True, timeout=60,
-                  creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-        if result.returncode:
-            raise RuntimeError('worker preparation failed: ' + result.stderr[-1000:])
-        return result.stdout
+        timeout = self.config.get('preparation_timeout', 300)
+        if type(timeout) is not int or timeout <= 0:
+            raise ValueError('preparation_timeout must be a positive integer')
+        if self.preparation_cleanup_failed:
+            raise RuntimeError('worker preparation cleanup failed; lease retained')
+        spec = {'id': 'prepare-' + secrets.token_hex(16), 'argv': list(args), 'cwd': '/', 'timeout': timeout}
+        saved = {'profile_id': profile['id'], 'container': profile['container']['name'], 'user': user, 'spec': spec}
+        if self.preparation_record:
+            write_json(self.preparation_record, saved)
+        payload = base64.urlsafe_b64encode(json.dumps(spec).encode()).decode()
+        argv = [self.docker, 'exec', '--user', user, saved['container'], '/usr/bin/python3', '-I',
+                '/opt/anchor-ci/runtime/container_process.py', 'run', payload]
+        process = None
+        try:
+            process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            deadline = time.monotonic() + timeout + 30
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired('worker preparation', timeout + 30)
+                try:
+                    stdout, stderr = process.communicate(timeout=min(20, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    if self.preparation_task_id:
+                        self.heartbeat('preparing', self.preparation_task_id)
+            if process.returncode:
+                raise RuntimeError('worker preparation failed: ' + stderr[-1000:])
+        except BaseException:
+            try:
+                self.stop_preparation(profile, saved)
+            except Exception:
+                self.preparation_cleanup_failed = True
+                raise RuntimeError('worker preparation cleanup unconfirmed; lease retained') from None
+            finally:
+                if process is not None and process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=10)
+            if self.preparation_record:
+                self.preparation_record.unlink(missing_ok=True)
+            raise
+        if self.preparation_record:
+            self.preparation_record.unlink(missing_ok=True)
+        return stdout
 
     def prepare_agent_home(self, profile):
         settings = self.config['codex']
@@ -143,6 +197,20 @@ class Engine:
         self.docker_run(profile, 'chown', '-R', profile.get('agent_user', '1001:1000'), agent_home)
         self.docker_run(profile, 'chmod', '700', agent_home)
         return agent_home
+
+    def prepare_venv(self, profile, host_task, container_task, output):
+        """A directory alone does not prove an interrupted seed copy completed."""
+        marker = output / 'venv-ready.json'
+        expected = {'profile_id': profile['id'], 'seed': profile.get('seed_venv', '/opt/ci-venv'),
+                    'path': container_task + '/venv'}
+        target = host_task / 'venv'
+        if target.exists() or marker.exists():
+            if target.is_symlink() or not target.is_dir() or not marker.is_file() or read_json(marker) != expected:
+                raise RuntimeError('task environment copy is incomplete; preserve this run and dispatch a new task')
+            return
+        self.docker_run(profile, 'cp', '-a', expected['seed'], expected['path'])
+        self.docker_run(profile, 'chown', '-R', '1000:1000', expected['path'])
+        write_json(marker, expected)
 
     def execute_codex(self, spec, prefix, environment, output, cancelled, validate):
         """Keep the broker/lease alive across at most two transient service errors."""
@@ -233,9 +301,20 @@ class Engine:
 
     def run(self, task, profile, resume_record=None):
         validate_task(task, self.config.get('repository', 'anteloper-c/triton-anchor'))
+        self.preparation_record = None
+        self.preparation_task_id = None
+        self.preparation_cleanup_failed = False
         if resume_record:
             validate_result_path(Path(resume_record).relative_to(self.state).as_posix(), task,
                                  read_json(resume_record)['run_id'], 'execution.json')
+            pending = Path(resume_record).with_name('preparation.json')
+            if pending.exists():
+                # Poller released the interrupted lease; reserve it again before
+                # touching the exact root process or any partially copied files.
+                self.manager.acquire(profile, task['task_id'])
+                self.stop_preparation(profile, read_json(pending))
+                pending.unlink()
+                self.manager.release(profile, task['task_id'])
         configured_profile = profile
         profile = copy.deepcopy(profile)
         # Acquire before creating an execution journal: maintenance/busy means queued.
@@ -342,6 +421,8 @@ class Engine:
         write_json(output / 'task.json', task)
         write_json(output / 'execution.json', {'profile_id': profile['id'], 'host_task': str(host_task),
                   'run_id': run_id, 'started_at': started_at, 'phase': 'preparing'})
+        self.preparation_record = output / 'preparation.json'
+        self.preparation_task_id = task['task_id']
         try:
             if preparation_error:
                 raise RuntimeError(preparation_error)
@@ -361,9 +442,7 @@ class Engine:
             self.docker_run(profile, 'chmod', '2770', container_task + '/artifacts/custom')
             self.docker_run(profile, 'chown', '-R', profile.get('agent_user', '1001:1000'), container_task + '/agent')
             self.docker_run(profile, 'chmod', '700', container_task + '/agent')
-            if not (host_task / 'venv').exists():
-                self.docker_run(profile, 'cp', '-a', profile.get('seed_venv', '/opt/ci-venv'), container_task + '/venv')
-            self.docker_run(profile, 'chown', '-R', '1000:1000', container_task + '/venv')
+            self.prepare_venv(profile, host_task, container_task, output)
             from .performance import prepare_baselines
             context['performance_baselines'] = prepare_baselines(self.config, profile, task, host_task, container_task)
             if (host_task / 'baselines').exists():
@@ -451,11 +530,15 @@ class Engine:
             broker.stop()
             if lease:
                 try:
+                    if self.preparation_cleanup_failed:
+                        raise RuntimeError('root preparation cleanup is unconfirmed')
                     self.docker_run(profile, '/usr/bin/python3', '-I',
                                     '/opt/anchor-ci/runtime/container_process.py', 'clean-users')
                     self.manager.release(profile, task['task_id'])
                 except Exception as exc:
                     failure = f'worker cleanup failed; lease retained: {exc}'
+            self.preparation_record = None
+            self.preparation_task_id = None
         def unchanged(path, expected):
             candidate = source / path
             if expected.startswith('symlink:'):

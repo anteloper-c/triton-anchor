@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from runtime.common import digest, git, read_json, write_json  # noqa: E402
 from runtime.poller import Poller  # noqa: E402
+from runtime.engine import Engine  # noqa: E402
 from runtime.result_paths import run_relative  # noqa: E402
 
 
@@ -155,6 +157,140 @@ class PublicationRecoveryTests(unittest.TestCase):
         worker = Path(self.config["state_dir"]) / "workers" / "cpu.json"
         if worker.exists():
             self.assertIsNone(read_json(worker).get("lease"))
+
+
+class PreparationRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.profile = {'id': 'fixture', 'triton_version': '3.3', 'container': {'name': 'persistent-fixture'}}
+        config = {'state_dir': str(self.root / 'state'), 'workspace_host': str(self.root / 'workspace'),
+                  'local_acceptance': True, 'codex': {}}
+        self.engine = Engine(config, mock.Mock(), mock.Mock())
+        self.output = self.root / 'output'
+        self.output.mkdir()
+        self.engine.preparation_record = self.output / 'preparation.json'
+        self.engine.preparation_task_id = 'prepare-task'
+
+    def process(self, returncode=0):
+        process = mock.Mock(returncode=returncode)
+        process.communicate.return_value = ('prepared', 'fixture error')
+        process.poll.return_value = returncode
+        return process
+
+    def task(self):
+        return {'schema': 'triton-anchor-local-ci-task-metadata', 'repository': 'anteloper-c/triton-anchor',
+                'task_id': 'prepare-task', 'task_ref': 'ci/push/main', 'event_kind': 'push', 'pr_number': 0,
+                'target_branch': 'main', 'target_sha': 'a' * 40, 'tested_sha': 'a' * 40, 'head_sha': 'a' * 40,
+                'base_sha': 'a' * 40, 'worker_revision_sha': 'b' * 40, 'captured_at': '2026-09-08T10:00:00Z'}
+
+    def test_long_preparation_has_internal_deadline_and_fresh_heartbeat(self):
+        process = self.process()
+        process.communicate.side_effect = [subprocess.TimeoutExpired('fixture', 20), ('prepared', '')]
+        with mock.patch('runtime.engine.subprocess.Popen', return_value=process) as spawn, \
+             mock.patch.object(self.engine, 'stop_preparation') as stop:
+            self.assertEqual(self.engine.docker_run(self.profile, 'cp', '-a', '/opt/ci-venv', '/workspace/venv'), 'prepared')
+        spec = json.loads(base64.urlsafe_b64decode(spawn.call_args.args[0][-1]))
+        self.assertEqual(spec['timeout'], 300)
+        self.assertNotIn('env', spec)
+        self.assertNotIn('env', spawn.call_args.kwargs)
+        self.assertEqual(read_json(self.engine.state / 'health/task.json')['phase'], 'preparing')
+        self.assertEqual(process.communicate.call_count, 2)
+        self.assertFalse(self.engine.preparation_record.exists())
+        stop.assert_not_called()
+
+    def test_host_deadline_stops_exact_spec_and_reaps_client(self):
+        process = self.process()
+        process.poll.return_value = None
+        process.communicate.side_effect = [subprocess.TimeoutExpired('fixture', 20), ('', '')]
+        self.engine.config['preparation_timeout'] = 5
+        with mock.patch('runtime.engine.subprocess.Popen', return_value=process), \
+             mock.patch('runtime.engine.time.monotonic', side_effect=[0, 0, 35]), \
+             mock.patch.object(self.engine, 'stop_preparation') as stop:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                self.engine.docker_run(self.profile, 'cp', '-a', '/seed', '/target')
+        self.assertEqual(stop.call_args.args[1]['spec']['argv'], ['cp', '-a', '/seed', '/target'])
+        self.assertEqual(stop.call_args.args[1]['spec']['timeout'], 5)
+        process.kill.assert_called_once()
+        self.assertFalse(self.engine.preparation_record.exists())
+
+    def test_unconfirmed_stop_preserves_spec_for_recovery(self):
+        process = self.process(returncode=1)
+        with mock.patch('runtime.engine.subprocess.Popen', return_value=process), \
+             mock.patch.object(self.engine, 'stop_preparation', side_effect=RuntimeError('unreachable')):
+            with self.assertRaisesRegex(RuntimeError, 'lease retained'):
+                self.engine.docker_run(self.profile, 'cp', '-a', '/seed', '/target')
+        saved = read_json(self.engine.preparation_record)
+        self.assertEqual(saved['spec']['argv'], ['cp', '-a', '/seed', '/target'])
+        self.assertEqual(saved['user'], '0')
+        self.assertTrue(self.engine.preparation_cleanup_failed)
+
+    def test_interrupted_copy_without_ready_marker_is_never_reused(self):
+        task = self.root / 'task'
+        task.mkdir()
+        def copy_then_fail(profile, *args):
+            if args[0] == 'cp':
+                (task / 'venv').mkdir()
+            else:
+                raise RuntimeError('permission step interrupted')
+        with mock.patch.object(self.engine, 'docker_run', side_effect=copy_then_fail):
+            with self.assertRaisesRegex(RuntimeError, 'permission step interrupted'):
+                self.engine.prepare_venv(self.profile, task, '/workspace/task', self.output)
+        self.assertFalse((self.output / 'venv-ready.json').exists())
+        with mock.patch.object(self.engine, 'docker_run') as execute:
+            with self.assertRaisesRegex(RuntimeError, 'copy is incomplete'):
+                self.engine.prepare_venv(self.profile, task, '/workspace/task', self.output)
+        execute.assert_not_called()
+
+    def test_ready_marker_is_written_after_copy_and_permissions_then_reused(self):
+        task = self.root / 'task'
+        task.mkdir()
+        def prepare(profile, *args):
+            self.assertFalse((self.output / 'venv-ready.json').exists())
+            if args[0] == 'cp':
+                (task / 'venv').mkdir()
+        with mock.patch.object(self.engine, 'docker_run', side_effect=prepare) as execute:
+            self.engine.prepare_venv(self.profile, task, '/workspace/task', self.output)
+            self.assertEqual(execute.call_count, 2)
+            self.engine.prepare_venv(self.profile, task, '/workspace/task', self.output)
+            self.assertEqual(execute.call_count, 2)
+
+    def test_resume_stops_saved_preparation_before_work_and_retains_failed_lease(self):
+        task = self.task()
+        record = self.engine.state / run_relative(task, 'preserved') / 'execution.json'
+        write_json(record, {'run_id': 'preserved'})
+        saved = {'spec': {'id': 'exact-old-invocation'}}
+        write_json(record.with_name('preparation.json'), saved)
+        with mock.patch.object(self.engine, 'stop_preparation', side_effect=RuntimeError('stop unavailable')) as stop:
+            with self.assertRaisesRegex(RuntimeError, 'stop unavailable'):
+                self.engine.run(task, self.profile, resume_record=record)
+        self.engine.manager.acquire.assert_called_once_with(self.profile, task['task_id'])
+        stop.assert_called_once_with(self.profile, saved)
+        self.engine.manager.release.assert_not_called()
+        self.engine.relay.checkout.assert_not_called()
+        self.assertEqual(read_json(record.with_name('preparation.json')), saved)
+
+    def test_failed_root_cleanup_prevents_finally_releasing_worker(self):
+        relay = self.engine.relay
+        relay.current.return_value, relay.changed_paths.return_value = True, ['README.md']
+        def checkout(sha, path):
+            path.mkdir()
+            (path / 'README.md').write_text('frozen fixture')
+            return {'README.md': digest(path / 'README.md')}
+        relay.checkout.side_effect = checkout
+        def failed_preparation(*args):
+            self.engine.preparation_cleanup_failed = True
+            raise RuntimeError('root process cleanup unconfirmed')
+        with mock.patch.object(self.engine, 'docker_run', side_effect=failed_preparation) as execute, \
+             mock.patch('runtime.control.verify_control', return_value={'tree_sha256': 'fixture', 'verified': False}), \
+             mock.patch('runtime.control.verify_container_control', return_value={'verified': False}):
+            output, result = self.engine.run(self.task(), self.profile)
+        self.engine.manager.acquire.assert_called_once()
+        self.engine.manager.release.assert_not_called()
+        execute.assert_called_once()
+        self.assertEqual(result['conclusion'], 'error')
+        self.assertTrue(any('lease retained' in reason for reason in result['blocking_reasons']))
 
 
 class AdmissionRejectionTests(unittest.TestCase):

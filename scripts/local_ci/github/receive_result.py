@@ -312,6 +312,10 @@ def comment_text(value) -> str:
         return '审查服务暂时繁忙，重试后仍未完成；需要重新运行。'
     if re.search(r'Codex.*(?:timeout|budget exhausted)', text, re.I):
         return '审查达到运行时间上限，尚未完成；需要补齐验证。'
+    if (text.startswith(('worker preparation', 'task environment copy is incomplete',
+                         'worker cleanup failed; lease retained')) or
+            re.search(r"^Command .*'cp'.*timed out after ", text)):
+        return 'CI 运行环境准备未完成，需要维护者处理后重新执行；详细原因见完整报告。'
     replacements = {
         'context.changed_paths': '变更文件清单', 'broker policy': '检查范围',
         'broker status': '检查进度', 'context': '变更信息', '冻结 diff': '改动差异',
