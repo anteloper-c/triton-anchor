@@ -75,7 +75,8 @@ class Broker:
                   self.profile['container']['name'], '/usr/bin/python3', '-I', '/opt/anchor-ci/runtime/container_process.py']
         argv = prefix + ['run', encoded]
         def stop():
-            subprocess.run(prefix + ['stop', encoded], capture_output=True, timeout=15)
+            subprocess.run(prefix + ['stop', encoded], capture_output=True, timeout=15,
+                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self.active = stop
         log = self.output / 'logs' / (receipt_id + '.log')
         started = utcnow()

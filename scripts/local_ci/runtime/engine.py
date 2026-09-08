@@ -37,7 +37,8 @@ class Engine:
 
     def docker_run(self, profile, *args, user='0'):
         result = subprocess.run([self.docker, 'exec', '--user', user,
-                  profile['container']['name'], *args], capture_output=True, text=True, timeout=60)
+                  profile['container']['name'], *args], capture_output=True, text=True, timeout=60,
+                  creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         if result.returncode:
             raise RuntimeError('worker preparation failed: ' + result.stderr[-1000:])
         return result.stdout
@@ -50,7 +51,8 @@ class Engine:
         if settings.get('auth_file'):
             subprocess.run([self.docker, 'cp', settings['auth_file'],
                 profile['container']['name'] + ':' + agent_home + '/auth.json'],
-                check=True, capture_output=True, timeout=30)
+                check=True, capture_output=True, timeout=30,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self.docker_run(profile, 'chown', '-R', profile.get('agent_user', '1001:1000'), agent_home)
         self.docker_run(profile, 'chmod', '700', agent_home)
         return agent_home
@@ -110,7 +112,8 @@ class Engine:
             try:
                 outcome = execute(prefix + ['run', encoded], log, env=environment, timeout=remaining,
                     cancelled=cancelled.is_set, terminate=lambda encoded=encoded: subprocess.run(
-                        prefix + ['stop', encoded], env=environment, capture_output=True, timeout=15))
+                        prefix + ['stop', encoded], env=environment, capture_output=True, timeout=15,
+                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)))
             except Exception as exc:
                 failure = 'Codex execution failed: ' + str(exc)
                 attempts.append({'attempt': attempt, 'log_path': log.name, 'error': failure})
@@ -469,7 +472,8 @@ class Engine:
             self.heartbeat('publish_pending', task['task_id'], safe_diagnostic)
             execute(prefix + ['run', encoded], Path(record).parent / 'publication-recovery.jsonl', env=env,
                     timeout=settings.get('publication_recovery_timeout', 180),
-                    terminate=lambda: subprocess.run(prefix + ['stop', encoded], env=env, capture_output=True, timeout=15))
+                    terminate=lambda: subprocess.run(prefix + ['stop', encoded], env=env, capture_output=True, timeout=15,
+                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)))
         finally:
             self.docker_run(profile, '/usr/bin/python3', '-I', '/opt/anchor-ci/runtime/container_process.py', 'clean-users')
             self.manager.release(profile, task['task_id'])

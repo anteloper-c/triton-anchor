@@ -54,7 +54,8 @@ class Relay:
 
     def _git(self, repo, *args, check=True, binary=False):
         options = {'capture_output': True, 'timeout': int(self.config.get('git_timeout_seconds', 60)),
-                   'env': git_environment(self.config)}
+                   'env': git_environment(self.config),
+                   'creationflags': getattr(subprocess, 'CREATE_NO_WINDOW', 0)}
         if not binary:
             options.update(text=True, encoding='utf-8', errors='replace')
         # Keep hook policy repository-local. A command-line -c would propagate

@@ -187,7 +187,8 @@ class WorkerManager:
             })
 
     def _docker(self, *args, check=True, timeout=120):
-        result = self.run([self.docker, *map(str, args)], capture_output=True, text=True, timeout=timeout)
+        result = self.run([self.docker, *map(str, args)], capture_output=True, text=True, timeout=timeout,
+                          creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         if check and result.returncode:
             # Never echo Docker run arguments: trusted config may carry secrets.
             raise WorkerError(f"docker {args[0]} failed (exit {result.returncode})")

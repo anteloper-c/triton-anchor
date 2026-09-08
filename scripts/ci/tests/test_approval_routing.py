@@ -8,9 +8,10 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import textwrap
 import unittest
 
-import yaml
+from test_gateway_contract import job as workflow_job
 
 ROOT = Path(__file__).resolve().parents[3]
 NODE = shutil.which('node')
@@ -20,10 +21,12 @@ NODE = shutil.which('node')
 class ApprovalRoutingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.jobs = yaml.safe_load((ROOT / '.github/workflows/ci-gateway.yml').read_text(encoding='utf-8'))['jobs']
+        cls.gateway = (ROOT / '.github/workflows/ci-gateway.yml').read_text(encoding='utf-8')
 
     def condition(self, job, needs):
-        expression = self.jobs[job]['if'][3:-2].strip()
+        match = re.search(r'(?m)^    if: \$\{\{(.+)\}\}\s*$', workflow_job(self.gateway, job))
+        self.assertIsNotNone(match, f'Job {job} must expose its actual approval condition')
+        expression = match[1].strip()
         expression = re.sub(r'needs\.([a-zA-Z0-9_-]+)', lambda m: 'needs[' + json.dumps(m[1]) + ']', expression)
         script = ('const needs=' + json.dumps(needs) + '; const always=()=>true;'
                   'const github={event_name:"workflow_dispatch"};'
@@ -79,7 +82,10 @@ class ApprovalRoutingTests(unittest.TestCase):
                     self.assertTrue(self.condition('dispatch-failure-status', needs))
 
     def card(self, repository='contributor/triton-anchor', *, head='a' * 40, base='b' * 40, reviewers=True):
-        script = self.jobs['approval-review-card']['steps'][0]['with']['script']
+        block = workflow_job(self.gateway, 'approval-review-card')
+        match = re.search(r'(?m)^          script: \|\n((?:(?: {12}.*)?\n)*)', block)
+        self.assertIsNotNone(match, 'Approval card must expose its actual GitHub script')
+        script = textwrap.dedent(match[1])
         fixture = {'pull': {'number': 19, 'state': 'open', 'draft': False,
                             'head': {'sha': head, 'repo': {'full_name': repository}}, 'base': {'sha': base}},
                    'environment': {'protection_rules': [{'type': 'required_reviewers', 'reviewers': [{'id': 1}]}] if reviewers else []}}

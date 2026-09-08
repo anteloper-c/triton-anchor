@@ -41,7 +41,8 @@ class HealthPublisher:
     def _git(self, *args, check=True):
         result = self.run(['git', '-C', str(self.checkout), *map(str, args)],
                           capture_output=True, text=True, encoding='utf-8', errors='replace',
-                          timeout=int(self.relay.get('git_timeout_seconds', 60)), env=self._environment())
+                          timeout=int(self.relay.get('git_timeout_seconds', 60)), env=self._environment(),
+                          creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         if check and result.returncode:
             # Do not copy server errors or credential-bearing process environment
             # into health snapshots or SMTP messages.

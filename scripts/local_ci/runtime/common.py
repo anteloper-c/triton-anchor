@@ -44,7 +44,8 @@ def safe_id(value):
 
 def git(repo, *args, check=True):
     result = subprocess.run(['git', '-C', str(repo), *args], text=True,
-                            encoding='utf-8', errors='replace', capture_output=True)
+                            encoding='utf-8', errors='replace', capture_output=True,
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if check and result.returncode:
         raise RuntimeError(f'git {args[0]} failed: {result.stderr[-1200:]}')
     return result.stdout.strip() if check else result
@@ -61,7 +62,8 @@ def execute(argv, log, *, cwd=None, env=None, timeout=900, cancelled=lambda: Fal
     Path(log).parent.mkdir(parents=True, exist_ok=True)
     with Path(log).open('wb') as output:
         process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=output,
-                                   stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+                                   stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         reason = None
         stopped_inside = False
         try:

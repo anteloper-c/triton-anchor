@@ -88,7 +88,8 @@ def collect(config, manager=None, now=None, service_runner=subprocess.run):
             issues.append(issue("docker_unavailable", "无法读取 Docker worker 状态。", profile_id=profile["id"]))
     for service in health.get("systemd_services", []):
         try:
-            result = service_runner(["systemctl", "is-active", "--quiet", service], timeout=15, capture_output=True)
+            result = service_runner(["systemctl", "is-active", "--quiet", service], timeout=15, capture_output=True,
+                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             if result.returncode:
                 issues.append(issue("service_unavailable", f"systemd 服务未运行：{service}", service=service))
         except (OSError, subprocess.SubprocessError):
