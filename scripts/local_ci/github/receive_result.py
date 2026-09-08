@@ -393,7 +393,7 @@ def render_comment(result: dict, target_url: str, run_url: str = '') -> str:
                     judgment.get('status') in {'passed', 'failed'} and bool(judgment.get('summary')))
         if (ran or reviewed) and status not in {'skipped', 'not_applicable'}:
             outcome = '通过' if status == 'passed' else '未通过' if status == 'failed' else '未完成'
-            detail = comment_text(judgment['summary']) if reviewed else ''
+            detail = comment_text(judgment['summary']) if reviewed and judgment['status'] == 'failed' else ''
             item = f'- **{label}：{outcome}。**' + (f' {detail}' if detail else '')
             if name == 'architecture_review':
                 evidence = comment_evidence(judgment.get('evidence', []), result, explain=False)

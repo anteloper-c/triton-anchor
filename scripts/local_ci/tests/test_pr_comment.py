@@ -37,12 +37,18 @@ class PRCommentTests(unittest.TestCase):
     def test_documentation_review_lists_only_performed_reviews(self):
         _, _, result = result_fixture()
         result['ai_review']['summary'] = '本次澄清纯文档的验证范围，已核对新增说明与现有规则一致。'
+        result['ai_review']['pr_information']['summary'] = '预检与冻结任务身份逐项核对的详细过程。'
+        result['ai_review']['architecture']['summary'] = '模型服务配置与任务隔离实现的详细架构说明。'
+        before = copy.deepcopy(result)
         body = receiver.render_comment(result, 'https://example.test/report', 'https://github.com/anteloper-c/triton-anchor/actions/runs/123')
         performed = body.split('**已执行的检查与审查**')[1].split('**合入阻塞与重要限制**')[0]
         self.assertEqual(performed.count('- **'), 2)
         self.assertIn('PR 说明与改动一致性：通过', performed)
         self.assertIn('架构与接口约束审查：通过', performed)
         self.assertIn('本次澄清纯文档的验证范围', body)
+        self.assertNotIn(result['ai_review']['pr_information']['summary'], body)
+        self.assertNotIn(result['ai_review']['architecture']['summary'], body)
+        self.assertEqual(result, before)
         self.assertIn('不包含编译器构建与运行行为验证', body)
         self.assertIn(f"/blob/{result['tested_sha']}/README.md", body)
         self.assertIn('[完整执行报告（需要访问权限）](https://example.test/report)', body)
@@ -50,6 +56,20 @@ class PRCommentTests(unittest.TestCase):
         for internal in (*receiver.TOOLS, 'skipped', 'not_applicable', 'success', 'Task ', '被测提交'):
             self.assertNotIn(internal, body)
         self.assertNotIn('| --- |', body)
+
+    def test_failed_reviews_keep_the_explanation_needed_to_address_the_problem(self):
+        for name, section in (('pr_information', 'pr_information'), ('architecture_review', 'architecture')):
+            with self.subTest(review=name):
+                _, _, result = result_fixture()
+                result['conclusion'] = 'failure'
+                check = next(item for item in result['checks'] if item['id'] == name)
+                check.update(status='failed', reason='需处理审查指出的问题。')
+                result['ai_review'][section].update(status='failed', summary='新增行为与公开说明不一致，请补充预期行为和验证依据。')
+                body = receiver.render_comment(result, 'https://example.test/report')
+                performed = body.split('**已执行的检查与审查**')[1].split('**合入阻塞与重要限制**')[0]
+                self.assertIn(receiver.CHECK_NAMES[name] + '：未通过', performed)
+                self.assertIn('新增行为与公开说明不一致，请补充预期行为和验证依据。', performed)
+                self.assertIn('发现合入阻塞，需要处理后重新验证', body)
 
     def test_partial_build_is_listed_but_unexecuted_required_install_blocks(self):
         _, _, result = result_fixture()
@@ -70,6 +90,17 @@ class PRCommentTests(unittest.TestCase):
         self.assertIn('尚未验证导入行为', blockers)
         self.assertNotIn('检查已通过', body)
         self.assertNotIn('frontend_install', body)
+
+    def test_rejected_positive_review_keeps_host_error_without_success_narrative(self):
+        _, _, result = result_fixture()
+        result['conclusion'] = 'error'
+        result['ai_review']['architecture']['summary'] = '所有架构约束均已确认符合。'
+        check = next(item for item in result['checks'] if item['id'] == 'architecture_review')
+        check.update(status='error', reason='架构审查缺少可核对的源码位置。')
+        body = receiver.render_comment(result, 'https://example.test/report')
+        self.assertIn('架构与接口约束审查：未完成', body)
+        self.assertIn('架构审查缺少可核对的源码位置', body)
+        self.assertNotIn('所有架构约束均已确认符合', body)
 
     def test_failed_review_and_capacity_interruption_cannot_read_as_success(self):
         _, _, result = result_fixture()
