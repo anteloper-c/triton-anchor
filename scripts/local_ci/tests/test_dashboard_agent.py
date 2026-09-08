@@ -3,11 +3,16 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 
 from scripts.dashboard.sync_agent_results import sync_agent_results, web_link
 from scripts.dashboard.sync_gitee_results import sync_dashboard
+
+
+NODE = shutil.which('node')
 
 
 def example_result():
@@ -115,6 +120,61 @@ class DashboardAgentFeed(unittest.TestCase):
         (self.root / 'tasks/fixture-pr-42/latest.json').unlink()
         self.assertEqual(self.sync()['runs'], [])
         self.assertEqual(web_link('javascript:alert(1)', 'main', 'result.json'), '')
+
+
+@unittest.skipUnless(NODE, 'Node.js is required to execute the dashboard renderer')
+class DashboardWorkerSnapshot(unittest.TestCase):
+    def test_actual_renderer_distinguishes_old_snapshot_from_fresh_offline_state(self):
+        script = Path(__file__).resolve().parents[3] / 'dashboard/local-ci.js'
+        harness = r'''
+const fs=require('fs'),vm=require('vm');
+class Element {
+  constructor(tag){this.tag=tag;this.children=[];this.textContent='';this.value='all';this.listeners={};}
+  append(...children){this.children.push(...children);}
+  replaceChildren(...children){this.children=children;}
+  addEventListener(name,callback){this.listeners[name]=callback;}
+}
+const roots={},intervals=[],now=Date.parse('2026-09-08T12:00:00Z');
+class Clock extends Date {static now(){return now;}}
+const sandbox={document:{createElement:tag=>new Element(tag),getElementById:id=>roots[id]||(roots[id]=new Element('div'))},
+  Date:Clock,URL,URLSearchParams,location:{search:''},fetch:()=>new Promise(()=>{}),
+  setInterval:(callback,delay)=>intervals.push(delay)};
+vm.createContext(sandbox);vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),sandbox);
+const text=node=>[node.textContent,...node.children.map(text)].join(' ');
+const cases=[
+  {id:'old-healthy',state:'healthy',heartbeat_at:(now-16*60000)/1000},
+  {id:'old-offline',state:'offline',heartbeat_at:new Date(now-16*60000).toISOString()},
+  {id:'fresh-healthy',state:'healthy',heartbeat_at:(now-30000)/1000},
+  {id:'fresh-offline',state:'offline',heartbeat_at:new Date(now-30000).toISOString()},
+  {id:'invalid-time',state:'offline',heartbeat_at:'not-a-date'},
+  {id:'boundary',state:'healthy',heartbeat_at:(now-15*60000)/1000},
+  {id:'past-boundary',state:'healthy',heartbeat_at:(now-15*60000-1)/1000},
+];
+const rendered=cases.map(worker=>{
+  sandbox.fixture={workers:[{...worker,worker_id:worker.id,workers:[],issues:[]}]};
+  vm.runInContext('model.data=fixture;renderWorkers();',sandbox);
+  const card=roots.workers.children[0],badge=card.children[0].children[1];
+  return {id:worker.id,label:badge.textContent,tone:badge.className,text:text(card)};
+});
+process.stdout.write(JSON.stringify({rendered,intervals,manual_refresh:typeof roots.refresh.listeners.click==='function'}));
+'''
+        output = subprocess.run([NODE, '-e', harness, str(script)], check=True, capture_output=True, text=True)
+        data = json.loads(output.stdout)
+        rows = {row['id']: row for row in data['rendered']}
+        for name in ('old-healthy', 'old-offline', 'past-boundary'):
+            with self.subTest(name=name):
+                self.assertEqual(rows[name]['label'], '快照已过期')
+                self.assertIn('warn', rows[name]['tone'])
+                self.assertIn('状态待刷新', rows[name]['text'])
+                self.assertIn('不能据此判断主机当前是否离线', rows[name]['text'])
+        for name in ('fresh-healthy', 'boundary'):
+            self.assertEqual(rows[name]['label'], '正常')
+            self.assertNotIn('状态待刷新', rows[name]['text'])
+        self.assertEqual(rows['fresh-offline']['label'], '离线')
+        self.assertIn('bad', rows['fresh-offline']['tone'])
+        self.assertEqual(rows['invalid-time']['label'], '状态未知')
+        self.assertEqual(data['intervals'], [60000])
+        self.assertTrue(data['manual_refresh'])
 
 
 if __name__ == '__main__':

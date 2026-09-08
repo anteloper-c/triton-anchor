@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import html
 import json
 import os
 import re
@@ -288,6 +289,163 @@ def summary_context(expected: dict, requested: str = "") -> str:
     return context
 
 
+CHECK_NAMES = {
+    'pr_information': 'PR 说明与改动一致性', 'architecture_review': '架构与接口约束审查',
+    'environment': '构建环境与依赖检查', 'frontend_build': '前端构建',
+    'frontend_install': '前端安装与导入验证', 'frontend_tests': '前端测试',
+    'frontend_smoke': '前端基本功能验证', 'backend_build': '后端构建',
+    'backend_install': '后端安装与发现验证', 'backend_tests': '后端测试',
+    'backend_smoke': '后端即时编译验证', 'flaggems': 'FlagGems 算子测试',
+    'compile_time': '编译耗时测量', 'pass_profile': '编译阶段耗时分析',
+    'ir_serialization': '中间表示序列化验证', 'control_plane': 'CI 流程回归检查',
+    'custom_test': '针对性复现测试',
+}
+
+
+def comment_escape(text: str) -> str:
+    text = html.escape(text, quote=False).replace('@', '@\u200b')
+    return re.sub(r'([\\`*_\[\]])', r'\\\1', text)
+
+
+def comment_text(value) -> str:
+    """Keep legacy review prose readable; detailed diagnostics stay in the report."""
+    text = str(value or '')
+    if re.search(r'Codex.*(?:capacity|overload|rate.?limit)', text, re.I):
+        return '审查服务暂时繁忙，重试后仍未完成；需要重新运行。'
+    if re.search(r'Codex.*(?:timeout|budget exhausted)', text, re.I):
+        return '审查达到运行时间上限，尚未完成；需要补齐验证。'
+    replacements = {
+        'context.changed_paths': '变更文件清单', 'broker policy': '检查范围',
+        'broker status': '检查进度', 'context': '变更信息', '冻结 diff': '改动差异',
+        'frontend/backend build': '前后端构建', 'control-plane': 'CI 流程',
+        'broker': '检查执行服务', 'task_python': '隔离 Python',
+        'smoke': '基本功能验证',
+        'docs-only': '纯文档', 'docs_only=true': '仅修改文档',
+        'trusted receipts': '执行记录', 'receipts': '执行记录',
+        'required check was not completed': '必需检查尚未完成',
+        'missing required check': '必需检查尚未执行，合入前需要补齐验证',
+        'missing valid host command receipts': '缺少可核对的执行记录',
+        'tested tracked source changed during execution': '验证期间源码发生变化，需要重新验证',
+        'Codex did not submit a complete review': '审查未完成，需要重新运行',
+        'no valid architecture review': '架构审查尚未完成',
+        'PR intent and attributes were not reviewed': 'PR 说明与改动尚未完成核对',
+        'host-verified artifact changed after tool completion': '检查产物在完成后发生变化，需要重新验证',
+        'not selected for this change': '本次未执行',
+        'profile has no backend/operator/performance capability': '当前环境缺少所需测试能力',
+    }
+    # Old reports sometimes append an exhaustive list of checks not selected.
+    text = re.sub(r'(?:根据[^。\n]*策略)?未选择[^。\n]*(?:。|$)', '', text)
+    text = re.sub(r'\b(?:pr_information/)?basic/api/security\b', '基础检查、接口兼容性与安全检查', text)
+    for term, replacement in sorted({**replacements, **CHECK_NAMES}.items(), key=lambda pair: -len(pair[0])):
+        text = text.replace(term, replacement)
+    for term, replacement in {'passed': '通过', 'success': '通过', 'failed': '未通过',
+                              'failure': '未通过', 'error': '未完成', 'cancelled': '已中断',
+                              'skipped': '未执行', 'not_applicable': '不适用'}.items():
+        text = re.sub(r'\b' + term + r'\b', replacement, text)
+    text = re.sub(r'\b(?:task-[\w-]+|command-\d+|[0-9a-f]{40,64})\b', '（详见报告）', text)
+    text = ' '.join(text.split())[:1600]
+    text = re.sub(r'(?<=[\u4e00-\u9fff]) +(?=[\u4e00-\u9fff])', '', text)
+    # Model prose must not create hidden HTML, mentions, headings or arbitrary links.
+    return comment_escape(text)
+
+
+def comment_evidence(items, result, *, explain=True) -> str:
+    links = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get('path', ''))
+        relative = PurePosixPath(path)
+        if not path or relative.is_absolute() or '..' in relative.parts or '\\' in path:
+            continue
+        label = comment_escape(path)
+        line = item.get('line')
+        suffix = f'#L{line}' if type(line) is int and line > 0 else ''
+        if suffix:
+            label += f':{line}'
+        url = (f"https://github.com/anteloper-c/triton-anchor/blob/{result['tested_sha']}/"
+               + urllib.parse.quote(path, safe='/') + suffix)
+        detail = comment_text(item.get('reason', '')).rstrip('。；') if explain else ''
+        links.append(f'[{label}]({url})' + (f'：{detail}' if detail else ''))
+        if len(links) == 2:
+            break
+    return '；'.join(links)
+
+
+def render_comment(result: dict, target_url: str, run_url: str = '') -> str:
+    """Contributor-facing feedback; the full machine report remains unchanged."""
+    review = result.get('ai_review', {})
+    verdict = {'success': '本次要求的检查已通过。', 'failure': '发现合入阻塞，需要处理后重新验证。',
+               'error': '验证尚未完成，暂不能确认可合入。', 'cancelled': '验证已中断，暂不能确认可合入。'}
+    lines = ['<!-- local-ci-result -->', '### CI 审查反馈', '',
+             '**结论：' + verdict.get(result.get('conclusion'), '尚无完整结论。') + '**']
+    summary = comment_text(review.get('summary'))
+    if summary:
+        lines += ['', '**变更意图与审查结论**', '', summary]
+    receipts = {r.get('id'): r for r in result.get('evidence', []) if isinstance(r, dict)}
+    executed, blockers, limitations = [], [], []
+    rendered_blocking_reasons = set()
+    for check in result.get('checks', []):
+        name, status = check['id'], check['status']
+        label = CHECK_NAMES.get(name, '补充检查')
+        refs = check.get('evidence', [])
+        ran = any(isinstance(ref, str) and receipts.get(ref, {}).get('tool') == name for ref in refs)
+        judgment = review.get('architecture' if name == 'architecture_review' else 'pr_information', {})
+        reviewed = (name in {'architecture_review', 'pr_information'} and
+                    judgment.get('status') in {'passed', 'failed'} and bool(judgment.get('summary')))
+        if (ran or reviewed) and status not in {'skipped', 'not_applicable'}:
+            outcome = '通过' if status == 'passed' else '未通过' if status == 'failed' else '未完成'
+            detail = comment_text(judgment['summary']) if reviewed else ''
+            item = f'- **{label}：{outcome}。**' + (f' {detail}' if detail else '')
+            if name == 'architecture_review':
+                evidence = comment_evidence(judgment.get('evidence', []), result, explain=False)
+                if evidence:
+                    item += ' 依据：' + evidence
+            executed.append(item)
+        if status in {'failed', 'error'} or (check.get('required') and status != 'passed'):
+            detail = comment_text(check.get('reason'))
+            blockers.append(f'{label}尚未通过' + (f'：{detail}' if detail else '，合入前需要补齐验证。'))
+            rendered_blocking_reasons.add(f"{name}: {check.get('reason', '')}")
+    lines += ['', '**已执行的检查与审查**', '', *(executed or ['尚无可核对的检查或审查记录。'])]
+    findings = []
+    for finding in review.get('findings', []):
+        if not isinstance(finding, dict) or not finding.get('summary'):
+            continue
+        detail = comment_text(finding['summary'])
+        evidence = comment_evidence(finding.get('code_evidence', []), result)
+        if evidence:
+            detail += ' 依据：' + evidence
+        if finding.get('blocking'):
+            blockers.append(detail)
+        else:
+            findings.append(detail + ('（尚未确认由本次改动引入。）' if finding.get('caused_by_change') is not True else ''))
+    if findings:
+        lines += ['', '**需要关注的发现**', '', *('- ' + value for value in findings[:10])]
+    for reason in result.get('blocking_reasons', []):
+        if reason not in rendered_blocking_reasons:
+            blockers.append(comment_text(reason))
+    for item in review.get('uncompleted', []):
+        value = item.get('summary') or item.get('reason') if isinstance(item, dict) else item
+        if value and comment_text(value):
+            limitations.append(comment_text(value))
+    compiler_tools = set(TOOLS) - {'environment'}
+    if not any(r.get('tool') in compiler_tools for r in receipts.values()):
+        limitations.append('本次结论仅覆盖文档、代码或 CI 流程审查，不包含编译器构建与运行行为验证。')
+    lines += ['', '**合入阻塞与重要限制**', '']
+    if blockers:
+        lines += ['- ' + value for value in dict.fromkeys(blockers) if value]
+    elif result.get('conclusion') == 'success':
+        lines.append('- 已完成的检查未报告合入阻塞。')
+    else:
+        lines.append('- 尚未取得完整验证结论，需要补齐检查后再判断。')
+    lines += ['- ' + value for value in dict.fromkeys(limitations)][:10]
+    links = [f'[完整执行报告（需要访问权限）]({target_url})']
+    if run_url:
+        links.insert(0, f'[查看 GitHub 检查记录]({run_url})')
+    lines += ['', ' · '.join(links), '']
+    return '\n'.join(lines)
+
+
 def publish(api: API, expected: dict, result: dict, state: str, target_url: str, context: str = ""):
     context = summary_context(expected, context)
     validate_current(api, expected)
@@ -299,9 +457,9 @@ def publish(api: API, expected: dict, result: dict, state: str, target_url: str,
         validate_current(api, expected)
         api.call("POST", f"{prefix}/statuses/{expected['head_sha']}", {**status, "context": "local-ci/summary"})
         marker = "<!-- local-ci-result -->"
-        reasons = "\n".join(f"- {str(reason)[:1000]}" for reason in result["blocking_reasons"][:30]) or "- 无已报告阻塞项"
-        rows = "\n".join(f"| {str(c['id']).replace('|', '/')} | {c['status']} | {str(c.get('reason', '')).replace('|', '/').replace(chr(10), ' ')[:500]} |" for c in result["checks"])
-        body = f"{marker}\n### Codex Local CI：{result['conclusion']}\n\n被测提交 `{expected['tested_sha']}`\n\n| 检查 | 结果 | 说明 |\n| --- | --- | --- |\n{rows}\n\n{reasons}\n\n[完整结果与证据]({target_url})"
+        run_id = os.environ.get('GITHUB_RUN_ID', '')
+        run_url = f'https://github.com/anteloper-c/triton-anchor/actions/runs/{run_id}' if run_id.isdigit() else ''
+        body = render_comment(result, target_url, run_url)
         comments = []
         for page in range(1, 21):
             batch = api.call("GET", f"{prefix}/issues/{expected['pr_number']}/comments?per_page=100&page={page}")

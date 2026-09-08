@@ -29,7 +29,7 @@
     "max_commands": 100,
     "publication_recovery_attempts": 1,
     "publication_recovery_timeout": 180,
-    "model": "gpt-5.5",
+    "model": "gpt-5.3-codex-spark",
     "reasoning_effort": "high"
   },
   "profiles": [

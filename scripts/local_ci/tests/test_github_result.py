@@ -310,7 +310,7 @@ class ReceiverHTTPTests(unittest.TestCase):
                     "--expected-head-sha", expected["head_sha"], "--comparison-base-sha", expected["base_sha"],
                     "--github-api", url, "--gitee-api", url, "--timeout-seconds", "0"]
             try:
-                with patch.dict(os.environ, {"GITHUB_TOKEN": "", "GH_TOKEN": "", "GITEE_TOKEN": "", "GITHUB_OUTPUT": ""}):
+                with patch.dict(os.environ, {"GITHUB_TOKEN": "", "GH_TOKEN": "", "GITEE_TOKEN": "", "GITHUB_OUTPUT": "", "GITHUB_RUN_ID": "12345"}):
                     if tamper:
                         with self.assertRaises(ValueError):
                             receiver.main(argv)
@@ -327,6 +327,10 @@ class ReceiverHTTPTests(unittest.TestCase):
         self.assertEqual(len(statuses), 2)
         self.assertTrue(all(body["state"] == "success" for _, body in statuses))
         self.assertEqual(len([item for item in writes if "/comments" in item[0]]), 1)
+        comment = next(body['body'] for path, body in writes if '/comments' in path)
+        self.assertIn('https://github.com/anteloper-c/triton-anchor/actions/runs/12345', comment)
+        self.assertIn('需要访问权限', comment)
+        self.assertNotIn('| --- |', comment)
 
     def test_bad_published_bytes_produce_no_remote_writes(self):
         self.assertEqual(self.run_receiver(tamper=True), [])

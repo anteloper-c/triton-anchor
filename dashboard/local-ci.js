@@ -1,12 +1,12 @@
 /* Render remote result text as text nodes. No result field can inject HTML. */
-const labels = {success:'通过',passed:'通过',failure:'失败',failed:'失败',error:'执行错误',cancelled:'已取消',skipped:'未执行',not_applicable:'不适用',healthy:'正常',degraded:'异常',offline:'心跳过期',unknown:'状态未知',waiting:'等待',ready:'就绪'};
+const labels = {success:'通过',passed:'通过',failure:'失败',failed:'失败',error:'执行错误',cancelled:'已取消',skipped:'未执行',not_applicable:'不适用',healthy:'正常',degraded:'异常',offline:'离线',snapshot_stale:'快照已过期',unknown:'状态未知',waiting:'等待',ready:'就绪'};
 const names = {environment:'环境与依赖',frontend_build:'Frontend build',frontend_install:'Frontend 安装 / import',frontend_tests:'Frontend tests',wheel_install:'Wheel 安装 / import',frontend_smoke:'Frontend smoke',backend_build:'Backend build',backend_install:'Backend 安装 / 发现',backend_tests:'Backend tests',backend_rebuild:'Backend rebuild',backend_smoke:'Backend smoke / JIT',flaggems:'FlagGems',compile_time:'Compile-time performance',pass_profile:'Pass profiling',ir_serialization:'IR serialization',pr_information:'PR 信息核验',architecture_review:'架构契约审查',control_plane:'CI 控制面检查',custom_test:'定向测试'};
 const model = {data:null, selected:null};
 const $ = id => document.getElementById(id);
 const arr = value => Array.isArray(value) ? value : [];
 const txt = value => typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value);
 function el(tag, className, text) { const node=document.createElement(tag); if(className)node.className=className; if(text!=null)node.textContent=txt(text); return node; }
-function badge(status) { const tone=['success','passed','healthy','ready'].includes(status)?'good':['failure','failed','error','offline'].includes(status)?'bad':['degraded','waiting'].includes(status)?'warn':status==='cancelled'?'info':''; return el('span','ci-badge '+tone,labels[status]||status||'未知'); }
+function badge(status) { const tone=['success','passed','healthy','ready'].includes(status)?'good':['failure','failed','error','offline'].includes(status)?'bad':['degraded','waiting','snapshot_stale'].includes(status)?'warn':status==='cancelled'?'info':''; return el('span','ci-badge '+tone,labels[status]||status||'未知'); }
 function date(value) { const d=new Date(typeof value==='number'?value*1000:value); return value!=null&&!Number.isNaN(d.valueOf())?d.toLocaleString('zh-CN',{hour12:false}):'尚无时间记录'; }
 function link(label, url) { try { const target=new URL(url); if(target.protocol!=='https:')return null; const a=el('a','',label); a.href=target.href; a.target='_blank'; a.rel='noopener noreferrer'; return a; } catch { return null; } }
 function empty(container, message) { container.append(el('div','ci-empty',message)); }
@@ -20,9 +20,10 @@ function renderWorkers() {
   for(const worker of model.data.workers) {
     const item=el('article','ci-worker'); const head=el('div','ci-worker-head');
     const heartbeat=typeof worker.heartbeat_at==='number'?worker.heartbeat_at*1000:Date.parse(worker.heartbeat_at);
-    const state=!Number.isFinite(heartbeat)?'unknown':Date.now()-heartbeat>900000?'offline':worker.state;
+    const state=!Number.isFinite(heartbeat)?'unknown':Date.now()-heartbeat>900000?'snapshot_stale':worker.state;
     head.append(el('h3','',worker.worker_id),badge(state)); item.append(head);
     item.append(el('p','ci-muted','最近心跳：'+date(worker.heartbeat_at)));
+    if(state==='snapshot_stale')item.append(el('p','ci-muted','状态待刷新：以下为历史快照，不能据此判断主机当前是否离线。'));
     const profiles=arr(worker.workers);
     if(!profiles.length)item.append(el('p','ci-muted','没有版本容器状态。'));
     for(const profile of profiles) {

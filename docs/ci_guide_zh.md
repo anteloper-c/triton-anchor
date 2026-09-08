@@ -17,7 +17,7 @@ flowchart LR
   G --> H[GitHub复核身份并更新检查与Dashboard]
 ```
 
-同仓贡献通过前置检查后自动继续；外部贡献者 PR 进入 `local-ci-fork-approval` environment，由维护者审批。审批绑定当前 head、base 和被测合并提交，force-push 后不能沿用旧审批。缺少有效任务信息、前置检查或审批时不能投递成功任务。
+同仓贡献通过前置检查后自动继续，不发布审批卡片或提供审批入口；仅外部贡献者 PR 发布审批卡片并进入 `local-ci-fork-approval` environment，由维护者审批。审批绑定当前 head、base 和被测合并提交，force-push 后不能沿用旧审批。缺少有效任务信息、前置检查或外部 PR 所需审批时不能投递成功任务。
 
 | 身份 | 用途 |
 | --- | --- |
@@ -47,7 +47,7 @@ Gitee 保存代码和任务信息，不决定是否授权。Poller 在执行期�
 
 性能测量必须真实执行。基线须匹配比较提交、profile、LLVM 和内容哈希；没有可信基线时只报告候选测量。耗时变化用于诊断，不单独阻塞合入；测量命令失败仍阻塞。
 
-Codex 使用受信主机配置的 `gpt-5.5` 模型和 `high` 推理强度。其编排入口为 [ai_ci_program.md](../scripts/local_ci/ai_ci_program.md)。它可以调整当前任务的计划、并行度和辅助用例；长期规则、基础工具、架构契约和生产配置的修改交由维护者采纳。
+Codex 使用受信主机配置的 `gpt-5.3-codex-spark` 模型和 `high` 推理强度。其编排入口为 [ai_ci_program.md](../scripts/local_ci/ai_ci_program.md)。它可以调整当前任务的计划、并行度和辅助用例；长期规则、基础工具、架构契约和生产配置的修改交由维护者采纳。
 
 ## 查看与触发任务
 
@@ -56,6 +56,8 @@ PR 的四项必要检查是 `local-ci/basic`、`local-ci/api`、`local-ci/securi
 自动 PR 和 push 任务由 GitHub 工作流投递。手动验证从 `main` 的 `ci-gateway.yml` 入口选择 `mode=push`、`source_branch=<目标分支>`，需要固定提交时填写 `requested_sha`；FlagGems 全量另设 `flaggems_mode=full`。不要在 Gitee 手工伪造 task metadata。手动入口仍校验权限、提交身份和环境能力。
 
 Dashboard 展示工具选择、未执行原因、AI 架构审查与发现、阻塞项、性能变化、命令日志和 worker 健康。以 `task_id`、`run_id` 和 `tested_sha` 对照 GitHub 检查与结果，不能只凭页面颜色判断是否测试了当前 PR。
+
+本机实时视图读取持续更新的数据源；公开 GitHub Pages 展示最近一次结果或手动发布时同步的历史快照，页面刷新不会触发服务器重新采样。快照心跳超过 15 分钟时显示“快照已过期 / 状态待刷新”，不能据此判断主机当前离线；新鲜快照中的离线状态才表示该次监控的结论。
 
 ## 主机与 GitHub 配置
 
@@ -69,7 +71,7 @@ Dashboard 展示工具选择、未执行原因、AI 架构审查与发现、阻�
 | `profiles` / `branch_profiles` | Triton 版本、固定容器名、可信镜像/配方、LLVM 与真实目标分支映射 |
 | `dependency_sources` | 所需 Triton/FlagGems 依赖的受信本地 Git 源；按精确 gitlink 检出 |
 | `profile.tools` | 前后端测试根、后端 checkout/JIT 命令、FlagGems 路径及性能配置；`backend_env_scripts` 只为后端/算子/性能加载 SDK 环境 |
-| `codex` | 独立认证文件、`model: gpt-5.5`、`reasoning_effort: high`、命令与时间预算 |
+| `codex` | 独立认证文件、`model: gpt-5.3-codex-spark`、`reasoning_effort: high`、命令与时间预算 |
 | `relay` | 明确的新 Gitee 仓库 URL、结果分支和凭据环境变量名 |
 | `smtp` | SMTP 服务与指定 Gitee 用户对应的真实收件邮箱，不能使用用户名代替邮箱 |
 

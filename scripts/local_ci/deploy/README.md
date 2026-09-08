@@ -33,7 +33,7 @@
 
 将受信配方与 [prepare_llvm.sh](prepare_llvm.sh) 一并放到配置的 recipe context。首次接任务前准备镜像；后续 LLVM 选择从被测精确 Git 对象读取，变更只执行该受信配方。不要从候选 PR 下载并执行环境脚本。容器健康检查除工具可用性外，还独立验证 root 所有的 `/opt/llvm/anchor-ci-llvm-revision`。
 
-主机 `codex.model` 设置 `gpt-5.5`，`codex.reasoning_effort` 设置 `high`；认证单独配置，不复制桌面插件、记忆或用户配置。生产控制目录必须与任务冻结的 `worker_revision_sha` 一致，更新控制目录前先排空任务。
+主机 `codex.model` 设置 `gpt-5.3-codex-spark`，`codex.reasoning_effort` 设置 `high`；认证单独配置，不复制桌面插件、记忆或用户配置。生产控制目录必须与任务冻结的 `worker_revision_sha` 一致，更新控制目录前先排空任务。
 
 ## 启动服务
 
