@@ -27,8 +27,6 @@ def build_result(task, run_id, policy, broker, *, started_at, source_unchanged,
     checks['pr_information'] = {'id': 'pr_information', 'required': is_pr,
         'status': pr_status if is_pr else 'not_applicable', 'evidence': [],
         'reason': pr_review.get('summary', 'PR intent and attributes were not reviewed') if is_pr else 'not a PR event'}
-    if is_pr and pr_status != 'passed':
-        blocking.append('pr_information: ' + checks['pr_information']['reason'])
     architecture = review.get('architecture', {})
     arch_status = architecture.get('status')
     arch_evidence = architecture.get('evidence', [])

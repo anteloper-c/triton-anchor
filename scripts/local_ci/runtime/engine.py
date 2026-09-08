@@ -133,6 +133,7 @@ class Engine:
             (host_task / directory).mkdir(parents=True, exist_ok=True)
         container_task = '/workspace/tasks/' + task['task_id'] + '/' + run_id
         context = {'task_id': task['task_id'], 'target_sha': task['tested_sha'],
+                   'event_kind': task['event_kind'],
                    'control_identity': control_identity,
                    'validation_scope': 'local_acceptance' if self.config.get('local_acceptance') else 'production',
                    'source_dir': container_task + '/source', 'source_host_dir': str(source),
@@ -230,7 +231,9 @@ class Engine:
                 codex_args += ['-c', 'model_reasoning_effort=' + json.dumps(settings['reasoning_effort'])]
             codex_args.append(prompt)
             spec = {'id': task['task_id'] + '-codex', 'argv': codex_args,
-                    'cwd': container_task + '/agent', 'env': {}}
+                    'cwd': container_task + '/agent',
+                    'env': {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'safe.directory',
+                            'GIT_CONFIG_VALUE_0': context['source_dir']}}
             encoded = base64.urlsafe_b64encode(json.dumps(spec).encode()).decode()
             prefix = [self.docker, 'exec', '--user', profile.get('agent_user', '1001:1000'),
                       '-e', 'LOCAL_CI_BROKER_URL', '-e', 'LOCAL_CI_BROKER_TOKEN', '-e', 'CODEX_HOME',

@@ -157,7 +157,27 @@ class Broker:
                     raise ValueError('task no longer accepts a review')
                 if not isinstance(parameters.get('review'), dict):
                     raise ValueError('finalize needs review object')
-                self.review = parameters['review']
+                review = parameters['review']
+                if not isinstance(review.get('summary'), str) or not review['summary'].strip():
+                    raise ValueError('review.summary must be a nonempty string')
+                statuses = {'architecture': {'passed', 'failed'}, 'pr_information': {'passed', 'failed'}}
+                if self.context.get('event_kind') == 'push':
+                    statuses['pr_information'].add('not_applicable')
+                for name, allowed in statuses.items():
+                    section = review.get(name)
+                    if not isinstance(section, dict):
+                        raise ValueError(f'review.{name} must be an object')
+                    if not isinstance(section.get('status'), str) or section['status'] not in allowed:
+                        raise ValueError(f'review.{name}.status must be one of: ' + ', '.join(sorted(allowed)))
+                    if not isinstance(section.get('summary'), str) or not section['summary'].strip():
+                        raise ValueError(f'review.{name}.summary must be a nonempty string')
+                evidence = review['architecture'].get('evidence')
+                if not isinstance(evidence, list) or not evidence:
+                    raise ValueError('review.architecture.evidence must be a nonempty list')
+                for name in ('findings', 'uncompleted'):
+                    if name in review and not isinstance(review[name], list):
+                        raise ValueError(f'review.{name} must be a list')
+                self.review = review
                 write_json(self.output / 'agent-review.json', self.review)
                 self.closed = True
                 return {'status': 'submitted', 'message': 'Host will validate review and minimum checks.'}
