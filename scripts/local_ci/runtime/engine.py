@@ -10,7 +10,8 @@ import re
 import subprocess
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 from maintenance.workers import WorkerBusy
 
 from .broker import Broker
@@ -24,6 +25,41 @@ from .task_permissions import write_agent_document
 
 class Engine:
     @staticmethod
+    def codex_provider(settings):
+        """Validate the explicitly selected host-owned Responses provider."""
+        provider = settings.get('provider')
+        if provider is None:
+            return None
+        if not isinstance(provider, dict) or set(provider) - {'id', 'name', 'base_url', 'env_key', 'wire_api'}:
+            raise ValueError('codex.provider must contain only id, name, base_url, env_key and wire_api')
+        if not isinstance(provider.get('id'), str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]*', provider['id']):
+            raise ValueError('codex.provider.id must be a provider identifier')
+        name = provider.get('name', provider['id'])
+        if not isinstance(name, str) or not name.strip() or not name.isprintable():
+            raise ValueError('codex.provider.name must be a nonempty printable name')
+        env_key = provider.get('env_key')
+        if not isinstance(env_key, str) or not re.fullmatch(r'[A-Z][A-Z0-9_]*_API_KEY', env_key):
+            raise ValueError('codex.provider.env_key must name an uppercase API_KEY environment variable')
+        if provider.get('wire_api', 'responses') != 'responses':
+            raise ValueError('codex.provider.wire_api must be responses')
+        base_url = provider.get('base_url')
+        try:
+            if (not isinstance(base_url, str) or not base_url.isascii() or not base_url.isprintable() or
+                    any(c.isspace() for c in base_url)):
+                raise ValueError
+            parsed = urlsplit(base_url)
+            if (parsed.scheme != 'https' or not parsed.hostname or parsed.username is not None or
+                    parsed.password is not None or parsed.query or parsed.fragment or
+                    '?' in base_url or '#' in base_url or '\\' in base_url or
+                    not re.fullmatch(r'[A-Za-z0-9.-]+', parsed.hostname)):
+                raise ValueError
+            parsed.port  # Reject malformed/out-of-range ports before spawning the CLI.
+        except ValueError:
+            raise ValueError('codex.provider.base_url must be HTTPS without credentials, query or fragment') from None
+        return {'id': provider['id'], 'name': name, 'base_url': base_url, 'env_key': env_key,
+                'wire_api': 'responses'}
+
+    @staticmethod
     def codex_options(settings):
         """Apply the same trusted model and history budget on every CLI entry."""
         options = []
@@ -31,6 +67,22 @@ class Engine:
             options += ['-m', settings['model']]
         if settings.get('reasoning_effort'):
             options += ['-c', 'model_reasoning_effort=' + json.dumps(settings['reasoning_effort'])]
+        provider = Engine.codex_provider(settings)
+        if provider:
+            options += ['-c', 'model_provider=' + json.dumps(provider['id'])]
+            for key in ('name', 'base_url', 'env_key', 'wire_api'):
+                options += ['-c', 'model_providers.' + provider['id'] + '.' + key + '=' + json.dumps(provider[key])]
+            # The CLI needs the key, but agent shell commands and tests do not.
+            options += ['-c', 'shell_environment_policy.exclude=' + json.dumps([provider['env_key']])]
+            # Login startup/saved shell snapshots can restore the filtered key.
+            options += ['-c', 'allow_login_shell=false', '-c', 'features.shell_snapshot=false']
+        if 'model_catalog_json' in settings:
+            catalog = settings['model_catalog_json']
+            if (not isinstance(catalog, str) or not catalog.startswith('/') or catalog.startswith('//') or
+                    not catalog.isprintable() or '\\' in catalog or
+                    PurePosixPath(catalog).as_posix() != catalog or '..' in PurePosixPath(catalog).parts):
+                raise ValueError('codex.model_catalog_json must be a canonical absolute container path')
+            options += ['-c', 'model_catalog_json=' + json.dumps(catalog)]
         for key in ('auto_compact_token_limit', 'tool_output_token_limit'):
             if key in settings:
                 value = settings[key]
@@ -39,6 +91,22 @@ class Engine:
                 cli_key = 'model_' + key if key == 'auto_compact_token_limit' else key
                 options += ['-c', cli_key + '=' + str(value)]
         return options
+
+    @staticmethod
+    def codex_environment(settings):
+        environment = os.environ.copy()
+        provider = Engine.codex_provider(settings)
+        if provider and not environment.get(provider['env_key'], '').strip():
+            raise ValueError('Codex provider credential is missing: ' + provider['env_key'])
+        return environment
+
+    def codex_prefix(self, profile, *environment_keys):
+        prefix = [self.docker, 'exec', '--user', profile.get('agent_user', '1001:1000')]
+        provider = self.codex_provider(self.config['codex'])
+        for key in (*environment_keys, *((provider['env_key'],) if provider else ())):
+            prefix += ['-e', key]
+        return prefix + [profile['container']['name'], '/usr/bin/python3', '-I',
+                         '/opt/anchor-ci/runtime/container_process.py']
 
     def __init__(self, config, relay, manager):
         self.config, self.relay, self.manager = config, relay, manager
@@ -172,6 +240,8 @@ class Engine:
         profile = copy.deepcopy(profile)
         # Acquire before creating an execution journal: maintenance/busy means queued.
         try:
+            self.codex_options(self.config['codex'])
+            environment = self.codex_environment(self.config['codex'])
             from .control import verify_control, verify_container_control
             control_identity = verify_control(self.config, task)
             if not self.config.get('local_acceptance'):
@@ -325,7 +395,6 @@ class Engine:
                 raise RuntimeError('trusted control files changed before Codex execution')
             verify_container_control(self.config, profile, control_identity)
             port = broker.start()
-            environment = os.environ.copy()
             environment.update({'LOCAL_CI_BROKER_URL': f"http://{self.config.get('broker_host', 'host.docker.internal')}:{port}/",
                                 'LOCAL_CI_BROKER_TOKEN': broker.token, 'CODEX_HOME': home})
             settings = self.config['codex']
@@ -346,9 +415,7 @@ class Engine:
                     'cwd': container_task + '/agent',
                     'env': {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'safe.directory',
                             'GIT_CONFIG_VALUE_0': context['source_dir']}}
-            prefix = [self.docker, 'exec', '--user', profile.get('agent_user', '1001:1000'),
-                      '-e', 'LOCAL_CI_BROKER_URL', '-e', 'LOCAL_CI_BROKER_TOKEN', '-e', 'CODEX_HOME',
-                      profile['container']['name'], '/usr/bin/python3', '-I', '/opt/anchor-ci/runtime/container_process.py']
+            prefix = self.codex_prefix(profile, 'LOCAL_CI_BROKER_URL', 'LOCAL_CI_BROKER_TOKEN', 'CODEX_HOME')
             def validate_recovery():
                 if not self.relay.current(task):
                     cancelled.set()
@@ -456,6 +523,8 @@ class Engine:
         profile = next(p for p in self.config['profiles'] if p['id'] == execution['profile_id'])
         if not self.config.get('local_acceptance'):
             profile = self.manager.effective_profile(profile)
+        env = self.codex_environment(self.config['codex'])
+        self.codex_options(self.config['codex'])
         self.manager.acquire(profile, task['task_id'])
         try:
             from .control import verify_control, verify_container_control
@@ -480,10 +549,8 @@ class Engine:
             command += [session_id, prompt]
             spec = {'id': task['task_id'] + '-publish', 'argv': command, 'cwd': container_dir, 'env': {}}
             encoded = base64.urlsafe_b64encode(json.dumps(spec).encode()).decode()
-            env = os.environ.copy()
             env['CODEX_HOME'] = settings.get('home', '/home/agent/.codex')
-            prefix = [self.docker, 'exec', '--user', profile.get('agent_user', '1001:1000'), '-e', 'CODEX_HOME',
-                      profile['container']['name'], '/usr/bin/python3', '-I', '/opt/anchor-ci/runtime/container_process.py']
+            prefix = self.codex_prefix(profile, 'CODEX_HOME')
             self.heartbeat('publish_pending', task['task_id'], safe_diagnostic)
             execute(prefix + ['run', encoded], Path(record).parent / 'publication-recovery.jsonl', env=env,
                     timeout=settings.get('publication_recovery_timeout', 180),

@@ -47,7 +47,7 @@ Gitee 保存代码和任务信息，不决定是否授权。Poller 在执行期�
 
 性能测量必须真实执行。基线须匹配比较提交、profile、LLVM 和内容哈希；没有可信基线时只报告候选测量。耗时变化用于诊断，不单独阻塞合入；测量命令失败仍阻塞。
 
-Codex 通过常驻容器中的 `codex exec` 执行，CLI 调用模型服务；受信配置使用 `gpt-5.3-codex-spark` 和 `high` 推理强度，恢复会话保持同一模型。其编排入口为 [ai_ci_program.md](../scripts/local_ci/ai_ci_program.md)。简短计划、按需读取日志、文件提交评审和提前压缩历史共同控制上下文占用；模型错误仍如实阻塞。它可以调整当前任务的计划、并行度和辅助用例；长期规则、基础工具、架构契约和生产配置的修改交由维护者采纳。
+Codex 通过常驻容器中的 `codex exec` 执行，CLI 调用 DeepSeek 官方 Responses API；受信配置使用 `deepseek-v4-flash` 和 `high` 推理强度，恢复会话保持同一模型与服务。其编排入口为 [ai_ci_program.md](../scripts/local_ci/ai_ci_program.md)。简短计划、按需读取日志、文件提交评审和提前压缩历史共同控制上下文占用；模型错误仍如实阻塞。它可以调整当前任务的计划、并行度和辅助用例；长期规则、基础工具、架构契约和生产配置的修改交由维护者采纳。
 
 ## 查看与触发任务
 
@@ -71,7 +71,7 @@ Dashboard 展示工具选择、未执行原因、AI 架构审查与发现、阻�
 | `profiles` / `branch_profiles` | Triton 版本、固定容器名、可信镜像/配方、LLVM 与真实目标分支映射 |
 | `dependency_sources` | 所需 Triton/FlagGems 依赖的受信本地 Git 源；按精确 gitlink 检出 |
 | `profile.tools` | 前后端测试根、后端 checkout/JIT 命令、FlagGems 路径及性能配置；`backend_env_scripts` 只为后端/算子/性能加载 SDK 环境 |
-| `codex` | 独立认证文件、`model: gpt-5.3-codex-spark`、`reasoning_effort: high`、命令与时间预算 |
+| `codex` | `model: deepseek-v4-flash`、`reasoning_effort: high`、受信 `provider`、只读模型目录、命令与时间预算；密钥由宿主环境提供 |
 | `relay` | 明确的新 Gitee 仓库 URL、结果分支和凭据环境变量名 |
 | GitHub 运维 Issue | 配置 `LOCAL_CI_OPERATIONS_ISSUE_NUMBER`；维护者订阅该 Issue，并按需启用 GitHub 邮件通知 |
 

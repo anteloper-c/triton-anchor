@@ -76,6 +76,47 @@ class PolicyAndReportTests(unittest.TestCase):
         self.broker.review["architecture"]["evidence"] = []
         self.assertEqual(self.result()["conclusion"], "error")
 
+    def test_invalid_architecture_evidence_reports_missing_source_not_positive_summary(self):
+        positive = self.broker.review['architecture']['summary']
+        for evidence in ([], ['command-0001', 'command-0002', 'command-0013'],
+                         [{'path': 'missing.md', 'reason': 'reviewed'}]):
+            with self.subTest(evidence=evidence):
+                self.broker.review['architecture']['evidence'] = evidence
+                result = self.result()
+                check = next(item for item in result['checks'] if item['id'] == 'architecture_review')
+                self.assertEqual(result['conclusion'], 'error')
+                self.assertIn('缺少可核对的源码位置', check['reason'])
+                self.assertNotIn(positive, check['reason'])
+                self.assertTrue(any('缺少可核对的源码位置' in reason for reason in result['blocking_reasons']))
+                self.assertFalse(any(positive in reason for reason in result['blocking_reasons']))
+                for internal in ('review.architecture', 'evidence', 'path', 'reason', 'command-'):
+                    self.assertNotIn(internal, check['reason'])
+                    self.assertFalse(any(internal in reason for reason in result['blocking_reasons']))
+
+    def test_invalid_architecture_conclusion_or_summary_has_public_language(self):
+        original = copy.deepcopy(self.broker.review['architecture'])
+        for field, value in (('status', 'warning'), ('summary', '')):
+            with self.subTest(field=field):
+                self.broker.review['architecture'] = {**original, field: value}
+                result = self.result()
+                check = next(item for item in result['checks'] if item['id'] == 'architecture_review')
+                self.assertEqual(result['conclusion'], 'error')
+                self.assertEqual(check['reason'], '架构审查缺少明确结论或审查说明。')
+                self.assertNotIn(original['summary'], check['reason'])
+                self.assertNotIn('status', check['reason'])
+                self.assertNotIn('summary', check['reason'])
+
+    def test_valid_architecture_preserves_summary_and_failed_review_still_blocks(self):
+        self.broker.review['architecture']['evidence'][0]['line'] = 1
+        result = self.result()
+        check = next(item for item in result['checks'] if item['id'] == 'architecture_review')
+        self.assertEqual(result['conclusion'], 'success')
+        self.assertEqual(check['reason'], self.broker.review['architecture']['summary'])
+        self.broker.review['architecture'].update(status='failed', summary='发现实际架构边界问题。')
+        self.assertEqual(self.result()['conclusion'], 'failure')
+        self.broker.review['architecture']['evidence'] = []
+        self.assertEqual(self.result()['conclusion'], 'error')
+
     def test_pass_flag_without_corresponding_host_receipt_cannot_pass(self):
         self.broker.receipts = []
         self.assertNotEqual(self.result()["conclusion"], "success")

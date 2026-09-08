@@ -100,7 +100,11 @@ review 至少包含：
 
 每个发现写 `summary`, `severity`, `blocking`, `caused_by_change`, `code_evidence`,
 `reproduction_receipts`。宿主依据真实 receipts、最低必检、源码完整性和任务
-有效性生成最终结果。最后输出 schema 约束的 `{task_id,submitted,summary}`。
+有效性生成最终结果。架构审查通过时，`evidence` 必须是上例中的源码证据对象，
+路径相对于被测仓库，行号对应实际文件；命令编号只能证明工具执行，不能替代
+源码位置。即使未修改编译器，也应引用本次实际审阅的相关代码并说明边界。
+`finalize` 返回错误时，按提示修正本任务的审查文件后重新提交，复用已有成功
+检查；收到宿主接受确认后，才输出 schema 约束的 `{task_id,submitted,summary}`。
 
 `summary`、各项审查说明和 `uncompleted` 会用于面向 PR 作者与审核者的评论。
 用自然语言说明变更意图、实际验证的行为、重要发现及依据、合入阻塞和剩余

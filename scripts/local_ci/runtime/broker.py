@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 
 from .common import digest, execute, read_json, utcnow, write_json
 from .policy import TOOLS
+from .report import validate_architecture_evidence
 from tools.basic_tools.runner import DEPENDENCIES
 
 
@@ -214,9 +215,11 @@ class Broker:
                         raise ValueError(f'review.{name}.status must be one of: ' + ', '.join(sorted(allowed)))
                     if not isinstance(section.get('summary'), str) or not section['summary'].strip():
                         raise ValueError(f'review.{name}.summary must be a nonempty string')
-                evidence = review['architecture'].get('evidence')
-                if not isinstance(evidence, list) or not evidence:
-                    raise ValueError('review.architecture.evidence must be a nonempty list')
+                evidence = review['architecture'].get('evidence', [])
+                if review['architecture']['status'] == 'passed':
+                    validate_architecture_evidence(evidence, self.context.get('source_host_dir'))
+                elif not isinstance(evidence, list):
+                    raise ValueError('review.architecture.evidence must be a list; an incomplete failed review may use []')
                 for name in ('findings', 'uncompleted'):
                     if name in review and not isinstance(review[name], list):
                         raise ValueError(f'review.{name} must be a list')

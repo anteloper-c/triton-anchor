@@ -10,8 +10,7 @@
 | --- | --- |
 | `/opt/anchor-ci` | root 所有的精确 `ci_repo` checkout；运行期间不修改，容器只读挂载 |
 | `/etc/anchor-ci/config.json` | root 所有、`0600`；设置真实 profile 和 `local_acceptance=false` |
-| `/etc/anchor-ci/service.env` | root 所有、`0600`；systemd 读取 Gitee 凭据环境变量 |
-| `/etc/anchor-ci/codex/auth.json` | 独立 Codex 认证，root 所有、`0600`；父目录 `0700` |
+| `/etc/anchor-ci/service.env` | root 所有、`0600`；systemd 读取 Gitee 凭据和 `DEEPSEEK_API_KEY` 环境变量 |
 | `/etc/anchor-ci/recipes/` | root 管理的镜像配方，不能指向 PR workspace |
 | `/var/lib/anchor-ci` | root 所有、`0700`，配置为 `state_dir` |
 | `/srv/anchor-ci/workspace` | root 所有，配置为 `workspace_host`；仅给容器 UID 必要的目录穿越权限 |
@@ -21,8 +20,8 @@
 ```sh
 sudo install -d -o root -g root -m 0700 /etc/anchor-ci /etc/anchor-ci/codex /etc/anchor-ci/recipes /var/lib/anchor-ci
 sudo install -d -o root -g root -m 0711 /srv/anchor-ci /srv/anchor-ci/workspace
-sudo chown root:root /etc/anchor-ci/config.json /etc/anchor-ci/service.env /etc/anchor-ci/codex/auth.json
-sudo chmod 0600 /etc/anchor-ci/config.json /etc/anchor-ci/service.env /etc/anchor-ci/codex/auth.json
+sudo chown root:root /etc/anchor-ci/config.json /etc/anchor-ci/service.env
+sudo chmod 0600 /etc/anchor-ci/config.json /etc/anchor-ci/service.env
 ```
 
 不要将普通用户拥有的 checkout 直接作为 root 服务控制目录；由 root 管理该精确 checkout，Git 所有者一致，无需通配 `safe.directory`。凭据只存在宿主配置文件中，不写入镜像、Git URL 或仓库。
@@ -48,7 +47,9 @@ sudo chmod 0600 /etc/anchor-ci/config.json /etc/anchor-ci/service.env /etc/ancho
 
 将受信配方与 [prepare_llvm.sh](prepare_llvm.sh) 一并放到配置的 recipe context。首次接任务前准备镜像；后续 LLVM 选择从被测精确 Git 对象读取，变更只执行该受信配方。不要从候选 PR 下载并执行环境脚本。容器健康检查除工具可用性外，还独立验证 root 所有的 `/opt/llvm/anchor-ci-llvm-revision`。
 
-主机 `codex.model` 设置 `gpt-5.3-codex-spark`，`codex.reasoning_effort` 设置 `high`；认证单独配置，不复制桌面插件、记忆或用户配置。生产控制目录必须与任务冻结的 `worker_revision_sha` 一致，更新控制目录前先排空任务。
+主机 `codex.model` 设置 `deepseek-v4-flash`，`codex.reasoning_effort` 设置 `high`；`codex.provider` 使用示例中的官方地址和 `responses` 协议。将 `DEEPSEEK_API_KEY` 放在宿主 `service.env` 中，配置 JSON 只保存环境变量名称。宿主仅向 Codex 进程传递该密钥，不传给构建/测试工具；Codex 子命令排除该变量，并关闭可能恢复环境变量的登录 shell 和 shell 快照。
+
+[模型目录](../etc/deepseek-models.json) 按 [DeepSeek 官方 Codex 接入文档](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/) 声明上下文与工具能力，通过受信控制目录只读挂载。目录中的简短角色说明不替代 `ai_ci_program.md`。需要其他已验证的 Responses 服务时，由维护者修改 `provider` 和对应模型目录；不配置 `provider` 时仍支持 Codex 自身的认证方式及可选 `auth_file`。不要复制桌面插件、记忆或用户配置。生产控制目录必须与任务冻结的 `worker_revision_sha` 一致，更新控制目录前先排空任务。
 
 ## 启动服务
 

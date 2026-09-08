@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import copy
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 from test_github_result import receiver, result_fixture
@@ -19,8 +21,11 @@ class PRCommentTests(unittest.TestCase):
             checks={'environment': dict(id='environment', required=True, status='passed',
                                         reason='Environment verified', evidence=['command-1'])},
             review=seed['ai_review'], receipts=[receipt], context={})
-        result = build_result(task, 'review-proof', policy, broker,
-                              started_at='2026-09-08T12:00:00Z', source_unchanged=True)
+        with tempfile.TemporaryDirectory() as temporary:
+            (Path(temporary) / 'README.md').write_text('Reviewed scope\n', encoding='utf-8')
+            broker.context['source_host_dir'] = temporary
+            result = build_result(task, 'review-proof', policy, broker,
+                                  started_at='2026-09-08T12:00:00Z', source_unchanged=True)
         self.assertEqual(receiver.validate_result(result, task, expected), 'failure')
         self.assertEqual(result['blocking_reasons'], ['control_plane: missing required check'])
         body = receiver.render_comment(result, 'https://example.test/report')
