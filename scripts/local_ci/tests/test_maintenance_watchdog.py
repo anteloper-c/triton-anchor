@@ -1,17 +1,19 @@
-"""External detection remains active without email; mail errors stay observable."""
+"""External heartbeat and public GitHub notification behavior; all APIs are fake."""
 import contextlib
 import io
 import json
 import os
 from pathlib import Path
-import smtplib
 import tempfile
+import textwrap
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 from urllib.error import URLError
 
-from scripts.local_ci.maintenance import notify, watchdog
+from scripts.local_ci.maintenance import watchdog
+from scripts.local_ci.maintenance.notify import Notifier
+from scripts.local_ci.tests.test_maintenance_notify import IssueAPI
 
 
 class ExternalWatchdogTests(unittest.TestCase):
@@ -22,124 +24,94 @@ class ExternalWatchdogTests(unittest.TestCase):
         environment = patch.dict(os.environ, {}, clear=True)
         environment.start()
         self.addCleanup(environment.stop)
-        self.config = {'heartbeat_url': 'https://example.invalid/heartbeat.json',
-                       'worker_id': 'worker-test', 'state_dir': str(self.root / 'state')}
-        self.snapshot = {'schema': 'triton-anchor-local-ci-worker-health', 'worker_id': 'worker-test',
-                         'heartbeat_at': time.time(), 'state': 'healthy', 'issues': []}
-        self.smtp = {'host': 'smtp.example.invalid', 'from': 'ci@example.invalid',
-                     'accounts': ['heron-mc'], 'account_emails': {'heron-mc': 'recipient@example.invalid'},
-                     'starttls': True}
+        self.config = {"heartbeat_url": "https://example.invalid/heartbeat.json",
+                       "worker_id": "worker-test", "state_dir": str(self.root / "state")}
+        self.snapshot = {"schema": "triton-anchor-local-ci-worker-health", "worker_id": "worker-test",
+                         "heartbeat_at": time.time(), "state": "healthy", "issues": []}
+        self.api = IssueAPI()
 
-    def run_watchdog(self, unavailable=False):
-        path = self.root / 'config.json'
-        path.write_text(json.dumps(self.config), encoding='utf-8')
+    def run_watchdog(self, unavailable=False, configured=True):
+        path = self.root / "config.json"
+        path.write_text(json.dumps(self.config), encoding="utf-8")
         response = io.BytesIO(json.dumps(self.snapshot).encode())
-        with patch.object(watchdog, 'urlopen', side_effect=URLError('offline') if unavailable else None,
-                          return_value=response) as read, contextlib.redirect_stdout(io.StringIO()):
-            code = watchdog.main(['--config', str(path)])
+        with contextlib.ExitStack() as stack:
+            read = stack.enter_context(patch.object(watchdog, "urlopen", side_effect=URLError("private-server") if unavailable else None,
+                                                   return_value=response))
+            if configured:
+                stack.enter_context(patch.object(watchdog, "Notifier", return_value=Notifier({}, api=self.api)))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            code = watchdog.main(["--config", str(path)])
         read.assert_called_once()
-        return code, json.loads((self.root / 'state/watchdog-latest.json').read_text())
+        return code, json.loads((self.root / "state/watchdog-latest.json").read_text())
 
-    def test_no_smtp_reads_fresh_heartbeat_without_recording_mail_delivery(self):
-        with patch.object(watchdog, 'Notifier') as notifier:
-            code, result = self.run_watchdog()
-        notifier.assert_not_called()
-        self.assertEqual(code, 0)
-        self.assertEqual(result['notification']['status'], 'not_configured')
-        self.assertEqual([i['code'] for i in result['issues']], ['notification_not_configured'])
-        self.assertFalse(list((self.root / 'state').glob('notify-*')))
-
-    def test_actual_host_missing_mail_issue_is_retained_but_nonblocking(self):
-        self.snapshot.update(state='degraded', issues=[{'code': 'notification_not_configured', 'message': 'SMTP host/from not configured'}])
+    def test_healthy_without_smtp_initializes_issue_without_comment(self):
         code, result = self.run_watchdog()
         self.assertEqual(code, 0)
-        self.assertEqual(result['issues'], self.snapshot['issues'])
+        self.assertEqual(result["notification"]["status"], "healthy")
+        self.assertEqual(result["issues"], [])
+        self.assertEqual(self.api.comments, [])
+        self.assertNotIn("notification_not_configured", json.dumps(result))
 
-    def test_stale_wrong_worker_unreachable_and_operational_fault_still_fail(self):
-        cases = [('host_offline', {'heartbeat_at': time.time() - 10000}, False),
-                 ('heartbeat_invalid', {'worker_id': 'different'}, False),
-                 ('heartbeat_unreachable', {}, True),
-                 ('poller_stale', {'state': 'degraded', 'issues': [{'code': 'poller_stale', 'message': 'stopped'}]}, False)]
+    def test_stale_wrong_worker_unreachable_and_local_faults_are_real_failures(self):
+        cases = [({"heartbeat_at": time.time() - 10000}, False), ({"worker_id": "different"}, False),
+                 ({}, True), ({"state": "degraded", "issues": [{"code": "poller_stale", "message": "private-path"}]}, False)]
         original = dict(self.snapshot)
-        for expected, changes, unavailable in cases:
-            with self.subTest(expected=expected):
+        for changes, unavailable in cases:
+            with self.subTest(changes=changes):
                 self.snapshot = {**original, **changes}
                 code, result = self.run_watchdog(unavailable)
                 self.assertEqual(code, 1)
-                self.assertIn(expected, [i['code'] for i in result['issues']])
-                self.assertEqual(result['notification']['status'], 'not_configured')
+                self.assertEqual(result["notification"]["status"], "sent")
+                self.assertTrue(result["issues"])
+                self.assertNotIn("private", json.dumps(result))
 
-    def test_partial_mail_or_missing_oauth_authorization_cannot_be_hidden(self):
-        for smtp in ([], {'host': 'smtp.example.invalid'}, {**self.smtp, 'host': {}}, {**self.smtp, 'port': 0},
-                     {**self.smtp, 'account_emails': {}},
-                     {**self.smtp, 'oauth2': {'token_endpoint': 'https://example.invalid/token', 'client_id': ''}}):
-            with self.subTest(smtp=smtp), patch.object(watchdog, 'Notifier') as notifier:
-                self.config['smtp'] = smtp
-                code, result = self.run_watchdog()
-                notifier.assert_not_called()
-                self.assertEqual(code, 1)
-                self.assertEqual(result['notification']['status'], 'pending')
-                self.assertIn('notification_configuration_error', [i['code'] for i in result['issues']])
-
-    def test_orphaned_authentication_secret_is_partial_configuration(self):
-        with patch.dict(os.environ, {'LOCAL_CI_SMTP_PASSWORD': 'example-password'}):
-            code, result = self.run_watchdog()
+    def test_missing_issue_configuration_is_actionable_without_fake_mail_incident(self):
+        code, result = self.run_watchdog(configured=False)
         self.assertEqual(code, 1)
-        self.assertEqual(result['notification']['status'], 'pending')
+        self.assertEqual(result["state"], "healthy")
+        self.assertEqual(result["issues"], [])
+        self.assertEqual(result["notification"]["status"], "error")
+        self.assertIn("LOCAL_CI_OPERATIONS_ISSUE_NUMBER", result["notification"]["message"])
+        self.assertIn("LOCAL_CI_WATCHDOG_ENABLED=false", result["notification"]["message"])
 
-    def test_mail_delivery_deduplication_and_failed_recovery_preserve_exit_status(self):
-        self.config['smtp'] = self.smtp
-        self.snapshot.update(state='degraded', issues=[{'code': 'poller_stale', 'message': 'stopped'}])
-        with patch.object(notify.smtplib, 'SMTP') as transport:
-            client = transport.return_value.__enter__.return_value
-            code, result = self.run_watchdog()
-            self.assertEqual((code, result['notification']['status']), (1, 'sent'))
-            self.assertEqual(client.send_message.call_count, 1)
-            code, result = self.run_watchdog()
-            self.assertEqual((code, result['notification']['status']), (1, 'unchanged'))
-            self.assertEqual(client.send_message.call_count, 1)
-            self.snapshot.update(state='healthy', issues=[])
-            client.send_message.side_effect = smtplib.SMTPException('private-error-do-not-log')
-            code, result = self.run_watchdog()
-            self.assertEqual((code, result['notification']['status']), (1, 'pending'))
-            self.assertNotIn('private-error-do-not-log', json.dumps(result))
-            client.send_message.side_effect = None
-            code, result = self.run_watchdog()
-            self.assertEqual((code, result['notification']['status']), (0, 'sent'))
-
-    def test_configured_smtp_authentication_failure_is_pending_and_not_delivered(self):
-        self.config['smtp'] = self.smtp
-        self.snapshot.update(state='degraded', issues=[{'code': 'poller_stale', 'message': 'stopped'}])
-        with patch.dict(os.environ, {'LOCAL_CI_SMTP_USERNAME': 'example-user', 'LOCAL_CI_SMTP_PASSWORD': 'example-password'}), \
-                patch.object(notify.smtplib, 'SMTP') as transport:
-            client = transport.return_value.__enter__.return_value
-            client.login.side_effect = smtplib.SMTPAuthenticationError(535, b'private authentication diagnostic')
-            code, result = self.run_watchdog()
-            client.send_message.assert_not_called()
-        self.assertEqual((code, result['notification']['status']), (1, 'pending'))
+    def test_failed_issue_update_is_error_even_after_service_recovers(self):
+        self.snapshot.update(state="degraded", issues=[{"code": "poller_stale", "message": "stopped"}])
+        self.run_watchdog()
+        self.snapshot.update(state="healthy", issues=[])
+        self.api.fail = "POST"
+        code, result = self.run_watchdog()
+        self.assertEqual((code, result["notification"]["status"]), (1, "error"))
+        self.api.fail = None
+        code, result = self.run_watchdog()
+        self.assertEqual((code, result["notification"]["status"]), (0, "sent"))
+        self.assertEqual(len(self.api.comments), 2)
 
 
 class WatchdogWorkflowPreparation(unittest.TestCase):
-    def test_actual_preparation_requires_only_heartbeat_and_keeps_partial_smtp(self):
-        # Execute the trusted workflow's Python preparation in a temporary folder;
-        # it has no network/API/SMTP effects and cannot send any message.
-        import yaml
+    def test_actual_preparation_requires_trusted_issue_and_has_no_mail_inputs(self):
+        # Execute only the workflow's trusted preparation, without YAML package,
+        # network calls or Issue mutation; also works in the minimal host Python.
         root = Path(__file__).resolve().parents[3]
-        workflow = yaml.safe_load((root / '.github/workflows/local-ci-watchdog.yml').read_text(encoding='utf-8'))
-        step = next(s for s in workflow['jobs']['check-heartbeat']['steps'] if s.get('name') == 'Prepare explicitly configured watchdog')
-        script = step['run'].split("python - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
-        for extra in ({}, {'SMTP_HOST': 'smtp.example.invalid'}, {'SMTP_AUTH_MODE': 'oauth2'}):
-            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as directory:
-                env = {key: '' for key in step['env']}
-                env.update(WATCHDOG_URL='https://example.invalid/heartbeat.json', WATCHDOG_WORKER='worker-test',
-                           WATCHDOG_MAX_AGE='1800', SMTP_AUTH_MODE='password', RUNNER_TEMP=directory)
-                env.update(extra)
+        workflow = (root / ".github/workflows/local-ci-watchdog.yml").read_text(encoding="utf-8")
+        script = textwrap.dedent(workflow.split("python - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
+        self.assertNotIn("SMTP", workflow)
+        self.assertNotIn("EMAIL_", workflow)
+        self.assertNotIn("actions/cache", workflow)
+        self.assertIn("      issues: write", workflow)
+        for number in ("", "abc", "0", "7"):
+            with self.subTest(number=number), tempfile.TemporaryDirectory() as directory:
+                env = {"WATCHDOG_URL": "https://example.invalid/heartbeat.json", "WATCHDOG_WORKER": "worker-test",
+                       "WATCHDOG_MAX_AGE": "1800", "OPERATIONS_ISSUE": number, "RUNNER_TEMP": directory}
                 with patch.dict(os.environ, env, clear=True):
-                    exec(compile(script, 'watchdog-workflow-prepare', 'exec'), {})
-                config = json.loads((Path(directory) / 'watchdog.json').read_text())
-                self.assertEqual(config['worker_id'], 'worker-test')
-                self.assertEqual(bool(config['smtp']), bool(extra))
+                    if number != "7":
+                        with self.assertRaisesRegex(SystemExit, "LOCAL_CI_OPERATIONS_ISSUE_NUMBER"):
+                            exec(compile(script, "watchdog-workflow-prepare", "exec"), {})
+                        continue
+                    exec(compile(script, "watchdog-workflow-prepare", "exec"), {})
+                config = json.loads((Path(directory) / "watchdog.json").read_text())
+                self.assertEqual(config["github"], {"repository": "anteloper-c/triton-anchor", "issue_number": 7, "token_env": "GITHUB_TOKEN"})
+                self.assertNotIn("smtp", config)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

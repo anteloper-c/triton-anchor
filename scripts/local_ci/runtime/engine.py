@@ -18,9 +18,28 @@ from .common import digest, execute, git, read_json, utcnow, write_json
 from .codex_events import read_events
 from .policy import minimum_checks, validate_task
 from .report import build_result, markdown
+from .result_paths import run_relative, validate_result_path
+from .task_permissions import write_agent_document
 
 
 class Engine:
+    @staticmethod
+    def codex_options(settings):
+        """Apply the same trusted model and history budget on every CLI entry."""
+        options = []
+        if settings.get('model'):
+            options += ['-m', settings['model']]
+        if settings.get('reasoning_effort'):
+            options += ['-c', 'model_reasoning_effort=' + json.dumps(settings['reasoning_effort'])]
+        for key in ('auto_compact_token_limit', 'tool_output_token_limit'):
+            if key in settings:
+                value = settings[key]
+                if type(value) is not int or value <= 0:
+                    raise ValueError('codex.' + key + ' must be a positive integer')
+                cli_key = 'model_' + key if key == 'auto_compact_token_limit' else key
+                options += ['-c', cli_key + '=' + str(value)]
+        return options
+
     def __init__(self, config, relay, manager):
         self.config, self.relay, self.manager = config, relay, manager
         self.state = Path(config['state_dir'])
@@ -93,10 +112,7 @@ class Engine:
                     command = [settings.get('bin', 'codex'), 'exec', 'resume', '--json',
                                '--ignore-user-config', '--skip-git-repo-check',
                                '-c', 'approval_policy="never"', '-c', 'sandbox_mode="danger-full-access"']
-                    if settings.get('model'):
-                        command += ['-m', settings['model']]
-                    if settings.get('reasoning_effort'):
-                        command += ['-c', 'model_reasoning_effort=' + json.dumps(settings['reasoning_effort'])]
+                    command += self.codex_options(settings)
                     command += [session_id, prompt]
                 else:
                     # Failure before thread.started: use the same on-disk task
@@ -149,6 +165,9 @@ class Engine:
 
     def run(self, task, profile, resume_record=None):
         validate_task(task, self.config.get('repository', 'anteloper-c/triton-anchor'))
+        if resume_record:
+            validate_result_path(Path(resume_record).relative_to(self.state).as_posix(), task,
+                                 read_json(resume_record)['run_id'], 'execution.json')
         configured_profile = profile
         profile = copy.deepcopy(profile)
         # Acquire before creating an execution journal: maintenance/busy means queued.
@@ -180,7 +199,7 @@ class Engine:
         except Exception as exc:
             run_id = (read_json(resume_record)['run_id'] if resume_record else
                       time.strftime('%Y%m%dT%H%M%S', time.gmtime()) + '-' + secrets.token_hex(3))
-            output = self.state / 'runs' / task['task_id'] / run_id
+            output = Path(resume_record).parent if resume_record else self.state / run_relative(task, run_id)
             output.mkdir(parents=True, exist_ok=True)
             policy = minimum_checks([], profile, task['task_ref'].startswith('ci/full/'))
             broker = Broker(profile, {}, policy, output / 'preparation-error', lambda: False)
@@ -194,7 +213,7 @@ class Engine:
             return output, result
         run_id = (read_json(resume_record)['run_id'] if resume_record else
                   time.strftime('%Y%m%dT%H%M%S', time.gmtime()) + '-' + secrets.token_hex(3))
-        output = self.state / 'runs' / task['task_id'] / run_id
+        output = Path(resume_record).parent if resume_record else self.state / run_relative(task, run_id)
         output.mkdir(parents=True, exist_ok=True)
         started_at = utcnow()
         write_json(output / 'task.json', task)
@@ -262,6 +281,8 @@ class Engine:
             if task.get('triton_version') and task['triton_version'] != profile['triton_version']:
                 raise RuntimeError('task version differs from the trusted branch profile')
             self.heartbeat('preparing', task['task_id'])
+            self.docker_run(profile, '/usr/bin/python3', '-I', '-S',
+                            '/opt/anchor-ci/runtime/task_permissions.py', container_task)
             self.docker_run(profile, 'chown', '-R', '1000:1000', container_task)
             self.docker_run(profile, 'chown', '0:0', container_task)
             self.docker_run(profile, 'chmod', '755', container_task)
@@ -298,7 +319,7 @@ class Engine:
                     raise ValueError('materialized dependency differs from the tested gitlink')
                 if name == 'FlagGems':
                     profile.setdefault('tools', {})['flaggems_dir'] = container_task + '/source/FlagGems'
-            write_json(host_task / 'agent/context.json', {'task': task, 'policy': policy,
+            write_agent_document(host_task / 'agent/context.json', {'task': task, 'policy': policy,
                        'source_dir': context['source_dir'], 'artifact_dir': context['artifact_dir']})
             if verify_control(self.config, task)['tree_sha256'] != control_identity['tree_sha256']:
                 raise RuntimeError('trusted control files changed before Codex execution')
@@ -319,10 +340,7 @@ class Engine:
                           '-C', container_task + '/agent', '--output-schema',
                           '/opt/anchor-ci/schemas/completion.schema.json', '-o',
                           container_task + '/agent/completion.json']
-            if settings.get('model'):
-                codex_args += ['-m', settings['model']]
-            if settings.get('reasoning_effort'):
-                codex_args += ['-c', 'model_reasoning_effort=' + json.dumps(settings['reasoning_effort'])]
+            codex_args += self.codex_options(settings)
             codex_args.append(prompt)
             spec = {'id': task['task_id'] + '-codex', 'argv': codex_args,
                     'cwd': container_task + '/agent',
@@ -446,7 +464,7 @@ class Engine:
             write_json(record, execution)
             safe_diagnostic = re.sub(r'https?://[^/\s@]+@', 'https://REDACTED@', str(diagnostic))[-6000:]
             agent_dir = Path(host_task) / 'agent'
-            write_json(agent_dir / 'publication-diagnostic.json', {'task_id': task['task_id'],
+            write_agent_document(agent_dir / 'publication-diagnostic.json', {'task_id': task['task_id'],
                        'phase': 'publish_pending', 'diagnostic': safe_diagnostic,
                        'instruction': 'Build/review already complete. Diagnose publication only. Do not rerun tests, alter result files, or request credentials. Host retries publication.'})
             container_dir = '/workspace/' + agent_dir.relative_to(self.workspace).as_posix()
@@ -458,10 +476,7 @@ class Engine:
             command = [settings.get('bin', 'codex'), 'exec', 'resume', '--json', '--ignore-user-config',
                        '--skip-git-repo-check', '-c', 'approval_policy="never"', '-c', 'sandbox_mode="danger-full-access"',
                        ]
-            if settings.get('model'):
-                command += ['-m', settings['model']]
-            if settings.get('reasoning_effort'):
-                command += ['-c', 'model_reasoning_effort=' + json.dumps(settings['reasoning_effort'])]
+            command += self.codex_options(settings)
             command += [session_id, prompt]
             spec = {'id': task['task_id'] + '-publish', 'argv': command, 'cwd': container_dir, 'env': {}}
             encoded = base64.urlsafe_b64encode(json.dumps(spec).encode()).decode()

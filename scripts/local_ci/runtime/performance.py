@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 
 from .common import read_json
 from .relay import evidence_path
+from .result_paths import iter_run_files, validate_result_path
 
 
 TOOLS = ("compile_time", "pass_profile", "ir_serialization")
@@ -44,12 +45,13 @@ def _successful_tool(result, tool):
 
 
 def _published_candidates(config, identity, task):
-    root = Path(config["state_dir"]) / "runs"
+    root = Path(config["state_dir"])
     found = []
-    for candidate in root.glob("*/*/result.json"):
+    for candidate in iter_run_files(root, 'result.json'):
         try:
             result_path = evidence_path(root, candidate.relative_to(root).as_posix())
             result = read_json(result_path)
+            validate_result_path(result_path.relative_to(root).as_posix(), result, result['run_id'])
             execution = read_json(evidence_path(result_path.parent, "execution.json"))
             environment = result.get("environment", {})
             if (execution.get("phase") != "published" or result.get("conclusion") != "success"

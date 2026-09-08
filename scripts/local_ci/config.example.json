@@ -30,7 +30,9 @@
     "publication_recovery_attempts": 1,
     "publication_recovery_timeout": 180,
     "model": "gpt-5.3-codex-spark",
-    "reasoning_effort": "high"
+    "reasoning_effort": "high",
+    "auto_compact_token_limit": 80000,
+    "tool_output_token_limit": 4000
   },
   "profiles": [
     {
@@ -255,28 +257,5 @@
     "systemd_services": [
       "anchor-ci-poller.service"
     ]
-  },
-  "smtp": {
-    "accounts": [
-      "heron-mc",
-      "likehupochuan"
-    ],
-    "account_emails": {
-      "heron-mc": "",
-      "likehupochuan": ""
-    },
-    "host": "smtp-mail.outlook.com",
-    "from": "",
-    "port": 587,
-    "starttls": true,
-    "username_env": "LOCAL_CI_SMTP_USERNAME",
-    "password_env": "LOCAL_CI_SMTP_PASSWORD",
-    "oauth2": {
-      "token_endpoint": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
-      "client_id": "",
-      "scope": "https://outlook.office.com/SMTP.Send offline_access",
-      "access_token_env": "LOCAL_CI_SMTP_ACCESS_TOKEN",
-      "refresh_token_env": "LOCAL_CI_SMTP_REFRESH_TOKEN"
-    }
   }
 }

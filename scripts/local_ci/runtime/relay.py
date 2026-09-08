@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from .common import digest, read_json, safe_id, utcnow, write_json
+from .result_paths import legacy_run_relative, run_relative
 try:
     from ..maintenance.transport import git_environment, validate_relay_url
 except ImportError:
@@ -128,6 +129,7 @@ class Relay:
 
     def publish(self, result_dir, result):
         task_id, run_id = safe_id(result['task_id']), safe_id(result['run_id'])
+        relative = run_relative(result, run_id)
         worktree = self.root / 'publication'
         if not worktree.exists():
             self._git(self.root, 'init', '--template=', str(worktree))
@@ -141,7 +143,13 @@ class Relay:
             self._git(worktree, 'checkout', '-B', 'publication', 'FETCH_HEAD')
         elif self._git(worktree, 'rev-parse', '--verify', 'HEAD', check=False).returncode:
             self._git(worktree, 'checkout', '--orphan', 'publication')
-        relative = f'runs/{task_id}/{run_id}'
+        # An already-published historical run keeps its original immutable URL.
+        # New runs always use the task-derived grouped location.
+        legacy = legacy_run_relative(result, run_id)
+        if evidence_path(worktree, legacy + '/result.json').is_file():
+            if evidence_path(worktree, relative + '/result.json').is_file():
+                raise ValueError('same immutable run exists in two result locations')
+            relative = legacy
         target = evidence_path(worktree, relative)
         if target.exists():
             old_result = target / 'result.json'

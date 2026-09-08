@@ -32,7 +32,8 @@ class RecoveryTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.config = {'state_dir': str(self.root / 'state'), 'workspace_host': str(self.root / 'workspace'),
-                       'codex': {'model': 'gpt-5.5', 'reasoning_effort': 'high', 'timeout': 200}}
+                       'codex': {'model': 'gpt-5.3-codex-spark', 'reasoning_effort': 'high', 'timeout': 200,
+                                 'auto_compact_token_limit': 80000, 'tool_output_token_limit': 4000}}
         self.engine = Engine(self.config, mock.Mock(), mock.Mock())
         self.spec = {'id': 'task-codex', 'argv': ['codex', 'exec', '--json', 'read frozen task context'],
                      'cwd': '/workspace/task/agent', 'env': {'GIT_CONFIG_VALUE_0': '/workspace/task/source'}}
@@ -70,8 +71,10 @@ class RecoveryTests(unittest.TestCase):
         resumed = commands[1]
         self.assertEqual(resumed['argv'][:3], ['codex', 'exec', 'resume'])
         self.assertIn(SESSION, resumed['argv'])
-        self.assertIn('gpt-5.5', resumed['argv'])
+        self.assertIn('gpt-5.3-codex-spark', resumed['argv'])
         self.assertIn('model_reasoning_effort="high"', resumed['argv'])
+        self.assertIn('model_auto_compact_token_limit=80000', resumed['argv'])
+        self.assertIn('tool_output_token_limit=4000', resumed['argv'])
         self.assertEqual(resumed['env'], self.spec['env'])
         self.assertNotEqual(resumed['id'], commands[0]['id'])
         self.assertEqual(timeouts, [200, 169])
@@ -169,7 +172,8 @@ class ActiveBuildRecoveryTests(unittest.TestCase):
                     'captured_at': '2026-09-08T10:00:00Z'}
             config = {'local_acceptance': True, 'state_dir': str(root / 'state'),
                       'workspace_host': str(root / 'workspace'), 'codex': {'timeout': 200,
-                      'model': 'gpt-5.5', 'reasoning_effort': 'high'}}
+                      'model': 'gpt-5.3-codex-spark', 'reasoning_effort': 'high',
+                      'auto_compact_token_limit': 80000, 'tool_output_token_limit': 4000}}
             relay, manager = mock.Mock(), mock.Mock()
             relay.current.return_value, relay.changed_paths.return_value = True, ['README.md']
             def checkout(sha, directory):
@@ -239,6 +243,12 @@ class ActiveBuildRecoveryTests(unittest.TestCase):
                     thread.join(5)
             self.assertEqual(len(created), 1)
             self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0]['argv'][:2], ['codex', 'exec'])
+            self.assertEqual(calls[1]['argv'][:3], ['codex', 'exec', 'resume'])
+            for spec in calls:
+                for option in ('gpt-5.3-codex-spark', 'model_reasoning_effort="high"',
+                               'model_auto_compact_token_limit=80000', 'tool_output_token_limit=4000'):
+                    self.assertIn(option, spec['argv'])
             manager.acquire.assert_called_once()
             manager.release.assert_called_once()
             self.assertEqual(result['conclusion'], 'success')

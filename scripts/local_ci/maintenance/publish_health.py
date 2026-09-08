@@ -45,7 +45,7 @@ class HealthPublisher:
                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         if check and result.returncode:
             # Do not copy server errors or credential-bearing process environment
-            # into health snapshots or SMTP messages.
+            # into health snapshots or public notifications.
             raise PublicationError(f'health git {args[0]} failed (exit {result.returncode})')
         return result
 

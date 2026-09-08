@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime.policy import TOOLS, minimum_checks
+from runtime.result_paths import validate_result_path
 
 
 SCHEMA = "triton-anchor-local-ci-result"
@@ -40,20 +41,14 @@ def object_json(data: bytes) -> dict:
     return value
 
 
-def safe_result_path(path: str, task_id: str, run_id: str) -> str:
-    prefix = f"runs/{task_id}/{run_id}/"
-    parsed = PurePosixPath(path)
-    if not path.startswith(prefix) or parsed.is_absolute() or ".." in parsed.parts or "\\" in path:
-        raise ValueError("Result path escapes the immutable task/run directory")
-    return path
-
-
-def validate_artifacts(index: dict, manifest: dict, result_bytes: bytes, task_id: str) -> dict:
-    if index.get("task_id") != task_id or not SAFE_ID.fullmatch(str(index.get("run_id", ""))):
+def validate_artifacts(index: dict, manifest: dict, result_bytes: bytes, expected: dict) -> dict:
+    if index.get("task_id") != expected["task_id"] or not SAFE_ID.fullmatch(str(index.get("run_id", ""))):
         raise ValueError("Result index has a mismatched task or invalid run ID")
     run_id = index["run_id"]
-    result_path = safe_result_path(str(index.get("result_path", "")), task_id, run_id)
-    safe_result_path(str(index.get("manifest_path", "")), task_id, run_id)
+    result_path = validate_result_path(index.get("result_path"), expected, run_id)
+    manifest_path = validate_result_path(index.get("manifest_path"), expected, run_id, "publish-manifest.json")
+    if PurePosixPath(result_path).parent != PurePosixPath(manifest_path).parent:
+        raise ValueError("Result and manifest must belong to the same immutable run directory")
     digest = hashlib.sha256(result_bytes).hexdigest()
     if index.get("result_sha256") != digest:
         raise ValueError("Result digest does not match the published index")
@@ -63,7 +58,10 @@ def validate_artifacts(index: dict, manifest: dict, result_bytes: bytes, task_id
     entries = [item for item in files if isinstance(item, dict) and item.get("path") in {result_path, "result.json"}]
     if len(entries) != 1 or entries[0].get("sha256") != digest or entries[0].get("size") != len(result_bytes):
         raise ValueError("Result is missing or mismatched in the publish manifest")
-    return object_json(result_bytes)
+    result = object_json(result_bytes)
+    if result.get("task_id") != expected["task_id"] or result.get("run_id") != run_id:
+        raise ValueError("Result identity differs from the published task/run index")
+    return result
 
 
 def validate_result(result: dict, metadata: dict, expected: dict) -> str:
@@ -513,26 +511,30 @@ def main(argv=None) -> int:
         try:
             validate_current(github, expected)
             metadata = object_json(gitee.contents(args.gitee_owner, args.gitee_repo, "task-metadata.json", metadata_ref))
-            if metadata.get("task_id") != args.task_id:
+            if any(metadata.get(key) != expected[key] or type(metadata.get(key)) is not type(expected[key]) for key in IDENTITY):
                 raise StaleTask("A newer task replaced the relay metadata")
             index = object_json(gitee.contents(args.gitee_owner, args.gitee_repo, f"tasks/{args.task_id}/latest.json", args.gitee_results_branch))
             run_id = str(index.get("run_id", ""))
             if not SAFE_ID.fullmatch(run_id):
                 raise ValueError("Invalid published run ID")
-            manifest_path = safe_result_path(str(index.get("manifest_path", "")), args.task_id, run_id)
-            result_path = safe_result_path(str(index.get("result_path", "")), args.task_id, run_id)
+            if index.get("task_id") != args.task_id:
+                raise ValueError("Published index belongs to a different task")
+            manifest_path = validate_result_path(index.get("manifest_path"), expected, run_id, "publish-manifest.json")
+            result_path = validate_result_path(index.get("result_path"), expected, run_id)
+            if PurePosixPath(result_path).parent != PurePosixPath(manifest_path).parent:
+                raise ValueError("Result and manifest directories differ")
             manifest = object_json(gitee.contents(args.gitee_owner, args.gitee_repo, manifest_path, args.gitee_results_branch))
             result_bytes = gitee.contents(args.gitee_owner, args.gitee_repo, result_path, args.gitee_results_branch)
-            result = validate_artifacts(index, manifest, result_bytes, args.task_id)
+            result = validate_artifacts(index, manifest, result_bytes, expected)
             # Scope is derived from GitHub, not the model-owned result or relay's file list.
             metadata["changed_paths"] = current_changed_paths(github, expected)
             if metadata.get("triton_version") != current_triton_version(github, expected):
                 raise ValueError("Task profile version differs from the exact tested source")
             state = validate_result(result, metadata, expected)
             latest_metadata = object_json(gitee.contents(args.gitee_owner, args.gitee_repo, "task-metadata.json", metadata_ref))
-            if latest_metadata.get("task_id") != args.task_id:
+            if any(latest_metadata.get(key) != expected[key] or type(latest_metadata.get(key)) is not type(expected[key]) for key in IDENTITY):
                 raise StaleTask("Task was replaced while receiving its result")
-            target = f"{args.gitee_web_url or f'https://gitee.com/{args.gitee_owner}/{args.gitee_repo}'}/blob/{urllib.parse.quote(args.gitee_results_branch, safe='')}/{result_path}"
+            target = f"{args.gitee_web_url or f'https://gitee.com/{args.gitee_owner}/{args.gitee_repo}'}/blob/{urllib.parse.quote(args.gitee_results_branch, safe='')}/{urllib.parse.quote(result_path, safe='/')}"
             publish(github, expected, result, state, target, args.context)
             output("overall_status", state)
             output("target_url", target)
@@ -547,6 +549,10 @@ def main(argv=None) -> int:
             if exc.code not in {404, 409, 429, 500, 502, 503, 504}:
                 raise
             print(f"Waiting for relay or service recovery (HTTP {exc.code})")
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            # A transient TLS/connection timeout must use the same bounded wait
+            # and existing receiver continuation, rather than reject the task.
+            print(f"Waiting for relay or service recovery ({type(exc).__name__})")
         if time.monotonic() >= deadline:
             return 3
         time.sleep(min(max(1, args.poll_interval_seconds), 60, max(0, deadline - time.monotonic())))

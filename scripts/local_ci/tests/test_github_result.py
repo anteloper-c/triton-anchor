@@ -26,6 +26,7 @@ def module(name):
 
 receiver = module("receive_result")
 builder = module("build_task_metadata")
+from runtime.result_paths import run_relative
 
 
 def admitted_task(external=False):
@@ -51,7 +52,7 @@ def result_fixture(external=False):
     container_files = {path[len('scripts/local_ci/'):]: value for path, value in control_files.items()}
     control['container'] = dict(verified=True, mount_read_only=True, container_id='a' * 64,
                                tree_sha256=hashlib.sha256(json.dumps(container_files, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
-    result = dict(expected, schema=receiver.SCHEMA, conclusion="success", blocking_reasons=[],
+    result = dict(expected, schema=receiver.SCHEMA, run_id="run1", conclusion="success", blocking_reasons=[],
                   checks=[dict(id="architecture_review", status="passed", required=True, reason="Verified contract", evidence=[{"path": "README.md", "reason": "Scope reviewed"}]),
                           dict(id='pr_information', status='passed', required=True, reason='PR intent and scope are complete', evidence=[])]
                          + [dict(id=tool, status="skipped", required=False, reason="Documentation-only scope", evidence=[]) for tool in receiver.TOOLS],
@@ -217,12 +218,46 @@ class ResultGateTests(unittest.TestCase):
         index = dict(task_id=task["task_id"], run_id="run1", result_path=path, result_sha256=digest,
                      manifest_path=f"runs/{task['task_id']}/run1/publish-manifest.json")
         manifest = dict(files=[dict(path=path, sha256=digest, size=len(content))])
-        self.assertEqual(receiver.validate_artifacts(index, manifest, content, task["task_id"]), result)
+        self.assertEqual(receiver.validate_artifacts(index, manifest, content, expected), result)
         with self.assertRaises(ValueError):
-            receiver.validate_artifacts(index, manifest, content + b" ", task["task_id"])
+            receiver.validate_artifacts(index, manifest, content + b" ", expected)
         index["result_path"] = f"runs/{task['task_id']}/run1/../../other/result.json"
         with self.assertRaises(ValueError):
-            receiver.validate_artifacts(index, manifest, content, task["task_id"])
+            receiver.validate_artifacts(index, manifest, content, expected)
+
+    def test_grouped_artifacts_bind_target_event_pr_and_one_directory(self):
+        task, expected, result = result_fixture()
+        content = json.dumps(result).encode()
+        path = run_relative(expected, "run1") + "/result.json"
+        index = dict(task_id=task['task_id'], run_id='run1', result_path=path,
+                     result_sha256=hashlib.sha256(content).hexdigest(),
+                     manifest_path=run_relative(expected, 'run1') + '/publish-manifest.json')
+        manifest = dict(files=[dict(path='result.json', sha256=index['result_sha256'], size=len(content))])
+        self.assertEqual(receiver.validate_artifacts(index, manifest, content, expected), result)
+        for wrong_path in (path.replace('/main/', '/ci_repo/'), path.replace('/pr-19/', '/pr-20/'),
+                           path.replace('runs/pr/main/pr-19/', 'runs/push/main/'),
+                           path.replace('/run1/', '/run2/'), path.replace('runs/', 'runs//', 1)):
+            with self.subTest(path=wrong_path), self.assertRaises(ValueError):
+                receiver.validate_artifacts(dict(index, result_path=wrong_path), manifest, content, expected)
+        with self.assertRaises(ValueError):
+            receiver.validate_artifacts(dict(index, manifest_path=f"runs/{task['task_id']}/run1/publish-manifest.json"), manifest, content, expected)
+
+    def test_push_and_full_grouped_artifacts_use_the_trusted_target(self):
+        for mode in ('push', 'full'):
+            with self.subTest(mode=mode):
+                task, expected, result = result_fixture()
+                expected.update(event_kind='push', pr_number=0, target_branch='release/3.0',
+                                task_ref='ci/' + mode + '/release/3.0')
+                result.update(expected)
+                content = json.dumps(result).encode()
+                directory = run_relative(expected, 'run1')
+                index = dict(task_id=expected['task_id'], run_id='run1', result_path=directory + '/result.json',
+                             manifest_path=directory + '/publish-manifest.json', result_sha256=hashlib.sha256(content).hexdigest())
+                manifest = dict(files=[dict(path='result.json', sha256=index['result_sha256'], size=len(content))])
+                self.assertIn('runs/push/release%2F3.0/', directory)
+                self.assertEqual(receiver.validate_artifacts(index, manifest, content, expected), result)
+                with self.assertRaises(ValueError):
+                    receiver.validate_artifacts(dict(index, result_path=index['result_path'].replace('release%2F3.0', 'main')), manifest, content, expected)
 
     def test_current_github_base_and_merge_checked_before_writes(self):
         task, expected, result = result_fixture()
@@ -247,18 +282,22 @@ class ResultGateTests(unittest.TestCase):
 class ReceiverHTTPTests(unittest.TestCase):
     """Real HTTP requests against local fixtures; no live GitHub or Gitee writes."""
 
-    def run_receiver(self, tamper=False, missing_result=False):
+    def run_receiver(self, tamper=False, missing_result=False, legacy=False, invalid_group=False, network_failure=None):
         task, expected, result = result_fixture()
         data = json.dumps(result).encode()
         digest = hashlib.sha256(data).hexdigest()
-        result_path = f"runs/{task['task_id']}/run1/result.json"
-        manifest_path = f"runs/{task['task_id']}/run1/publish-manifest.json"
+        directory = f"runs/{task['task_id']}/run1" if legacy else run_relative(expected, 'run1')
+        if invalid_group:
+            directory = directory.replace('/pr/main/', '/pr/ci_repo/')
+        result_path = directory + '/result.json'
+        manifest_path = directory + '/publish-manifest.json'
         index = dict(task_id=task["task_id"], run_id="run1", result_path=result_path,
                      manifest_path=manifest_path, result_sha256=digest)
         manifest = dict(files=[dict(path=result_path, sha256=digest, size=len(data))])
         relay = {"task-metadata.json": json.dumps(task).encode(), f"tasks/{task['task_id']}/latest.json": json.dumps(index).encode(),
                  result_path: data + (b" " if tamper else b""), manifest_path: json.dumps(manifest).encode()}
         writes = []
+        disconnected = []
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -266,6 +305,10 @@ class ReceiverHTTPTests(unittest.TestCase):
 
             def do_GET(self):
                 path = unquote(urlparse(self.path).path)
+                if path.endswith('/pulls/19') and network_failure and (network_failure == 'always' or not disconnected):
+                    disconnected.append(True)
+                    self.close_connection = True
+                    return
                 if path.endswith("/files"):
                     value = [{"filename": "README.md", "status": "modified"}]
                 elif path.endswith("/pulls/19"):
@@ -308,14 +351,15 @@ class ReceiverHTTPTests(unittest.TestCase):
                     "--task-id", task["task_id"], "--task-ref", task["task_ref"], "--sha", expected["tested_sha"],
                     "--worker-revision-sha", expected["worker_revision_sha"], "--target-branch", "main", "--pr-number", "19",
                     "--expected-head-sha", expected["head_sha"], "--comparison-base-sha", expected["base_sha"],
-                    "--github-api", url, "--gitee-api", url, "--timeout-seconds", "0"]
+                    "--github-api", url, "--gitee-api", url, "--timeout-seconds", "10" if network_failure == 'once' else "0",
+                    "--poll-interval-seconds", "1"]
             try:
                 with patch.dict(os.environ, {"GITHUB_TOKEN": "", "GH_TOKEN": "", "GITEE_TOKEN": "", "GITHUB_OUTPUT": "", "GITHUB_RUN_ID": "12345"}):
-                    if tamper:
+                    if tamper or invalid_group:
                         with self.assertRaises(ValueError):
                             receiver.main(argv)
                     else:
-                        self.assertEqual(receiver.main(argv), 3 if missing_result else 0)
+                        self.assertEqual(receiver.main(argv), 3 if missing_result or network_failure == 'always' else 0)
             finally:
                 server.shutdown()
                 thread.join(timeout=5)
@@ -335,8 +379,24 @@ class ReceiverHTTPTests(unittest.TestCase):
     def test_bad_published_bytes_produce_no_remote_writes(self):
         self.assertEqual(self.run_receiver(tamper=True), [])
 
+    def test_grouped_wrong_target_produces_no_remote_writes(self):
+        self.assertEqual(self.run_receiver(invalid_group=True), [])
+
+    def test_historical_flat_publication_remains_receivable(self):
+        statuses = [body for path, body in self.run_receiver(legacy=True) if '/statuses/' in path]
+        self.assertEqual(len(statuses), 2)
+        self.assertTrue(all(body['state'] == 'success' for body in statuses))
+
     def test_unpublished_gitee_result_waits_until_timeout_without_writes(self):
         self.assertEqual(self.run_receiver(missing_result=True), [])
+
+    def test_actual_connection_drop_recovers_before_publishing_exact_result(self):
+        statuses = [body for path, body in self.run_receiver(network_failure='once') if '/statuses/' in path]
+        self.assertEqual(len(statuses), 2)
+        self.assertTrue(all(body['state'] == 'success' for body in statuses))
+
+    def test_persistent_connection_drop_exhausts_original_budget_without_writes(self):
+        self.assertEqual(self.run_receiver(network_failure='always'), [])
 
 
 if __name__ == "__main__":

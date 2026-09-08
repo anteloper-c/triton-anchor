@@ -16,6 +16,7 @@ from runtime.common import digest, git, read_json, write_json  # noqa: E402
 from runtime.policy import BACKEND_TOOLS, minimum_checks, validate_task  # noqa: E402
 from runtime.relay import Relay  # noqa: E402
 from runtime.report import build_result  # noqa: E402
+from runtime.result_paths import legacy_run_relative, run_relative  # noqa: E402
 
 
 def admitted_task():
@@ -141,7 +142,8 @@ class RealGitRelayTests(unittest.TestCase):
         git(self.seed, "push", "origin", f"HEAD:refs/heads/{ref}")
 
     def output(self, run_id="run-one"):
-        result = {"schema": "triton-anchor-local-ci-result", "task_id": self.task["task_id"],
+        result = {**{k: self.task[k] for k in ('event_kind', 'pr_number', 'target_branch', 'task_ref')},
+                  "schema": "triton-anchor-local-ci-result", "task_id": self.task["task_id"],
                   "run_id": run_id, "conclusion": "success", "evidence": [], "tested_sha": self.sha}
         out = self.root / run_id
         out.mkdir()
@@ -184,6 +186,33 @@ class RealGitRelayTests(unittest.TestCase):
         before = git(self.remote, "rev-parse", "refs/heads/local-ci-results")
         self.relay.publish(out, result)
         self.assertEqual(git(self.remote, "rev-parse", "refs/heads/local-ci-results"), before)
+
+    def test_historical_flat_run_retry_preserves_url_and_new_run_is_grouped(self):
+        out, result = self.output('historical')
+        legacy = legacy_run_relative(result, result['run_id'])
+        target = self.seed / legacy
+        target.mkdir(parents=True)
+        files = []
+        for name in ('result.json', 'report.md'):
+            (target / name).write_bytes((out / name).read_bytes())
+            files.append({'path': name, 'sha256': digest(out / name), 'size': (out / name).stat().st_size})
+        write_json(target / 'publish-manifest.json', {'schema': 'triton-anchor-local-ci-publication',
+                   'task_id': result['task_id'], 'run_id': result['run_id'], 'files': files})
+        write_json(self.seed / 'tasks' / result['task_id'] / 'latest.json',
+                   {'task_id': result['task_id'], 'run_id': result['run_id'], 'result_path': legacy + '/result.json',
+                    'result_sha256': digest(out / 'result.json'), 'manifest_path': legacy + '/publish-manifest.json'})
+        git(self.seed, 'add', 'runs', 'tasks')
+        git(self.seed, 'commit', '-m', 'historical flat publication fixture')
+        git(self.seed, 'push', 'origin', 'HEAD:refs/heads/local-ci-results')
+        before = git(self.remote, 'rev-parse', 'refs/heads/local-ci-results')
+        self.assertEqual(self.relay.publish(out, result), legacy)
+        self.assertEqual(git(self.remote, 'rev-parse', 'refs/heads/local-ci-results'), before)
+        newer, current = self.output('new-grouped')
+        relative = self.relay.publish(newer, current)
+        self.assertEqual(relative, run_relative(current, current['run_id']))
+        self.assertEqual(json.loads(git(self.remote, 'show', 'local-ci-results:' + legacy + '/result.json')), result)
+        latest = json.loads(git(self.remote, 'show', f"local-ci-results:tasks/{result['task_id']}/latest.json"))
+        self.assertEqual(latest['result_path'], relative + '/result.json')
 
     def test_same_run_cannot_rewrite_a_published_report(self):
         out, result = self.output()

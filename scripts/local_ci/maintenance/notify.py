@@ -1,183 +1,162 @@
-"""SMTP incident/recovery notifications with durable deduplication and retries."""
+"""One GitHub operations Issue records health changes across watchdog runners."""
 from __future__ import annotations
 
-from email.message import EmailMessage
-from email.utils import parseaddr
-from http.client import HTTPException
+from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
-from pathlib import Path
-import smtplib
-import ssl
-import time
-from urllib import error, parse, request
-
-from .workers import atomic_json, file_lock, read_json
+import re
+from urllib import error, request
 
 
-def refresh_access_token(settings, refresh_token, *, opener=None):
-    """Exchange a trusted OAuth refresh token; never expose response diagnostics."""
-    endpoint = settings.get('token_endpoint', '')
-    parsed = parse.urlsplit(endpoint)
-    if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
-            or parsed.query or parsed.fragment or not settings.get('client_id') or not refresh_token):
-        raise ValueError('OAuth2 HTTPS endpoint, client_id and refresh token must be configured')
-    fields = {'grant_type': 'refresh_token', 'client_id': settings['client_id'], 'refresh_token': refresh_token}
-    if settings.get('scope'):
-        fields['scope'] = settings['scope']
-    if settings.get('client_secret_env'):
-        secret = os.environ.get(settings['client_secret_env'], '')
-        if not secret:
-            raise ValueError('OAuth2 client secret is not configured')
-        fields['client_secret'] = secret
-    call = request.Request(endpoint, data=parse.urlencode(fields).encode('utf-8'),
-                           headers={'Content-Type': 'application/x-www-form-urlencoded'}, method='POST')
-    try:
-        with (opener.open if opener else request.urlopen)(call, timeout=30) as response:
-            raw = response.read(131073)
-        if len(raw) > 131072:
-            raise ValueError('oversized token response')
-        document = json.loads(raw)
-        token = document.get('access_token')
-        if (document.get('token_type', '').lower() != 'bearer' or not isinstance(token, str)
-                or not token or len(token) > 65536 or any(ord(c) < 33 or ord(c) > 126 for c in token)):
-            raise ValueError('invalid token response')
-        rotated = document.get('refresh_token', refresh_token)
-        if (not isinstance(rotated, str) or not rotated or len(rotated) > 65536
-                or any(ord(c) < 33 or ord(c) > 126 for c in rotated)):
-            raise ValueError('invalid rotated refresh token')
-        return {'access_token': token, 'refresh_token': rotated,
-                'expires_in': max(1, min(86400, int(document.get('expires_in', 3600))))}
-    except (OSError, error.URLError, HTTPException, ValueError, TypeError, KeyError, AttributeError):
-        raise ValueError('OAuth2 token refresh failed; check configuration or renew authorization') from None
+REPOSITORY = "anteloper-c/triton-anchor"
+START, END = "<!-- anchor-ci-health:start -->", "<!-- anchor-ci-health:end -->"
+CONFIG_ERROR = ("请配置 LOCAL_CI_OPERATIONS_ISSUE_NUMBER 为本仓库已创建的运维 Issue 编号，"
+                "并让维护者订阅该 Issue；配置完成前保持 LOCAL_CI_WATCHDOG_ENABLED=false。")
+FAULTS = {
+    "host_offline": "服务器心跳过期，请检查服务器、电源、网络和健康发布服务。",
+    "heartbeat_invalid": "健康快照校验失败，请检查监控配置和发布服务。",
+    "heartbeat_unreachable": "无法读取健康快照，请检查网络和发布通道。",
+    "poller_stale": "任务调度心跳过期，请检查调度服务。",
+    "poller_error": "任务调度服务报告异常，请检查服务日志。",
+    "poller_failed": "任务调度服务失败，请检查服务日志。",
+    "poller_publish_pending": "任务结果等待发布，请检查发布通道。",
+    "task_stalled": "任务执行心跳过期，请检查构建与执行进程。",
+    "task_overdue": "任务超过预期时长，请检查执行阶段。",
+    "publication_pending": "任务结果等待发布，请检查发布通道。",
+    "health_publication_pending": "健康快照发布失败，请检查发布通道。",
+    "disk_low": "可用磁盘空间不足，请按保留策略清理任务产物。",
+    "disk_unavailable": "工作磁盘不可访问，请检查存储状态。",
+    "container_unavailable": "常驻测试容器未运行，请检查版本环境。",
+    "container_oom": "测试容器发生内存不足，请检查内存与编译并行度。",
+    "maintenance_failed": "环境维护失败，请检查维护日志和回滚状态。",
+    "docker_unavailable": "无法读取测试容器状态，请检查 Docker 服务。",
+    "service_unavailable": "必要服务未运行，请检查服务管理器。",
+}
 
 
-def oauth_access_token(settings):
-    supplied = os.environ.get(settings.get('access_token_env', ''), '')
-    if supplied:
-        if len(supplied) > 65536 or any(ord(c) < 33 or ord(c) > 126 for c in supplied):
-            raise ValueError('OAuth2 access token is invalid')
-        return supplied
-    refresh = os.environ.get(settings.get('refresh_token_env', ''), '')
-    return refresh_access_token(settings, refresh)['access_token']
+class NotificationError(ValueError):
+    """A safe operator-facing diagnostic, never an API response or credential."""
 
 
-def validate_authentication(config):
-    """Report missing OAuth setup without contacting the identity provider."""
-    settings = config.get('oauth2')
-    if settings is None:
-        return
-    if not isinstance(settings, dict):
-        raise ValueError('OAuth2 settings must be an object')
-    if not config.get('ssl', False) and not config.get('starttls', True):
-        raise ValueError('OAuth2 SMTP requires SSL or STARTTLS')
-    if os.environ.get(settings.get('access_token_env', ''), ''):
-        return
-    if (not settings.get('client_id') or not settings.get('token_endpoint', '').startswith('https://')
-            or not os.environ.get(settings.get('refresh_token_env', ''), '')):
-        raise ValueError('OAuth2 application or user authorization is not configured')
+class NoRedirect(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise NotificationError("GitHub API 地址发生重定向；请检查仓库配置。")
 
 
-def recipients(config):
-    """Resolve the requested Gitee accounts using explicit operator mappings.
+class GitHubIssue:
+    def __init__(self, config):
+        number = config.get("issue_number")
+        if (config.get("repository") != REPOSITORY or type(number) is not int or number <= 0):
+            raise NotificationError(CONFIG_ERROR)
+        self.path = f"/repos/{REPOSITORY}/issues/{number}"
+        self.token = os.environ.get(config.get("token_env", "GITHUB_TOKEN"), "")
+        if not self.token:
+            raise NotificationError("缺少 GitHub 工作流令牌；请为 watchdog 作业授予 issues:write 权限。")
 
-    Gitee usernames are not email addresses. No guessed or scraped private email
-    is used; an unresolved account is a visible configuration error.
-    """
-    mapping = config.get("account_emails", {})
-    accounts = config.get("accounts", ["heron-mc", "likehupochuan"])
-    resolved, missing = [], []
-    for account in accounts:
-        value = mapping.get(account, "")
-        if "\n" in value or "\r" in value or parseaddr(value)[1] != value or "@" not in value:
-            missing.append(account)
-        else:
-            resolved.append(value)
-    if missing:
-        raise ValueError("email mapping not configured for Gitee accounts: " + ", ".join(missing))
-    if not resolved:
-        raise ValueError("no notification recipients configured")
-    return list(dict.fromkeys(resolved))
+    def call(self, method, suffix="", document=None):
+        payload = None if document is None else json.dumps(document, ensure_ascii=False).encode("utf-8")
+        call = request.Request("https://api.github.com" + self.path + suffix, data=payload, method=method,
+                               headers={"Accept": "application/vnd.github+json", "Authorization": "Bearer " + self.token,
+                                        "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json"})
+        try:
+            with request.build_opener(NoRedirect()).open(call, timeout=30) as response:
+                raw = response.read(2 * 1024 * 1024 + 1)
+            if len(raw) > 2 * 1024 * 1024:
+                raise ValueError("oversized response")
+            return json.loads(raw)
+        except (OSError, error.URLError, ValueError):
+            raise NotificationError("无法读取或更新运维 Issue；请检查仓库、Issue 编号、网络及 issues:write 权限。") from None
 
 
-def send_email(config, subject, body):
-    targets = recipients(config)
-    host = config.get("host")
-    sender = config.get("from")
-    if not host or not sender:
-        raise ValueError("SMTP host/from not configured")
-    if "\r" in sender or "\n" in sender or "@" not in sender:
-        raise ValueError("invalid SMTP from address")
-    message = EmailMessage()
-    message["Subject"] = subject
-    message["From"] = sender
-    message["To"] = ", ".join(targets)
-    message.set_content(body)
-    use_ssl = bool(config.get("ssl", False))
-    oauth = config.get('oauth2')
-    validate_authentication(config)
-    access_token = oauth_access_token(oauth) if oauth is not None else None
-    port = int(config.get("port", 465 if use_ssl else 587))
-    client_type = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
-    kwargs = {"timeout": 30}
-    if use_ssl:
-        kwargs["context"] = ssl.create_default_context()
-    try:
-        with client_type(host, port, **kwargs) as client:
-            if not use_ssl and config.get("starttls", True):
-                client.starttls(context=ssl.create_default_context())
-            username = os.environ.get(config.get("username_env", "LOCAL_CI_SMTP_USERNAME"), "") or sender
-            if access_token is not None:
-                client.ehlo()
-                response = 'user=' + username + '\x01auth=Bearer ' + access_token + '\x01\x01'
-                client.auth('XOAUTH2', lambda challenge=None: response if challenge is None else '')
-            else:
-                username = os.environ.get(config.get("username_env", "LOCAL_CI_SMTP_USERNAME"), "")
-                password = os.environ.get(config.get("password_env", "LOCAL_CI_SMTP_PASSWORD"), "")
-                if username:
-                    if not password:
-                        raise ValueError("SMTP password environment variable is missing")
-                    client.login(username, password)
-            client.send_message(message)
-    except (OSError, smtplib.SMTPException):
-        if oauth is not None:
-            raise ValueError('OAuth2 SMTP authentication or delivery failed') from None
-        raise
+def public_faults(issues):
+    """Never copy heartbeat messages, service names, host paths or unknown codes."""
+    rows = []
+    for item in issues:
+        text = FAULTS.get(item["code"], "健康检查报告异常，请维护者查看受限的运维日志。")
+        match = re.fullmatch(r"(?:triton-)?(3\.(?:0|3|6))", str(item.get("profile_id", "")))
+        if match:
+            text = "Triton " + match[1] + "：" + text
+        rows.append(text)
+    return sorted(set(rows))
+
+
+def status_block(body, current):
+    """Replace only our block, retaining the operator's existing Issue prose."""
+    if body.count(START) != body.count(END) or body.count(START) > 1:
+        raise NotificationError("运维 Issue 的状态区域不完整；请维护者修复或移除该区域后重试。")
+    block = START + "\n" + current + "\n" + END
+    if START in body:
+        begin, end = body.index(START), body.index(END)
+        if end < begin:
+            raise NotificationError("运维 Issue 的状态区域顺序无效；请维护者修复后重试。")
+        updated = body[:begin] + block + body[end + len(END):]
+    else:
+        updated = body.rstrip() + "\n\n" + block
+    if len(updated) > 65000:
+        raise NotificationError("运维 Issue 正文过长；请维护者缩短正文后重试。")
+    return updated
 
 
 class Notifier:
-    def __init__(self, state_dir, config, send=send_email):
-        self.root = Path(state_dir)
-        self.config = config
-        self.send = send
+    def __init__(self, config, api=None):
+        self.api = api or GitHubIssue(config)
 
     def update(self, worker_id, issues, dry_run=False):
-        """Notify only changed incidents/recovery; failed deliveries retry later."""
-        if not isinstance(worker_id, str) or not worker_id:
-            raise ValueError("worker_id is required")
+        """Post only transitions; reconcile the body after an interrupted PATCH.
+
+        The latest authenticated Actions-bot comment is the delivery receipt.
+        A lost POST response is resolved on the next run without another POST.
+        The workflow must serialize this one Issue's watchdog runs.
+        """
         key = hashlib.sha256(worker_id.encode()).hexdigest()[:24]
-        # Drop fluctuating metrics from fingerprint to avoid mail each heartbeat.
-        stable = sorted({json.dumps([item["code"], item.get("profile_id", ""), item.get("service", ""), item.get("path", "")]) for item in issues})
+        # Identity changes count, while durations/messages cannot cause alert spam.
+        stable = sorted({json.dumps([i["code"], i.get("profile_id", ""), i.get("service", ""), i.get("path", "")], sort_keys=True) for i in issues})
         signature = hashlib.sha256(json.dumps(stable).encode()).hexdigest()
-        with file_lock(self.root / f"notify-{key}.lock"):
-            path = self.root / f"notify-{key}.json"
-            state = read_json(path, {})
-            if state.get("signature") == signature:
-                return {"status": "unchanged"}
-            if not issues and not state.get("signature"):
-                atomic_json(path, {"signature": signature, "updated_at": time.time()})
-                return {"status": "healthy"}
-            subject = f"[Local CI] {worker_id}: {'异常' if issues else '已恢复'}"
-            body = "\n".join(f"- {item['code']}: {item.get('message', '')}" for item in issues) or "此前报告的 Local CI 故障已恢复。"
-            if dry_run:
-                return {"status": "dry_run", "subject": subject, "body": body}
-            try:
-                self.send(self.config, subject, body)
-            except (ValueError, OSError, smtplib.SMTPException) as exc:
-                # Do not persist exception text: servers can include credentials.
-                atomic_json(path.with_suffix(".pending.json"), {"updated_at": time.time(), "error_type": type(exc).__name__, "issues": stable})
-                return {"status": "pending", "error_type": type(exc).__name__}
-            atomic_json(path, {"signature": signature, "updated_at": time.time()})
-            path.with_suffix(".pending.json").unlink(missing_ok=True)
-            return {"status": "sent"}
+        marker = f"<!-- anchor-ci-health:{key}:{signature} -->"
+        rows = public_faults(issues)
+        title = "Local CI 需要处理" if issues else "Local CI 已恢复"
+        current = marker + "\n**" + title + "**\n\n"
+        current += "\n".join("- " + row for row in rows) if issues else "此前报告的故障已恢复，当前心跳与服务检查正常。"
+        if dry_run:
+            return {"status": "dry_run", "body": current}
+        issue = self.api.call("GET")
+        if not isinstance(issue, dict) or "pull_request" in issue or issue.get("state") != "open":
+            raise NotificationError("请使用本仓库保持打开的运维 Issue；不能使用 PR 或已关闭的 Issue。")
+        body, count = issue.get("body") or "", issue.get("comments", 0)
+        if not isinstance(body, str) or type(count) is not int or count < 0:
+            raise NotificationError("运维 Issue 响应不完整；请稍后重试。")
+        # Validate the managed area before any comment mutation.
+        status_block(body, current)
+        latest = None
+        pattern = re.compile(r"^<!-- anchor-ci-health:" + key + r":([0-9a-f]{64}) -->\n")
+        last_page = max(1, math.ceil(count / 100))
+        for page in range(last_page, max(0, last_page - 10), -1) if count else []:
+            comments = self.api.call("GET", f"/comments?per_page=100&page={page}")
+            if not isinstance(comments, list):
+                raise NotificationError("运维 Issue 评论响应无效；请稍后重试。")
+            for comment in reversed(comments):
+                author = comment.get("user", {})
+                text = comment.get("body", "")
+                match = pattern.match(text) if isinstance(text, str) else None
+                if author.get("login") == "github-actions[bot]" and author.get("type") == "Bot" and match:
+                    latest = (match[1], text)
+                    break
+            if latest:
+                break
+        if count > 1000 and latest is None:
+            raise NotificationError("近期评论中找不到监控记录；请维护者使用专用运维 Issue。")
+        posted = False
+        if latest and latest[0] == signature:
+            current = latest[1]
+        elif issues or latest:
+            current += "\n\n检测时间（UTC）：" + datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            self.api.call("POST", "/comments", {"body": current})
+            posted = True
+        else:
+            current = marker + "\n**Local CI 正常**\n\n监控已建立，当前心跳与服务检查正常。"
+        updated = status_block(body, current)
+        if updated != body:
+            self.api.call("PATCH", document={"body": updated})
+        return {"status": "sent" if posted else "unchanged" if latest or updated == body else "healthy"}

@@ -13,6 +13,7 @@ from .engine import Engine
 from .policy import TOOLS, identity, validate_task
 from .report import markdown
 from .relay import Relay
+from .result_paths import iter_run_files, run_relative, task_run_files, validate_result_path
 
 
 class Poller:
@@ -27,7 +28,7 @@ class Poller:
 
     def reject_task(self, task, reason, *, cancelled=False):
         """Persist an admission failure through the normal immutable result publisher."""
-        output = self.state / 'runs' / task['task_id'] / 'admission'
+        output = self.state / run_relative(task, 'admission')
         output.mkdir(parents=True, exist_ok=True)
         now = utcnow()
         conclusion = 'cancelled' if cancelled else 'error'
@@ -59,12 +60,14 @@ class Poller:
 
     def retry_publications(self):
         pending = False
-        for record in sorted((self.state / 'runs').glob('*/*/execution.json')):
+        for record in iter_run_files(self.state, 'execution.json'):
             try:
                 execution = read_json(record)
                 if execution['phase'] != 'publish_pending':
                     continue
                 result = read_json(record.parent / 'result.json')
+                validate_result_path(record.relative_to(self.state).as_posix(), result,
+                                     result['run_id'], 'execution.json')
                 self.engine.heartbeat('publishing', result['task_id'])
                 self.relay.publish(record.parent, result)
                 execution['phase'] = 'published'
@@ -91,16 +94,22 @@ class Poller:
                                        {'error': str(recovery_exc), 'at': utcnow()})
                 except (ValueError, OSError):
                     pass
+        if pending:
+            # A later successful run must not clear another run's publication
+            # fault from the shared queue heartbeat used by the watchdog.
+            self.engine.heartbeat('publish_pending')
         return pending
 
     def recover_interrupted(self):
         """A restarted poller owns the global OS lock before recovering worker leases."""
-        for record in sorted((self.state / 'runs').glob('*/*/execution.json')):
+        for record in iter_run_files(self.state, 'execution.json'):
             try:
                 execution = read_json(record)
                 if execution.get('phase') not in ('preparing', 'running'):
                     continue
                 task = read_json(record.parent / 'task.json')
+                validate_result_path(record.relative_to(self.state).as_posix(), task,
+                                     execution['run_id'], 'execution.json')
                 profile = self.profiles[execution['profile_id']]
                 status = self.manager.inspect(profile)
                 lease = status.get('lease')
@@ -131,7 +140,7 @@ class Poller:
                 validate_task(task, self.config.get('repository', 'anteloper-c/triton-anchor'))
                 if (self.state / 'completed' / (task['task_id'] + '.json')).exists():
                     continue
-                if list((self.state / 'runs' / task['task_id']).glob('*/execution.json')):
+                if task_run_files(self.state, task):
                     # A crash never silently duplicates a running build. Recovery is explicit.
                     continue
                 if not self.relay.current(task):

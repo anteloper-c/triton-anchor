@@ -5,9 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=anchor-ci
-Group=anchor-ci
-SupplementaryGroups=docker
+User=root
+Group=root
 WorkingDirectory=/opt/anchor-ci
 EnvironmentFile=-/etc/anchor-ci/service.env
 ExecStart=/usr/bin/python3 -m scripts.local_ci.maintenance.health --config /etc/anchor-ci/config.json --publish

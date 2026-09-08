@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from runtime.common import digest, git, read_json, write_json  # noqa: E402
 from runtime.poller import Poller  # noqa: E402
+from runtime.result_paths import run_relative  # noqa: E402
 
 
 class PublicationRecoveryTests(unittest.TestCase):
@@ -50,10 +51,11 @@ class PublicationRecoveryTests(unittest.TestCase):
 
     def pending(self, task_id=None, run_id="run-preserved"):
         task_id = task_id or self.task["task_id"]
-        output = Path(self.config["state_dir"]) / "runs" / task_id / run_id
-        output.mkdir(parents=True)
-        result = {"schema": "triton-anchor-local-ci-result", "task_id": task_id, "run_id": run_id,
+        result = {**{k: self.task[k] for k in ('event_kind', 'pr_number', 'target_branch', 'task_ref')},
+                  "schema": "triton-anchor-local-ci-result", "task_id": task_id, "run_id": run_id,
                   "tested_sha": self.task["tested_sha"], "conclusion": "success", "evidence": []}
+        output = Path(self.config["state_dir"]) / run_relative(result, run_id)
+        output.mkdir(parents=True)
         write_json(output / "result.json", result)
         (output / "report.md").write_text("Preserved, already-completed test result\n")
         write_json(output / "execution.json", {"phase": "publish_pending", "run_id": run_id, "profile_id": "cpu"})
@@ -82,7 +84,7 @@ class PublicationRecoveryTests(unittest.TestCase):
         self.assertEqual(read_json(output / "execution.json")["phase"], "published")
         self.assertEqual(digest(output / "result.json"), before)
         self.assertTrue((Path(self.config["state_dir"]) / "completed" / f"{self.task['task_id']}.json").is_file())
-        published = json.loads(git(self.remote, "show", f"local-ci-results:runs/{result['task_id']}/{result['run_id']}/result.json"))
+        published = json.loads(git(self.remote, "show", 'local-ci-results:' + run_relative(result, result['run_id']) + '/result.json'))
         self.assertEqual(published, result)
 
     def test_corrupt_run_record_does_not_prevent_other_results_publication(self):
@@ -100,6 +102,48 @@ class PublicationRecoveryTests(unittest.TestCase):
         task_health = read_json(Path(self.config["state_dir"]) / "health" / "task.json")
         self.assertEqual(task_health["state"], "completed")
         self.assertIsNone(task_health.get("error"))
+
+    def test_grouped_publications_keep_queue_fault_visible_until_all_are_published(self):
+        from maintenance.health import collect
+        from maintenance.watchdog import evaluate
+        from maintenance.notify import public_faults
+
+        with mock.patch.dict(self.task, event_kind='pull_request', pr_number=4,
+                             task_ref='ci/pr-4/contributor/topic'):
+            failed, failed_result = self.pending('pr-task')
+        completed, completed_result = self.pending('push-task')
+        original_bytes = (failed / 'result.json').read_bytes()
+        publish = self.poller.relay.publish
+
+        def transport(output, result):
+            if result['task_id'] == 'pr-task':
+                raise RuntimeError('PR publication channel temporarily unavailable')
+            return publish(output, result)
+
+        config = {**self.config, 'worker_id': 'fixture-host', 'health': {'min_free_gb': 0}}
+        manager = mock.Mock()
+        manager.inspect.return_value = {'running': True}
+        with mock.patch.object(self.poller.relay, 'publish', side_effect=transport):
+            self.assertTrue(self.poller.retry_publications())
+        self.assertEqual(read_json(failed / 'execution.json')['phase'], 'publish_pending')
+        self.assertEqual(read_json(completed / 'execution.json')['phase'], 'published')
+        self.assertEqual(json.loads(git(self.remote, 'show', 'local-ci-results:' +
+                         run_relative(completed_result, completed_result['run_id']) + '/result.json')),
+                         completed_result)
+        # Health and the independent watchdog use the queue heartbeat, without
+        # depending on flat or grouped report directory depths.
+        snapshot = collect(config, manager)
+        faults = evaluate(snapshot, config['worker_id'])
+        self.assertIn('poller_publish_pending', {row['code'] for row in faults})
+        self.assertTrue(any('等待发布' in row for row in public_faults(faults)))
+
+        self.assertFalse(self.poller.retry_publications())
+        self.assertEqual((failed / 'result.json').read_bytes(), original_bytes)
+        self.assertEqual(read_json(failed / 'execution.json')['phase'], 'published')
+        self.assertEqual(evaluate(collect(config, manager), config['worker_id']), [])
+        self.assertEqual(json.loads(git(self.remote, 'show', 'local-ci-results:' +
+                         run_relative(failed_result, failed_result['run_id']) + '/result.json')),
+                         failed_result)
 
     def test_actual_unavailable_docker_produces_publishable_error_without_lease(self):
         # This is a real executable-not-found error. No fake container lifecycle
@@ -138,10 +182,11 @@ class AdmissionRejectionTests(unittest.TestCase):
         self.assertFalse(any(c['status'] == 'passed' for c in result['checks']))
         rejected = Path(self.config['state_dir']) / 'rejected' / (self.task['task_id'] + '.json')
         before = rejected.read_bytes()
-        published = json.loads(git(self.remote, 'show', f"local-ci-results:runs/{self.task['task_id']}/admission/result.json"))
+        relative = run_relative(self.task, 'admission') + '/result.json'
+        published = json.loads(git(self.remote, 'show', 'local-ci-results:' + relative))
         self.assertEqual(published, result)
         from scripts.dashboard.sync_agent_results import normalize_result
-        dashboard = normalize_result(published, f"runs/{self.task['task_id']}/admission/result.json", '',
+        dashboard = normalize_result(published, relative, '',
                                      'local-ci-results', {self.task['task_id']: 'admission'})
         self.assertEqual(dashboard['blocking_reasons'], result['blocking_reasons'])
         restarted = Poller(self.config)
@@ -167,7 +212,7 @@ class AdmissionRejectionTests(unittest.TestCase):
         with mock.patch.object(self.poller.relay, 'publish', side_effect=RuntimeError('temporary publication outage')), \
              mock.patch.object(self.poller.engine, 'run', side_effect=AssertionError('no task execution')):
             self.poller.once()
-        output = Path(self.config['state_dir']) / 'runs' / self.task['task_id'] / 'admission'
+        output = Path(self.config['state_dir']) / run_relative(self.task, 'admission')
         before = (output / 'result.json').read_bytes()
         self.assertEqual(read_json(output / 'execution.json')['phase'], 'publish_pending')
         restarted = Poller(self.config)
