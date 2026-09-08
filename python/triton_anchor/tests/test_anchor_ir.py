@@ -107,3 +107,15 @@ class TestAnchorIRValidator:
         }
         """
         assert v.is_valid(ir_with_comments)
+
+
+    def test_extension_allowlist_is_local_to_validator(self):
+        ir = "%buffer = xsmt.alloc : memref<128xf32>"
+        extended = AnchorIRValidator(extra_allowed={"xsmt"})
+        default = AnchorIRValidator()
+
+        assert extended.validate(ir) == []
+        violations = default.validate(ir)
+        assert len(violations) == 1
+        assert violations[0].dialect == "xsmt"
+        assert violations[0].op_name == "xsmt.alloc"
