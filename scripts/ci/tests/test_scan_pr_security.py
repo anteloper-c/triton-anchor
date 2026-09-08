@@ -25,6 +25,22 @@ def messages(findings: list[object]) -> list[str]:
 
 
 class ScanSecurityTests(unittest.TestCase):
+    def test_documented_admin_commands_do_not_request_workflow_privileges(self) -> None:
+        administrator_command = "su" + "do"
+        for filename in ("docs/install.md", "scripts/local_ci/deploy/README.md"):
+            with self.subTest(filename=filename):
+                blocking, _ = security.scan([pr_file(filename, [administrator_command + " install -m 0644 service /etc/systemd/system/"])])
+                self.assertEqual(blocking, [])
+        for filename in (".github/workflows/deploy.yml", "scripts/install.sh", "setup.py"):
+            with self.subTest(filename=filename):
+                blocking, _ = security.scan([pr_file(filename, [administrator_command + " install package"])])
+                self.assertIn("workflow requests " + administrator_command + " privileges", messages(blocking))
+        # A documentation exception cannot hide a real credential or a protected action.
+        blocking, _ = security.scan([pr_file("docs/install.md", ["ghp_" + "x" * 32])])
+        self.assertIn("GitHub token", messages(blocking))
+        blocking, _ = security.scan([pr_file(".github/actions/AGENTS.md", [administrator_command + " install package"])])
+        self.assertIn(security.PROTECTED_PATH_MESSAGE, messages(blocking))
+
     def test_github_actions_changes_remain_blocked(self) -> None:
         blocking, _ = security.scan(
             [pr_file(".github/actions/AGENTS.md", ["# Development notes"])]
