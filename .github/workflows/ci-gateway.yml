@@ -151,7 +151,7 @@ jobs:
       - name: Cancel obsolete Local CI work
         uses: actions/github-script@v7
         env:
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const pull = context.payload.pull_request;
@@ -354,7 +354,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           MANUAL_PR_NUMBER: ${{ inputs.pr_number }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -578,7 +578,7 @@ jobs:
           BASE_REF: ${{ needs.prepare-route.outputs.base_ref }}
           AUTHORIZATION_SOURCE: ${{ needs.prepare-route.outputs.authorization_source }}
           RUN_TITLE: ${{ needs.prepare-route.outputs.run_title }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -848,7 +848,7 @@ jobs:
           REQUESTED_BRANCH: ${{ inputs.source_branch }}
           REQUESTED_SHA: ${{ inputs.requested_sha }}
           FLAGGEMS_MODE: ${{ inputs.flaggems_mode || 'sample' }}
-          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: ${{ inputs.flaggems_mode == 'full' && 'local-ci/summary/full' || 'local-ci/summary/push' }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -856,7 +856,7 @@ jobs:
             const sourceBranch = process.env.REQUESTED_BRANCH.trim();
             const requestedSha = process.env.REQUESTED_SHA.trim();
             const flaggemsMode = process.env.FLAGGEMS_MODE;
-            const statusContext = process.env.STATUS_CONTEXT + (flaggemsMode === 'full' ? '/full' : '');
+            const statusContext = process.env.STATUS_CONTEXT;
             const fallbackRef = process.env.FALLBACK_WORKER_BRANCH.trim();
             const requiredCapabilities = ['cross-branch-push', 'dispatch', 'receive'];
             const requiredPaths = [
@@ -1050,7 +1050,7 @@ jobs:
         env:
           HEAD_SHA: ${{ needs.prepare-route.outputs.head_sha }}
           TESTED_SHA: ${{ needs.prepare-route.outputs.tested_sha }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const targetUrl =
