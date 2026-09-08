@@ -9,6 +9,7 @@ User=root
 Group=root
 WorkingDirectory=/opt/anchor-ci
 EnvironmentFile=-/etc/anchor-ci/service.env
+UnsetEnvironment=DEEPSEEK_API_KEY
 ExecStart=/usr/bin/python3 -m scripts.local_ci.maintenance.health --config /etc/anchor-ci/config.json --publish
 TimeoutStartSec=300
 UMask=0077

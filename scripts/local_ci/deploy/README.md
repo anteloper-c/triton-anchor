@@ -49,6 +49,8 @@ sudo chmod 0600 /etc/anchor-ci/config.json /etc/anchor-ci/service.env
 
 主机 `codex.model` 设置 `deepseek-v4-flash`，`codex.reasoning_effort` 设置 `high`；`codex.provider` 使用示例中的官方地址和 `responses` 协议。将 `DEEPSEEK_API_KEY` 放在宿主 `service.env` 中，配置 JSON 只保存环境变量名称。宿主仅向 Codex 进程传递该密钥，不传给构建/测试工具；Codex 子命令排除该变量，并关闭可能恢复环境变量的登录 shell 和 shell 快照。
 
+health 和 maintenance 的 systemd 模板通过 `UnsetEnvironment=DEEPSEEK_API_KEY` 排除模型密钥，仅 Poller 接收；若更改 `provider.env_key`，同步调整这两个模板中的变量名。
+
 [模型目录](../etc/deepseek-models.json) 按 [DeepSeek 官方 Codex 接入文档](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/) 声明上下文与工具能力，通过受信控制目录只读挂载。目录中的简短角色说明不替代 `ai_ci_program.md`。需要其他已验证的 Responses 服务时，由维护者修改 `provider` 和对应模型目录；不配置 `provider` 时仍支持 Codex 自身的认证方式及可选 `auth_file`。不要复制桌面插件、记忆或用户配置。生产控制目录必须与任务冻结的 `worker_revision_sha` 一致，更新控制目录前先排空任务。
 
 ## 启动服务
