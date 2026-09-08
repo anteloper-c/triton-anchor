@@ -292,6 +292,60 @@ class PreparationRecoveryTests(unittest.TestCase):
         self.assertEqual(result['conclusion'], 'error')
         self.assertTrue(any('lease retained' in reason for reason in result['blocking_reasons']))
 
+    def test_source_index_is_frozen_before_task_permissions_and_final_hash_check_remains(self):
+        self.engine.relay.current.return_value = True
+        self.engine.relay.changed_paths.return_value = ['README.md']
+        def checkout(sha, path):
+            path.mkdir()
+            (path / 'README.md').write_text('original\n')
+            return {'README.md': digest(path / 'README.md')}
+        self.engine.relay.checkout.side_effect = checkout
+        observed = []
+        def first_task_command(*args):
+            if observed:
+                return ''  # Existing final cleanup, not another preparation attempt.
+            output = self.engine.preparation_record.parent
+            observed.append(read_json(output / 'source-index.json'))
+            self.assertEqual(observed[0]['files'], {'README.md': 1})
+            source = self.engine.workspace / 'tasks/prepare-task' / output.name / 'source/README.md'
+            source.write_text('changed\nsecond\nthird\n')
+            raise RuntimeError('stop fixture before task execution')
+        with mock.patch.object(self.engine, 'docker_run', side_effect=first_task_command), \
+             mock.patch('runtime.control.verify_control', return_value={'tree_sha256': 'fixture', 'verified': False}), \
+             mock.patch('runtime.control.verify_container_control', return_value={'verified': False}):
+            output, result = self.engine.run(self.task(), self.profile)
+        self.assertEqual(read_json(output / 'source-index.json'), observed[0])
+        self.assertFalse(result['source_unchanged'])
+        self.assertIn('tested tracked source changed during execution', result['blocking_reasons'])
+
+    def test_resume_missing_or_misbound_index_never_rebuilds_from_mutable_source(self):
+        task = self.task()
+        self.engine.relay.current.return_value = True
+        self.engine.relay.changed_paths.return_value = ['README.md']
+        for run_id in ('missing-index', 'misbound-index'):
+            with self.subTest(run_id=run_id):
+                output = self.engine.state / run_relative(task, run_id)
+                record = output / 'execution.json'
+                write_json(record, {'run_id': run_id})
+                source = self.engine.workspace / 'tasks/prepare-task' / run_id / 'source'
+                source.mkdir(parents=True)
+                (source / 'README.md').write_text('original\n')
+                write_json(output / 'source-manifest.json', {'README.md': digest(source / 'README.md')})
+                index = output / 'source-index.json'
+                if run_id == 'misbound-index':
+                    write_json(index, {'manifest_sha256': '0' * 64, 'files': {'README.md': 1}})
+                before = index.read_bytes() if index.exists() else None
+                with mock.patch.object(self.engine, 'docker_run', return_value='') as execute, \
+                     mock.patch('runtime.engine.build_source_index', side_effect=AssertionError('Must not rebuild a resume index')), \
+                     mock.patch('runtime.control.verify_control', return_value={'tree_sha256': 'fixture', 'verified': False}), \
+                     mock.patch('runtime.control.verify_container_control', return_value={'verified': False}):
+                    _, result = self.engine.run(task, self.profile, resume_record=record)
+                self.assertEqual(result['conclusion'], 'error')
+                self.engine.relay.checkout.assert_not_called()
+                execute.assert_called_once()
+                self.assertEqual(execute.call_args.args[-1], 'clean-users')
+                self.assertEqual(index.read_bytes() if index.exists() else None, before)
+
 
 class AdmissionRejectionTests(unittest.TestCase):
     setUp = PublicationRecoveryTests.setUp

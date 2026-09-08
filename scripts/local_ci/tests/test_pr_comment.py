@@ -8,7 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from test_github_result import receiver, result_fixture
-from runtime.report import build_result
+from runtime.common import digest
+from runtime.report import build_result, build_source_index
 
 
 class PRCommentTests(unittest.TestCase):
@@ -24,6 +25,7 @@ class PRCommentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             (Path(temporary) / 'README.md').write_text('Reviewed scope\n', encoding='utf-8')
             broker.context['source_host_dir'] = temporary
+            broker.context['source_index'] = build_source_index(temporary, {'README.md': digest(Path(temporary) / 'README.md')})
             result = build_result(task, 'review-proof', policy, broker,
                                   started_at='2026-09-08T12:00:00Z', source_unchanged=True)
         self.assertEqual(receiver.validate_result(result, task, expected), 'failure')

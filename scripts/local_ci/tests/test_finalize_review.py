@@ -9,7 +9,8 @@ from urllib import error, request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime.broker import Broker  # noqa: E402
-from runtime.common import read_json  # noqa: E402
+from runtime.common import digest, read_json  # noqa: E402
+from runtime.report import build_source_index  # noqa: E402
 
 
 def review():
@@ -28,7 +29,8 @@ class FinalizeReviewTests(unittest.TestCase):
         source = self.root / 'source'
         source.mkdir()
         (source / 'README.md').write_text('Architecture boundary\n', encoding='utf-8')
-        self.broker = Broker({}, {'event_kind': 'pull_request', 'source_host_dir': str(source)}, {'required': [], 'not_applicable': []},
+        source_index = build_source_index(source, {'README.md': digest(source / 'README.md')})
+        self.broker = Broker({}, {'event_kind': 'pull_request', 'source_host_dir': str(source), 'source_index': source_index}, {'required': [], 'not_applicable': []},
                              self.root, lambda: False)
 
     def rejected(self, document, field):
@@ -121,7 +123,7 @@ class FinalizeReviewTests(unittest.TestCase):
         document = review()
         document['architecture'].update(status='failed', summary='源码尚不可用，未完成架构审查。', evidence=[])
         document['uncompleted'] = ['架构源码证据缺失']
-        self.broker.context.pop('source_host_dir')
+        self.broker.context.pop('source_index')
         self.assertEqual(self.broker.invoke('finalize', {'review': document})['status'], 'submitted')
         self.assertEqual(read_json(self.root / 'agent-review.json'), document)
 

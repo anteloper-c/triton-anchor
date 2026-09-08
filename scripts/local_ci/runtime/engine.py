@@ -18,7 +18,7 @@ from .broker import Broker
 from .common import digest, execute, git, read_json, utcnow, write_json
 from .codex_events import read_events
 from .policy import minimum_checks, validate_task
-from .report import build_result, markdown
+from .report import build_result, build_source_index, markdown, validate_source_index
 from .result_paths import run_relative, validate_result_path
 from .task_permissions import write_agent_document
 
@@ -382,12 +382,17 @@ class Engine:
         host_task.mkdir(parents=True, exist_ok=True)
         source = host_task / 'source'
         tracked_hashes = {}
+        source_index = None
         try:
             if resume_record:
                 tracked_hashes = read_json(output / 'source-manifest.json')
+                source_index = read_json(output / 'source-index.json')
+                validate_source_index(source_index, tracked_hashes)
             else:
                 tracked_hashes = self.relay.checkout(task['tested_sha'], source)
                 write_json(output / 'source-manifest.json', tracked_hashes)
+                source_index = build_source_index(source, tracked_hashes)
+                write_json(output / 'source-index.json', source_index)
         except Exception as exc:
             preparation_error = str(exc)
         for directory in ('artifacts/custom', 'agent'):
@@ -399,6 +404,7 @@ class Engine:
                    'control_identity': control_identity,
                    'validation_scope': 'local_acceptance' if self.config.get('local_acceptance') else 'production',
                    'source_dir': container_task + '/source', 'source_host_dir': str(source),
+                   'source_index': source_index,
                    'artifact_dir': container_task + '/artifacts',
                    'artifact_host_dir': str(host_task / 'artifacts'), 'base_sha': task['base_sha'],
                    'tools_dir': '/opt/anchor-ci/tools', 'triton_version': profile['triton_version'],

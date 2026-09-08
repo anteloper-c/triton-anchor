@@ -217,7 +217,7 @@ class Broker:
                         raise ValueError(f'review.{name}.summary must be a nonempty string')
                 evidence = review['architecture'].get('evidence', [])
                 if review['architecture']['status'] == 'passed':
-                    validate_architecture_evidence(evidence, self.context.get('source_host_dir'))
+                    validate_architecture_evidence(evidence, self.context.get('source_index'))
                 elif not isinstance(evidence, list):
                     raise ValueError('review.architecture.evidence must be a list; an incomplete failed review may use []')
                 for name in ('findings', 'uncompleted'):

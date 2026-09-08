@@ -1,43 +1,80 @@
 """Combine model judgments with host receipts; never trust model pass flags."""
 from pathlib import Path, PurePosixPath, PureWindowsPath
+import hashlib
+import json
+import re
+import stat
 from .common import digest, utcnow
 from .policy import TOOLS, identity
 
 
-def validate_architecture_evidence(evidence, source_root):
+def source_path(name):
+    return (isinstance(name, str) and bool(name) and '\x00' not in name and '\\' not in name
+            and PurePosixPath(name).as_posix() == name and bool(PurePosixPath(name).parts)
+            and not PurePosixPath(name).is_absolute() and not PureWindowsPath(name).drive
+            and '..' not in PurePosixPath(name).parts)
+
+
+def manifest_files(manifest):
+    if not isinstance(manifest, dict) or any(not source_path(name) or not isinstance(value, str)
+                                           for name, value in manifest.items()):
+        raise ValueError('invalid trusted source manifest')
+    if any(not re.fullmatch('[a-f0-9]{64}|gitlink:[a-f0-9]{40}', value) and not value.startswith('symlink:')
+           for value in manifest.values()):
+        raise ValueError('invalid trusted source manifest fingerprint')
+    return {name for name, value in manifest.items() if re.fullmatch('[a-f0-9]{64}', value)}
+
+
+def validate_source_index(index, manifest=None):
+    if (not isinstance(index, dict) or set(index) != {'manifest_sha256', 'files'}
+            or not isinstance(index['manifest_sha256'], str)
+            or not re.fullmatch('[a-f0-9]{64}', index['manifest_sha256'])
+            or not isinstance(index['files'], dict)
+            or any(not source_path(name) or type(lines) is not int or lines < 0
+                   for name, lines in index['files'].items())):
+        raise ValueError('trusted source index is missing or invalid')
+    if manifest is not None:
+        expected = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+        if set(index['files']) != manifest_files(manifest) or index['manifest_sha256'] != expected:
+            raise ValueError('trusted source index differs from the frozen manifest')
+
+
+def build_source_index(source_root, manifest):
+    """Read once after checkout, before task UIDs can modify the source tree."""
+    root = Path(source_root).resolve(strict=True)
+    files = {}
+    for name in sorted(manifest_files(manifest)):
+        candidate = root / name
+        if not stat.S_ISREG(candidate.lstat().st_mode) or root not in candidate.resolve(strict=True).parents:
+            raise ValueError('source index requires ordinary frozen files')
+        data = candidate.read_bytes()
+        if hashlib.sha256(data).hexdigest() != manifest[name]:
+            raise ValueError('source changed before trusted index creation')
+        files[name] = len(data.decode('utf-8', errors='replace').splitlines())
+    return {'manifest_sha256': hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest(),
+            'files': files}
+
+
+def validate_architecture_evidence(evidence, source_index):
     """Require source locations, shared by repairable finalize and final reporting."""
     field = '缺少源码位置证据：review.architecture.evidence'
     if not isinstance(evidence, list) or not evidence:
         raise ValueError(field + ' 必须是非空对象列表，每项包含 path 和 reason；命令回执不能替代源码位置。')
-    if not source_root:
-        raise ValueError(field + ' 无法核对当前任务的源码目录。')
     try:
-        root = Path(source_root).resolve(strict=True)
-    except (OSError, ValueError, RuntimeError):
-        raise ValueError(field + ' 无法核对当前任务的源码目录。') from None
+        validate_source_index(source_index)
+    except ValueError:
+        raise ValueError(field + ' 当前任务缺少有效的受信源码索引，无法核对。') from None
     for index, item in enumerate(evidence):
         entry = f'{field}[{index}]'
         if not isinstance(item, dict) or any(not isinstance(item.get(key), str) or not item[key].strip()
                                              for key in ('path', 'reason')):
             raise ValueError(entry + ' 必须包含非空字符串 path 和 reason；command 回执 ID 不能替代源码位置。')
-        relative = PurePosixPath(item['path'])
-        try:
-            candidate = root / item['path']
-            valid_path = (not relative.is_absolute() and not PureWindowsPath(item['path']).drive
-                          and '..' not in relative.parts and '\\' not in item['path']
-                          and candidate.is_file() and root in candidate.resolve(strict=True).parents)
-        except (OSError, ValueError, RuntimeError):
-            valid_path = False
-        if not valid_path:
-            raise ValueError(entry + '.path 必须是当前任务源码目录中已存在文件的相对路径。')
+        if not source_path(item['path']) or item['path'] not in source_index['files']:
+            raise ValueError(entry + '.path 必须是本仓库受检提交中普通文件的相对路径，不含子模块或符号链接。')
         if 'line' in item:
             if type(item['line']) is not int or item['line'] < 1:
                 raise ValueError(entry + '.line 必须是文件实际范围内的正整数。')
-            try:
-                lines = len(candidate.read_text(encoding='utf-8', errors='replace').splitlines())
-            except (OSError, ValueError):
-                raise ValueError(entry + '.path 文件不可读，无法核对 line。') from None
-            if item['line'] > lines:
+            if item['line'] > source_index['files'][item['path']]:
                 raise ValueError(entry + '.line 必须是文件实际范围内的正整数。')
 
 
@@ -69,10 +106,10 @@ def build_result(task, run_id, policy, broker, *, started_at, source_unchanged,
         architecture = {}
     arch_status = architecture.get('status')
     arch_evidence = architecture.get('evidence', [])
-    source_root = getattr(broker, 'context', {}).get('source_host_dir')
+    source_index = getattr(broker, 'context', {}).get('source_index')
     arch_error = None
     try:
-        validate_architecture_evidence(arch_evidence, source_root)
+        validate_architecture_evidence(arch_evidence, source_index)
     except ValueError:
         arch_error = '架构审查缺少可核对的源码位置，请提供实际文件路径及审查说明，并核对所引用的行号。'
     valid_arch = (not arch_error and arch_status in ('passed', 'failed')
