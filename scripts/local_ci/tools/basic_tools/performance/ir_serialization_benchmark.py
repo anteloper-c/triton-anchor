@@ -371,7 +371,7 @@ def run(args: argparse.Namespace) -> int:
             kernel_metadata[kernel] = metadata
 
         document = {
-            "schema": "triton-anchor-ir-serialization/v1",
+            "schema": "triton-anchor-ir-serialization",
             "metadata": {
                 "backend": args.backend,
                 "vendor": args.vendor or args.backend,

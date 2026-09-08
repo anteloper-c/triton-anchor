@@ -1,5 +1,5 @@
 {
-  "schema": "triton-anchor-dashboard-local-ci/v1",
+  "schema": "triton-anchor-dashboard-local-ci",
   "data_mode": "live",
   "generated_at": null,
   "runs": [],

@@ -13,8 +13,8 @@ git -C /opt/llvm-source checkout --detach FETCH_HEAD
 [[ "$(git -C /opt/llvm-source rev-parse HEAD)" == "$revision" ]]
 cmake -S /opt/llvm-source/llvm -B /opt/llvm-build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$destination" \
-  -DLLVM_ENABLE_PROJECTS='mlir;clang;lld' -DLLVM_ENABLE_ASSERTIONS=ON \
-  -DLLVM_TARGETS_TO_BUILD="${LLVM_TARGETS_TO_BUILD:-host}" \
+  -DLLVM_ENABLE_PROJECTS=mlir -DLLVM_ENABLE_ASSERTIONS=ON \
+  -DLLVM_TARGETS_TO_BUILD="${LLVM_TARGETS_TO_BUILD:-host;NVPTX;AMDGPU}" \
   -DLLVM_INSTALL_UTILS=ON -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
 cmake --build /opt/llvm-build --parallel "${LLVM_BUILD_JOBS:-4}"
 cmake --install /opt/llvm-build

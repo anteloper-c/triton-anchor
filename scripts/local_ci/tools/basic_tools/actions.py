@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -100,13 +101,15 @@ def preflight(payload: dict[str, Any]) -> None:
     out = artifact / tool
     for directory in (out, out / "tmp", out / "cache", out / "dump"):
         directory.mkdir(parents=True, exist_ok=True)
-    if tool in {"wheel_install", "frontend_smoke", "backend_rebuild"}:
+    if tool == "frontend_install":
         wheel_manifest(context, "frontend_build")
-    if tool in {"frontend_smoke", "backend_rebuild"}:
-        require_installation(context, "frontend_build", "wheel_install")
-    if tool in {"backend_smoke", "flaggems", "compile_time", "pass_profile", "ir_serialization"}:
-        require_installation(context, "frontend_build", "wheel_install")
-        require_installation(context, "backend_rebuild", "backend_rebuild")
+    if tool == "backend_install":
+        wheel_manifest(context, "backend_build")
+    if tool in {"frontend_tests", "frontend_smoke", "backend_tests", "backend_smoke",
+                "flaggems", "compile_time", "pass_profile", "ir_serialization"}:
+        require_installation(context, "frontend_build", "frontend_install")
+    if tool in {"backend_tests", "backend_smoke", "flaggems", "compile_time", "pass_profile", "ir_serialization"}:
+        require_installation(context, "backend_build", "backend_install")
     print(json.dumps({"task_id": context["task_id"], "target_sha": actual, "tool": tool}))
 
 
@@ -132,7 +135,9 @@ def environment(payload: dict[str, Any]) -> None:
         if not present:
             missing.append(f"python-module:{module}")
     source = Path(context["source_dir"])
-    for name in config.get("required_source_files", ["setup.py", "pyproject.toml", "tests/test_smoke.py"]):
+    # Package and test-file requirements belong to their individual tools, so a
+    # frontend-only source problem does not prevent diagnosing backend builds.
+    for name in config.get("required_source_files", []):
         relative = Path(name)
         if relative.is_absolute() or ".." in relative.parts:
             raise ValueError("required_source_files must stay within the checkout")
@@ -197,7 +202,7 @@ def record_wheel(payload: dict[str, Any]) -> None:
 
 def install_wheel(payload: dict[str, Any]) -> None:
     context, tool = payload["context"], payload["tool_id"]
-    build_tool = "backend_rebuild" if tool == "backend_rebuild" else "frontend_build"
+    build_tool = "backend_build" if tool == "backend_install" else "frontend_build"
     manifest, wheel = wheel_manifest(context, build_tool)
     # Dependencies belong to the daily trusted environment recipe. Installing the
     # candidate must not silently replace the matched LLVM/Triton/backend stack.
@@ -224,6 +229,43 @@ def smoke_success(payload: dict[str, Any]) -> None:
                {"task_id": context["task_id"], "target_sha": context["target_sha"],
                 "python_executable": candidate_python(context), "task_venv": context.get("task_venv"),
                 "tool": tool, "status": "passed"})
+
+
+def prepare_tests(payload: dict[str, Any]) -> None:
+    """Validate actual container paths and discard earlier attempt summaries."""
+    source = Path(payload["test_source"]).resolve(strict=True)
+    for value in payload["test_paths"]:
+        selected = (source / value.split("::", 1)[0]).resolve(strict=True)
+        if selected != source and source not in selected.parents:
+            raise ValueError("Test path resolves outside its configured checkout")
+        if not selected.is_file() and not selected.is_dir():
+            raise ValueError("Test path is not a real file or directory")
+    out = Path(payload["context"]["artifact_dir"]) / payload["tool_id"]
+    for name in ("tests.xml", "tests.json"):
+        (out / name).unlink(missing_ok=True)
+
+
+def test_results(payload: dict[str, Any]) -> None:
+    """Record actual pytest cases; empty or wholly skipped suites are not proof."""
+    context, tool = payload["context"], payload["tool_id"]
+    out = Path(context["artifact_dir"]) / tool
+    report = out / "tests.xml"
+    if not report.is_file() or report.is_symlink():
+        raise ValueError("Test command did not produce a real JUnit report")
+    cases = list(ET.parse(report).getroot().iter("testcase"))
+    counts = {"tests": len(cases), "passed": 0, "failures": 0, "errors": 0, "skipped": 0}
+    for case in cases:
+        kind = next((name for tag, name in (("error", "errors"), ("failure", "failures"), ("skipped", "skipped"))
+                     if case.find(tag) is not None), "passed")
+        counts[kind] += 1
+    result = {"task_id": context["task_id"], "target_sha": context["target_sha"], "tool": tool,
+              "python_executable": candidate_python(context), "task_venv": context.get("task_venv"),
+              "test_source": payload["test_source"], "selected_paths": payload["test_paths"],
+              "keyword": payload["parameters"].get("keyword", ""), "junit_sha256": digest(report), **counts}
+    write_json(out / "tests.json", result)
+    if not counts["passed"] or counts["failures"] or counts["errors"]:
+        raise ValueError("Test selection must run passing cases, without failures or errors")
+    print(json.dumps(result, ensure_ascii=False))
 
 
 def compare_performance(payload: dict[str, Any]) -> None:
@@ -262,7 +304,7 @@ def compare_performance(payload: dict[str, Any]) -> None:
 
 
 ACTIONS = {function.__name__: function for function in (preflight, environment, prepare_build, record_wheel,
-           install_wheel, backend_discovery, smoke_success, compare_performance)}
+           install_wheel, backend_discovery, smoke_success, prepare_tests, test_results, compare_performance)}
 
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@ def write_run(root: Path, sha: str, run_id: str, status: int) -> Path:
     (run / "delivery-summary.txt").write_text(
         "\n".join(
             (
-                "schema: triton-anchor-local-ci/v2",
+                "schema: triton-anchor-local-ci",
                 f"status: {status}",
                 f"target_sha: {sha}",
                 f"branch: {PUSH_SOURCE}",
@@ -55,7 +55,7 @@ def write_full_run(
     (run / "delivery-summary.txt").write_text(
         "\n".join(
             (
-                "schema: triton-anchor-local-ci/v2",
+                "schema: triton-anchor-local-ci",
                 "status: 1",
                 f"target_sha: {sha}",
                 f"branch: {branch}",
@@ -186,7 +186,7 @@ class DashboardSyncTest(unittest.TestCase):
             write_json(
                 output / "manifest.json",
                 {
-                    "schema": "triton-anchor-dashboard-manifest/v1",
+                    "schema": "triton-anchor-dashboard-manifest",
                     "mode": "mock",
                     "sources": {
                         "full_test": "full-test.json",
@@ -270,7 +270,7 @@ class DashboardSyncTest(unittest.TestCase):
             write_json(
                 output / "manifest.json",
                 {
-                    "schema": "triton-anchor-dashboard-manifest/v1",
+                    "schema": "triton-anchor-dashboard-manifest",
                     "mode": "mock",
                     "sources": {
                         "full_test": "full-test.json",

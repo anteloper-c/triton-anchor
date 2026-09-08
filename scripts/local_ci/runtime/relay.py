@@ -156,7 +156,7 @@ class Relay:
         if artifact_manifest.exists():
             artifact_manifest = evidence_path(result_dir, 'artifact-manifest.json')
             manifest = read_json(artifact_manifest)
-            if manifest.get('schema') != 'triton-anchor-local-ci-artifacts/v1' or not isinstance(manifest.get('files'), list):
+            if manifest.get('schema') != 'triton-anchor-local-ci-artifacts' or not isinstance(manifest.get('files'), list):
                 raise ValueError('artifact manifest schema/files are invalid')
             seen = set()
             for entry in manifest['files']:
@@ -201,7 +201,7 @@ class Relay:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, dest)
             files.append({'path': name, 'sha256': digest(dest), 'size': dest.stat().st_size})
-        write_json(evidence_path(target, 'publish-manifest.json'), {'schema': 'triton-anchor-local-ci-publication/v1',
+        write_json(evidence_path(target, 'publish-manifest.json'), {'schema': 'triton-anchor-local-ci-publication',
                    'task_id': task_id, 'run_id': run_id, 'files': files})
         write_json(evidence_path(worktree, f'tasks/{task_id}/latest.json'), {'task_id': task_id, 'run_id': run_id,
                    'result_path': relative + '/result.json', 'result_sha256': digest(target / 'result.json'),

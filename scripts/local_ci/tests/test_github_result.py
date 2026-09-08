@@ -103,7 +103,7 @@ class ResultGateTests(unittest.TestCase):
 
     def test_legacy_result_never_passes(self):
         task, expected, result = result_fixture()
-        result["schema"] = "triton-anchor-local-ci-result/v3"
+        result["schema"] = "unrecognized-result-kind"
         with self.assertRaises(ValueError):
             receiver.validate_result(result, task, expected)
 

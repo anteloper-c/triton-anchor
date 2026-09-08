@@ -1,9 +1,21 @@
 name: Local CI independent watchdog
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
   workflow_dispatch:
+  workflow_call:
+    secrets:
+      LOCAL_CI_SMTP_FROM:
+        required: false
+      LOCAL_CI_EMAIL_HERON_MC:
+        required: false
+      LOCAL_CI_EMAIL_LIKEHUPOCHUAN:
+        required: false
+      LOCAL_CI_HEARTBEAT_READ_TOKEN:
+        required: false
+      LOCAL_CI_SMTP_USERNAME:
+        required: false
+      LOCAL_CI_SMTP_PASSWORD:
+        required: false
 
 permissions:
   contents: read
@@ -20,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ vars.LOCAL_CI_CONTROL_BRANCH || 'ci_repo' }}
+          ref: ci_repo
           persist-credentials: false
 
       - uses: actions/setup-python@v6

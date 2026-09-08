@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 
 
 SCOPES = ("scripts/local_ci", "scripts/dashboard", ".github")
-MANIFEST_SCHEMA = "triton-anchor-local-ci-control/v1"
+MANIFEST_SCHEMA = "triton-anchor-local-ci-control"
 SHA = re.compile(r"[a-f0-9]{40}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
 CACHES = {"__pycache__", ".pytest_cache"}

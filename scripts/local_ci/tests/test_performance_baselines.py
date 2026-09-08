@@ -31,7 +31,7 @@ class PerformanceBaselineTests(unittest.TestCase):
         artifact = run / "artifacts" / tool / "candidate.json"
         artifact.parent.mkdir(parents=True)
         artifact.write_text(json.dumps({"kernels": {"add": {"median_ms": 1.25}}}))
-        result = {"schema": "triton-anchor-local-ci-result/v4", "repository": self.task["repository"],
+        result = {"schema": "triton-anchor-local-ci-result", "repository": self.task["repository"],
                   "task_id": "previous", "run_id": run_id, "tested_sha": self.task["base_sha"],
                   "conclusion": "success", "completed_at": "2026-09-08T10:00:00Z",
                   "environment": {"profile_id": self.profile["id"], "llvm_revision": self.profile["llvm_revision"]},

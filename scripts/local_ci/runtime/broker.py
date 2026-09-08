@@ -10,17 +10,11 @@ import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 from .common import digest, execute, read_json, utcnow, write_json
 from .policy import TOOLS
-
-DEPENDENCIES = {
-    'frontend_build': ['environment'], 'wheel_install': ['frontend_build'],
-    'frontend_smoke': ['wheel_install'], 'backend_rebuild': ['wheel_install'],
-    'backend_smoke': ['backend_rebuild'], 'flaggems': ['backend_smoke'],
-    'compile_time': ['backend_smoke'], 'pass_profile': ['backend_smoke'],
-    'ir_serialization': ['backend_smoke'],
-}
+from tools.basic_tools.runner import DEPENDENCIES
 
 
 class Broker:
@@ -103,8 +97,10 @@ class Broker:
             return
         required = {
             'environment': ['environment.json'], 'frontend_build': ['wheel.json'],
-            'wheel_install': ['installation.json'], 'frontend_smoke': ['smoke_success.json'],
-            'backend_rebuild': ['wheel.json', 'installation.json'], 'backend_smoke': ['smoke_success.json'],
+            'frontend_install': ['installation.json'], 'frontend_tests': ['tests.xml', 'tests.json'],
+            'frontend_smoke': ['smoke_success.json'], 'backend_build': ['wheel.json'],
+            'backend_install': ['installation.json'], 'backend_tests': ['tests.xml', 'tests.json'],
+            'backend_smoke': ['smoke_success.json'],
             'flaggems': ['flaggems-summary.json', 'selected.txt'],
             **{name: ['candidate.json', 'comparison.json', 'baseline_identity.json']
                for name in ('compile_time', 'pass_profile', 'ir_serialization')},
@@ -118,7 +114,8 @@ class Broker:
                 documents[name] = read_json(path)
                 if not isinstance(documents[name], dict):
                     raise ValueError('tool artifact must be a JSON object')
-        if tool in ('environment', 'frontend_build', 'wheel_install', 'frontend_smoke', 'backend_rebuild', 'backend_smoke'):
+        if tool in ('environment', 'frontend_build', 'frontend_install', 'frontend_tests', 'frontend_smoke',
+                    'backend_build', 'backend_install', 'backend_tests', 'backend_smoke'):
             for document in documents.values():
                 if any(document.get(key) != self.context[key] for key in ('task_id', 'target_sha')):
                     raise ValueError('tool artifact identity differs from current task')
@@ -126,11 +123,44 @@ class Broker:
             manifest = documents['wheel.json']
             prefix = self.context['artifact_dir'].rstrip('/') + '/'
             wheel = manifest.get('wheel', '')
-            if not wheel.startswith(prefix + tool + '/wheels/'):
+            if not isinstance(wheel, str) or not wheel.startswith(prefix + tool + '/wheels/'):
                 raise ValueError('wheel manifest path is outside this build')
             actual = evidence_path(root, wheel[len(prefix):])
             if not actual.is_file() or digest(actual) != manifest.get('sha256'):
                 raise ValueError('wheel manifest has no matching actual artifact')
+        for name in ('installation.json', 'smoke_success.json', 'tests.json'):
+            if name in documents:
+                document = documents[name]
+                if (document.get('python_executable') != self.context.get('python_bin', 'python3')
+                        or document.get('task_venv') != self.context.get('task_venv')):
+                    raise ValueError('tool artifact belongs to a different Python environment')
+        if 'installation.json' in documents:
+            build = 'backend_build' if tool == 'backend_install' else 'frontend_build'
+            built = read_json(evidence_path(root, build + '/wheel.json'))
+            if any(documents['installation.json'].get(key) != built.get(key)
+                   for key in ('task_id', 'target_sha', 'wheel', 'sha256')):
+                raise ValueError('installation no longer matches the current built wheel')
+        if 'tests.json' in documents:
+            document = documents['tests.json']
+            junit = evidence_path(root, tool + '/tests.xml')
+            if (junit.stat().st_size > 20 * 1024 * 1024 or document.get('tool') != tool
+                    or document.get('junit_sha256') != digest(junit)):
+                raise ValueError('test summary has no matching bounded JUnit artifact')
+            try:
+                cases = list(ET.fromstring(junit.read_bytes()).iter('testcase'))
+            except ET.ParseError as exc:
+                raise ValueError('test JUnit artifact is malformed') from exc
+            counts = {'tests': len(cases), 'passed': 0, 'failures': 0, 'errors': 0, 'skipped': 0}
+            for case in cases:
+                outcome = next((key for key, tag in (('failures', 'failure'), ('errors', 'error'), ('skipped', 'skipped'))
+                                if case.find(tag) is not None), 'passed')
+                counts[outcome] += 1
+            if (any(type(document.get(key)) is not int or document[key] != count for key, count in counts.items())
+                    or not counts['passed'] or counts['failures'] or counts['errors']):
+                raise ValueError('tests did not produce a nonempty passing JUnit selection')
+            selected = document.get('selected_paths')
+            if not isinstance(selected, list) or not selected or not all(isinstance(path, str) and path for path in selected):
+                raise ValueError('test summary has no concrete test selection')
         if tool == 'environment' and documents['environment.json'].get('missing'):
             raise ValueError('environment reported missing prerequisites')
         if tool == 'flaggems':
@@ -247,7 +277,7 @@ class Broker:
             artifact_host = self.context.get('artifact_host_dir')
             if status == 'passed' and artifact_host:
                 directory = Path(artifact_host) / tool
-                files = [*directory.glob('*.json'), *directory.glob('wheels/*.whl')]
+                files = [*directory.glob('*.json'), *directory.glob('*.xml'), *directory.glob('wheels/*.whl')]
                 self.artifact_fingerprints[tool] = {str(p): digest(p) for p in files if p.is_file() and not p.is_symlink()}
                 write_json(self.output / 'artifact-fingerprints.json', self.artifact_fingerprints)
                 if tool in ('compile_time', 'pass_profile', 'ir_serialization'):

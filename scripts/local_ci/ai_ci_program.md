@@ -28,12 +28,22 @@ python3 /opt/anchor-ci/runtime/client.py frontend_build --parameters '{"jobs":2}
 python3 /opt/anchor-ci/runtime/client.py flaggems --parameters '{"mode":"impact","ops":["add"]}'
 ```
 
-十个基础工具为 `environment`, `frontend_build`, `wheel_install`, `frontend_smoke`,
-`backend_rebuild`, `backend_smoke`, `flaggems`, `compile_time`, `pass_profile`,
+13 个基础工具为 `environment`、`frontend_build`、`frontend_install`、
+`frontend_tests`、`frontend_smoke`、`backend_build`、`backend_install`、
+`backend_tests`、`backend_smoke`、`flaggems`、`compile_time`、`pass_profile`、
 `ir_serialization`。阅读 `/opt/anchor-ci/tools/README.md` 获取参数。
+前后端 build 都只依赖环境检查；各自 install 使用对应 build 产物，后端
+install 还依赖前端 install，以验证 Triton 后端发现。前端 install 保留 import
+验证。前端 tests 和 smoke 依赖前端 install，后端 tests
+和 smoke 依赖前端、后端 install；tests 与 smoke 互不依赖。
+`frontend_tests`、`backend_tests` 可以用 `paths` 选择受信测试根下的路径或
+pytest nodeid，用 `keyword` 缩小范围；不得替换受信根或测试命令。
+编译器最低必检包含环境、前端构建、安装/import、smoke 与架构审查；代码
+或测试变更追加相关前端 tests，深层编译器变更或影响不明执行全部适用检查。
 仅 Triton 3.0 具备后端、算子与性能能力；其它版本明确不适用。FlagGems 根据
 实际影响选择算子，无法可靠缩小则覆盖已有可运行集合。只有手动 full 任务
-可以要求全量；不能自行把不适用、缺失依赖或未执行写成成功。
+可以要求全量；不能自行把不适用、缺失依赖或未执行写成成功。测试工具的
+无用例、全量 skip 或失败均不能算通过；结合宿主保存的 JUnit 与日志解释原因。
 
 控制面变更调用 `control_plane`；复现用例优先复用现有测试。必要时在
 `artifacts/custom/` 写独立 Python 测例，再用 `custom_test --parameters

@@ -19,7 +19,7 @@ from runtime.report import build_result  # noqa: E402
 
 
 def admitted_task():
-    task = {"schema": "triton-anchor-local-ci-task-metadata/v2", "repository": "anteloper-c/triton-anchor",
+    task = {"schema": "triton-anchor-local-ci-task-metadata", "repository": "anteloper-c/triton-anchor",
             "task_id": "task-test", "task_ref": "ci/pr-7/triton-3.2", "event_kind": "pull_request",
             "pr_number": 7, "target_branch": "main", "tested_sha": "a" * 40, "target_sha": "a" * 40,
             "head_sha": "b" * 40, "base_sha": "c" * 40, "worker_revision_sha": "d" * 40,
@@ -54,10 +54,10 @@ class PolicyAndReportTests(unittest.TestCase):
                             started_at="2026-09-08T10:01:00Z", source_unchanged=True, **kwargs)
 
     def test_missing_required_frontend_check_cannot_pass(self):
-        self.broker.checks.pop("wheel_install")
+        self.broker.checks.pop("frontend_install")
         result = self.result()
         self.assertNotEqual(result["conclusion"], "success")
-        self.assertTrue(any("wheel_install" in reason for reason in result["blocking_reasons"]))
+        self.assertTrue(any("frontend_install" in reason for reason in result["blocking_reasons"]))
 
     def test_missing_or_failed_pr_intent_review_cannot_pass(self):
         self.broker.review.pop('pr_information')
@@ -141,7 +141,7 @@ class RealGitRelayTests(unittest.TestCase):
         git(self.seed, "push", "origin", f"HEAD:refs/heads/{ref}")
 
     def output(self, run_id="run-one"):
-        result = {"schema": "triton-anchor-local-ci-result/v4", "task_id": self.task["task_id"],
+        result = {"schema": "triton-anchor-local-ci-result", "task_id": self.task["task_id"],
                   "run_id": run_id, "conclusion": "success", "evidence": [], "tested_sha": self.sha}
         out = self.root / run_id
         out.mkdir()

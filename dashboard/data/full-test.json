@@ -1,5 +1,5 @@
 {
-  "schema": "triton-anchor-full-test/v1",
+  "schema": "triton-anchor-full-test",
   "data_mode": "mock",
   "source_note": "历史样例，来自 2026-07-24 手动全量算子测试；仅用于无 live 全量算子结果时的页面展示。",
   "source_summary": {

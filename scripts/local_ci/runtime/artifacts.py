@@ -43,7 +43,7 @@ def collect_artifacts(source, output, *, max_file_bytes=8*1024*1024,
             total += size
             files.append({'path': destination.relative_to(output).as_posix(),
                           'sha256': digest(destination), 'size': size})
-    manifest = {'schema': 'triton-anchor-local-ci-artifacts/v1', 'files': files,
+    manifest = {'schema': 'triton-anchor-local-ci-artifacts', 'files': files,
                 'omitted': omitted, 'total_bytes': total}
     write_json(output / 'artifact-manifest.json', manifest)
     return manifest

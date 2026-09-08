@@ -90,7 +90,7 @@ async function load() {
     const requested=new URLSearchParams(location.search).get('data');
     const source=requested&&/^data\/[A-Za-z0-9_.-]+\.json$/.test(requested)?requested:'data/local-ci.json';
     const response=await fetch(source,{cache:'no-store'});if(!response.ok)throw new Error('HTTP '+response.status);
-    const data=await response.json();if(data.schema!=='triton-anchor-dashboard-local-ci/v1'||!Array.isArray(data.runs)||!Array.isArray(data.workers))throw new Error('结果数据格式不兼容');
+    const data=await response.json();if(data.schema!=='triton-anchor-dashboard-local-ci'||!Array.isArray(data.runs)||!Array.isArray(data.workers))throw new Error('结果数据格式不兼容');
     model.data=data;notice.hidden=data.data_mode!=='fixture';notice.textContent='本机界面样例 · 以下数据用于验证展示，不构成编译、硬件或部署验收证据。';
     $('updatedAt').textContent=data.generated_at?'结果同步：'+date(data.generated_at):'尚未同步真实结果';
     const warnings=$('syncWarnings');warnings.replaceChildren();warnings.hidden=!arr(data.warnings).length;if(!warnings.hidden){warnings.append(el('strong','','部分发布数据未通过校验'));const list=el('ul');for(const warning of data.warnings)list.append(el('li','',warning.path+'：'+warning.reason));warnings.append(list);}

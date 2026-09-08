@@ -87,7 +87,7 @@ def build_result(task, run_id, policy, broker, *, started_at, source_unchanged,
         blocking.append(error)
     conclusion = ('cancelled' if cancelled else 'error' if error or not valid_arch or pr_status == 'error' else
                   'failure' if blocking else 'success')
-    return {'schema': 'triton-anchor-local-ci-result/v4', **identity(task), 'run_id': run_id,
+    return {'schema': 'triton-anchor-local-ci-result', **identity(task), 'run_id': run_id,
             'control_identity': getattr(broker, 'context', {}).get('control_identity', {'verified': False}),
             'validation_scope': getattr(broker, 'context', {}).get('validation_scope', 'production'),
             'conclusion': conclusion, 'checks': list(checks.values()),

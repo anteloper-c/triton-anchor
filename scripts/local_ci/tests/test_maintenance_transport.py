@@ -67,7 +67,7 @@ class RealArtifactPublication(unittest.TestCase):
         path.write_text('assert 1 + 1 == 2\n', encoding='utf-8')
         entry = {'path': 'artifacts/custom/repro.py', 'sha256': digest(path), 'size': path.stat().st_size}
         atomic_json(self.output / 'artifact-manifest.json',
-                    {'schema': 'triton-anchor-local-ci-artifacts/v1', 'files': [entry], 'omitted': []})
+                    {'schema': 'triton-anchor-local-ci-artifacts', 'files': [entry], 'omitted': []})
         return path, entry
 
     def test_custom_evidence_and_manifest_are_published_and_immutable(self):

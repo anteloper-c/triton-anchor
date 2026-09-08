@@ -333,7 +333,7 @@ jobs:
             receiver_title="Push ${SOURCE_BRANCH} | ${TESTED_SHA:0:7} | receive 1/${RECEIVER_MAX_ATTEMPTS}"
           fi
           gh workflow run ci-gateway.yml --repo "${GITHUB_REPOSITORY}" --ref "${GITHUB_REF_NAME}" \
-            -f gateway_contract_version=4 -f mode=receive \
+            -f gateway_kind=triton-anchor-ci-gateway -f mode=receive \
             -f pr_number="${PR_NUMBER}" -f expected_head_sha="${HEAD_SHA}" \
             -f comparison_base_sha="${BASE_SHA}" -f tested_sha="${TESTED_SHA}" \
             -f worker_revision_sha="${WORKER_REVISION_SHA}" \

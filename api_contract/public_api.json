@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "kind": "triton-anchor-public-api-scope",
   "description": "Initial stable Python API contract for triton-anchor. The base branch copy is authoritative during compatibility checks.",
   "modules": {
     "triton_anchor": {

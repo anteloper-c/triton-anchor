@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Normalize published Local CI v4 results and v2 health into a static UI feed."""
+"""Normalize published Local CI results and worker health into a static UI feed."""
 from __future__ import annotations
 
 import argparse
@@ -10,9 +10,9 @@ from pathlib import Path, PurePosixPath
 import re
 from urllib.parse import quote, urlparse
 
-SCHEMA = 'triton-anchor-dashboard-local-ci/v1'
-RESULT_SCHEMA = 'triton-anchor-local-ci-result/v4'
-HEALTH_SCHEMA = 'triton-anchor-local-ci-worker-health/v2'
+SCHEMA = 'triton-anchor-dashboard-local-ci'
+RESULT_SCHEMA = 'triton-anchor-local-ci-result'
+HEALTH_SCHEMA = 'triton-anchor-local-ci-worker-health'
 ID = re.compile(r'[A-Za-z0-9_.-]{1,160}')
 SHA = re.compile(r'[0-9a-f]{40}')
 

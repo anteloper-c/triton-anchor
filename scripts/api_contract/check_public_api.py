@@ -436,9 +436,13 @@ def _load_scope(path: Path) -> dict[str, Any]:
         scope = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ContractError(f"Cannot read API scope {path}: {exc}") from exc
-    if scope.get("schema_version") != 1 or not isinstance(scope.get("modules"), dict):
+    if (not isinstance(scope, dict) or not isinstance(scope.get("modules"), dict)
+            or any(not isinstance(name, str) or not isinstance(module, dict)
+                   for name, module in scope["modules"].items())):
         raise ContractError(f"Unsupported or invalid API scope: {path}")
-    return scope
+    # The base copy is authoritative. Compare semantic scope fields so metadata
+    # and display-label edits do not manufacture an API scope change.
+    return {"modules": scope["modules"]}
 
 
 def run_check(base_root: Path, candidate_root: Path, scope_path: Path,
@@ -456,7 +460,7 @@ def run_check(base_root: Path, candidate_root: Path, scope_path: Path,
     breaking_count = sum(change["severity"] == "breaking" for change in changes)
     warning_count = sum(change["severity"] == "warning" for change in changes)
     return {
-        "schema_version": 1,
+        "schema": "triton-anchor-public-api-compatibility",
         "status": "breaking" if breaking_count else "compatible",
         "breaking_count": breaking_count,
         "warning_count": warning_count,
@@ -526,7 +530,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     except Exception as exc:
         result = {
-            "schema_version": 1,
+            "schema": "triton-anchor-public-api-compatibility",
             "status": "error",
             "breaking_count": 0,
             "warning_count": 0,

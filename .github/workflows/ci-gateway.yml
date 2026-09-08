@@ -15,10 +15,10 @@ on:
       - converted_to_draft
   workflow_dispatch:
     inputs:
-      gateway_contract_version:
-        description: "Internal gateway contract version"
+      gateway_kind:
+        description: "Internal gateway message kind"
         required: false
-        default: "4"
+        default: "triton-anchor-ci-gateway"
         type: string
       mode:
         description: "Gateway operation; use push for a manual branch task"
@@ -131,7 +131,7 @@ on:
 permissions: {}
 
 env:
-  GATEWAY_CONTRACT_VERSION: "4"
+  GATEWAY_KIND: "triton-anchor-ci-gateway"
   FALLBACK_WORKER_BRANCH: ${{ vars.LOCAL_CI_FALLBACK_WORKER_BRANCH || 'ci_repo' }}
   FALLBACK_PR_ENABLED: ${{ vars.LOCAL_CI_FALLBACK_PR_ENABLED || 'true' }}
   FALLBACK_PUSH_ENABLED: ${{ vars.LOCAL_CI_FALLBACK_PUSH_ENABLED || 'true' }}
@@ -240,7 +240,7 @@ jobs:
                   Buffer.from(response.data.content, 'base64').toString('utf8')
                 );
                 const compatible =
-                  manifest.gateway_contract_version === process.env.GATEWAY_CONTRACT_VERSION &&
+                  manifest.kind === process.env.GATEWAY_KIND &&
                   manifest.role === 'worker' &&
                   manifest.capabilities?.includes('cancel') &&
                   (!requireCrossBranch ||
@@ -286,7 +286,7 @@ jobs:
                   workflow_id: 'ci-gateway.yml',
                   ref: worker.ref,
                   inputs: {
-                    gateway_contract_version: process.env.GATEWAY_CONTRACT_VERSION,
+                    gateway_kind: process.env.GATEWAY_KIND,
                     mode: 'cancel',
                     pr_number: String(pull.number),
                     expected_head_sha: action === 'synchronize' && shaPattern.test(previousHeadSha) ? previousHeadSha : pull.head.sha,
@@ -583,13 +583,13 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const prNumber = Number.parseInt(process.env.PR_NUMBER, 10);
-            const expectedContract = process.env.GATEWAY_CONTRACT_VERSION;
+            const expectedKind = process.env.GATEWAY_KIND;
             const shaPattern = /^[0-9a-f]{40}$/i;
             const baseCapabilities = [
               'pr-information',
               'basic-ci',
               'api-compatibility',
-              'result-v4',
+              'task-result',
               'security-scan',
               'codeql',
               'dispatch',
@@ -689,17 +689,15 @@ jobs:
               } catch (error) {
                 throw new Error(`Worker manifest on ${ref} is invalid JSON: ${error.message}`);
               }
-              if (allowMissingManifest && manifest.role === 'router' && manifest.gateway_contract_version === expectedContract) {
+              if (allowMissingManifest && manifest.role === 'router' && manifest.kind === expectedKind) {
                 return null;
               }
-              if (allowMissingManifest && manifest.schema_version === 1 && manifest.role === 'worker' &&
-                  manifest.gateway_contract_version === '3') {
-                core.notice(`Branch ${ref} still has a legacy worker; route through the verified v4 fallback.`);
+              if (allowMissingManifest && !Object.hasOwn(manifest, 'kind')) {
+                core.notice(`Branch ${ref} does not declare a worker kind; use the verified fallback.`);
                 return null;
               }
               if (
-                manifest.schema_version !== 1 ||
-                manifest.gateway_contract_version !== expectedContract ||
+                manifest.kind !== expectedKind ||
                 manifest.role !== 'worker' ||
                 manifest.tested_revision !== 'merge-result' ||
                 !Array.isArray(manifest.capabilities)
@@ -809,7 +807,7 @@ jobs:
                 workflow_id: 'ci-gateway.yml',
                 ref: worker.ref,
                 inputs: {
-                  gateway_contract_version: expectedContract,
+                  gateway_kind: expectedKind,
                   mode: 'dispatch',
                   pr_number: String(prNumber),
                   expected_head_sha: latestPull.head.sha,
@@ -982,8 +980,7 @@ jobs:
                 throw new Error(`Fallback worker manifest is invalid JSON: ${error.message}`);
               }
               if (
-                manifest.schema_version !== 1 ||
-                manifest.gateway_contract_version !== process.env.GATEWAY_CONTRACT_VERSION ||
+                manifest.kind !== process.env.GATEWAY_KIND ||
                 manifest.role !== 'worker' ||
                 requiredCapabilities.some(
                   (capability) => !manifest.capabilities?.includes(capability)
@@ -1015,7 +1012,7 @@ jobs:
                 workflow_id: 'ci-gateway.yml',
                 ref: fallbackRef,
                 inputs: {
-                  gateway_contract_version: process.env.GATEWAY_CONTRACT_VERSION,
+                  gateway_kind: process.env.GATEWAY_KIND,
                   mode: 'push',
                   worker_revision_sha: workerRevision,
                   authorization_source: `manual-push:${context.actor}`,
@@ -1102,7 +1099,7 @@ jobs:
         id: validate
         uses: actions/github-script@v7
         env:
-          REQUESTED_CONTRACT: ${{ inputs.gateway_contract_version }}
+          REQUESTED_KIND: ${{ inputs.gateway_kind }}
           PR_NUMBER: ${{ inputs.pr_number }}
           EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
           COMPARISON_BASE_SHA: ${{ inputs.comparison_base_sha }}
@@ -1137,9 +1134,9 @@ jobs:
             };
 
             try {
-              if (process.env.REQUESTED_CONTRACT !== process.env.GATEWAY_CONTRACT_VERSION) {
+              if (process.env.REQUESTED_KIND !== process.env.GATEWAY_KIND) {
                 throw new Error(
-                  `Gateway contract mismatch: expected ${process.env.GATEWAY_CONTRACT_VERSION}`
+                  `Gateway message kind mismatch: expected ${process.env.GATEWAY_KIND}`
                 );
               }
               if (process.env.REF_TYPE !== 'branch') {
@@ -1255,7 +1252,7 @@ jobs:
                 'pr-information',
               'basic-ci',
               'api-compatibility',
-              'result-v4',
+              'task-result',
               'security-scan',
                 'codeql',
                 'dispatch',
@@ -1268,8 +1265,7 @@ jobs:
                 requiredCapabilities.push('cross-branch-pr');
               }
               if (
-                manifest.schema_version !== 1 ||
-                manifest.gateway_contract_version !== process.env.GATEWAY_CONTRACT_VERSION ||
+                manifest.kind !== process.env.GATEWAY_KIND ||
                 manifest.role !== 'worker' ||
                 manifest.tested_revision !== 'merge-result' ||
                 requiredCapabilities.some(
@@ -1607,7 +1603,7 @@ jobs:
         id: validate
         uses: actions/github-script@v7
         env:
-          REQUESTED_CONTRACT: ${{ inputs.gateway_contract_version }}
+          REQUESTED_KIND: ${{ inputs.gateway_kind }}
           WORKER_REVISION_SHA: ${{ inputs.worker_revision_sha }}
           AUTHORIZATION_SOURCE: ${{ inputs.authorization_source }}
           TESTED_SHA: ${{ inputs.tested_sha }}
@@ -1638,9 +1634,9 @@ jobs:
             };
 
             try {
-              if (process.env.REQUESTED_CONTRACT !== process.env.GATEWAY_CONTRACT_VERSION) {
+              if (process.env.REQUESTED_KIND !== process.env.GATEWAY_KIND) {
                 throw new Error(
-                  `Gateway contract mismatch: expected ${process.env.GATEWAY_CONTRACT_VERSION}`
+                  `Gateway message kind mismatch: expected ${process.env.GATEWAY_KIND}`
                 );
               }
               if (
@@ -1704,8 +1700,7 @@ jobs:
               );
               const requiredCapabilities = ['cross-branch-push', 'dispatch', 'receive'];
               if (
-                manifest.schema_version !== 1 ||
-                manifest.gateway_contract_version !== process.env.GATEWAY_CONTRACT_VERSION ||
+                manifest.kind !== process.env.GATEWAY_KIND ||
                 manifest.role !== 'worker' ||
                 requiredCapabilities.some(
                   (capability) => !manifest.capabilities?.includes(capability)
@@ -1804,7 +1799,7 @@ jobs:
         id: validate
         uses: actions/github-script@v7
         env:
-          REQUESTED_CONTRACT: ${{ inputs.gateway_contract_version }}
+          REQUESTED_KIND: ${{ inputs.gateway_kind }}
           PR_NUMBER: ${{ inputs.pr_number }}
           EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
           COMPARISON_BASE_SHA: ${{ inputs.comparison_base_sha }}
@@ -1851,9 +1846,9 @@ jobs:
             };
 
             try {
-              if (process.env.REQUESTED_CONTRACT !== process.env.GATEWAY_CONTRACT_VERSION) {
+              if (process.env.REQUESTED_KIND !== process.env.GATEWAY_KIND) {
                 throw new Error(
-                  `Gateway contract mismatch: expected ${process.env.GATEWAY_CONTRACT_VERSION}`
+                  `Gateway message kind mismatch: expected ${process.env.GATEWAY_KIND}`
                 );
               }
               if (
@@ -1979,7 +1974,7 @@ jobs:
       - name: Validate Pages inputs
         uses: actions/github-script@v7
         env:
-          REQUESTED_CONTRACT: ${{ inputs.gateway_contract_version }}
+          REQUESTED_KIND: ${{ inputs.gateway_kind }}
           WORKER_REVISION_SHA: ${{ inputs.worker_revision_sha }}
           SOURCE_BRANCH: ${{ inputs.source_branch }}
           TASK_REF: ${{ inputs.task_ref }}
@@ -1989,9 +1984,9 @@ jobs:
           PAGES_BRANCH: ${{ vars.LOCAL_CI_PAGES_BRANCH || 'ci_repo' }}
         with:
           script: |
-            if (process.env.REQUESTED_CONTRACT !== process.env.GATEWAY_CONTRACT_VERSION) {
+            if (process.env.REQUESTED_KIND !== process.env.GATEWAY_KIND) {
               throw new Error(
-                `Gateway contract mismatch: expected ${process.env.GATEWAY_CONTRACT_VERSION}`
+                `Gateway message kind mismatch: expected ${process.env.GATEWAY_KIND}`
               );
             }
             if (
@@ -2048,7 +2043,7 @@ jobs:
       - name: Validate cancellation and stop matching receivers
         uses: actions/github-script@v7
         env:
-          REQUESTED_CONTRACT: ${{ inputs.gateway_contract_version }}
+          REQUESTED_KIND: ${{ inputs.gateway_kind }}
           PR_NUMBER: ${{ inputs.pr_number }}
           EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
           WORKER_REVISION_SHA: ${{ inputs.worker_revision_sha }}
@@ -2060,8 +2055,8 @@ jobs:
         with:
           script: |
             const shaPattern = /^[0-9a-f]{40}$/i;
-            if (process.env.REQUESTED_CONTRACT !== process.env.GATEWAY_CONTRACT_VERSION) {
-              throw new Error('Cancellation contract version is invalid');
+            if (process.env.REQUESTED_KIND !== process.env.GATEWAY_KIND) {
+              throw new Error('Cancellation message kind is invalid');
             }
             if (
               !/^[1-9][0-9]*$/.test(process.env.PR_NUMBER) ||
@@ -2133,7 +2128,7 @@ jobs:
           git init --bare "$git_dir"
           git --git-dir="$git_dir" config user.name github-actions
           git --git-dir="$git_dir" config user.email github-actions@github.com
-          jq -n --arg schema triton-anchor-local-ci-cancellation/v1 \
+          jq -n --arg schema triton-anchor-local-ci-cancellation \
             --arg repository "$GITHUB_REPOSITORY" --arg task_ref "$TASK_REF" \
             --arg head_sha "$HEAD_SHA" --arg target_branch "$TARGET_BRANCH" \
             --arg reason "$REASON" --arg cancelled_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \

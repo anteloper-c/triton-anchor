@@ -6,11 +6,63 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime.artifacts import collect_artifacts
-from runtime.common import digest
-from runtime.broker import Broker
+from runtime.common import digest, write_json
+from runtime.broker import Broker, DEPENDENCIES
+from tools.basic_tools.runner import DEPENDENCIES as TOOL_DEPENDENCIES
 
 
 class ArtifactTests(unittest.TestCase):
+    def test_dependency_contract_has_one_source(self):
+        self.assertIs(DEPENDENCIES, TOOL_DEPENDENCIES)
+        self.assertEqual(DEPENDENCIES['backend_build'], ['environment'])
+        self.assertEqual(DEPENDENCIES['backend_tests'], ['frontend_install', 'backend_install'])
+
+    def test_test_evidence_must_match_real_cases_identity_and_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = {'artifact_host_dir': str(root / 'artifacts'), 'task_id': 'task-tests',
+                       'target_sha': 'a' * 40, 'python_bin': '/opt/anchor-ci/runtime/task_python',
+                       'task_venv': '/workspace/tasks/task-tests/run/venv'}
+            broker = Broker({}, context, {}, root / 'output', lambda: False)
+            for tool in ('frontend_tests', 'backend_tests'):
+                output = root / 'artifacts' / tool
+                output.mkdir(parents=True)
+                junit = output / 'tests.xml'
+                junit.write_text('<testsuites><testsuite><testcase name="actual-case"/></testsuite></testsuites>')
+                valid = {key: context[key] for key in ('task_id', 'target_sha', 'task_venv')}
+                valid.update(tool=tool, python_executable=context['python_bin'], junit_sha256=digest(junit),
+                             tests=1, passed=1, failures=0, errors=0, skipped=0, selected_paths=['tests'])
+                write_json(output / 'tests.json', valid)
+                broker.verify_artifacts(tool)
+                for field, bad in (('passed', 0), ('tests', True), ('target_sha', 'b' * 40),
+                                   ('junit_sha256', 'c' * 64), ('tool', 'flaggems'),
+                                   ('task_venv', '/workspace/tasks/other/run/venv'), ('selected_paths', [])):
+                    with self.subTest(tool=tool, field=field), self.assertRaises(ValueError):
+                        write_json(output / 'tests.json', {**valid, field: bad})
+                        broker.verify_artifacts(tool)
+                for outcome in ('skipped', 'failure', 'error'):
+                    junit.write_text(f'<testsuites><testsuite><testcase><{outcome}/></testcase></testsuite></testsuites>')
+                    with self.subTest(tool=tool, outcome=outcome), self.assertRaises(ValueError):
+                        write_json(output / 'tests.json', {**valid, 'junit_sha256': digest(junit)})
+                        broker.verify_artifacts(tool)
+
+    def test_backend_build_is_independent_of_installation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifacts = root / 'artifacts'
+            wheel = artifacts / 'backend_build/wheels/backend.whl'
+            wheel.parent.mkdir(parents=True)
+            wheel.write_bytes(b'synthetic wheel bytes for host artifact validation')
+            context = {'artifact_host_dir': str(artifacts), 'artifact_dir': '/artifacts',
+                       'task_id': 'task-build', 'target_sha': 'a' * 40}
+            write_json(wheel.parent.parent / 'wheel.json',
+                       {'task_id': context['task_id'], 'target_sha': context['target_sha'],
+                        'wheel': '/artifacts/backend_build/wheels/backend.whl', 'sha256': digest(wheel)})
+            broker = Broker({}, context, {}, root / 'output', lambda: False)
+            broker.verify_artifacts('backend_build')
+            with self.assertRaisesRegex(ValueError, 'without its required artifact'):
+                broker.verify_artifacts('backend_install')
+
     def test_zero_exit_without_required_build_artifact_cannot_pass(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

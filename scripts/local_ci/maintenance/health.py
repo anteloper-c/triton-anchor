@@ -102,7 +102,7 @@ def collect(config, manager=None, now=None, service_runner=subprocess.run):
     except ValueError as exc:
         notification_config = str(exc)
         issues.append(issue("notification_not_configured", notification_config))
-    return {"schema": "triton-anchor-local-ci-worker-health/v2", "worker_id": config["worker_id"],
+    return {"schema": "triton-anchor-local-ci-worker-health", "worker_id": config["worker_id"],
             "heartbeat_at": now, "generated_at": datetime.fromtimestamp(now, timezone.utc).isoformat(),
             "state": "degraded" if issues else "healthy", "issues": issues, "workers": workers,
             "poller": poller, "task": task, "disks": disks, "notification_config": notification_config}

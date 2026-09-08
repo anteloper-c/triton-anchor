@@ -1,6 +1,5 @@
 {
-  "schema_version": 1,
-  "gateway_contract_version": "4",
+  "kind": "triton-anchor-ci-gateway",
   "role": "worker",
   "tested_revision": "merge-result",
   "capabilities": [
@@ -18,6 +17,6 @@
     "basic-ci",
     "api-compatibility",
     "ai-orchestration",
-    "result-v4"
+    "task-result"
   ]
 }

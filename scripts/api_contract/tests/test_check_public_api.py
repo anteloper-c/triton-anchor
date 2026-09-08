@@ -149,7 +149,7 @@ class PublicApiCheckerTests(unittest.TestCase):
     def _write_scope(path, functions, classes=None):
         path.write_text(
             json.dumps({
-                "schema_version": 1,
+                "kind": "triton-anchor-public-api-scope",
                 "modules": {
                     "sample": {
                         "functions": functions,

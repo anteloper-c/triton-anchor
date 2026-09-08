@@ -23,9 +23,7 @@ else:
 
 
 DEFAULT_PROFILE = "sophgo-cmodel"
-DEFAULT_RESULTS_WEB_URL = (
-    "https://gitee.com/likehupochuan/triton-anchor-local-ci-results"
-)
+DEFAULT_RESULTS_WEB_URL = ""
 RUN_ID_RE = re.compile(r"^(\d{8}T\d{6}Z)-")
 
 
@@ -206,7 +204,7 @@ def backend_document(
             }
         )
     return {
-        "schema": "triton-anchor-backend-status-list/v1",
+        "schema": "triton-anchor-backend-status-list",
         "data_mode": "live",
         "backends": [sophgo, *placeholders],
     }
@@ -302,7 +300,7 @@ def full_test_document(
         return None, None
 
     document = {
-        "schema": "triton-anchor-full-test/v1",
+        "schema": "triton-anchor-full-test",
         "data_mode": "live",
         "source_schema": source.get("schema", ""),
         "source_summary": source.get("summary", {}),
@@ -503,7 +501,7 @@ def performance_document(
         }
 
     return {
-        "schema": "triton-anchor-performance-summary/v1",
+        "schema": "triton-anchor-performance-summary",
         "data_mode": "live",
         "backend": f"{backend_name} CModel",
         "profile": profile,
@@ -575,7 +573,7 @@ def sync_dashboard(
     agent_results = sync_agent_results(results_dir, output_dir, results_web_url, results_branch)
     main_runs = discover_runs(results_dir, source_branch)
     if not main_runs:
-        # A new deployment can contain only v4 results or health snapshots. The
+        # A new deployment can contain only task results or health snapshots. The
         # new page still receives an explicit empty feed when nothing is published.
         return
     full_test_runs = discover_runs(results_dir, full_test_source_branch)

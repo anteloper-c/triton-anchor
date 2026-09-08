@@ -18,7 +18,7 @@ def evaluate(snapshot, worker_id, max_age=300, now=None):
     now = time.time() if now is None else now
     if not isinstance(snapshot, dict):
         return [issue("heartbeat_invalid", "心跳快照不是对象。")]
-    if snapshot.get("worker_id") != worker_id or snapshot.get("schema") != "triton-anchor-local-ci-worker-health/v2":
+    if snapshot.get("worker_id") != worker_id or snapshot.get("schema") != "triton-anchor-local-ci-worker-health":
         return [issue("heartbeat_invalid", "心跳来源或 Schema 不匹配。")]
     seen = timestamp(snapshot.get("heartbeat_at"))
     if seen is None or now - seen > max_age or seen > now + 60:

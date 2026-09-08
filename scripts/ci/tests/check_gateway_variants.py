@@ -15,10 +15,10 @@ def dispatch_block(text: str) -> str:
     return text[start:end]
 
 
-def contract_version(text: str) -> str:
-    match = re.search(r'^  GATEWAY_CONTRACT_VERSION: "([0-9]+)"$', text, re.MULTILINE)
+def gateway_kind(text: str) -> str:
+    match = re.search(r'^  GATEWAY_KIND: "([a-z-]+)"$', text, re.MULTILINE)
     if not match:
-        raise ValueError("gateway contract version is missing")
+        raise ValueError("gateway message kind is missing")
     return match.group(1)
 
 
@@ -35,9 +35,9 @@ def main() -> int:
         raise SystemExit("Router is not identical to the Worker's public job prefix")
     if dispatch_block(router) != dispatch_block(worker):
         raise SystemExit("Router and Worker workflow_dispatch inputs differ")
-    if contract_version(router) != contract_version(worker):
-        raise SystemExit("Router and Worker contract versions differ")
-    print(f"Gateway variants match Contract v{contract_version(worker)}")
+    if gateway_kind(router) != gateway_kind(worker):
+        raise SystemExit("Router and Worker message kinds differ")
+    print(f"Gateway variants match {gateway_kind(worker)}")
     return 0
 
 

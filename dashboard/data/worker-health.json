@@ -1,5 +1,5 @@
 {
-  "schema": "triton-anchor-local-ci-worker-health/v1",
+  "schema": "triton-anchor-local-ci-worker-health",
   "data_mode": "unavailable",
   "worker_id": "",
   "profile": "unknown",

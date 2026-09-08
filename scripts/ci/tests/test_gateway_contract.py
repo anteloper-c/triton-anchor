@@ -24,7 +24,7 @@ def dependencies(block: str) -> set[str]:
     return {item.strip() for item in inline.split(',') if item.strip()} if inline else set(re.findall(r'      - ([^\n]+)', match.group(2)))
 
 
-class GatewayV4ContractTests(unittest.TestCase):
+class GatewayContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.gateway = (WORKFLOWS / 'ci-gateway.yml').read_text(encoding='utf-8')
@@ -32,11 +32,13 @@ class GatewayV4ContractTests(unittest.TestCase):
         cls.receive = (WORKFLOWS / 'receive-local-ci-result.yml').read_text(encoding='utf-8')
         cls.prechecks = (WORKFLOWS / 'local-ci-prechecks.yml').read_text(encoding='utf-8')
 
-    def test_v4_interface_carries_immutable_identity(self):
+    def test_interface_carries_immutable_identity(self):
         manifest = json.loads((ROOT / '.github/ci-gateway-manifest.json').read_text())
-        self.assertEqual(manifest['gateway_contract_version'], '4')
-        self.assertIn('result-v4', manifest['capabilities'])
-        self.assertIn('GATEWAY_CONTRACT_VERSION: "4"', self.gateway)
+        self.assertEqual(manifest['kind'], 'triton-anchor-ci-gateway')
+        self.assertIn('task-result', manifest['capabilities'])
+        self.assertIn('GATEWAY_KIND: "triton-anchor-ci-gateway"', self.gateway)
+        self.assertNotIn('gateway_contract_version', self.gateway)
+        self.assertNotIn('schema_version', manifest)
         for name in ('task_id', 'expected_head_sha', 'comparison_base_sha', 'tested_sha', 'worker_revision_sha'):
             self.assertRegex(self.gateway, r'(?m)^      ' + name + ':$')
 
@@ -102,7 +104,7 @@ class GatewayV4ContractTests(unittest.TestCase):
         self.assertIn('flaggems_mode: flaggemsMode', job(self.gateway, 'route-manual-push'))
         self.assertIn("flaggems_mode: ${{ inputs.flaggems_mode || 'sample' }}", job(self.gateway, 'dispatch-push'))
 
-    def test_receiver_uses_v4_path_and_forwards_task_identity(self):
+    def test_receiver_uses_task_path_and_forwards_task_identity(self):
         self.assertIn('scripts/local_ci/github/receive_result.py', self.receive)
         self.assertNotIn('scripts/local_ci/results/', self.receive)
         self.assertIn('--task-id "${TASK_ID}"', self.receive)
@@ -116,8 +118,15 @@ class GatewayV4ContractTests(unittest.TestCase):
         self.assertIn("FALLBACK_WORKER_BRANCH: ${{ vars.LOCAL_CI_FALLBACK_WORKER_BRANCH || 'ci_repo' }}", self.gateway)
         self.assertIn('process.env.WORKER_REVISION_SHA.toLowerCase()', self.gateway)
         self.assertIn("manifest.role === 'router'", self.gateway)
-        self.assertIn("manifest.gateway_contract_version === '3'", self.gateway)
-        self.assertIn('route through the verified v4 fallback', self.gateway)
+        self.assertIn("!Object.hasOwn(manifest, 'kind')", self.gateway)
+        self.assertIn('use the verified fallback', self.gateway)
+
+    def test_watchdog_implementation_is_reusable_on_control_branch(self):
+        source = (WORKFLOWS / 'local-ci-watchdog.yml').read_text(encoding='utf-8')
+        self.assertIn('  workflow_call:', source)
+        self.assertNotIn('  schedule:', source)
+        self.assertIn('ref: ci_repo', source)
+        self.assertIn('python -m scripts.local_ci.maintenance.watchdog', source)
 
     def test_lifecycle_cancellation_reaches_local_worker(self):
         cancellation = job(self.gateway, 'cancel')

@@ -28,7 +28,9 @@
     "timeout": 14400,
     "max_commands": 100,
     "publication_recovery_attempts": 1,
-    "publication_recovery_timeout": 180
+    "publication_recovery_timeout": 180,
+    "model": "gpt-5.5",
+    "reasoning_effort": "high"
   },
   "profiles": [
     {
@@ -90,18 +92,30 @@
           "ninja"
         ],
         "env": {},
-        "backend_dir": "/opt/backend",
-        "backend_wheel_pattern": "*.whl",
-        "expected_backend": "REPLACE_WITH_BACKEND_NAME",
+        "backend_dir": "/workspace/triton-sophgo-backend",
+        "backend_wheel_pattern": "triton_sophgo_backend-*.whl",
+        "expected_backend": "sophgo",
         "backend_smoke_argv": [
           "{python}",
-          "-m",
-          "pytest",
-          "-q",
-          "REPLACE_WITH_REAL_BACKEND_JIT_TEST"
+          "-c",
+          "import runpy; runpy.run_path('tests/test_smoke.py', run_name='__main__'); runpy.run_path('tests/test_jit.py', run_name='__main__')"
         ],
-        "flaggems_dir": "/opt/FlagGems",
-        "flaggems_pytest_args": "--ref cpu -vs"
+        "flaggems_dir": "/workspace/FlagGems",
+        "flaggems_pytest_args": "--ref cpu -vs",
+        "backend_env_scripts": [
+          {
+            "path": "/workspace/triton-sophgo-backend/envsetup.sh",
+            "args": [
+              "PIO_CMODEL"
+            ]
+          }
+        ],
+        "backend_test_paths": [
+          "tests"
+        ],
+        "frontend_test_paths": [
+          "python/triton_anchor/tests"
+        ]
       }
     },
     {
@@ -159,7 +173,10 @@
           "cmake",
           "ninja"
         ],
-        "env": {}
+        "env": {},
+        "frontend_test_paths": [
+          "python/triton_anchor/tests"
+        ]
       }
     },
     {
@@ -217,7 +234,10 @@
           "cmake",
           "ninja"
         ],
-        "env": {}
+        "env": {},
+        "frontend_test_paths": [
+          "python/triton_anchor/tests"
+        ]
       }
     }
   ],

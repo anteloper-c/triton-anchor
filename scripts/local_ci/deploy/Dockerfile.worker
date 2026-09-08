@@ -6,7 +6,7 @@ FROM ${BASE_IMAGE}
 ARG LLVM_REVISION
 ARG CODEX_VERSION
 ARG LLVM_BUILD_JOBS=4
-ARG LLVM_TARGETS_TO_BUILD=host
+ARG LLVM_TARGETS_TO_BUILD=host;NVPTX;AMDGPU
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates git cmake ninja-build build-essential clang lld \

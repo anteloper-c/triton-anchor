@@ -1,5 +1,5 @@
 {
-  "schema": "triton-anchor-performance-summary/v1",
+  "schema": "triton-anchor-performance-summary",
   "data_mode": "mock",
   "backend": "Sophgo CModel",
   "profile": "sophgo-cmodel",

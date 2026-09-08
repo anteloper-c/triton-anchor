@@ -83,7 +83,7 @@ class HealthPublisher:
         if source.is_symlink() or source.stat().st_size > 2 * 1024 * 1024:
             raise PublicationError('health snapshot must be a bounded regular file')
         snapshot = read_json(source)
-        if not isinstance(snapshot, dict) or snapshot.get('schema') != 'triton-anchor-local-ci-worker-health/v2' or snapshot.get('worker_id') != self.worker_id:
+        if not isinstance(snapshot, dict) or snapshot.get('schema') != 'triton-anchor-local-ci-worker-health' or snapshot.get('worker_id') != self.worker_id:
             raise PublicationError('health snapshot schema/identity differs from trusted configuration')
         if not isinstance(snapshot.get('issues'), list) or snapshot.get('state') not in {'healthy', 'degraded'}:
             raise PublicationError('health snapshot state/issues are invalid')

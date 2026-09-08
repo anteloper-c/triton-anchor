@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Receive only identity-bound v4 results; untrusted result text grants no authority."""
+"""Receive only identity-bound results; untrusted result text grants no authority."""
 from __future__ import annotations
 
 import argparse
@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime.policy import TOOLS, minimum_checks
 
 
-SCHEMA = "triton-anchor-local-ci-result/v4"
+SCHEMA = "triton-anchor-local-ci-result"
 IDENTITY = (
     "task_id", "task_ref", "repository", "pr_number", "event_kind", "target_branch",
     "tested_sha", "base_sha", "head_sha", "worker_revision_sha",
@@ -182,7 +182,7 @@ class API:
         self.gitee = gitee
 
     def call(self, method: str, path: str, body: dict | None = None):
-        headers = {"Accept": "application/json", "User-Agent": "triton-anchor-local-ci-v4"}
+        headers = {"Accept": "application/json", "User-Agent": "triton-anchor-local-ci"}
         if self.token:
             if self.gitee:
                 # Gitee v5 documents access_token as a request parameter. Never log request URLs.
@@ -273,7 +273,7 @@ def publish(api: API, expected: dict, result: dict, state: str, target_url: str,
         # Recheck immediately before marking the head required check or updating its comment.
         validate_current(api, expected)
         api.call("POST", f"{prefix}/statuses/{expected['head_sha']}", {**status, "context": "local-ci/summary"})
-        marker = "<!-- local-ci-v4-result -->"
+        marker = "<!-- local-ci-result -->"
         reasons = "\n".join(f"- {str(reason)[:1000]}" for reason in result["blocking_reasons"][:30]) or "- 无已报告阻塞项"
         rows = "\n".join(f"| {str(c['id']).replace('|', '/')} | {c['status']} | {str(c.get('reason', '')).replace('|', '/').replace(chr(10), ' ')[:500]} |" for c in result["checks"])
         body = f"{marker}\n### Codex Local CI：{result['conclusion']}\n\n被测提交 `{expected['tested_sha']}`\n\n| 检查 | 结果 | 说明 |\n| --- | --- | --- |\n{rows}\n\n{reasons}\n\n[完整结果与证据]({target_url})"

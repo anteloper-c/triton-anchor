@@ -290,7 +290,7 @@ pytest python/triton_anchor/tests/ -v
 python -m pytest scripts/local_ci/tests scripts/ci/tests -v
 ```
 
-> 更详细的 Local CI 使用、维护和故障排查说明见 `scripts/local_ci/README.md` 和 `scripts/local_ci/DEVELOPMENT_GUIDE.md`。
+> Local CI 使用、维护和故障排查统一见 [CI 指南](docs/ci_guide_zh.md)。
 
 ```bash
 # 代码风格检查
@@ -308,15 +308,16 @@ triton-anchor/
 ├── csrc/                        # triton-anchor 扩展的 C++ Passes (例如 triton-linalg)
 ├── docs/                        # 文档
 │   ├── build.md                 #   构建与环境配置指南
+│   ├── ci_guide_zh.md           #   CI 使用与维护指南
 │   └── custom_backend.md        #   自定义硬件后端接入指南
 ├── tests/                       # 产品级和端到端测试
 │   └── test_smoke.py            #   安装后 smoke、binding 和编译链路测试
 ├── scripts/local_ci/            # Local CI 控制面及模块内契约测试
-│   ├── README.md                #   Local CI 使用说明
-│   ├── DEVELOPMENT_GUIDE.md     #   Local CI 长期开发指南
-│   ├── tests/                   #   Local CI 布局测试
-│   ├── codex_ai/tests/          #   Codex prompt、报告和容器 harness
-│   └── results/tests/           #   Gitee/GitHub bridge 测试
+│   ├── ai_ci_program.md         #   Codex 工作流程编排
+│   ├── runtime/                 #   任务、工具调用、证据与结果发布
+│   ├── tools/                   #   基础检查和 AI 审查工具
+│   ├── maintenance/             #   常驻容器维护和健康监控
+│   └── tests/                   #   控制面契约及恢复测试
 ├── .github/                     # GitHub 配置
 │   ├── workflows/ci_basic.yml   #   基础 CI（lint + 单元测试）
 │   └── ISSUE_TEMPLATE/          #   Issue 模板（Feature Request / Bug Report）
@@ -495,7 +496,7 @@ pytest tests/ -v
 
 [GitHub CI gateway](.github/workflows/ci-gateway.yml) 执行 PR 信息、Basic CI、API compatibility 和 Security Gate 前置检查，外部贡献者 PR 经人工审批后投递 Local CI。Codex 在对应 Triton 版本的常驻环境中自主组织构建、测试和架构审查，主机 broker 保存执行证据，GitHub 校验结果后回写状态。
 
-目标分支保护规则应要求 `local-ci/basic`、`local-ci/api`、`local-ci/security`、`local-ci/summary`。只有 Triton 3.0 支持后端、算子及性能检查；其他版本执行适用的前端检查。配置、部署与验收边界见 [Local CI 文档](scripts/local_ci/README.md)。
+目标分支保护规则应要求 `local-ci/basic`、`local-ci/api`、`local-ci/security`、`local-ci/summary`。前后端的构建、安装、测试和 smoke 可独立选用并遵守产物依赖；只有 Triton 3.0 支持后端、算子及性能检查。配置、部署与验收边界见 [CI 指南](docs/ci_guide_zh.md)。
 
 ## 10 参与贡献
 

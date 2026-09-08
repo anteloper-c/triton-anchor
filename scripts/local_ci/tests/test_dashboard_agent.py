@@ -11,7 +11,7 @@ from scripts.dashboard.sync_gitee_results import sync_dashboard
 
 
 def example_result():
-    return {'schema': 'triton-anchor-local-ci-result/v4', 'repository': 'anteloper-c/triton-anchor',
+    return {'schema': 'triton-anchor-local-ci-result', 'repository': 'anteloper-c/triton-anchor',
             'task_id': 'fixture-pr-42', 'run_id': 'fixture-run-1', 'task_ref': 'ci/pr-42/main',
             'pr_number': 42, 'event_kind': 'pull_request', 'target_branch': 'main',
             'tested_sha': 'a' * 40, 'base_sha': 'b' * 40, 'head_sha': 'c' * 40,
@@ -20,7 +20,7 @@ def example_result():
             'checks': [
                 {'id': 'environment', 'status': 'passed', 'required': True, 'reason': '界面样例：环境检查完成', 'evidence': ['command-0001']},
                 {'id': 'frontend_build', 'status': 'failed', 'required': True, 'reason': '界面样例：构建命令退出码 1，后续依赖检查未执行。', 'evidence': ['command-0002']},
-                {'id': 'wheel_install', 'status': 'skipped', 'required': True, 'reason': 'Frontend build 未完成。', 'evidence': []},
+                {'id': 'frontend_install', 'status': 'skipped', 'required': True, 'reason': 'Frontend build 未完成。', 'evidence': []},
                 {'id': 'frontend_smoke', 'status': 'skipped', 'required': True, 'reason': '没有可安装的候选 wheel。', 'evidence': []},
                 {'id': 'backend_smoke', 'status': 'not_applicable', 'required': False, 'reason': '此版本没有后端测试能力。', 'evidence': []},
                 {'id': 'architecture_review', 'status': 'passed', 'required': True, 'reason': '界面样例：架构证据展示。', 'evidence': []}],
@@ -35,7 +35,7 @@ def example_result():
                          {'id': 'command-0002', 'tool': 'frontend_build', 'argv': ['python', '-m', 'build', '--wheel'], 'cwd': '/workspace/source',
                           'returncode': 1, 'elapsed_seconds': 14.8, 'termination': None, 'log_path': 'logs/command-0002.log', 'log_sha256': '1' * 64}],
             'performance': [], 'policy': {'docs_only': False, 'manual_full': False, 'changed_paths': ['python/pipeline.py'],
-                                          'required': ['environment', 'frontend_build', 'wheel_install', 'frontend_smoke', 'architecture_review'],
+                                          'required': ['environment', 'frontend_build', 'frontend_install', 'frontend_smoke', 'architecture_review'],
                                           'reasons': {'frontend_build': '编译器变更最低要求'}}}
 
 
@@ -95,7 +95,7 @@ class DashboardAgentFeed(unittest.TestCase):
         self.assertTrue(feed['warnings'])
 
     def test_health_and_empty_result_feed_do_not_manufacture_passes(self):
-        self.write('health/server-1.json', {'schema': 'triton-anchor-local-ci-worker-health/v2',
+        self.write('health/server-1.json', {'schema': 'triton-anchor-local-ci-worker-health',
                    'worker_id': 'server-1', 'heartbeat_at': 10, 'state': 'degraded',
                    'issues': [{'code': 'poller_stale', 'message': 'Poller 心跳过期'}], 'workers': []})
         feed = self.sync()
@@ -103,7 +103,7 @@ class DashboardAgentFeed(unittest.TestCase):
         self.assertEqual(feed['workers'][0]['state'], 'degraded')
         self.assertEqual(feed['total_runs'], 0)
 
-    def test_legacy_entry_supports_v4_only_and_no_retired_runtime_import(self):
+    def test_legacy_entry_supports_task_results_only_and_no_retired_runtime_import(self):
         self.publish()
         sync_dashboard(self.root, self.output, 'ci/push/main', 'ci/full/main')
         self.assertEqual(len(json.loads((self.output / 'local-ci.json').read_text(encoding='utf-8'))['runs']), 1)

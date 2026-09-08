@@ -447,7 +447,7 @@ def write_reports(
     failed = sum(result.test_status == "失败" for result in results)
     timed_out = sum(result.test_status == "超时" for result in results)
     document = {
-        "schema": "triton-anchor-local-ci/flaggems-v1",
+        "schema": "triton-anchor-local-ci/flaggems",
         "mode": args.mode,
         "sample_size": args.sample_size,
         "seed": args.seed,

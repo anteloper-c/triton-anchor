@@ -16,7 +16,7 @@ import urllib.parse
 from receive_result import API
 
 
-MANAGED_NAME = "Local CI v4 mandatory checks"
+MANAGED_NAME = "Local CI mandatory checks"
 CONTEXTS = ("local-ci/basic", "local-ci/api", "local-ci/security", "local-ci/summary")
 
 
@@ -32,6 +32,37 @@ def ruleset_payload(branches: list[str], integration_id: int) -> dict:
             "required_status_checks": [{"context": name, "integration_id": integration_id} for name in CONTEXTS],
         }}],
     }
+
+
+def managed_rulesets(api, prefix: str, repository: str, existing: list, desired: dict) -> list:
+    """Identify an existing equivalent gate by structure, not protocol editions.
+
+    Display-name changes must not create a second mandatory ruleset. Only an
+    exact repository-owned gate, target set and check policy qualify for rename.
+    """
+    matches = []
+    for item in existing:
+        if item.get('source') != repository or item.get('target') != 'branch':
+            continue
+        if item.get('name') == MANAGED_NAME:
+            matches.append(item)
+            continue
+        detail = api.call('GET', f"{prefix}/rulesets/{item['id']}")
+        actual_refs = detail.get('conditions', {}).get('ref_name', {})
+        desired_refs = desired['conditions']['ref_name']
+        same_targets = (set(actual_refs.get('include', [])) == set(desired_refs['include'])
+                        and actual_refs.get('exclude', []) == desired_refs['exclude'])
+        actual_rules = detail.get('rules', [])
+        if (same_targets and detail.get('bypass_actors', []) == [] and len(actual_rules) == 1
+                and actual_rules[0].get('type') == 'required_status_checks'):
+            actual = dict(actual_rules[0].get('parameters', {}))
+            wanted = dict(desired['rules'][0]['parameters'])
+            check_key = lambda check: (check.get('context', ''), check.get('integration_id', 0))
+            actual['required_status_checks'] = sorted(actual.get('required_status_checks', []), key=check_key)
+            wanted['required_status_checks'] = sorted(wanted['required_status_checks'], key=check_key)
+            if actual == wanted:
+                matches.append(item)
+    return matches
 
 
 def main(argv=None):
@@ -58,7 +89,7 @@ def main(argv=None):
     application = api.call("GET", "apps/github-actions")
     rule = ruleset_payload(list(dict.fromkeys(args.branch)), application["id"])
     existing = api.call("GET", f"{prefix}/rulesets?includes_parents=false&per_page=100")
-    matches = [item for item in existing if item.get("name") == MANAGED_NAME and item.get("source") == args.repository]
+    matches = managed_rulesets(api, prefix, args.repository, existing, rule)
     if len(matches) > 1:
         raise ValueError("Duplicate managed rulesets need explicit cleanup")
     environment_path = f"{prefix}/environments/{urllib.parse.quote(args.environment, safe='')}"

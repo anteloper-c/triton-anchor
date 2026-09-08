@@ -369,7 +369,12 @@ class Engine:
                       'credentials and retries publication; no build/test tools are available now.')
             command = [settings.get('bin', 'codex'), 'exec', 'resume', '--json', '--ignore-user-config',
                        '--skip-git-repo-check', '-c', 'approval_policy="never"', '-c', 'sandbox_mode="danger-full-access"',
-                       session_id, prompt]
+                       ]
+            if settings.get('model'):
+                command += ['-m', settings['model']]
+            if settings.get('reasoning_effort'):
+                command += ['-c', 'model_reasoning_effort=' + json.dumps(settings['reasoning_effort'])]
+            command += [session_id, prompt]
             spec = {'id': task['task_id'] + '-publish', 'argv': command, 'cwd': container_dir, 'env': {}}
             encoded = base64.urlsafe_b64encode(json.dumps(spec).encode()).decode()
             env = os.environ.copy()

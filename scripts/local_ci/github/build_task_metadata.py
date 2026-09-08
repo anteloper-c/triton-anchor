@@ -19,7 +19,7 @@ def build_metadata(values: dict, pull: dict | None = None) -> dict:
     number = int(values.get("PR_NUMBER") or 0)
     is_pr = number > 0
     result = {
-        "schema": "triton-anchor-local-ci-task-metadata/v2",
+        "schema": "triton-anchor-local-ci-task-metadata",
         "repository": repository, "event_kind": "pull_request" if is_pr else "push",
         "execution_mode": "ai", "pr_number": number,
         "task_ref": values["TASK_REF"], "base_task_ref": values.get("BASE_TASK_REF", ""),

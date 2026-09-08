@@ -88,7 +88,7 @@ def compare(
         )
 
     return {
-        "schema": "triton-anchor-compile-time-comparison/v1",
+        "schema": "triton-anchor-compile-time-comparison",
         "status": "warning" if warnings else "pass",
         "base_sha": base_sha,
         "candidate_sha": candidate_sha,

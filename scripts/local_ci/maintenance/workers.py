@@ -148,7 +148,7 @@ class WorkerManager:
         if saved.get("configured_revision") != self._configured_revision(configured_profile):
             return selected
         revision = saved.get("llvm_revision")
-        if (saved.get("schema_version") != "triton-anchor-local-ci-environment-selection/v1"
+        if (saved.get("schema") != "triton-anchor-local-ci-environment-selection"
                 or saved.get("profile_id") != configured_profile["id"]
                 or not isinstance(revision, str)
                 or (not re.fullmatch(r"[0-9a-f]{40}", revision)
@@ -179,7 +179,7 @@ class WorkerManager:
             raise WorkerError("selection may only change the LLVM revision and selection evidence")
         with self._lock(configured_profile):
             atomic_json(self.root / (self._key(configured_profile) + ".selection.json"), {
-                "schema_version": "triton-anchor-local-ci-environment-selection/v1",
+                "schema": "triton-anchor-local-ci-environment-selection",
                 "profile_id": configured_profile["id"],
                 "configured_revision": self._configured_revision(configured_profile),
                 "llvm_revision": revision, "llvm_selection": metadata,

@@ -1,5 +1,5 @@
 {
-  "schema": "triton-anchor-backend-status-list/v1",
+  "schema": "triton-anchor-backend-status-list",
   "data_mode": "mock",
   "backends": [
     {

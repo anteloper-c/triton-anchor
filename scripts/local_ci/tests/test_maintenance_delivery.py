@@ -23,7 +23,7 @@ def git(path, *args):
 
 
 def snapshot(now=None):
-    return {'schema': 'triton-anchor-local-ci-worker-health/v2', 'worker_id': 'acceptance-worker',
+    return {'schema': 'triton-anchor-local-ci-worker-health', 'worker_id': 'acceptance-worker',
             'heartbeat_at': now or time.time(), 'state': 'degraded', 'workers': [],
             'issues': [{'code': 'poller_stale', 'message': '本机故障注入：Poller 心跳过期。'}]}
 

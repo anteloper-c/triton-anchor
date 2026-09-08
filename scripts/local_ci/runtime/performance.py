@@ -53,7 +53,7 @@ def _published_candidates(config, identity, task):
             execution = read_json(evidence_path(result_path.parent, "execution.json"))
             environment = result.get("environment", {})
             if (execution.get("phase") != "published" or result.get("conclusion") != "success"
-                    or result.get("schema") != "triton-anchor-local-ci-result/v4"
+                    or result.get("schema") != "triton-anchor-local-ci-result"
                     or result.get("tested_sha") != identity["base_sha"]
                     or environment.get("profile_id") != identity["profile_id"]
                     or environment.get("llvm_revision") != identity["llvm_revision"]

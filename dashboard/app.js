@@ -191,7 +191,7 @@ async function fetchLiveWorkerHealth() {
     throw new Error("Gitee worker health response is invalid");
   }
   const document = JSON.parse(decodeBase64Utf8(response.content));
-  if (document.schema !== "triton-anchor-local-ci-worker-health/v1") {
+  if (document.schema !== "triton-anchor-local-ci-worker-health") {
     throw new Error("Worker health snapshot schema is invalid");
   }
   return document;

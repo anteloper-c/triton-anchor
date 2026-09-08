@@ -16,15 +16,20 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-BACKEND_TOOLS = frozenset({"backend_rebuild", "backend_smoke", "flaggems", "compile_time", "pass_profile", "ir_serialization"})
+BACKEND_TOOLS = frozenset({"backend_build", "backend_install", "backend_tests", "backend_smoke",
+                           "flaggems", "compile_time", "pass_profile", "ir_serialization"})
 DEPENDENCIES = {
     "environment": [], "frontend_build": ["environment"],
-    "wheel_install": ["frontend_build"], "frontend_smoke": ["wheel_install"],
-    "backend_rebuild": ["wheel_install"], "backend_smoke": ["backend_rebuild"],
+    "frontend_install": ["frontend_build"], "frontend_tests": ["frontend_install"],
+    "frontend_smoke": ["frontend_install"],
+    "backend_build": ["environment"], "backend_install": ["backend_build", "frontend_install"],
+    "backend_tests": ["frontend_install", "backend_install"],
+    "backend_smoke": ["frontend_install", "backend_install"],
     "flaggems": ["backend_smoke"], "compile_time": ["backend_smoke"],
     "pass_profile": ["backend_smoke"], "ir_serialization": ["backend_smoke"],
 }
 TOOL_IDS = tuple(DEPENDENCIES)
+MINIMUM_FRONTEND = ("environment", "frontend_build", "frontend_install", "frontend_smoke")
 
 
 def bounded(value: Any, name: str, low: int, high: int) -> int:
@@ -36,6 +41,33 @@ def bounded(value: Any, name: str, low: int, high: int) -> int:
 def path_join(root: str, *parts: str) -> str:
     # Plans run on the controller but normally describe Linux container paths.
     return str(PurePosixPath(root).joinpath(*parts)) if root.startswith("/") else str(Path(root).joinpath(*parts))
+
+
+def test_selection(tool_id: str, config: dict[str, Any], parameters: dict[str, Any]) -> list[str]:
+    """Select pytest nodes only inside the trusted profile's test roots."""
+    key = "frontend_test_paths" if tool_id == "frontend_tests" else "backend_test_paths"
+    roots = config.get(key, ["python/triton_anchor/tests"] if tool_id == "frontend_tests" else None)
+
+    def relative(value: Any, node: bool = False) -> PurePosixPath:
+        if not isinstance(value, str) or not value or len(value) > 2048 or any(c in value for c in "\\\n\r\x00"):
+            raise ValueError("Test selections must be relative paths or pytest node IDs")
+        filename = value.split("::", 1)[0] if node else value
+        path = PurePosixPath(filename)
+        if not filename or path.is_absolute() or ".." in path.parts or ":" in filename or filename.startswith("-"):
+            raise ValueError("Test paths must stay within their trusted roots")
+        return path
+
+    if not isinstance(roots, list) or not roots or len(roots) > 100:
+        raise ValueError(f"profile.tools.{key} must configure nonempty real test paths")
+    allowed = [relative(value) for value in roots]
+    selected = parameters.get("paths", roots)
+    if not isinstance(selected, list) or not selected or len(selected) > 100:
+        raise ValueError("paths must select 1..100 test paths or pytest node IDs")
+    for value in selected:
+        path = relative(value, node=True)
+        if not any(path == root or root in path.parents for root in allowed):
+            raise ValueError("Test selection is outside the profile's trusted test roots")
+    return list(dict.fromkeys(selected))
 
 
 def plan(tool_id: str, context: dict[str, Any], parameters: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -54,7 +86,9 @@ def plan(tool_id: str, context: dict[str, Any], parameters: dict[str, Any] | Non
     if tool_id in BACKEND_TOOLS and not re.fullmatch(r"3\.0(?:\.\d+)?", context["triton_version"]):
         result.update(status="not_applicable", reason="仅 Triton 3.0 环境部署了后端、算子及性能测试能力。")
         return result
-    allowed = {"jobs", "build_mode"} if tool_id in {"frontend_build", "backend_rebuild"} else set()
+    allowed = {"jobs", "build_mode"} if tool_id in {"frontend_build", "backend_build"} else set()
+    if tool_id in {"frontend_tests", "backend_tests"}:
+        allowed = {"paths", "keyword"}
     if tool_id == "flaggems":
         allowed = {"mode", "ops", "categories"}
     if tool_id in {"compile_time", "pass_profile", "ir_serialization"}:
@@ -91,7 +125,10 @@ def plan(tool_id: str, context: dict[str, Any], parameters: dict[str, Any] | Non
         env.update(MAX_JOBS=str(jobs), CMAKE_BUILD_PARALLEL_LEVEL=str(jobs), NINJAFLAGS=f"-j{jobs}")
 
     def add(argv: list[str], cwd: str | None = None, timeout: int = 300) -> None:
-        for script in reversed(config.get("env_scripts", [])):
+        scripts = list(config.get("env_scripts", []))
+        if tool_id in BACKEND_TOOLS:
+            scripts += config.get("backend_env_scripts", [])
+        for script in reversed(scripts):
             argv = ["bash", path_join(root, "basic_tools", "env_exec.sh"), script["path"],
                     *script.get("args", []), "--", *argv]
         result["commands"].append({"argv": argv, "cwd": cwd or source, "env": env.copy(), "timeout": timeout})
@@ -110,20 +147,37 @@ def plan(tool_id: str, context: dict[str, Any], parameters: dict[str, Any] | Non
     action("preflight")
     if tool_id == "environment":
         action("environment")
-    elif tool_id in {"frontend_build", "backend_rebuild"}:
+    elif tool_id in {"frontend_build", "backend_build"}:
         build_source = source if tool_id == "frontend_build" else config.get("backend_dir")
         if not build_source:
             raise ValueError("profile.tools.backend_dir is required")
         action("prepare_build", {"build_source": build_source})
         add([py, "-m", "build", "--wheel", "--no-isolation", "--outdir", path_join(out, "wheels"), build_source], build_source, 7200)
         action("record_wheel")
-        if tool_id == "backend_rebuild":
-            action("install_wheel", timeout=1200)
-            action("backend_discovery")
-    elif tool_id == "wheel_install":
+    elif tool_id in {"frontend_install", "backend_install"}:
         action("install_wheel", timeout=1200)
-        # -I prevents candidate source/PYTHONPATH from shadowing the installed wheel.
-        add([py, "-I", "-c", "import triton_anchor; print(triton_anchor.__file__); print(getattr(triton_anchor, '__version__', 'unknown'))"], out)
+        if tool_id == "frontend_install":
+            # -I prevents candidate source/PYTHONPATH from shadowing the installed wheel.
+            add([py, "-I", "-c", "import triton_anchor; print(triton_anchor.__file__); print(getattr(triton_anchor, '__version__', 'unknown'))"], out)
+        else:
+            action("backend_discovery", cwd=out)
+    elif tool_id in {"frontend_tests", "backend_tests"}:
+        test_source = source if tool_id == "frontend_tests" else config.get("backend_dir")
+        if not test_source:
+            raise ValueError("profile.tools.backend_dir is required")
+        selected = test_selection(tool_id, config, params)
+        keyword = params.get("keyword", "")
+        if not isinstance(keyword, str) or len(keyword) > 300 or any(c in keyword for c in "\n\r\x00"):
+            raise ValueError("keyword must be a pytest expression of at most 300 characters")
+        action("prepare_tests", {"test_source": test_source, "test_paths": selected})
+        argv = [py, "-I", "-m", "pytest", "-q", "-o", "addopts=", "--import-mode=importlib",
+                "--rootdir", test_source, "--junitxml", path_join(out, "tests.xml")]
+        if keyword:
+            argv += ["-k", keyword]
+        argv += [path_join(test_source, value) for value in selected]
+        env["PYTEST_ADDOPTS"] = ""
+        add(argv, out, 3600)
+        action("test_results", {"test_source": test_source, "test_paths": selected}, cwd=out)
     elif tool_id == "frontend_smoke":
         add([py, "-I", path_join(source, "tests", "test_smoke.py")], out, 900)
         action("smoke_success")

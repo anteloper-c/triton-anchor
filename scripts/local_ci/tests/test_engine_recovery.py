@@ -31,7 +31,7 @@ class PublicationRecoveryTests(unittest.TestCase):
         git(self.seed, "commit", "-m", "source fixture")
         sha = git(self.seed, "rev-parse", "HEAD")
         git(self.seed, "remote", "add", "origin", str(self.remote))
-        self.task = {"schema": "triton-anchor-local-ci-task-metadata/v2", "repository": "anteloper-c/triton-anchor",
+        self.task = {"schema": "triton-anchor-local-ci-task-metadata", "repository": "anteloper-c/triton-anchor",
                      "task_id": "recovery-task", "task_ref": "ci/push/main", "event_kind": "push", "pr_number": 0,
                      "target_branch": "main", "target_sha": sha, "tested_sha": sha, "head_sha": sha,
                      "base_sha": sha, "worker_revision_sha": sha, "captured_at": "2026-09-08T10:00:00Z"}
@@ -52,7 +52,7 @@ class PublicationRecoveryTests(unittest.TestCase):
         task_id = task_id or self.task["task_id"]
         output = Path(self.config["state_dir"]) / "runs" / task_id / run_id
         output.mkdir(parents=True)
-        result = {"schema": "triton-anchor-local-ci-result/v4", "task_id": task_id, "run_id": run_id,
+        result = {"schema": "triton-anchor-local-ci-result", "task_id": task_id, "run_id": run_id,
                   "tested_sha": self.task["tested_sha"], "conclusion": "success", "evidence": []}
         write_json(output / "result.json", result)
         (output / "report.md").write_text("Preserved, already-completed test result\n")

@@ -1,13 +1,9 @@
 """Minimum coverage is trusted policy; the agent chooses ordering and additions."""
 from __future__ import annotations
 
-import fnmatch
 import re
 
-TOOLS = ('environment', 'frontend_build', 'wheel_install', 'frontend_smoke',
-         'backend_rebuild', 'backend_smoke', 'flaggems', 'compile_time',
-         'pass_profile', 'ir_serialization')
-BACKEND_TOOLS = TOOLS[4:]
+from tools.basic_tools.runner import BACKEND_TOOLS, MINIMUM_FRONTEND, TOOL_IDS as TOOLS
 SHA = re.compile(r'[0-9a-f]{40}')
 IDENTITY_FIELDS = ('repository', 'task_id', 'task_ref', 'event_kind', 'pr_number',
                    'target_branch', 'tested_sha', 'base_sha', 'head_sha',
@@ -15,7 +11,7 @@ IDENTITY_FIELDS = ('repository', 'task_id', 'task_ref', 'event_kind', 'pr_number
 
 
 def validate_task(task, repository='anteloper-c/triton-anchor'):
-    if task.get('schema') != 'triton-anchor-local-ci-task-metadata/v2':
+    if task.get('schema') != 'triton-anchor-local-ci-task-metadata':
         raise ValueError('unsupported task schema')
     if task.get('repository') != repository or repository == 'RACE-org/triton-anchor':
         raise ValueError('task repository is not authorized')
@@ -49,7 +45,7 @@ def validate_task(task, repository='anteloper-c/triton-anchor'):
 def minimum_checks(changed_paths, profile, manual_full=False):
     """Conservative floor. Documentation allowlist excludes executable config."""
     paths = list(changed_paths)
-    supported = list(TOOLS if profile['triton_version'] == '3.0' else TOOLS[:4])
+    supported = [tool for tool in TOOLS if tool not in BACKEND_TOOLS or re.fullmatch(r'3\.0(?:\.\d+)?', profile['triton_version'])]
     docs = bool(paths) and all(
         (p.startswith('docs/') and p.lower().endswith(('.md', '.rst', '.txt', '.png', '.svg', '.jpg')))
         or ('/' not in p and p.lower().endswith(('.md', '.rst')))
@@ -60,8 +56,11 @@ def minimum_checks(changed_paths, profile, manual_full=False):
     unknown = not paths or any(not p.startswith(known) and p not in packaging for p in paths)
     compiler = any(p.startswith(('python/', 'csrc/', 'include/', 'tests/')) or p in packaging for p in paths)
     control_only = bool(paths) and all(p.startswith(('.github/', 'scripts/local_ci/', 'scripts/dashboard/', 'dashboard/')) for p in paths)
-    required = [] if docs else ['environment'] if control_only else list(TOOLS[:4])
+    required = [] if docs else ['environment'] if control_only else list(MINIMUM_FRONTEND)
     reasons = {t: 'minimum frontend coverage' for t in required}
+    if not docs and compiler:
+        required.append('frontend_tests')
+        reasons['frontend_tests'] = 'frontend code or test behavior changed'
     deep_compiler = any(p.startswith(('csrc/', 'include/', 'triton/')) or
                         p in ('CMakeLists.txt', '.gitmodules', 'envsetup.sh') or
                         any(part in p.lower() for part in ('lowering', 'pipeline', 'adapter', 'hwcapability', 'jit', 'cache')) for p in paths)
