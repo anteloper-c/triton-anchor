@@ -51,7 +51,7 @@ Codex 使用受信主机配置的 `gpt-5.5` 模型和 `high` 推理强度。其�
 
 ## 查看与触发任务
 
-PR 的四项必要检查是 `local-ci/basic`、`local-ci/api`、`local-ci/security`、`local-ci/summary`。仓库分支保护必须实际要求这些检查；工作流文件存在并不等于门禁已启用。其他既有必要检查按仓库保护规则保留。
+PR 的四项必要检查是 `local-ci/basic`、`local-ci/api`、`local-ci/security`、`local-ci/summary`。普通 push 和手动 full 分别写入 `local-ci/summary/push`、`local-ci/summary/full`，包括等待、失败与结果续跑；即使与 PR 使用同一提交，也不能覆盖 PR 门禁。仓库分支保护必须实际要求这些检查；工作流文件存在并不等于门禁已启用。其他既有必要检查按仓库保护规则保留。
 
 自动 PR 和 push 任务由 GitHub 工作流投递。手动验证从 `main` 的 `ci-gateway.yml` 入口选择 `mode=push`、`source_branch=<目标分支>`，需要固定提交时填写 `requested_sha`；FlagGems 全量另设 `flaggems_mode=full`。不要在 Gitee 手工伪造 task metadata。手动入口仍校验权限、提交身份和环境能力。
 

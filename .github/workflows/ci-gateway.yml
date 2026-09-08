@@ -151,7 +151,7 @@ jobs:
       - name: Cancel obsolete Local CI work
         uses: actions/github-script@v7
         env:
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const pull = context.payload.pull_request;
@@ -354,7 +354,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           MANUAL_PR_NUMBER: ${{ inputs.pr_number }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -578,7 +578,7 @@ jobs:
           BASE_REF: ${{ needs.prepare-route.outputs.base_ref }}
           AUTHORIZATION_SOURCE: ${{ needs.prepare-route.outputs.authorization_source }}
           RUN_TITLE: ${{ needs.prepare-route.outputs.run_title }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -848,7 +848,7 @@ jobs:
           REQUESTED_BRANCH: ${{ inputs.source_branch }}
           REQUESTED_SHA: ${{ inputs.requested_sha }}
           FLAGGEMS_MODE: ${{ inputs.flaggems_mode || 'sample' }}
-          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: ${{ inputs.flaggems_mode == 'full' && 'local-ci/summary/full' || 'local-ci/summary/push' }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -856,7 +856,7 @@ jobs:
             const sourceBranch = process.env.REQUESTED_BRANCH.trim();
             const requestedSha = process.env.REQUESTED_SHA.trim();
             const flaggemsMode = process.env.FLAGGEMS_MODE;
-            const statusContext = process.env.STATUS_CONTEXT + (flaggemsMode === 'full' ? '/full' : '');
+            const statusContext = process.env.STATUS_CONTEXT;
             const fallbackRef = process.env.FALLBACK_WORKER_BRANCH.trim();
             const requiredCapabilities = ['cross-branch-push', 'dispatch', 'receive'];
             const requiredPaths = [
@@ -1050,7 +1050,7 @@ jobs:
         env:
           HEAD_SHA: ${{ needs.prepare-route.outputs.head_sha }}
           TESTED_SHA: ${{ needs.prepare-route.outputs.tested_sha }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const targetUrl =
@@ -1112,7 +1112,7 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           WORKFLOW_SHA: ${{ github.sha }}
           INPUT_RUN_TITLE: ${{ inputs.run_title }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -1444,7 +1444,7 @@ jobs:
           COMPARISON_BASE_SHA: ${{ needs.validate-dispatch.outputs.comparison_base_sha }}
           TESTED_SHA: ${{ needs.validate-dispatch.outputs.tested_sha }}
           BASE_REF: ${{ needs.validate-dispatch.outputs.base_ref }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -1553,7 +1553,7 @@ jobs:
         env:
           SHA: ${{ inputs.tested_sha }}
           HEAD_SHA: ${{ inputs.expected_head_sha }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const shaPattern = /^[0-9a-f]{40}$/i;
@@ -1613,7 +1613,7 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           WORKFLOW_SHA: ${{ github.sha }}
           INPUT_RUN_TITLE: ${{ inputs.run_title }}
-          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: ${{ inputs.flaggems_mode == 'full' && 'local-ci/summary/full' || 'local-ci/summary/push' }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -1765,7 +1765,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           SHA: ${{ inputs.tested_sha }}
-          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: ${{ inputs.flaggems_mode == 'full' && 'local-ci/summary/full' || 'local-ci/summary/push' }}
         with:
           script: |
             const shaPattern = /^[0-9a-f]{40}$/i;
@@ -1811,7 +1811,7 @@ jobs:
           TARGET_REF: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
           WORKFLOW_SHA: ${{ github.sha }}
-          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: ${{ startsWith(inputs.task_ref, 'ci/pr-') && 'local-ci/summary' || (startsWith(inputs.task_ref, 'ci/full/') && 'local-ci/summary/full' || 'local-ci/summary/push') }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -1831,6 +1831,7 @@ jobs:
                 description: description.slice(0, 140),
               });
               if (
+                process.env.TASK_REF.startsWith(`ci/pr-${process.env.PR_NUMBER}/`) &&
                 /^[1-9][0-9]*$/.test(process.env.PR_NUMBER) &&
                 shaPattern.test(process.env.EXPECTED_HEAD_SHA)
               ) {
@@ -1874,6 +1875,10 @@ jobs:
                 (prMatch && prMatch[2] === process.env.SOURCE_BRANCH);
               if (!taskMatchesSource) {
                 throw new Error('task_ref does not match source_branch');
+              }
+
+              if (!prMatch && process.env.PR_NUMBER !== '') {
+                throw new Error('Branch receiver must not claim a PR identity');
               }
 
               if (prMatch) {
@@ -1957,7 +1962,7 @@ jobs:
       target_branch: ${{ inputs.target_branch }}
       task_ref: ${{ inputs.task_ref }}
       task_id: ${{ inputs.task_id }}
-      context: ${{ inputs.context }}
+      context: ${{ startsWith(inputs.task_ref, 'ci/pr-') && 'local-ci/summary' || (startsWith(inputs.task_ref, 'ci/full/') && 'local-ci/summary/full' || 'local-ci/summary/push') }}
       attempt: ${{ inputs.attempt }}
       started_at: ${{ inputs.started_at }}
       wait_seconds: ${{ inputs.wait_seconds }}

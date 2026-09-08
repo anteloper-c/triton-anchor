@@ -268,7 +268,28 @@ def output(name: str, value):
             stream.write(f"{name}={text}\n")
 
 
-def publish(api: API, expected: dict, result: dict, state: str, target_url: str, context: str):
+def summary_context(expected: dict, requested: str = "") -> str:
+    """Keep branch results off the required PR context, including on the same SHA."""
+    task_ref = expected["task_ref"]
+    if expected["event_kind"] == "pull_request":
+        prefix = f"ci/pr-{expected['pr_number']}/"
+        if not expected["pr_number"] or not task_ref.startswith(prefix) or task_ref == prefix:
+            raise ValueError("PR task reference does not match its identity")
+        context = "local-ci/summary"
+    elif expected["event_kind"] == "push" and not expected["pr_number"]:
+        match = re.fullmatch(r"ci/(push|full)/.+", task_ref)
+        if not match:
+            raise ValueError("Branch task requires a push or full task reference")
+        context = f"local-ci/summary/{match[1]}"
+    else:
+        raise ValueError("Unsupported task event or inconsistent PR identity")
+    if requested and requested != context:
+        raise ValueError("Status context does not match the task event")
+    return context
+
+
+def publish(api: API, expected: dict, result: dict, state: str, target_url: str, context: str = ""):
+    context = summary_context(expected, context)
     validate_current(api, expected)
     prefix = f"repos/{expected['repository']}"
     status = {"state": state, "context": context, "description": f"Local CI {result['conclusion']}: {expected['tested_sha'][:12]}", "target_url": target_url}
@@ -304,7 +325,7 @@ def main(argv=None) -> int:
     parser.add_argument("--pr-number", default="")
     parser.add_argument("--expected-head-sha", default="")
     parser.add_argument("--comparison-base-sha", default="")
-    parser.add_argument("--context", default="local-ci/summary")
+    parser.add_argument("--context", default="")
     parser.add_argument("--timeout-seconds", type=int, default=300)
     parser.add_argument("--poll-interval-seconds", type=int, default=30)
     parser.add_argument("--github-api", default="https://api.github.com")
@@ -321,6 +342,10 @@ def main(argv=None) -> int:
                     worker_revision_sha=args.worker_revision_sha)
     if not all(SHA.fullmatch(expected[k]) for k in ("tested_sha", "head_sha", "worker_revision_sha")):
         parser.error("Task identity requires full commit SHAs")
+    try:
+        args.context = summary_context(expected, args.context)
+    except ValueError as exc:
+        parser.error(str(exc))
     github = API(args.github_api, os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN", ""))
     gitee = API(args.gitee_api, os.environ.get("GITEE_TOKEN", ""), gitee=True)
     metadata_ref = "ci/meta/" + args.task_ref.removeprefix("ci/")

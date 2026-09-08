@@ -26,6 +26,7 @@ def plan(context):
     argv = (['/opt/ci-venv/bin/python', '-I',
              '/opt/anchor-ci/runtime/control_plane.py', '--source', context['source_dir']]
             if router else [context['python_bin'], '-m', 'pytest', '-q',
+                            '-o', 'pythonpath=' + context['source_dir'],
                             'scripts/local_ci/tests', 'scripts/ci/tests'])
     return {'status': 'ready', 'commands': [
         {'argv': argv, 'cwd': context['source_dir'], 'env': {}, 'timeout': 900}]}

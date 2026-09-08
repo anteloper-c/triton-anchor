@@ -87,7 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+      CONTEXT: ${{ inputs.pr_number != '' && 'local-ci/summary' || (inputs.flaggems_mode == 'full' && 'local-ci/summary/full' || 'local-ci/summary/push') }}
       GITEE_CI_OWNER: ${{ vars.GITEE_RESULTS_OWNER || 'heron-mc' }}
       GITEE_CI_REPO: ${{ vars.GITEE_RESULTS_REPO }}
       GITEE_CI_REPO_URL: ${{ vars.GITEE_RESULTS_REPO_URL }}
@@ -165,7 +165,7 @@ jobs:
             task_ref="ci/full/${HEAD_REF}"
             base_task_ref=""; head_task_ref=""; metadata_ref="ci/meta/full/${HEAD_REF}"
             fetch_ref="refs/heads/${HEAD_REF}"; base_fetch_ref=""; head_fetch_ref=""
-            context="${CONTEXT}/full"
+            context="${CONTEXT}"
           else
             task_ref="ci/push/${HEAD_REF}"
             base_task_ref=""; head_task_ref=""; metadata_ref="ci/meta/push/${HEAD_REF}"
