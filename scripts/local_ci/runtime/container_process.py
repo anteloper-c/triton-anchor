@@ -6,6 +6,8 @@ clean-users as uid 0 after a task; it takes no PR-controlled user identifiers.
 """
 import argparse
 import base64
+import contextlib
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -64,6 +66,50 @@ def atomic_pidfile(path, value):
         Path(name).unlink(missing_ok=True)
 
 
+def metadata_exists(path):
+    """Only direct regular files owned by this execution UID are metadata."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+        raise RuntimeError('unsafe process metadata ownership/type/permissions')
+    return True
+
+
+def spec_digest(spec):
+    """Fence an exact invocation; a recovered invocation may reuse its task ID."""
+    return hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(',', ':'),
+                                     ensure_ascii=False).encode('utf-8')).hexdigest()
+
+
+@contextlib.contextmanager
+def registration_lock(root, ident):
+    """Serialize spawn/registration with stop, without an unbounded flock wait."""
+    import fcntl
+    path = root / (ident + '.lock')
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise RuntimeError('unsafe process lock ownership/type/permissions')
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('process registration lock timed out; retain task for recovery')
+                time.sleep(0.01)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def group_members(pgid):
     return [p for p in processes() if p['pgrp'] == pgid and p['uid'] == os.geteuid()]
 
@@ -112,7 +158,13 @@ def clean_users():
                     if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != uid:
                         raise RuntimeError('unsafe process directory during recovery')
                     for item in folder.glob('*.json'):
+                        entry = item.lstat()
+                        if not stat.S_ISREG(entry.st_mode) or entry.st_uid != uid:
+                            raise RuntimeError('unsafe process metadata during recovery')
                         item.unlink()
+                    # Keep cancellation fences and lock inodes until the daily
+                    # container replacement: a delayed exec must not start after
+                    # cleanup merely because its PID had not existed yet.
                 print(json.dumps({'status': 'clean', 'users': sorted(users)}))
                 return 0
             for old in members:
@@ -143,9 +195,10 @@ def validate_spec(spec):
 
 def run(spec):
     validate_spec(spec)
-    pidfile = process_directory() / (spec['id'] + '.json')
-    if pidfile.exists():
-        raise RuntimeError('process identity already registered; stop/recover it before retry')
+    root = process_directory()
+    pidfile = root / (spec['id'] + '.json')
+    fingerprint = spec_digest(spec)
+    cancelled = root / (fingerprint + '.cancelled')
     env = os.environ.copy()
     env.update(spec.get('env', {}))
     proc = None
@@ -156,11 +209,17 @@ def run(spec):
 
     previous = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
-        proc = subprocess.Popen(spec['argv'], cwd=spec['cwd'], env=env, start_new_session=True)
-        identity = process_info(proc.pid)
-        if identity is None:
-            raise RuntimeError('child process identity unavailable')
-        atomic_pidfile(pidfile, identity)
+        with registration_lock(root, spec['id']):
+            if metadata_exists(cancelled):
+                raise InterruptedError('process was cancelled before launcher registration')
+            if metadata_exists(pidfile):
+                raise RuntimeError('process identity already registered; stop/recover it before retry')
+            proc = subprocess.Popen(spec['argv'], cwd=spec['cwd'], env=env, start_new_session=True)
+            identity = process_info(proc.pid)
+            if identity is None:
+                raise RuntimeError('child process identity unavailable')
+            identity['spec_sha256'] = fingerprint
+            atomic_pidfile(pidfile, identity)
         return proc.wait()
     finally:
         for sig in previous:
@@ -176,7 +235,9 @@ def run(spec):
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=3)
-            pidfile.unlink(missing_ok=True)
+                with registration_lock(root, spec['id']):
+                    if metadata_exists(pidfile):
+                        pidfile.unlink()
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
@@ -197,11 +258,17 @@ def main(argv=None):
     validate_spec(spec)
     if args.operation == 'run':
         return run(spec)
-    pidfile = process_directory() / (spec['id'] + '.json')
-    if pidfile.exists():
-        if pidfile.is_symlink():
-            raise RuntimeError('unsafe pidfile symlink')
-        stop_group(json.loads(pidfile.read_text(encoding='utf-8')))
+    root = process_directory()
+    pidfile = root / (spec['id'] + '.json')
+    fingerprint = spec_digest(spec)
+    cancelled = root / (fingerprint + '.cancelled')
+    with registration_lock(root, spec['id']):
+        if not metadata_exists(cancelled):
+            atomic_pidfile(cancelled, {'cancelled_at': time.time()})
+        if metadata_exists(pidfile):
+            identity = json.loads(pidfile.read_text(encoding='utf-8'))
+            if identity.get('spec_sha256') == fingerprint:
+                stop_group(identity)
     return 0
 
 
