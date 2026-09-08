@@ -49,3 +49,18 @@
 | 同步文档与验收 | 更新唯一 Skill、当前说明、配置预检、迁移 v2 与回滚材料；完整 8 套 472 项通过，Ruff F/E9、Python/shell 语法、Skill 校验与差异检查通过。见 [单向交付报告](ci_oneway_verification/verification.md) 和 [覆盖说明](ci_oneway_verification/coverage.md)。 |
 
 本轮代码、文档和验收材料在同一 CI_dev 本地提交中记录，用 `git log -1 -- docs/ci_oneway_verification/coverage.md` 定位。没有推送、服务器部署、真实模型调用、真实后端编译或邮件发送。此前两版验收作为历史记录保留，回执相关内容不再代表当前实现。
+
+## 2026-09-08：落实常驻容器收尾与任务目录回收
+
+依据：用户要求落实任务后进程清理、证据封存、工作目录回收、环境复用检查和失败隔离。基于 CI_dev `8fe195545b50b16f7c420741b30c1e112da78f63`；main 无改动。
+
+| 要求 | 变更与证据 |
+| --- | --- |
+| 避免 venv/构建目录堆积 | 新增 TaskWorkspaces 与持久目录状态；成功任务封存后回收，失败默认 24 小时/100 GiB 逻辑预算，活动目录受保护。上传只用 outbox。 |
+| 真实清理与复用检查 | 专用 UID、no_new_privs、pidfd 回收与复查；dirty → 共享文件/公共目录/设备检查 → 可复用，失败隔离并核验容器停止。时限由可信配置控制。 |
+| 证据与恢复不丢失 | 优先引用封存证据，必要归档逐文件和目录 fsync 后释放租约；中断日志补登记，旧目录/租约恢复，删除前使通过记录失效；同配方换代必须重验。 |
+| 生命周期与并发 | 封存启动后禁新执行；收尾检查纳入结果；续跑与 Worker 共用 poll.lock，资源回收与环境轮换共用资源锁。只发布阶段不重建、不调用模型。 |
+| 部署与运维 | 增加配置预检、目录/代际健康与既有 Dashboard 摘要、异常去重/重试/恢复通知；回滚需匹配 state 与工作区快照。GitHub workflow、main 及发布顺序未改。 |
+| 验证 | 完整 8 套 532 项通过（相较上轮新增 60 项）；Python/shell 语法、Ruff F/E9、差异检查通过。见 [验收报告](ci_cleanup_verification/verification.md) 和 [覆盖对应](ci_cleanup_verification/coverage.md)。验收后仅补充部署 README 的回滚说明，交付摘要单独记录。 |
+
+本轮变更与报告在同一 CI_dev 本地提交中保存，可用 `git log -1 -- docs/ci_cleanup_verification/coverage.md` 定位。模拟运行真实控制、状态、文件和 Linux 子进程逻辑；未运行真实 Docker、LLVM/后端、厂商设备、公司模型、邮件或线上验收，也未推送或部署服务器。

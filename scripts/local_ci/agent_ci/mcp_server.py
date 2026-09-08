@@ -107,7 +107,12 @@ def validate_arguments(method: str, arguments: dict) -> None:
 def call(method: str, arguments: dict) -> dict:
     validate_arguments(method, arguments)
     with socket.socket(socket.AF_UNIX) as client:
-        client.settimeout(60)
+        # finish includes bounded process/device/dependency verification. Other
+        # tools retain their short RPC deadline; the model cannot choose either.
+        timeout = int(os.environ.get("LOCAL_CI_FINISH_TIMEOUT_SECONDS", "3240")) if method == "finish" else 60
+        if not 1 <= timeout <= 86400:
+            raise ArgumentValidationError("Invalid trusted RPC deadline")
+        client.settimeout(timeout)
         client.connect(os.environ["LOCAL_CI_RPC_SOCKET"])
         request = {"token": os.environ["LOCAL_CI_RPC_TOKEN"], "method": method, "arguments": arguments}
         client.sendall(json.dumps(request).encode() + b"\n")

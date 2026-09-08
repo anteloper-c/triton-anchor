@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import fcntl
 import sys
 from pathlib import Path
@@ -30,6 +31,9 @@ class FakeDocker:
         self.commands = []
         self.fail_validation = False
         self.fail_tool = None
+        self.fail_stop = False
+        self.device_changes_public_state = False
+        self.timeout_tool = None
 
     def __call__(self, argv, **kwargs):
         self.commands.append(argv)
@@ -37,6 +41,7 @@ class FakeDocker:
             return subprocess.run(argv, **kwargs)
         action = argv[1]
         output, code = "", 0
+        identified_name = next((name for name, item in self.containers.items() if item["Id"] == argv[-1]), argv[-1])
         if action == "create":
             name = argv[argv.index("--name") + 1]
             labels, mounts = {}, []
@@ -47,16 +52,19 @@ class FakeDocker:
                 if value == "--mount":
                     fields = dict(part.split("=", 1) for part in argv[index + 1].split(",") if "=" in part)
                     mounts.append({"Source": fields["source"], "Destination": fields["target"]})
-            self.containers[name] = {"Id": "fake-" + name, "Image": "sha256:fixture", "Config": {"Labels": labels}, "Mounts": mounts, "State": {"Running": False}}
+            self.containers[name] = {"Id": "fake-" + name, "Image": "sha256:fixture", "Config": {"Labels": labels}, "Mounts": mounts, "State": {"Running": False}, "Hygiene": {}}
         elif action == "start":
             self.containers[argv[-1]]["State"]["Running"] = True
         elif action == "stop":
-            self.containers[argv[-1]]["State"]["Running"] = False
-        elif action == "inspect":
-            if argv[-1] not in self.containers:
+            if self.fail_stop:
                 code = 1
             else:
-                output = json.dumps([self.containers[argv[-1]]])
+                self.containers[identified_name]["State"]["Running"] = False
+        elif action == "inspect":
+            if identified_name not in self.containers:
+                code = 1
+            else:
+                output = json.dumps([self.containers[identified_name]])
         elif action == "exec":
             index = 2
             while argv[index].startswith("--"):
@@ -65,7 +73,9 @@ class FakeDocker:
             command = argv[index + 1:]
             container = self.containers[name]
             mount = container["Mounts"][0]
-            if command[0] == "test":
+            if manager_module.HYGIENE_SNAPSHOT in command:
+                output = json.dumps({path: container["Hygiene"].get(path, "0" * 64) for path in json.loads(command[-1])})
+            elif command[0] == "test":
                 mapped = next((entry for entry in container["Mounts"] if command[2].startswith(entry["Destination"] + "/") or command[2] == entry["Destination"]), mount)
                 host = Path(command[2].replace(mapped["Destination"], mapped["Source"], 1))
                 code = 0 if (host.is_dir() if command[1] == "-x" else host.is_file()) else 1
@@ -78,8 +88,13 @@ class FakeDocker:
                 (install / "bin").mkdir()
                 (install / "bin/llvm-config").write_text("fixture")
                 (install / "bin/mlir-opt").write_text("fixture")
-            elif command[0] == "validate" and (self.fail_validation or command[-1] == self.fail_tool):
-                code = 19
+            elif command[0] == "validate":
+                if command[-1] == self.timeout_tool:
+                    raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+                if self.fail_validation or command[-1] == self.fail_tool:
+                    code = 19
+                elif command[-1] == "device-clean" and self.device_changes_public_state:
+                    container["Hygiene"]["/tmp"] = "1" * 64
             elif command[0] == "id":
                 output = "10001\n"
             elif command[-1] == "--version":
@@ -114,8 +129,9 @@ class ManagerTests(unittest.TestCase):
                 handle.addfile(member, io.BytesIO(data))
         self.config = {"control_root": str(control), "minimum_free_bytes": 0, "profiles": {
             "triton_v3.0": {"name": "triton-3.0", "triton_version": "3.0", "llvm_hash": self.sha,
-                "backend_enabled": True, "image": "fixture-image", "execution_user": "fixture-user", "workspace_root": str(self.root / "workspaces"),
+                "backend_enabled": True, "image": "fixture-image", "execution_user": "10001:10001", "workspace_root": str(self.root / "workspaces"),
                 "env": {"PYTHON_VENV_ACTIVATE": "/opt/venv/bin/activate"},
+                "post_task_validation_commands": [["validate", "device-clean"]],
                 "llvm": {"mode": "archive", "archive": str(self.archive), "sha256": manager_module.file_digest(self.archive), "commit": self.sha},
                 "validation_commands": {name: ["validate", name] for name in ("environment", "frontend_build", "wheel_install_import", "frontend_smoke", "backend_rebuild", "backend_smoke_jit")}}}}
         self.docker = FakeDocker()
@@ -337,6 +353,247 @@ class ManagerTests(unittest.TestCase):
         self.assertTrue(candidate["backend_enabled"])
         self.assertEqual(candidate["state"], "failed")
         self.assertFalse(self.docker.containers[candidate["container"]]["State"]["Running"])
+
+    def test_dirty_restart_preserves_active_role_and_task_files_do_not_change_baseline(self):
+        generation = self.manager.acquire("task-a", "triton_v3.0", self.sha)
+        self.manager.mark_dirty(generation["generation"], "task-a")
+        tasks = Path(generation["workspace_host"]) / "tasks/task-a"
+        tasks.mkdir(parents=True)
+        (tasks / "untrusted-output").write_text("task-only changes")
+        restarted = EnvironmentManager(self.config, self.root / "state", self.docker)
+        row = restarted.health()["generations"][0]
+        self.assertTrue(row["active"])
+        self.assertEqual(row["state"], "dirty")
+        self.assertFalse(row["reusable"])
+        self.assertEqual(restarted.leases()["task-a"]["generation"], generation["generation"])
+        self.assertEqual(restarted.generations()[generation["generation"]]["execution_uid"], 10001)
+        changed_snapshot = restarted.generations()
+        changed_snapshot[generation["generation"]]["state"] = "active"
+        self.assertEqual(restarted.generation(generation["generation"])["state"], "dirty")
+        with self.assertRaisesRegex(EnvironmentError, "dirty"):
+            restarted.acquire("task-a", "triton_v3.0", self.sha)
+        self.assertEqual(restarted.validate_reuse(generation["generation"])["state"], "active")
+        restarted.release("task-a")
+        self.assertEqual(restarted.acquire("task-b", "triton_v3.0", self.sha)["generation"], generation["generation"])
+
+    def test_shared_content_change_quarantines_then_replaces_without_deleting_diagnostics(self):
+        generation = self.manager.acquire("task-a", "triton_v3.0", self.sha)
+        self.manager.mark_dirty(generation["generation"], "task-a")
+        dependency = Path(generation["workspace_host"]) / f"deps/llvm-{self.sha}/bin/llvm-config"
+        dependency.write_text("contamination")
+        with self.assertRaisesRegex(EnvironmentError, "quarantined"):
+            self.manager.validate_reuse(generation["generation"])
+        isolated = self.manager.generation(generation["generation"])
+        self.assertEqual(isolated["quarantine_reason"], "shared_dependency_or_public_state_changed")
+        self.assertTrue(isolated["stopped"])
+        self.assertEqual(dependency.read_text(), "contamination")
+        self.assertIn("task-a", self.manager.leases())
+        self.assertNotIn("triton_v3.0", self.manager.health()["active"])
+        self.manager.release("task-a")
+        replacement = self.manager.acquire("task-b", "triton_v3.0", self.sha)
+        self.assertNotEqual(replacement["generation"], generation["generation"])
+        self.assertEqual((Path(replacement["workspace_host"]) / f"deps/llvm-{self.sha}/bin/llvm-config").read_text(), "fixture")
+
+    def test_dependency_permission_and_owner_are_part_of_baseline(self):
+        generation = self.manager.acquire("task", "triton_v3.0", self.sha)
+        dependency = Path(generation["workspace_host"]) / "deps"
+        baseline = manager_module.shared_workspace_digest(Path(generation["workspace_host"]))
+        dependency.chmod(0o777)
+        self.assertNotEqual(manager_module.shared_workspace_digest(Path(generation["workspace_host"])), baseline)
+        with self.assertRaisesRegex(EnvironmentError, "quarantined"):
+            self.manager.validate_reuse(generation["generation"])
+        if os.geteuid() == 0:
+            dependency.chmod(0o755)
+            os.chown(dependency, 12345, 12345)
+            self.assertNotEqual(manager_module.shared_workspace_digest(Path(generation["workspace_host"])), baseline)
+
+    def test_public_residue_is_retained_and_each_public_root_is_checked(self):
+        for number, path in enumerate(manager_module.PUBLIC_PATHS):
+            with self.subTest(path=path):
+                task_id = f"task-{number}"
+                generation = self.manager.acquire(task_id, "triton_v3.0", self.sha)
+                self.manager.mark_dirty(generation["generation"], task_id)
+                self.docker.containers[generation["container"]]["Hygiene"][path] = "1" * 64
+                with self.assertRaisesRegex(EnvironmentError, "quarantined"):
+                    self.manager.validate_reuse(generation["generation"])
+                self.assertEqual(self.docker.containers[generation["container"]]["Hygiene"][path], "1" * 64)
+                self.assertFalse(any(command[:2] == ["docker", "rm"] for command in self.docker.commands))
+                self.manager.release(task_id)
+
+    def test_post_task_device_failure_and_timeout_quarantine(self):
+        for attribute in ("fail_tool", "timeout_tool"):
+            with self.subTest(attribute=attribute):
+                generation = self.manager.acquire(attribute, "triton_v3.0", self.sha)
+                self.manager.mark_dirty(generation["generation"], attribute)
+                setattr(self.docker, attribute, "device-clean")
+                with self.assertRaisesRegex(EnvironmentError, "quarantined"):
+                    self.manager.validate_reuse(generation["generation"])
+                self.assertEqual(self.manager.generation(generation["generation"])["quarantine_reason"], "post_task_device_validation_failed")
+                self.assertTrue(self.manager.generation(generation["generation"])["stopped"])
+                self.manager.release(attribute)
+                setattr(self.docker, attribute, None)
+
+    def test_post_task_probe_cannot_leave_new_public_residue(self):
+        generation = self.manager.acquire("task", "triton_v3.0", self.sha)
+        self.docker.device_changes_public_state = True
+        with self.assertRaisesRegex(EnvironmentError, "quarantined"):
+            self.manager.validate_reuse(generation["generation"])
+        self.assertEqual(self.manager.generation(generation["generation"])["quarantine_reason"], "post_validation_changed_shared_or_public_state")
+
+    def test_unconfirmed_container_stop_blocks_all_selection_until_retry_confirms(self):
+        previous = self.manager.ensure("triton_v3.0", self.sha)
+        generation = self.manager.rotate("triton_v3.0")
+        self.manager.acquire("task", "triton_v3.0", self.sha)
+        self.docker.fail_stop = True
+        isolated = self.manager.quarantine(generation["generation"], "task_process_stop_failed")
+        self.assertFalse(isolated["stopped"])
+        restarted = EnvironmentManager(self.config, self.root / "state", self.docker)
+        for action in (lambda: restarted.acquire("task", "triton_v3.0", self.sha),
+                       lambda: restarted.acquire("next", "triton_v3.0", self.sha),
+                       lambda: restarted.ensure("triton_v3.0", self.sha),
+                       lambda: restarted.rotate("triton_v3.0"), lambda: restarted.rollback("triton_v3.0")):
+            with self.assertRaisesRegex(EnvironmentError, "stop is unconfirmed"):
+                action()
+        self.assertEqual(restarted.leases()["task"]["generation"], generation["generation"])
+        self.docker.fail_stop = False
+        self.assertTrue(restarted.quarantine(generation["generation"], "task_process_stop_failed")["stopped"])
+        restarted.release("task")
+        self.assertEqual(restarted.ensure("triton_v3.0", self.sha)["generation"], previous["generation"])
+
+    def test_quarantine_never_stops_a_replaced_container(self):
+        generation = self.manager.acquire("task", "triton_v3.0", self.sha)
+        self.docker.containers[generation["container"]]["Id"] = "different-container"
+        isolated = self.manager.quarantine(generation["generation"], "container_identity_mismatch")
+        self.assertFalse(isolated["stopped"])
+        self.assertTrue(self.docker.containers[generation["container"]]["State"]["Running"])
+        self.assertFalse(any(command[:2] == ["docker", "stop"] for command in self.docker.commands))
+
+    def test_dirty_previous_cannot_rollback_until_validated(self):
+        generation = self.manager.acquire("task", "triton_v3.0", self.sha)
+        self.manager.mark_dirty(generation["generation"], "task")
+        self.manager.rotate("triton_v3.0")
+        self.assertEqual(self.manager.generation(generation["generation"])["reuse_role"], "previous")
+        with self.assertRaisesRegex(EnvironmentError, "No retained previous"):
+            self.manager.rollback("triton_v3.0")
+        self.assertEqual(self.manager.validate_reuse(generation["generation"])["state"], "previous")
+        self.assertEqual(self.manager.rollback("triton_v3.0")["generation"], generation["generation"])
+
+    def test_legacy_generation_without_baseline_is_stopped_and_replaced(self):
+        generation = self.manager.ensure("triton_v3.0", self.sha)
+        state = self.manager._load()
+        del state["generations"][generation["generation"]]["reuse_baseline"]
+        self.manager._save(state)
+        replacement = self.manager.ensure("triton_v3.0", self.sha)
+        self.assertNotEqual(replacement["generation"], generation["generation"])
+        self.assertEqual(self.manager.generation(generation["generation"])["state"], "quarantined")
+        self.assertFalse(self.docker.containers[generation["container"]]["State"]["Running"])
+
+    def test_quarantine_retention_waits_for_stop_and_lease_release(self):
+        self.config["generation_retention_hours"] = 0
+        generation = self.manager.acquire("task", "triton_v3.0", self.sha)
+        self.docker.fail_stop = True
+        self.manager.quarantine(generation["generation"], "cleanup_failed")
+        self.assertFalse(self.manager.collect_retired()["removed"])
+        self.docker.fail_stop = False
+        self.manager.quarantine(generation["generation"], "cleanup_failed")
+        self.assertFalse(self.manager.collect_retired()["removed"])
+        self.manager.release("task")
+        self.assertEqual(self.manager.collect_retired()["removed"], [generation["generation"]])
+        self.assertFalse(Path(generation["workspace_host"]).exists())
+
+    def test_quarantine_retry_preserves_first_quarantine_time(self):
+        generation = self.manager.acquire("task", "triton_v3.0", self.sha)
+        self.docker.fail_stop = True
+        with mock.patch.object(manager_module, "utc_now", return_value="2020-01-01T00:00:00Z"):
+            first = self.manager.quarantine(generation["generation"], "cleanup_failed")
+        self.docker.fail_stop = False
+        second = self.manager.quarantine(generation["generation"], "cleanup_failed")
+        self.assertTrue(second["stopped"])
+        self.assertEqual(second["quarantined_at"], first["quarantined_at"])
+
+    def test_workspace_digest_deadline_interrupts_directory_walk(self):
+        root = self.root / "fingerprint-fixture"
+        (root / "child").mkdir(parents=True)
+        with mock.patch.object(manager_module.time, "monotonic", side_effect=[0, 0, 0.5, 1.1]):
+            with self.assertRaisesRegex(EnvironmentError, "fingerprint timed out"):
+                manager_module.shared_workspace_digest(root, timeout_seconds=1)
+
+    def test_workspace_digest_deadline_interrupts_large_file_between_chunks(self):
+        root = self.root / "fingerprint-fixture"
+        root.mkdir()
+        payload = root / "large-library"
+        payload.write_bytes(b"fixture")
+        clock = [0.0]
+        positions = []
+        class SlowSource(io.BytesIO):
+            def read(self, size=-1):
+                clock[0] += 0.6
+                result = super().read(size)
+                positions.append(self.tell())
+                return result
+        data = b"x" * (4 * 1024 * 1024)
+        with mock.patch.object(Path, "open", return_value=SlowSource(data)), mock.patch.object(manager_module.time, "monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(EnvironmentError, "fingerprint timed out"):
+                manager_module.shared_workspace_digest(root, timeout_seconds=1)
+        self.assertEqual(positions, [1024 * 1024, 2 * 1024 * 1024])
+
+    def test_reuse_uses_configured_host_deadline_and_matches_prepared_baseline(self):
+        self.config["hygiene_snapshot_timeout_seconds"] = 60
+        with mock.patch.object(manager_module, "shared_workspace_digest", wraps=manager_module.shared_workspace_digest) as digest:
+            generation = self.manager.acquire("task", "triton_v3.0", self.sha)
+            self.manager.mark_dirty(generation["generation"], "task")
+            checked = self.manager.validate_reuse(generation["generation"])
+        self.assertEqual(checked["reuse_baseline"], generation["reuse_baseline"])
+        self.assertEqual(digest.call_count, 3)
+        self.assertTrue(all(call.kwargs == {"timeout_seconds": 60} for call in digest.call_args_list))
+
+    def test_runtime_workspace_deadline_failure_quarantines(self):
+        generation = self.manager.acquire("task", "triton_v3.0", self.sha)
+        self.manager.mark_dirty(generation["generation"], "task")
+        with mock.patch.object(manager_module, "shared_workspace_digest", side_effect=EnvironmentError("Shared dependency fingerprint timed out")):
+            with self.assertRaisesRegex(EnvironmentError, "quarantined"):
+                self.manager.validate_reuse(generation["generation"])
+        self.assertEqual(self.manager.generation(generation["generation"])["state"], "quarantined")
+        self.assertTrue(self.manager.generation(generation["generation"])["stopped"])
+
+    def test_device_recipe_defaults_are_real_and_identity_numeric(self):
+        recipe = self.config["profiles"]["triton_v3.0"]
+        self.assertEqual(manager_module.EnvironmentManager._hygiene_recipe(recipe)[1], 120)
+        for commands in ([], [["true"]], [["/bin/true"]], ["device-status"]):
+            recipe["post_task_validation_commands"] = commands
+            with self.assertRaisesRegex(EnvironmentError, "real post_task_validation"):
+                self.manager.ensure("triton_v3.0", self.sha)
+        recipe["backend_enabled"] = False
+        with self.assertRaisesRegex(EnvironmentError, "real post_task_validation"):
+            self.manager.ensure("triton_v3.0", self.sha)
+        recipe["triton_version"] = "3.1"
+        recipe["post_task_validation_commands"] = []
+        recipe["execution_user"] = "named-user"
+        with self.assertRaisesRegex(EnvironmentError, "numeric execution_user"):
+            self.manager.ensure("triton_v3.0", self.sha)
+
+    def test_pid_one_is_root_and_python_probes_do_not_create_bytecode(self):
+        self.manager.ensure("triton_v3.0", self.sha)
+        create = next(command for command in self.docker.commands if command[:2] == ["docker", "create"])
+        self.assertEqual(create[create.index("--user") + 1], "0:0")
+        probes = [command for command in self.docker.commands if "import build, setuptools, wheel, pybind11, yaml, pytest" in command]
+        self.assertTrue(all("PYTHONDONTWRITEBYTECODE=1" in command for command in probes))
+
+    def test_real_public_snapshot_covers_contents_and_modes_without_leaking_contents(self):
+        directory = self.root / "public-fixture"
+        directory.mkdir()
+        payload = directory / "private-name"
+        payload.write_text("must-not-appear-in-output")
+        def snapshot():
+            return subprocess.check_output([sys.executable, "-I", "-S", "-B", "-c", manager_module.HYGIENE_SNAPSHOT, json.dumps([str(directory)])], text=True)
+        original = snapshot()
+        self.assertNotIn("private-name", original)
+        self.assertNotIn("must-not-appear", original)
+        payload.chmod(0o777)
+        changed_mode = snapshot()
+        self.assertNotEqual(original, changed_mode)
+        payload.write_text("different content")
+        self.assertNotEqual(changed_mode, snapshot())
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@
 
 本版本采用单向交付：Codex 成功封存即结束，Harness 上传 Gitee 成功即本地 complete；GitHub 独立接收并发布，没有回执。旧配置删除 `receipt_timeout_seconds`，否则预检明确失败。上传失败保留 outbox 并按轮询间隔继续尝试，每次 Git 上传最多三次网络尝试；不调用模型。保留原 status → comment → Pages 顺序，GitHub 发布失败通过 Actions 和后续定时接收处理。
 
-`profiles` 按目标分支配置。示例为 `triton_v3.0/3.3/3.6`；若 `main` 也要执行任务，显式为它登记实际版本配方和唯一 profile 名称。3.0 保留后端能力；其他版本不配置 backend、PPL、FlagGems 或性能能力。`container_execution_user` 或 profile 的 `execution_user` 必须是实际镜像里的非 root 用户；manager 探测 UID/GID，工具仅授予当前任务可写目录权限。
+`profiles` 按目标分支配置。示例为 `triton_v3.0/3.3/3.6`；若 `main` 也要执行任务，显式为它登记实际版本配方和唯一 profile 名称。3.0 保留后端能力；其他版本不配置 backend、PPL、FlagGems 或性能能力。`container_execution_user` 或 profile 的 `execution_user` 必须填写容器专用 CI 数字 UID，或数字 `UID:GID`；UID/GID 都不得为 0，且 UID 不得用于容器常驻服务。manager 探测实际 UID/GID，工具仅授予当前任务可写目录权限。
 
 宿主机 `codex_user` 由管理员创建，必须非 root 且不属于 root、docker、sudo、wheel、admin、adm、systemd-journal、lxd、libvirt 组，并与容器执行用户使用不同 UID。Codex 通过任务 MCP 调度；可信 worker 持有 Docker 和发布权限。`codex_sessions_root` 必须与 `state_dir` 分离、不互相包含，所有父目录允许该账号遍历；不得向该账号开放可信 state 写权限、部署配置或 Docker socket。可信控制 checkout 的 MCP 脚本与父目录须允许该账号读取/遍历，部署预检会实际以该账号验证。
 
@@ -29,6 +29,20 @@
 每日 job 使用全局 `state_dir/resource.lock`，候选全部验证通过才原子晋升。任务 lease 固定代际，晋升只影响新任务。上一可用代际、所有有 lease 的代际保留；其他代际满 `generation_retention_hours` 才按 ownership 标签回收，绝不全局 prune。准备失败停止未使用的候选容器并保留诊断。首次上线先完整验证候选，不能把只准备依赖的环境当作产品验收通过。
 
 LLVM 缓存以工具链配方、LLVM SHA 和实际 image ID 为键，保存完整安装树摘要和原子 ready 标记。代际只复制验证成功的缓存，不挂载共享可写缓存；损坏缓存隔离后重建。环境指纹同时包含实际可信控制 checkout 的 Git HEAD，控制脚本变更会创建新代际，不复用旧工具版本的成功环境。
+
+## 任务结束、环境复用与目录回收
+
+任务在常驻容器内使用独立 checkout、venv 和构建目录。任务进程启用 `no_new_privs`；可信 worker 的受控 root reaper 在确认容器身份后，仅终止专用任务 UID 的进程，再验证没有残留。`cleanup_timeout_seconds` 默认 60，必须为正整数，用于等待清理命令完成；超时或无法确认停止会隔离代际，保留诊断。专用 UID 不与常驻服务或宿主机 Codex 账户共用，是按 UID 清理的部署前提。
+
+每代首次可用时保存公共目录、共享依赖和工具链状态摘要；每次任务结束，先停止任务进程，再比对摘要并运行设备复用检查。3.0 profile 必须提供真实 `post_task_validation_commands`（非空 argv 列表的列表），用于确认设备和后端运行时已恢复可接单状态；样例故意留空，预检会失败，需要填入公司服务器实际命令，不能用 `true` 等占位。`post_task_validation_timeout_seconds` 默认 120，`hygiene_snapshot_timeout_seconds` 默认 600，两者须为 1 至 3600 的整数；前者按 profile 配置，后者为全局共享状态探测超时。其他版本可不配置设备检查。
+
+这些复用检查发生在结果封存前，失败记录 `environment_cleanup` 基础设施错误，不能得到整体通过结果。失败代际进入 `quarantined`，不再接单并尝试停止；停止未获确认时阻止接单、轮换和回滚，并持续保留。已确认停止且没有 lease 的隔离代际，从隔离时刻起满 `generation_retention_hours` 后可回收；不能手改 registry 将其恢复为可用。新任务使用经过验证的可用代际；旧任务仅在其工作目录、安装状态和绑定代际仍有效时复用成功执行记录。
+
+目录回收由 worker 每次扫描执行，不新增服务或 timer。成功结果封存进入 `publishing` 后即可删除任务 checkout、venv 和构建目录，不等待 Gitee 上传；已停止的取消任务也可立即回收。失败或待恢复目录默认保留 `task_workspace_retention_hours=24` 小时，允许 0 至 87600 的有限数值，0 表示下次扫描立即回收；`task_workspace_max_bytes` 默认 107374182400（100 GiB），必须为正整数。超出总预算时，按保留时间优先回收较旧的非活动任务目录；运行中或未确认停止的任务不可删除，保护项仍超预算时健康状态报错并阻止新执行。
+
+预算按逐任务目录的逻辑文件字节统计，包含 base/candidate checkout、venv、构建和临时产物；它不是整个磁盘的硬配额。删除前保存执行日志与证据，已有封存证据优先复用；已封存 outbox、上传所需结果目录和审计记录不在回收范围内，不为满足 scratch 预算而删除它们。`workspace-health.json` 另行报告 `durable_evidence_bytes`、`state_free_bytes` 和 `minimum_free_bytes`；可信 state 所在磁盘低于配置的空闲阈值时阻止新任务执行，已有结果仍继续上传。目录删除后撤销相关成功检查的可复用状态；人工续跑会重新创建独立环境并重跑必要检查。封存后目录回收失败会隔离代际并写入 `workspace-health.json`，保持原结果不可变。
+
+worker 启动持有单例锁后，先在旧 lease 指定的原代际停止遗留进程并验证环境，再释放 lease 或接新任务；普通进程重启恢复无需人工 `--resume`。显式续跑使用 `worker.py --config CONFIG --resume TASK_ID`，需先停止常驻 worker，执行该命令后再启动服务，避免与同任务的目录回收并发；常驻 worker 持锁时该命令返回 2。已封存且只待上传的任务重试原 outbox，不重新调用 Codex，也不依赖被回收的工作目录。
 
 ## 安装与回退
 
@@ -58,13 +72,17 @@ python3 scripts/local_ci/deploy/install.py --config /etc/triton-anchor-local-ci/
 
 服务回退执行 `install.py --rollback <backup目录>` 审阅，再加 `--apply`；第三方已修改的 unit 不覆盖。环境回退执行 `environments/manager.py --config <配置> --state-dir <状态目录> rollback --target-branch <分支>`，只切换新任务代际，已有 lease 不变。
 
+启用任务目录回收前，回滚备份应同时覆盖 state 与对应版本工作区；仅恢复旧 SQLite 会留下“通过记录存在、venv 已被新版本删除”的不一致。回退到不识别 `reuse_invalidated` 的旧 Worker 时，必须恢复匹配的工作区快照。没有匹配快照时保留旧 state 作审计，使用独立的新 state/环境重新验证，不能直接复用旧安装通过记录。仅回退 systemd unit 不会恢复已经回收的目录。
+
 ## 独立监控
 
-健康 timer 独立于 poller，读取 `health/worker.json`、只读 SQLite、环境 registry、Docker 和磁盘，向已配置 Gitee 健康仓库发布 `worker-health.json`。主机离线由其他机器或 GitHub Actions 的 watchdog 通过快照过期识别。
+健康 timer 独立于 poller，读取 `health/worker.json`、只读 SQLite、环境 registry、Docker 和磁盘，向已配置 Gitee 健康仓库发布 `worker-health.json`。快照的 `workspaces` 保留 `state_dir/workspace-health.json` 中的目录回收状态、预算和错误；尚未生成时为 `unreported`，损坏或不可读时明确为 `error`。`environments.generations` 同时显示 `dirty/quarantined`、隔离原因、是否确认停止及能否复用，不因 poller 在线而隐藏故障。主机离线由其他机器或 GitHub Actions 的 watchdog 通过快照过期识别。
 
 外部执行 `maintenance/watchdog.py --url <Gitee健康JSON或Contents API地址> --expected-worker <ID> --state <持久incident文件>`；SMTP 从 `LOCAL_CI_SMTP_*` 读取，缺配置明确失败。每次执行都要保存 incident 文件，包括发信失败时的 pending 通知，并在下次恢复该文件；仅供下载的 artifact 不能实现跨执行去重。
 
 模拟使用 `--input <JSON或-> --mail-outbox <目录>` 生成 `.eml`，不发信；`--dry-run` 不写状态。输入支持单 worker 快照或 `{workers: [...], tasks: [...], expected_workers: [...]}`；worker 的 `uploads` 列出未上传 outbox。GitHub 可用 `--tasks-file` 补充尚无结果的队列。默认心跳过期20分钟、未上传等待20分钟、显式进展停止30分钟；上传尝试失败立即告警。上传阶段不误报 Codex 已退出。异常和恢复各通知一次，SMTP失败保留待发通知；不监控 GitHub 回执。
+
+目录回收或预算检查报错触发 `workspace_cleanup_failed`；隔离代际尚未确认停止触发按代际区分的 `environment_quarantine_unconfirmed`。二者沿用 SMTP 去重、发送重试和恢复通知；缺少新的对应健康状态时不宣告恢复。v4 Dashboard 的监控 JSON 附带最小 `worker_health` 摘要，显示目录字节量、状态、任务/代际身份和清理原因代码，不复制原始主机路径、配置、凭据或异常全文。
 
 ## Gitee 结果保留
 

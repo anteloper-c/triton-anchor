@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -8,7 +9,10 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone, timedelta
+from email import policy
+from email.parser import BytesParser
 from pathlib import Path
+from unittest.mock import patch
 
 MODULE = Path(__file__).resolve().parents[1] / "watchdog.py"
 spec = importlib.util.spec_from_file_location("local_ci_watchdog", MODULE)
@@ -125,6 +129,133 @@ class WatchdogTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("receiver:queue_overdue:old", json.loads(result.stdout)["active"])
             self.assertFalse((root / "state.json").exists())
+
+    def test_workspace_error_deduplicates_and_recovers_only_with_healthy_snapshot(self):
+        worker = {**self.worker, "workspaces": {"status": "error", "logical_bytes": 101, "max_bytes": 100}}
+        state = watchdog.evaluate(worker, now=self.now)
+        self.assertEqual({"worker-1:workspace_cleanup_failed"}, set(state["active"]))
+        self.assertEqual(1, len(state["pending_notifications"]))
+        state["pending_notifications"] = []
+        repeated = watchdog.evaluate(worker, state, now=self.now)
+        self.assertFalse(repeated["pending_notifications"])
+        for unavailable in (self.worker, {**self.worker, "workspaces": {"status": "unreported"}}):
+            missing = watchdog.evaluate(unavailable, repeated, now=self.now)
+            self.assertEqual(set(repeated["active"]), set(missing["active"]))
+            self.assertFalse(missing["pending_notifications"])
+        restored = watchdog.evaluate({**self.worker, "workspaces": {"status": "healthy"}}, repeated, now=self.now)
+        self.assertTrue(restored["healthy"])
+        self.assertEqual(["recovered"], [row["transition"] for row in restored["pending_notifications"]])
+
+    def test_quarantine_alerts_per_generation_until_stop_is_confirmed(self):
+        g1 = {"generation": "g1", "state": "quarantined", "stopped": False}
+        g2 = {"generation": "g2", "state": "quarantined"}
+        worker = {**self.worker, "environments": {"active": {}, "generations": [g1, g2]}}
+        first = watchdog.evaluate(worker, now=self.now)
+        self.assertEqual({"worker-1:environment_quarantine_unconfirmed:g1", "worker-1:environment_quarantine_unconfirmed:g2"}, set(first["active"]))
+        first["pending_notifications"] = []
+        self.assertFalse(watchdog.evaluate(worker, first, now=self.now)["pending_notifications"])
+        for missing in (self.worker, {**self.worker, "environments": {"error": "unreadable", "generations": []}}):
+            state = watchdog.evaluate(missing, first, now=self.now)
+            self.assertTrue(set(first["active"]).issubset(state["active"]))
+            self.assertFalse(any(row["transition"] == "recovered" for row in state["pending_notifications"]))
+        g1["stopped"] = True
+        partial = watchdog.evaluate(worker, first, now=self.now)
+        self.assertEqual({"worker-1:environment_quarantine_unconfirmed:g2"}, set(partial["active"]))
+        self.assertEqual("g1", partial["pending_notifications"][0]["incident"]["generation"])
+        self.assertEqual("recovered", partial["pending_notifications"][0]["transition"])
+        partial["pending_notifications"] = []
+        g2["stopped"] = True
+        restored = watchdog.evaluate(worker, partial, now=self.now)
+        self.assertTrue(restored["healthy"])
+        self.assertEqual("g2", restored["pending_notifications"][0]["incident"]["generation"])
+
+    def test_dirty_or_safely_stopped_generation_is_not_an_unconfirmed_quarantine(self):
+        worker = {**self.worker, "environments": {"active": {}, "generations": [
+            {"generation": "g1", "state": "dirty"},
+            {"generation": "g2", "state": "quarantined", "stopped": True},
+        ]}}
+        self.assertTrue(watchdog.evaluate(worker, now=self.now)["healthy"])
+
+    def test_dashboard_summary_preserves_budget_and_states_without_private_values(self):
+        worker = {**self.worker, "host_path": "/private/host", "config": {"token": "secret-value"},
+                  "workspaces": {"status": "error", "logical_bytes": 200, "max_bytes": 100,
+                                 "state_free_bytes": 10, "minimum_free_bytes": 20, "durable_evidence_bytes": 30,
+                                 "root": "/private/scratch", "errors": [{"task_id": "t1", "error": "Permission denied: /private/task"}],
+                                 "workspaces": [{"task_id": "t1", "generation": "g1", "phase": "cleanup_failed", "reason": "cleanup_timeout", "path": "/private/row"}]},
+                  "environments": {"active": {}, "config_path": "/private/config", "generations": [
+                      {"generation": "g1", "state": "quarantined", "stopped": False, "running": True,
+                       "reusable": False, "quarantine_reason": "task_process_stop_failed", "env": {"TOKEN": "secret-value"}, "workspace_host": "/private/workspace"}]}}
+        result = watchdog.evaluate(worker, now=self.now)
+        summary = result["worker_health"][0]
+        self.assertEqual(30, summary["workspaces"]["durable_evidence_bytes"])
+        self.assertEqual(10, summary["workspaces"]["state_free_bytes"])
+        self.assertEqual(20, summary["workspaces"]["minimum_free_bytes"])
+        self.assertEqual("cleanup_timeout", summary["workspaces"]["workspaces"][0]["reason"])
+        self.assertEqual("details_available_on_worker", summary["workspaces"]["errors"][0]["reason"])
+        self.assertEqual("quarantined", summary["environments"]["generations"][0]["state"])
+        self.assertFalse(summary["environments"]["generations"][0]["stopped"])
+        self.assertNotIn("/private", json.dumps(result))
+        self.assertNotIn("secret-value", json.dumps(result))
+
+    def test_cli_cleanup_alerts_and_recovery_generate_one_mail_per_transition(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            command = [sys.executable, str(MODULE), "--input", "-", "--state", str(root / "state.json"),
+                       "--mail-outbox", str(root / "outbox"), "--output", str(root / "dashboard.json"), "--now", watchdog.iso(self.now)]
+            worker = {**self.worker, "workspaces": {"status": "error"},
+                      "environments": {"active": {}, "generations": [{"generation": "g1", "state": "quarantined", "stopped": False}]}}
+            for _ in range(2):
+                result = subprocess.run(command, input=json.dumps(worker), text=True, capture_output=True)
+                self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(2, len(list((root / "outbox").glob("*.eml"))))
+            worker["workspaces"]["status"] = "healthy"
+            worker["environments"]["generations"][0]["stopped"] = True
+            for _ in range(2):
+                result = subprocess.run(command, input=json.dumps(worker), text=True, capture_output=True)
+                self.assertEqual(0, result.returncode, result.stderr)
+            messages = [BytesParser(policy=policy.default).parsebytes(path.read_bytes()) for path in (root / "outbox").glob("*.eml")]
+            self.assertEqual(4, len(messages))
+            self.assertEqual(2, sum("环境代际：g1" in message.get_content() for message in messages))
+            state = json.loads((root / "state.json").read_text())
+            self.assertTrue(state["healthy"])
+            self.assertFalse(state["pending_notifications"])
+            self.assertEqual(state["worker_health"], json.loads((root / "dashboard.json").read_text())["worker_health"])
+
+    def test_fake_smtp_failure_keeps_cleanup_notification_for_retry(self):
+        class FakeSMTP:
+            fail = True
+            sent = []
+            def __init__(self, *args, **kwargs):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def send_message(self, message):
+                if self.fail:
+                    raise watchdog.smtplib.SMTPException("fixture send failed")
+                self.sent.append(message)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            command = [str(MODULE), "--input", "-", "--state", str(root / "state.json"), "--now", watchdog.iso(self.now)]
+            smtp_env = {"LOCAL_CI_SMTP_HOST": "fixture.invalid", "LOCAL_CI_SMTP_FROM": "sender@fixture.invalid",
+                        "LOCAL_CI_SMTP_TO": "maintainer@fixture.invalid", "LOCAL_CI_SMTP_STARTTLS": "false"}
+            worker = {**self.worker, "workspaces": {"status": "error"}}
+            def run():
+                with patch.object(sys, "argv", command), patch.object(sys, "stdin", io.StringIO(json.dumps(worker))), \
+                     patch.object(sys, "stdout", io.StringIO()), patch.object(sys, "stderr", io.StringIO()), \
+                     patch.dict(os.environ, smtp_env, clear=True), patch.object(watchdog.smtplib, "SMTP", FakeSMTP):
+                    return watchdog.main()
+            self.assertEqual(1, run())
+            prior = json.loads((root / "state.json").read_text())
+            self.assertEqual(1, len(prior["pending_notifications"]))
+            notification_id = prior["pending_notifications"][0]["id"]
+            FakeSMTP.fail = False
+            self.assertEqual(0, run())
+            self.assertEqual(0, run())
+            self.assertEqual(1, len(FakeSMTP.sent))
+            self.assertEqual(f"<{notification_id}@local-ci.invalid>", FakeSMTP.sent[0]["Message-ID"])
+            self.assertFalse(json.loads((root / "state.json").read_text())["pending_notifications"])
 
 
 if __name__ == "__main__":

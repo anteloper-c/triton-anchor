@@ -18,12 +18,13 @@ if str(LOCAL_ROOT) not in sys.path:
 
 from agent_ci.codex import CodexDriver
 from agent_ci.control import validate_control_revision
-from agent_ci.executor import DockerExecutor
+from agent_ci.executor import DockerExecutor, resource_lock
 from agent_ci.policy import changed_files, minimum_checks
 from agent_ci.protocol import ContractError, RESULT_SCHEMA, atomic_json, validate_task
 from agent_ci.relay import GitRelay
 from agent_ci.state import Journal
 from agent_ci.supervisor import Supervisor, ToolService
+from agent_ci.workspaces import TaskWorkspaces
 
 
 class Worker:
@@ -39,6 +40,7 @@ class Worker:
         self.executor_factory = executor_factory or DockerExecutor
         self.stop_event = threading.Event()
         self.active = None
+        self.workspaces = TaskWorkspaces(config, self.journal, manager, self.relay, self.executor_factory)
 
     def heartbeat(self, **extra):
         atomic_json(self.state_dir / "health/worker.json", {
@@ -59,6 +61,10 @@ class Worker:
                 self.heartbeat(control_channel="unreachable")
 
     def process(self, task):
+        self.workspaces.recover()
+        maintenance = self.workspaces.collect()
+        if maintenance["status"] != "healthy":
+            raise ContractError("Workspace maintenance blocks new execution; inspect workspace-health.json")
         validate_task(task, tuple(self.config.get("repositories", ["likehupochuan/triton-anchor"])))
         valid, _ = self.relay.validity(task)
         if not valid:
@@ -69,7 +75,8 @@ class Worker:
         run_dir = self.state_dir / "tasks" / task["task_id"] / row["run_id"]
         run_dir.mkdir(parents=True, exist_ok=True)
         self.journal.phase(task["task_id"], "preparing")
-        supervisor, watcher = None, None
+        supervisor, watcher, executor = None, None, None
+        generation = None
         done = threading.Event()
         prepare_cancel = threading.Event()
         worker = self
@@ -92,9 +99,13 @@ class Worker:
         try:
             validate_control_revision(self.config, task)
             generation = self.manager.acquire(task["task_id"], task["target_branch"], task["llvm_hash"])
+            self.workspaces.attach(task, generation)
             if prepare_cancel.is_set():
                 raise InterruptedError("Task cancelled during environment preparation")
             executor = self.executor_factory(self.config, self.state_dir, generation, task, self.relay)
+            # Verify the cleanup capability before any candidate code executes.
+            with resource_lock(self.state_dir, prepare_cancel):
+                executor.stop_task()
             checkout = executor.prepare()
             changes = changed_files(checkout, task["base_sha"], task["tested_sha"])
             if not changes and task["event_kind"] != "pull_request":
@@ -102,7 +113,8 @@ class Worker:
             policy = minimum_checks(changes, backend_enabled=generation["backend_enabled"], full=task["full"])
             atomic_json(run_dir / "policy.json", policy)
             atomic_json(run_dir / "task.json", task)
-            supervisor = Supervisor(task, policy, self.journal, executor, run_dir, changes=changes)
+            supervisor = Supervisor(task, policy, self.journal, executor, run_dir, changes=changes,
+                                    before_seal=lambda: self.workspaces.check(executor))
             supervisor.recover()
             self.active = supervisor
             self.journal.phase(task["task_id"], "running")
@@ -145,7 +157,10 @@ class Worker:
                 supervisor.close()
             self.active = None
             self.manager.cancel_event = None
-            self.manager.release(task["task_id"])
+            if generation is not None:
+                if executor is None:
+                    executor = self.executor_factory(self.config, self.state_dir, generation, task, self.relay)
+                self.workspaces.finish(executor)
             self.heartbeat()
 
     def deliver(self, row):
@@ -186,12 +201,20 @@ class Worker:
             self.journal.phase(row["task_id"], "publishing", detail)
 
     def scan(self):
+        # Local recovery/retention must still run while the relay is unavailable.
+        self.workspaces.recover()
+        self.workspaces.collect()
         self.relay.refresh()
         attempted = set()
         for row in self.journal.tasks():
             if row["phase"] == "publishing":
                 self.retry_delivery(row)
                 attempted.add(row["task_id"])
+            elif row["phase"] in {"queued", "preparing", "running"}:
+                valid, reason = self.relay.validity(json.loads(row["manifest"]))
+                if not valid:
+                    self.journal.phase(row["task_id"], "cancelled", {"reason": reason})
+        self.workspaces.collect()
         for task in self.relay.tasks():
             if self.stop_event.is_set():
                 break
@@ -213,9 +236,6 @@ def main(argv=None):
     parser.add_argument("--resume", metavar="TASK_ID")
     args = parser.parse_args(argv)
     worker = Worker(json.loads(Path(args.config).read_text()))
-    if args.resume:
-        worker.journal.resume(args.resume)
-        return 0
     import fcntl
     with (worker.state_dir / "poll.lock").open("w") as lock:
         try:
@@ -223,6 +243,9 @@ def main(argv=None):
         except BlockingIOError:
             print("Another worker owns the poll lock", file=sys.stderr)
             return 2
+        if args.resume:
+            worker.journal.resume(args.resume)
+            return 0
         def stop(signum, frame):
             worker.stop_event.set()
             if worker.active:

@@ -7,6 +7,8 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 DEPLOY = Path(__file__).resolve().parents[1]
 
@@ -75,6 +77,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn("gitee_repo_url", failed)
         self.assertIn("profile:triton_v3.0:image", failed)
         self.assertIn("profile:triton_v3.0:daily_validation", failed)
+        self.assertIn("profile:triton_v3.0:post_task_validation_commands", failed)
 
     def test_preflight_loads_skill_and_rejects_partial_control_package(self):
         config = json.loads((DEPLOY / "config.example.json").read_text())
@@ -209,6 +212,122 @@ class DeploymentTests(unittest.TestCase):
         result = preflight.check_configuration(config, runtime=False, require_notifications=False)
         check = next(row for row in result["checks"] if row["check"] == "session_state_separation")
         self.assertEqual(check["status"], "fail")
+
+    def configured_checks(self, config):
+        result = preflight.check_configuration(config, runtime=False, require_notifications=False)
+        return {row["check"]: row["status"] for row in result["checks"]}
+
+    def test_workspace_retention_defaults_and_numeric_boundaries(self):
+        config = json.loads((DEPLOY / "config.example.json").read_text())
+        defaults = {"task_workspace_retention_hours": 24, "task_workspace_max_bytes": 100 * 1024**3,
+                    "cleanup_timeout_seconds": 60, "hygiene_snapshot_timeout_seconds": 600}
+        for name, expected in defaults.items():
+            self.assertEqual(expected, config.pop(name))
+        checks = self.configured_checks(config)
+        for name in defaults:
+            self.assertEqual("pass", checks[name])
+        for value in (0, 0.5, 24, 87600):
+            with self.subTest(retention=value):
+                config["task_workspace_retention_hours"] = value
+                self.assertEqual("pass", self.configured_checks(config)["task_workspace_retention_hours"])
+        for value in (-1, 87600.5, True, "24", None, float("nan"), float("inf"), 10**400):
+            with self.subTest(retention=value):
+                config["task_workspace_retention_hours"] = value
+                self.assertEqual("fail", self.configured_checks(config)["task_workspace_retention_hours"])
+        for name in ("task_workspace_max_bytes", "cleanup_timeout_seconds", "hygiene_snapshot_timeout_seconds"):
+            for value in (0, -1, True, 1.5, "60", None):
+                with self.subTest(field=name, value=value):
+                    config[name] = value
+                    self.assertEqual("fail", self.configured_checks(config)[name])
+            config[name] = 1
+            self.assertEqual("pass", self.configured_checks(config)[name])
+        config["hygiene_snapshot_timeout_seconds"] = 3601
+        self.assertEqual("fail", self.configured_checks(config)["hygiene_snapshot_timeout_seconds"])
+
+    def test_execution_identity_requires_dedicated_numeric_nonroot_ids(self):
+        config = json.loads((DEPLOY / "config.example.json").read_text())
+        name = "profile:triton_v3.0:execution_user"
+        for value in ("", "root", "ci-user", "0", "0:1001", "1001:0", "1001:root", "-1", "01001", "1001:01001", "1001:1001:1001", True, 1001):
+            with self.subTest(user=value):
+                config["container_execution_user"] = value
+                self.assertEqual("fail", self.configured_checks(config)[name])
+        for value in ("1001", "1001:1001"):
+            config["container_execution_user"] = value
+            self.assertEqual("pass", self.configured_checks(config)[name])
+        config["profiles"]["triton_v3.0"]["execution_user"] = "0"
+        self.assertEqual("fail", self.configured_checks(config)[name])
+
+    def test_runtime_identity_separation_compares_numeric_uid(self):
+        config = json.loads((DEPLOY / "config.example.json").read_text())
+        config.update(container_execution_user="001001:1001", codex_user="fixture-codex")
+        account = SimpleNamespace(pw_uid=1001, pw_gid=1001)
+        with patch.object(preflight.pwd, "getpwnam", return_value=account), \
+             patch.object(preflight.grp, "getgrall", return_value=[]), \
+             patch.object(preflight.os, "geteuid", return_value=1001), \
+             patch.object(preflight.shutil, "which", return_value=None):
+            result = preflight.check_configuration(config, runtime=True, require_notifications=False)
+        row = next(row for row in result["checks"] if row["check"] == "container_host_identity_separation")
+        self.assertEqual("fail", row["status"])
+
+    def test_post_task_validation_requires_actual_argv_for_triton_30(self):
+        config = json.loads((DEPLOY / "config.example.json").read_text())
+        profile = config["profiles"]["triton_v3.0"]
+        name = "profile:triton_v3.0:post_task_validation_commands"
+        for commands in ([], [[]], ["device-check"], [[""]], [["true"]], [["/bin/true"]], [[":"]], [["probe", "\x00"]], [["probe", None]]):
+            with self.subTest(commands=commands):
+                profile["post_task_validation_commands"] = commands
+                self.assertEqual("fail", self.configured_checks(config)[name])
+        profile["post_task_validation_commands"] = [["/trusted/fixture-device-probe", "--readiness"]]
+        self.assertEqual("pass", self.configured_checks(config)[name])
+        profile["backend_enabled"] = False
+        profile["post_task_validation_commands"] = []
+        self.assertEqual("fail", self.configured_checks(config)[name])
+        self.assertEqual("pass", self.configured_checks(config)["profile:triton_v3.3:post_task_validation_commands"])
+
+    def test_post_task_timeout_defaults_to_120_and_rejects_invalid_values(self):
+        config = json.loads((DEPLOY / "config.example.json").read_text())
+        name = "profile:triton_v3.0:post_task_validation_timeout_seconds"
+        profile = config["profiles"]["triton_v3.0"]
+        self.assertEqual(120, profile.pop("post_task_validation_timeout_seconds"))
+        self.assertEqual("pass", self.configured_checks(config)[name])
+        for value in (0, -1, True, 1.5, "120", None, 3601):
+            profile["post_task_validation_timeout_seconds"] = value
+            self.assertEqual("fail", self.configured_checks(config)[name])
+        for value in (1, 120, 3600):
+            profile["post_task_validation_timeout_seconds"] = value
+            self.assertEqual("pass", self.configured_checks(config)[name])
+
+    def test_health_preserves_cleanup_failure_and_quarantined_environment(self):
+        state = Path(self.config["state_dir"])
+        (state / "health").mkdir(parents=True)
+        (state / "health/worker.json").write_text(json.dumps({"heartbeat_at": 1000, "pid": os.getpid()}))
+        workspace = {"status": "error", "logical_bytes": 101, "max_bytes": 100,
+                     "errors": [{"task_id": "fixture", "error": "cleanup_timeout"}],
+                     "workspaces": [{"task_id": "fixture", "generation": "g1", "phase": "cleanup_failed"}]}
+        (state / "workspace-health.json").write_text(json.dumps(workspace))
+        environment = {"active": {}, "generations": [{"generation": "g1", "state": "quarantined",
+                       "quarantine_reason": "task_cleanup_failed", "stopped": False, "reusable": False}]}
+        manager = SimpleNamespace(health=lambda: environment)
+        result = health.collect(self.config, now=1001, manager=manager)
+        self.assertEqual("healthy", result["state"])
+        self.assertEqual(workspace, result["workspaces"])
+        self.assertEqual(environment, result["environments"])
+
+    def test_health_distinguishes_missing_and_unreadable_workspace_snapshot(self):
+        state = Path(self.config["state_dir"])
+        state.mkdir(parents=True)
+        manager = SimpleNamespace(health=lambda: {"active": {}, "generations": []})
+        self.assertEqual("unreported", health.collect(self.config, manager=manager)["workspaces"]["status"])
+        snapshot = state / "workspace-health.json"
+        for content in ("{", "[]", "null"):
+            with self.subTest(content=content):
+                snapshot.write_text(content)
+                result = health.collect(self.config, manager=manager)
+                self.assertEqual("error", result["workspaces"]["status"])
+                self.assertIn("error", result["workspaces"])
+        snapshot.unlink()
+        snapshot.mkdir()
+        self.assertEqual("error", health.collect(self.config, manager=manager)["workspaces"]["status"])
 
 
 if __name__ == "__main__":

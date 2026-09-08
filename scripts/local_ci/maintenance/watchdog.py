@@ -13,7 +13,9 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import math
 import os
+import re
 import smtplib
 import ssl
 import sys
@@ -28,6 +30,11 @@ from typing import Any
 
 
 SCHEMA = "triton-anchor-local-ci-incidents/v1"
+PUBLIC_REASONS = {"sealed_success", "cancelled", "retention_expired", "disk_budget", "execution_finished",
+                  "worker_recovery", "worker_shutdown", "cleanup_failed", "cleanup_timeout", "task_cleanup_failed",
+                  "task_process_stop_failed", "container_identity_mismatch", "generation_missing_clean_baseline",
+                  "reuse_validation_failed", "shared_dependency_or_public_state_changed",
+                  "post_task_device_validation_failed", "post_validation_changed_shared_or_public_state"}
 
 
 def timestamp(value: Any) -> datetime | None:
@@ -64,6 +71,49 @@ def atomic_json(path: Path, document: dict[str, Any]) -> None:
             os.unlink(temporary)
 
 
+def public_worker_health(worker: dict[str, Any]) -> dict[str, Any]:
+    """Dashboard summary only: never copy host paths, env/config or raw errors."""
+    def identifier(value):
+        return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", value) else "unknown"
+    def reason(value):
+        return value if isinstance(value, str) and value in PUBLIC_REASONS else "details_available_on_worker"
+    def rows(value):
+        return value if isinstance(value, list) else []
+    def label(value, choices):
+        return value if isinstance(value, str) and value in choices else "unknown"
+    summary = {"worker_id": identifier(worker["worker_id"]), "collected_at": worker.get("collected_at") if timestamp(worker.get("collected_at")) else None}
+    workspaces = worker.get("workspaces")
+    if isinstance(workspaces, dict):
+        public = {"status": label(workspaces.get("status"), {"healthy", "error", "unreported"})}
+        for name in ("logical_bytes", "max_bytes", "retention_hours", "state_free_bytes", "minimum_free_bytes", "durable_evidence_bytes"):
+            value = workspaces.get(name)
+            if type(value) in (int, float) and value >= 0 and (type(value) is int or math.isfinite(value)):
+                public[name] = value
+        public["workspaces"] = [{"task_id": identifier(row.get("task_id")), "generation": identifier(row.get("generation")),
+                                 "phase": label(row.get("phase"), {"active", "unsafe", "cleaning", "retained", "cleanup_failed", "removed"}),
+                                 "reason": reason(row.get("reason"))}
+                                for row in rows(workspaces.get("workspaces")) if isinstance(row, dict)]
+        public["errors"] = [{"task_id": identifier(row.get("task_id")), "reason": reason(row.get("reason", row.get("error")))}
+                            for row in rows(workspaces.get("errors")) if isinstance(row, dict)]
+        summary["workspaces"] = public
+    environments = worker.get("environments")
+    if isinstance(environments, dict):
+        public = {"unavailable": bool(environments.get("error")), "generations": []}
+        for row in rows(environments.get("generations")):
+            if not isinstance(row, dict):
+                continue
+            generation = {"generation": identifier(row.get("generation")),
+                          "state": label(row.get("state"), {"preparing", "active", "previous", "ready", "retired", "failed", "dirty", "quarantined"})}
+            for name in ("active", "running", "stopped", "reusable", "leased"):
+                if type(row.get(name)) is bool:
+                    generation[name] = row[name]
+            if row.get("quarantine_reason"):
+                generation["quarantine_reason"] = reason(row["quarantine_reason"])
+            public["generations"].append(generation)
+        summary["environments"] = public
+    return summary
+
+
 def evaluate(document: dict[str, Any], previous: dict[str, Any] | None = None, *, now: datetime | None = None,
              stale_seconds: int = 1200, upload_seconds: int = 1200,
              progress_seconds: int = 1800, queue_seconds: int = 3600, disk_free_bytes: int = 5 * 1024**3) -> dict[str, Any]:
@@ -73,10 +123,14 @@ def evaluate(document: dict[str, Any], previous: dict[str, Any] | None = None, *
         raise ValueError("Unsupported incident state schema")
     observed: dict[str, dict[str, Any]] = {}
     unknown_workers: set[str] = set()
+    unknown_incidents: set[str] = set()
+    worker_health = []
 
-    def incident(worker: str, code: str, detail: str, *, task_id: str = "") -> None:
-        key = ":".join(filter(None, (worker, code, task_id)))
+    def incident(worker: str, code: str, detail: str, *, task_id: str = "", generation: str = "") -> None:
+        key = ":".join(filter(None, (worker, code, task_id, generation)))
         observed[key] = {"key": key, "worker_id": worker, "code": code, "detail": detail, "task_id": task_id, "severity": "error"}
+        if generation:
+            observed[key]["generation"] = generation
 
     workers = document.get("workers")
     if workers is None:
@@ -101,6 +155,7 @@ def evaluate(document: dict[str, Any], previous: dict[str, Any] | None = None, *
         if worker_id in seen:
             raise ValueError("Duplicate worker snapshot")
         seen.add(worker_id)
+        worker_health.append(public_worker_health(worker))
         collected_age = age(now, worker.get("collected_at"))
         if collected_age is None or collected_age > stale_seconds or collected_age < -300:
             incident(worker_id, "worker_offline", "服务器心跳缺失或超时；检查主机、电源、网络和 systemd。")
@@ -121,16 +176,33 @@ def evaluate(document: dict[str, Any], previous: dict[str, Any] | None = None, *
             if isinstance(container, dict) and container.get("running") is False:
                 incident(worker_id, "container_unavailable", "任务所需常驻容器不可用；检查环境健康和上一可用代际。")
         environments = worker.get("environments", {})
+        if not isinstance(environments, dict) or environments.get("error") or not isinstance(environments.get("generations"), list):
+            unknown_incidents.update(key for key, entry in previous["active"].items()
+                                     if entry.get("worker_id") == worker_id and entry.get("code") == "environment_quarantine_unconfirmed")
         if isinstance(environments, dict):
-            active = set(environments.get("active", {}).values())
-            active_created = {entry.get("target_branch"): entry.get("created_at", "") for entry in environments.get("generations", []) if entry.get("generation") in active}
-            if environments.get("error"):
+            generation_rows = environments.get("generations", [])
+            active_map = environments.get("active", {})
+            malformed = not isinstance(generation_rows, list) or not isinstance(active_map, dict)
+            generation_rows = [entry for entry in generation_rows if isinstance(entry, dict)] if isinstance(generation_rows, list) else []
+            active = set(active_map.values()) if isinstance(active_map, dict) else set()
+            active_created = {entry.get("target_branch"): entry.get("created_at", "") for entry in generation_rows if entry.get("generation") in active}
+            if environments.get("error") or malformed:
                 incident(worker_id, "environment_state_unavailable", "无法读取环境注册表或容器状态；检查可信状态目录和 Docker 服务。")
-            for generation in environments.get("generations", []):
+            for generation in generation_rows:
+                if generation.get("state") == "quarantined" and generation.get("stopped") is not True:
+                    identifier = generation.get("generation")
+                    identifier = identifier if isinstance(identifier, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", identifier) else "unknown"
+                    incident(worker_id, "environment_quarantine_unconfirmed", "隔离环境尚未确认停止，已阻止接单和环境切换；检查指定代际的容器身份、进程清理和 Docker 状态，勿手改 registry 放行。",
+                             generation=identifier)
                 if generation.get("generation") in active and not generation.get("running"):
                     incident(worker_id, "container_unavailable", "活动环境代际不可用；检查容器并按部署记录回退。")
                 if generation.get("state") == "failed" and generation.get("created_at", "") >= active_created.get(generation.get("target_branch"), ""):
                     incident(worker_id, "environment_rebuild_failed", "候选环境重建或验证失败；旧环境继续服务，检查准备日志。")
+        workspaces = worker.get("workspaces", {})
+        if isinstance(workspaces, dict) and workspaces.get("status") == "error":
+            incident(worker_id, "workspace_cleanup_failed", "任务工作目录回收失败、超出预算或可信 state 空间不足；检查 workspace-health.json 的状态与预算，保留已封存 outbox 和执行证据。")
+        elif not isinstance(workspaces, dict) or workspaces.get("status") != "healthy":
+            unknown_incidents.add(worker_id + ":workspace_cleanup_failed")
         for storage in worker.get("storage", []):
             free = storage.get("filesystem_free_bytes", storage.get("free_bytes"))
             used = storage.get("filesystem_used_percent", storage.get("used_percent"))
@@ -186,12 +258,13 @@ def evaluate(document: dict[str, Any], previous: dict[str, Any] | None = None, *
     for key, prior in previous["active"].items():
         if key in observed:
             continue
-        if prior.get("worker_id") in unknown_workers:
+        if prior.get("worker_id") in unknown_workers or key in unknown_incidents:
             active[key] = prior
         else:
             notify({**prior, "resolved_at": iso(now)}, "recovered")
     return {"schema": SCHEMA, "updated_at": iso(now), "active": active,
-            "pending_notifications": pending, "history": history[-1000:], "healthy": not active}
+            "pending_notifications": pending, "history": history[-1000:], "healthy": not active,
+            "worker_health": worker_health}
 
 
 def smtp_configuration(environ: dict[str, str] | None = None) -> dict[str, Any]:
@@ -225,7 +298,8 @@ def message_for(notification: dict[str, Any], sender: str, recipients: list[str]
     message["Subject"] = f"[Local CI {'恢复' if recovered else '异常'}] {entry['worker_id']} / {entry['code']}"
     message["Message-ID"] = f"<{notification['id']}@local-ci.invalid>"
     message.set_content("\n".join([f"状态：{'已恢复' if recovered else '需要处理'}", f"服务器：{entry['worker_id']}",
-                                    f"问题：{entry['code']}", f"任务：{entry.get('task_id') or '无'}", entry["detail"],
+                                    f"问题：{entry['code']}", f"任务：{entry.get('task_id') or '无'}",
+                                    *([f"环境代际：{entry['generation']}"] if entry.get("generation") else []), entry["detail"],
                                     f"首次发现：{entry['first_detected_at']}", f"本次通知：{notification['created_at']}"]))
     return message
 

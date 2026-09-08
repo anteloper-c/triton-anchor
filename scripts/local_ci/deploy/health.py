@@ -80,6 +80,14 @@ def collect(config: dict, *, now: float | None = None, manager=None) -> dict:
         environments = (manager or EnvironmentManager(config, state)).health()
     except Exception as exc:
         environments = {"active": {}, "generations": [], "error": type(exc).__name__}
+    try:
+        workspaces = json.loads((state / "workspace-health.json").read_text())
+        if not isinstance(workspaces, dict):
+            raise ValueError("Expected a workspace health object")
+    except FileNotFoundError:
+        workspaces = {"status": "unreported", "reason": "No task workspace cleanup snapshot has been recorded"}
+    except (OSError, ValueError) as exc:
+        workspaces = {"status": "error", "error": type(exc).__name__, "reason": "Task workspace cleanup snapshot is unreadable"}
     services = []
     for name in config.get("monitor_services", ["triton-anchor-local-ci.service", "triton-anchor-local-ci-health.timer"]):
         if not isinstance(name, str) or not __import__("re").fullmatch(r"[A-Za-z0-9_.@-]+\.(service|timer)", name):
@@ -98,7 +106,8 @@ def collect(config: dict, *, now: float | None = None, manager=None) -> dict:
                 "state": "offline" if not alive or stale else "busy" if active else "healthy",
                 "poller": {"alive": alive, "heartbeat_at": iso(heartbeat) if heartbeat else None, "heartbeat_stale": stale,
                            "last_poll_status": "error" if worker.get("control_channel") == "unreachable" else "success"},
-                "active_task": active, "tasks": tasks, "uploads": uploads, "environments": environments, "storage": storage, "services": services}
+                "active_task": active, "tasks": tasks, "uploads": uploads, "environments": environments,
+                "workspaces": workspaces, "storage": storage, "services": services}
     return snapshot
 
 

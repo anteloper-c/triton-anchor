@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -35,10 +36,11 @@ from test_executor import FAKE_DOCKER
 # by environment probes. No handler result or contract outcome is fabricated.
 DOCKER = FAKE_DOCKER.replace(
     'os.execvpe(args[0],args,env)',
-    '''if len(args)>3 and args[1]=='-c' and '.local-ci-environment.json' in args[2]:
+    '''command=args[len(prefix):]
+if len(command)>3 and command[1]=='-c' and '.local-ci-environment.json' in command[2]:
     code=subprocess.call(args,env=env)
     if code: sys.exit(code)
-    python=str(pathlib.Path(args[3])/'bin/python')
+    python=str(pathlib.Path(command[3])/'bin/python')
     site=pathlib.Path(subprocess.check_output([python,'-c','import sysconfig;print(sysconfig.get_path("purelib"))'],env=env).decode().strip())
     for name in ('build','setuptools','wheel','pybind11'):
         info=site/(name+'-0.0.dist-info');info.mkdir(exist_ok=True)
@@ -172,7 +174,7 @@ class GitHubPeer:
         return True
 
 
-@unittest.skipUnless(sys.platform.startswith("linux"), "Linux subprocess and Unix socket integration")
+@unittest.skipUnless(sys.platform.startswith("linux") and os.geteuid() == 0, "Linux root required for isolated test UIDs")
 class SkillFlowTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="ci-skill-")
@@ -227,8 +229,8 @@ class SkillFlowTests(unittest.TestCase):
             f"current/{current_key(task)}.json": canonical({"task_id": task["task_id"]}),
         })
         fixture.relay.refresh()
-        uid = 65534 if os.geteuid() == 0 else os.geteuid()
-        gid = 65534 if os.geteuid() == 0 else os.getegid()
+        uid = 100000 + int(uuid.uuid4().hex[:8], 16) % 1000000
+        gid = uid
         root, probes, llvm = self.root, self.probes, self.llvm
 
         class Manager(FakeManager):

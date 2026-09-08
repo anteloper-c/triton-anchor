@@ -2,7 +2,7 @@
 """Prepare, lease and rotate persistent environments from trusted recipes.
 
 No recipe is read from a PR checkout. Docker containers belong to generations,
-not individual tasks. State and receipts remain on the host when generations
+not individual tasks. State and results remain on the host when generations
 are rotated. This module does not invoke a model or contact GitHub.
 """
 from __future__ import annotations
@@ -18,6 +18,7 @@ import pwd
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -35,6 +36,30 @@ SCHEMA = "triton-anchor-local-ci-environments/v1"
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,100}")
+REUSABLE = {"ready", "active", "previous"}
+PUBLIC_PATHS = ("/tmp", "/var/tmp", "/dev/shm")
+
+# Trusted read-only probe: never deletes unfamiliar files or prints their contents.
+HYGIENE_SNAPSHOT = r'''
+import hashlib,json,os,pathlib,stat,sys
+def scan(root):
+    entries=[]
+    def visit(path):
+        info=path.lstat()
+        entry=[str(path.relative_to(root)),stat.S_IFMT(info.st_mode),stat.S_IMODE(info.st_mode),info.st_uid,info.st_gid]
+        if path.is_symlink(): entry.append(os.readlink(path))
+        elif stat.S_ISREG(info.st_mode):
+            digest=hashlib.sha256()
+            with path.open('rb') as source:
+                for block in iter(lambda:source.read(1048576),b''): digest.update(block)
+            entry.append(digest.hexdigest())
+        entries.append(entry)
+        if stat.S_ISDIR(info.st_mode):
+            for child in sorted(path.iterdir()): visit(child)
+    visit(root)
+    return hashlib.sha256(json.dumps(entries,separators=(',',':')).encode()).hexdigest()
+print(json.dumps({path:scan(pathlib.Path(path)) for path in json.loads(sys.argv[1])},sort_keys=True))
+'''
 
 
 class EnvironmentError(RuntimeError):
@@ -93,6 +118,51 @@ def tree_digest(root: Path) -> str:
         else:
             raise EnvironmentError("Prepared dependency contains a special file")
     return fingerprint(entries)
+
+
+def shared_workspace_digest(root: Path, *, timeout_seconds: int = 600) -> str:
+    """Content, type, ownership and mode of prepared shared files, not task data."""
+    deadline = time.monotonic() + timeout_seconds
+    entries = []
+
+    def check_deadline():
+        if time.monotonic() >= deadline:
+            raise EnvironmentError("Shared dependency fingerprint timed out")
+
+    def visit(path: Path):
+        check_deadline()
+        info = path.lstat()
+        entry = [path.relative_to(root).as_posix(), stat.S_IFMT(info.st_mode), stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid]
+        if path.is_symlink():
+            entry.append(os.readlink(path))
+        elif stat.S_ISREG(info.st_mode):
+            digest = hashlib.sha256()
+            with path.open("rb") as source:
+                while True:
+                    check_deadline()
+                    block = source.read(1024 * 1024)
+                    check_deadline()
+                    if not block:
+                        break
+                    digest.update(block)
+            entry.append(digest.hexdigest())
+        elif not stat.S_ISDIR(info.st_mode):
+            raise EnvironmentError("Shared dependency contains an unexpected special file")
+        entries.append(entry)
+        if stat.S_ISDIR(info.st_mode):
+            children = []
+            for child in path.iterdir():
+                check_deadline()
+                children.append(child)
+            for child in sorted(children):
+                check_deadline()
+                if path == root and child.name in {"tasks", "environment.json"}:
+                    continue
+                visit(child)
+    visit(root)
+    result = fingerprint(entries)
+    check_deadline()
+    return result
 
 
 def absolute_path(value: Any, label: str) -> Path:
@@ -248,7 +318,7 @@ class EnvironmentManager:
         with (self.directory / "events.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
-    def _run(self, argv: list[str], *, cwd: Path | None = None, timeout: int | None = None) -> str:
+    def _run(self, argv: list[str], *, cwd: Path | None = None, timeout: int | None = None, record_output: bool = True) -> str:
         if self.cancel_event is not None and self.cancel_event.is_set():
             raise EnvironmentError("Environment preparation cancelled because the task is no longer current")
         try:
@@ -283,7 +353,8 @@ class EnvironmentManager:
             # Full command output can contain private URLs. Keep it local only.
             with (self.directory / "preparation.log").open("a", encoding="utf-8") as handle:
                 handle.write(f"{utc_now()} executable={argv[0]} exit={result.returncode}\n")
-                handle.write((result.stdout or "") + (result.stderr or "") + "\n")
+                if record_output:
+                    handle.write((result.stdout or "") + (result.stderr or "") + "\n")
             raise EnvironmentError(f"Environment command failed: {argv[0]} (exit {result.returncode}); see local preparation.log")
         return result.stdout or ""
 
@@ -303,6 +374,7 @@ class EnvironmentManager:
             raise EnvironmentError("backend_enabled must be a trusted boolean capability")
         if recipe.get("backend_enabled") and str(recipe.get("triton_version", "")).split(".")[:2] != ["3", "0"]:
             raise EnvironmentError("Only the deployed Triton 3.0 profile may enable backend stages")
+        self._hygiene_recipe(recipe)
         llvm = recipe.get("llvm", {})
         if not isinstance(llvm, dict):
             raise EnvironmentError("llvm recipe must be an object")
@@ -344,10 +416,177 @@ class EnvironmentManager:
             if labels.get("triton-anchor.generation") != generation["generation"]:
                 raise EnvironmentError("Persistent container ownership does not match registry")
 
+    @staticmethod
+    def _hygiene_recipe(recipe: dict) -> tuple[list[list[str]], int]:
+        commands = recipe.get("post_task_validation_commands", [])
+        timeout = recipe.get("post_task_validation_timeout_seconds", 120)
+        requires_device_check = recipe.get("backend_enabled") or recipe.get("triton_version") == "3.0"
+        if (not isinstance(commands, list) or (requires_device_check and not commands)
+                or any(not isinstance(command, list) or not command or
+                       any(not isinstance(arg, str) or not arg.strip() or "\x00" in arg for arg in command)
+                       or Path(command[0]).name in {"true", ":"} for command in commands)):
+            raise EnvironmentError("Backend environments require real post_task_validation_commands argv lists")
+        if type(timeout) is not int or not 1 <= timeout <= 3600:
+            raise EnvironmentError("post_task_validation_timeout_seconds must be an integer between 1 and 3600")
+        return commands, timeout
+
+    def _post_task_validation(self, generation: dict) -> None:
+        commands, timeout = self._hygiene_recipe(generation)
+        for index, command in enumerate(commands):
+            prefix = [self.docker, "exec", "--user", generation["execution_user"]]
+            for key, value in generation["env"].items():
+                prefix.extend(["--env", f"{key}={value}"])
+            prefix.extend(["--env", "PYTHONDONTWRITEBYTECODE=1"])
+            try:
+                self._run([*prefix, generation["container"], *command], timeout=timeout, record_output=False)
+            except EnvironmentError:
+                raise EnvironmentError(f"Post-task device validation command {index + 1} failed") from None
+
+    def _reuse_snapshot(self, generation: dict) -> dict:
+        workspace = Path(generation["workspace_host"])
+        container_workspace = Path(generation["workspace_container"])
+        paths = set(PUBLIC_PATHS)
+        env = generation["env"]
+        seed = env.get("SEED_PYTHON") or str(Path(env.get("PYTHON_VENV_ACTIVATE", "")).parent / "python")
+        paths.add(str(Path(seed).parent.parent))
+        paths.update(generation.get("shared_dependency_paths", []))
+        for key in ("LLVM_BUILD_DIR", "PPL_ROOT", "FLAGGEMS_CLONE_DIR", "BACKEND_PATH"):
+            if env.get(key) and not Path(env[key]).is_relative_to(container_workspace):
+                paths.add(env[key])
+        if any(not Path(path).is_absolute() or path == "/" or ".." in Path(path).parts for path in paths):
+            raise EnvironmentError("Shared dependency probes need explicit non-root absolute paths")
+        timeout = self.config.get("hygiene_snapshot_timeout_seconds", 600)
+        if type(timeout) is not int or not 1 <= timeout <= 3600:
+            raise EnvironmentError("hygiene_snapshot_timeout_seconds must be between 1 and 3600")
+        result = self._run([self.docker, "exec", "--user", "0", generation["container"],
+                            self.config.get("container_python", "python3"), "-I", "-S", "-B", "-c", HYGIENE_SNAPSHOT,
+                            json.dumps(sorted(paths))], timeout=timeout, record_output=False)
+        try:
+            container = json.loads(result)
+            if not isinstance(container, dict) or set(container) != paths or any(not isinstance(value, str) or not DIGEST_RE.fullmatch(value) for value in container.values()):
+                raise ValueError("Invalid probe result")
+        except ValueError:
+            raise EnvironmentError("Could not verify container public state and dependency fingerprints") from None
+        return {"workspace": shared_workspace_digest(workspace, timeout_seconds=timeout), "container": container}
+
+    def _capture_reuse_baseline(self, generation: dict, recipe: dict) -> None:
+        commands, timeout = self._hygiene_recipe(recipe)
+        generation.update(post_task_validation_commands=commands, post_task_validation_timeout_seconds=timeout,
+                          shared_dependency_paths=[mount["target"] for mount in recipe.get("mounts", [])])
+        self._post_task_validation(generation)
+        generation["reuse_baseline"] = self._reuse_snapshot(generation)
+        generation["reuse_validated_at"] = utc_now()
+
+    def _quarantine(self, state: dict, generation: dict, reason: str) -> None:
+        generation["state"] = "quarantined"
+        generation["quarantine_reason"] = reason
+        generation.setdefault("quarantined_at", utc_now())
+        generation["stopped"] = False
+        branch = generation["target_branch"]
+        if state["active"].get(branch) == generation["generation"]:
+            state["active"].pop(branch)
+        self._event(state, "generation_quarantined", generation=generation["generation"], reason=reason)
+        self._save(state)
+        try:
+            info = self._inspect(generation["container"])
+            if (info.get("Id") != generation.get("container_id") or generation.get("external") or
+                    (info.get("Config", {}).get("Labels", {}) or {}).get("triton-anchor.generation") != generation["generation"]):
+                raise EnvironmentError("Cannot confirm owned generation container")
+            if info.get("State", {}).get("Running"):
+                self._run([self.docker, "stop", "--time", "10", generation["container_id"]], timeout=30, record_output=False)
+            verified = self._inspect(generation["container_id"])
+            generation["stopped"] = verified.get("Id") == generation["container_id"] and verified.get("State", {}).get("Running") is False
+        except (EnvironmentError, OSError, ValueError):
+            pass
+        self._event(state, "quarantine_stop_confirmed" if generation["stopped"] else "quarantine_stop_unconfirmed", generation=generation["generation"])
+        self._save(state)
+
+    def quarantine(self, generation_id: str, reason: str) -> dict:
+        """Persist exclusion, retaining the container and workspace for diagnostics."""
+        with self._locked():
+            state = self._load()
+            generation = state["generations"].get(generation_id)
+            if not generation:
+                raise EnvironmentError("Unknown environment generation")
+            # Callers supply operational reason codes, never raw tool output.
+            if not isinstance(reason, str) or not re.fullmatch(r"[A-Za-z0-9_. :-]{1,200}", reason):
+                reason = "task_cleanup_failed"
+            self._quarantine(state, generation, reason)
+            return copy.deepcopy(generation)
+
+    def mark_dirty(self, generation_id: str, task_id: str) -> dict:
+        with self._locked():
+            state = self._load()
+            generation = state["generations"].get(generation_id)
+            if not generation or state["leases"].get(task_id, {}).get("generation") != generation_id:
+                raise EnvironmentError("Dirty task must hold this generation lease")
+            if generation["state"] == "dirty" and generation.get("dirty_task_id") == task_id:
+                return copy.deepcopy(generation)
+            if generation["state"] not in REUSABLE or not generation.get("reuse_baseline"):
+                raise EnvironmentError("Generation is not clean and ready for task execution")
+            generation.update(reuse_role=generation["state"], state="dirty", dirty_task_id=task_id, dirty_at=utc_now())
+            self._event(state, "generation_dirty", generation=generation_id, task_id=task_id)
+            self._save(state)
+            return copy.deepcopy(generation)
+
+    def validate_reuse(self, generation_id: str) -> dict:
+        """Caller must first stop task processes; this method owns resource.lock."""
+        with self._locked():
+            state = self._load()
+            generation = state["generations"].get(generation_id)
+            if not generation or generation["state"] not in REUSABLE | {"dirty"}:
+                raise EnvironmentError("Generation is not eligible for reuse validation")
+            reason = "container_identity_validation_failed"
+            try:
+                self._verify_container(generation)
+                baseline = generation.get("reuse_baseline")
+                reason = "generation_missing_clean_baseline"
+                if not baseline:
+                    raise EnvironmentError("generation_missing_clean_baseline")
+                reason = "shared_dependency_or_public_state_changed"
+                before = self._reuse_snapshot(generation)
+                if before != baseline:
+                    raise EnvironmentError("shared_dependency_or_public_state_changed")
+                reason = "post_task_device_validation_failed"
+                self._post_task_validation(generation)
+                reason = "post_validation_changed_shared_or_public_state"
+                after = self._reuse_snapshot(generation)
+                if after != baseline:
+                    raise EnvironmentError("post_validation_changed_shared_or_public_state")
+            except (EnvironmentError, OSError, ValueError):
+                self._quarantine(state, generation, reason)
+                raise EnvironmentError("Environment quarantined: reuse validation failed; retained for diagnostics") from None
+            role = generation.get("reuse_role", generation["state"])
+            generation["state"] = "active" if state["active"].get(generation["target_branch"]) == generation_id else ("previous" if role == "previous" else "ready")
+            generation.pop("dirty_task_id", None)
+            generation.pop("dirty_at", None)
+            generation.pop("reuse_role", None)
+            generation["reuse_validated_at"] = utc_now()
+            self._event(state, "generation_reuse_validated", generation=generation_id)
+            self._save(state)
+            return copy.deepcopy(generation)
+
+    def leases(self) -> dict:
+        """Durable lease snapshot; only a caller that stopped processes may release."""
+        with self._locked():
+            return copy.deepcopy(self._load()["leases"])
+
+    def generation(self, generation_id: str) -> dict:
+        with self._locked():
+            value = self._load()["generations"].get(generation_id)
+            if value is None:
+                raise EnvironmentError("Unknown environment generation")
+            return copy.deepcopy(value)
+
+    def generations(self) -> dict:
+        """Full registered generation snapshot for bounded worker recovery."""
+        with self._locked():
+            return copy.deepcopy(self._load()["generations"])
+
     def _execution_identity(self, generation: dict[str, Any], recipe: dict[str, Any]) -> None:
         user = recipe.get("execution_user", self.config.get("container_execution_user", ""))
-        if not isinstance(user, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)?", user):
-            raise EnvironmentError("Configure the actual non-root execution_user in the persistent image")
+        if not isinstance(user, str) or not re.fullmatch(r"[1-9][0-9]*(?::[1-9][0-9]*)?", user):
+            raise EnvironmentError("Configure a dedicated non-root numeric execution_user UID or UID:GID")
         values = []
         for flag in ("-u", "-g"):
             value = self._run([self.docker, "exec", "--user", user, generation["container"], "id", flag]).strip()
@@ -376,7 +615,7 @@ class EnvironmentManager:
                     path.chmod((mode | 0o055) & ~0o022)
                 elif path.is_file():
                     path.chmod((mode | 0o044 | (0o011 if mode & 0o100 else 0)) & ~0o022)
-        prefix = [self.docker, "exec", "--user", generation["execution_user"], generation["container"]]
+        prefix = [self.docker, "exec", "--user", generation["execution_user"], "--env", "PYTHONDONTWRITEBYTECODE=1", generation["container"]]
         self._run([*prefix, "test", "-x", generation["workspace_container"]])
         self._run([*prefix, "test", "-r", "/opt/local-ci/control/scripts/local_ci/tools/run_tool.py"])
         self._run([*prefix, generation["env"]["LLVM_BUILD_DIR"] + "/bin/llvm-config", "--version"])
@@ -533,7 +772,7 @@ class EnvironmentManager:
         env.update({"WORKSPACE": container_workspace, "LLVM_BUILD_DIR": f"{container_workspace}/deps/llvm-{revision}",
                     "LLVM_SYSPATH": f"{container_workspace}/deps/llvm-{revision}", "LOCAL_CI_LLVM_HASH": revision,
                     "RUN_BACKEND_STAGES": "true" if recipe.get("backend_enabled", False) else "false"})
-        generation = {"profile": profile, "target_branch": branch, "generation": generation_id, "container": "anchor-ci-" + generation_id,
+        generation = {"profile": profile, "target_branch": branch, "triton_version": recipe.get("triton_version"), "generation": generation_id, "container": "anchor-ci-" + generation_id,
                       "workspace_host": str(workspace_host), "workspace_container": container_workspace, "llvm_hash": revision,
                       "backend_enabled": recipe.get("backend_enabled", False), "env": env, "state": "preparing", "created_at": utc_now(),
                       "recipe_fingerprint": fingerprint(recipe), "external": False, "daily_validation": daily}
@@ -547,7 +786,7 @@ class EnvironmentManager:
             control_root = absolute_path(self.config.get("control_root"), "control_root").resolve()
             if not (control_root / "scripts/local_ci").is_dir():
                 raise EnvironmentError("control_root does not contain trusted Local CI scripts")
-            args = [self.docker, "create", "--name", generation["container"], "--restart", "unless-stopped",
+            args = [self.docker, "create", "--name", generation["container"], "--user", "0:0", "--restart", "unless-stopped",
                     "--label", "triton-anchor.role=persistent-ci", "--label", f"triton-anchor.generation={generation_id}",
                     "--mount", f"type=bind,source={workspace_host},target={container_workspace}",
                     "--mount", f"type=bind,source={control_root},target=/opt/local-ci/control,readonly",
@@ -596,6 +835,7 @@ class EnvironmentManager:
                     if name in validations:
                         self._exec(generation, validations[name])
             self._runtime_access(generation, managed=True)
+            self._capture_reuse_baseline(generation, recipe)
             generation["state"] = "ready"
             generation["ready_at"] = utc_now()
             generation["environment_fingerprint"] = fingerprint({"recipe": recipe, "image_id": generation["image_id"], "llvm_hash": revision})
@@ -621,17 +861,29 @@ class EnvironmentManager:
             # Keep the failed managed generation for diagnostics; never prune broadly.
             raise
 
+    @staticmethod
+    def _require_stopped_quarantines(state: dict) -> None:
+        if any(row["state"] == "quarantined" and not row.get("stopped") for row in state["generations"].values()):
+            raise EnvironmentError("Quarantined container stop is unconfirmed; shared resources remain blocked")
+
     def _ensure(self, state: dict[str, Any], branch: str, revision: str) -> dict[str, Any]:
+        self._require_stopped_quarantines(state)
         profile, recipe = self._profile(branch, revision)
         digest = fingerprint(recipe)
         active = state["generations"].get(state["active"].get(branch, ""))
         candidates = ([active] if active else []) + list(reversed(list(state["generations"].values())))
         for generation in candidates:
-            if generation["target_branch"] == branch and generation["llvm_hash"] == revision and generation["recipe_fingerprint"] == digest and generation["state"] in {"ready", "active", "previous"}:
+            if generation["target_branch"] == branch and generation["llvm_hash"] == revision and generation["recipe_fingerprint"] == digest and generation["state"] in REUSABLE:
+                if not generation.get("reuse_baseline"):
+                    self._quarantine(state, generation, "generation_missing_clean_baseline")
+                    if not generation.get("stopped"):
+                        raise EnvironmentError("Legacy generation cannot be stopped safely")
+                    continue
                 self._verify_container(generation)
                 return generation
         existing = recipe.get("existing_container")
-        if existing and revision == recipe["llvm_hash"] and not state["active"].get(branch):
+        registered = any(row["container"] == existing for row in state["generations"].values())
+        if existing and not registered and revision == recipe["llvm_hash"] and not state["active"].get(branch):
             if not isinstance(existing, str) or not NAME_RE.fullmatch(existing):
                 raise EnvironmentError("existing_container name is invalid")
             workspace = absolute_path(recipe.get("existing_workspace_host"), "existing_workspace_host")
@@ -646,7 +898,7 @@ class EnvironmentManager:
             env.update({"WORKSPACE": container_workspace, "LOCAL_CI_LLVM_HASH": revision,
                         "RUN_BACKEND_STAGES": "true" if recipe.get("backend_enabled") else "false"})
             generation_id = profile + "-adopted-" + fingerprint(info.get("Id", existing))[:12]
-            generation = {"profile": profile, "target_branch": branch, "generation": generation_id, "container": existing,
+            generation = {"profile": profile, "target_branch": branch, "triton_version": recipe.get("triton_version"), "generation": generation_id, "container": existing,
                           "container_id": info.get("Id"), "workspace_host": str(workspace), "workspace_container": container_workspace,
                           "llvm_hash": revision, "backend_enabled": recipe.get("backend_enabled", False), "env": env,
                           "recipe_fingerprint": digest, "environment_fingerprint": fingerprint({"recipe": recipe, "image": info.get("Image"), "id": info.get("Id")}),
@@ -654,13 +906,14 @@ class EnvironmentManager:
             self._exec(generation, [env["LLVM_BUILD_DIR"] + "/bin/llvm-config", "--version"])
             self._execution_identity(generation, recipe)
             self._runtime_access(generation, managed=False)
+            self._capture_reuse_baseline(generation, recipe)
             state["generations"][generation_id] = generation
             state["active"][branch] = generation_id
             self._event(state, "generation_adopted", generation=generation_id, profile=profile)
             self._save(state)
             return generation
         generation = self._new_generation(state, branch, profile, recipe, daily=False)
-        if revision == recipe["llvm_hash"] and branch not in state["active"]:
+        if revision == recipe["llvm_hash"] and (branch not in state["active"] or state["generations"][state["active"][branch]]["state"] not in REUSABLE):
             state["active"][branch] = generation["generation"]
             generation["state"] = "active"
             self._save(state)
@@ -675,9 +928,12 @@ class EnvironmentManager:
             raise EnvironmentError("task_id must be a nonempty bounded identifier")
         with self._locked():
             state = self._load()
+            self._require_stopped_quarantines(state)
             lease = state["leases"].get(task_id)
             if lease:
                 generation = state["generations"][lease["generation"]]
+                if generation["state"] not in REUSABLE or not generation.get("reuse_baseline"):
+                    raise EnvironmentError("Leased generation is dirty, quarantined or lacks a clean baseline")
                 if generation["target_branch"] != target_branch or generation["llvm_hash"] != llvm_hash:
                     raise EnvironmentError("An existing task lease cannot change version or LLVM revision")
                 self._verify_container(generation)
@@ -689,6 +945,7 @@ class EnvironmentManager:
             return copy.deepcopy(generation)
 
     def release(self, task_id: str) -> None:
+        """Release only after the caller confirms task processes have stopped."""
         with self._locked():
             state = self._load()
             lease = state["leases"].pop(task_id, None)
@@ -699,12 +956,17 @@ class EnvironmentManager:
     def rotate(self, target_branch: str) -> dict[str, Any]:
         with self._locked():
             state = self._load()
+            self._require_stopped_quarantines(state)
             raw = self.config.get("profiles", {}).get(target_branch, {})
             profile, recipe = self._profile(target_branch, str(raw.get("llvm_hash", "")))
             generation = self._new_generation(state, target_branch, profile, recipe, daily=True)
             previous_id = state["active"].get(target_branch)
             if previous_id:
-                state["generations"][previous_id]["state"] = "previous"
+                previous = state["generations"][previous_id]
+                if previous["state"] == "dirty":
+                    previous["reuse_role"] = "previous"
+                elif previous["state"] in REUSABLE:
+                    previous["state"] = "previous"
             generation["state"] = "active"
             state["active"][target_branch] = generation["generation"]
             self._event(state, "generation_promoted", generation=generation["generation"], previous=previous_id, profile=profile)
@@ -714,14 +976,19 @@ class EnvironmentManager:
     def rollback(self, target_branch: str) -> dict[str, Any]:
         with self._locked():
             state = self._load()
-            previous = [entry for entry in state["generations"].values() if entry["target_branch"] == target_branch and entry["state"] == "previous"]
+            self._require_stopped_quarantines(state)
+            previous = [entry for entry in state["generations"].values() if entry["target_branch"] == target_branch and entry["state"] == "previous" and entry.get("reuse_baseline")]
             if not previous:
                 raise EnvironmentError("No retained previous generation is available")
             generation = previous[-1]
             self._verify_container(generation)
             active_id = state["active"].get(target_branch)
             if active_id:
-                state["generations"][active_id]["state"] = "ready"
+                current = state["generations"][active_id]
+                if current["state"] == "dirty":
+                    current["reuse_role"] = "ready"
+                elif current["state"] in REUSABLE:
+                    current["state"] = "ready"
             generation["state"] = "active"
             state["active"][target_branch] = generation["generation"]
             self._event(state, "generation_rollback", generation=generation["generation"], previous=active_id)
@@ -741,13 +1008,15 @@ class EnvironmentManager:
             grace = float(self.config.get("generation_retention_hours", 72)) * 3600
             for generation in list(state["generations"].values()):
                 identifier = generation["generation"]
-                if identifier in protected or generation.get("external") or generation["state"] == "preparing":
+                if (identifier in protected or generation.get("external") or generation["state"] in {"preparing", "dirty"}
+                        or (generation["state"] == "quarantined" and not generation.get("stopped"))):
                     continue
-                created = datetime.fromisoformat(generation["created_at"].replace("Z", "+00:00")).timestamp()
+                created = datetime.fromisoformat(generation.get("quarantined_at", generation["created_at"]).replace("Z", "+00:00")).timestamp()
                 if time.time() - created < grace:
                     continue
                 info = self._inspect(generation["container"])
-                if (info.get("Config", {}).get("Labels", {}) or {}).get("triton-anchor.generation") != identifier:
+                if (info.get("Id") != generation.get("container_id") or
+                        (info.get("Config", {}).get("Labels", {}) or {}).get("triton-anchor.generation") != identifier):
                     raise EnvironmentError("Refusing to remove a container with mismatched generation ownership")
                 recipe = self.config["profiles"][generation["target_branch"]]
                 root = absolute_path(recipe.get("workspace_root"), "workspace_root").resolve()
@@ -771,7 +1040,9 @@ class EnvironmentManager:
         rows = []
         leased = {lease["generation"] for lease in state["leases"].values()}
         for generation in state["generations"].values():
-            row = {key: generation.get(key) for key in ("profile", "generation", "container", "target_branch", "llvm_hash", "state", "created_at")}
+            row = {key: generation.get(key) for key in ("profile", "generation", "container", "target_branch", "llvm_hash", "state", "created_at", "reuse_role", "dirty_task_id", "quarantine_reason", "stopped", "reuse_validated_at")}
+            row["active"] = state["active"].get(generation["target_branch"]) == generation["generation"]
+            row["reusable"] = generation["state"] in REUSABLE and bool(generation.get("reuse_baseline"))
             row["leased"] = generation["generation"] in leased
             try:
                 self._verify_container(generation)

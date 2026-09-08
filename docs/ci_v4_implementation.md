@@ -37,6 +37,10 @@ Codex 的业务决定只有继续或阻塞。`pass/fail/infra_error` 说明证�
 
 Triton 3.0 必须保留后端、FlagGems 和性能能力，其他版本只提供前端。缺少已声明能力属于环境异常。每日错峰创建常驻候选环境，验证成功后只切换新任务；已有 lease 和上一可用代际受保护。新 LLVM 使用可信镜像/源码配方与精确摘要，3.0 后端失败不会降级。
 
+常驻容器复用系统、LLVM 和依赖底座，任务目录由 `agent_ci/workspaces.py` 管理。任务前持久登记并标记 dirty，任务后确认专用 UID 进程退出，验证共享文件指纹、公共目录及真实设备状态后才封存。失败代际隔离，停止未确认时禁止新构建。成功任务封存后立即回收工作目录；失败/待恢复目录默认保留 24 小时，受 100 GiB 逻辑预算约束。保留日志和 outbox，回收后使原安装状态的通过记录失效，续跑重建；同配方不同代际也不能直接复用安装状态。
+
+重启先在原代际处理残留进程和租约，兼容登记以前完成任务遗留的目录。显式 `--resume` 与 worker 共用独占锁，需先停止服务再操作。目录、代际与磁盘状态进入独立健康报告和现有告警机制。此轮不改变 GitHub 事件、门禁或 status → comment → Pages 的顺序。
+
 独立 health timer 发布主机、服务、环境、Codex、磁盘、执行及发布状态；GitHub watchdog 读取心跳并通过 SMTP 发异常/恢复通知。中转不可达与主机离线分别报告。告警状态和待发通知跨定时运行保存。
 
 配置模板故意留空实际公司镜像、模型目录、后端与 SMTP 来源，预检要求补齐。部署必须使用与投递 worker SHA 一致的干净控制 checkout；切换代码前停止旧接单并处理在途任务。旧凭据与公司模型不自动改写。
@@ -53,4 +57,4 @@ GitHub 侧需配置 `GITEE_RESULTS_REPO_URL`、`GITEE_USERNAME`、`LOCAL_CI_HEAL
 
 运行 `python3 scripts/local_ci/agent_ci/verify.py --output-dir /tmp/ci-v4-verification` 可重现验收。最终报告单独记录通过项及源码摘要。模拟结果不代表公司模型、LLVM/后端真实编译、硬件、实际邮件或线上 GitHub/Gitee 已通过验收。
 
-单向交付调整的本机结果见 [最新验收](ci_oneway_verification/verification.md) 和 [覆盖说明](ci_oneway_verification/coverage.md)。Skill 结构迁移的 442 项报告保留在 ci_skill_verification，原回执相关测试仅代表当时实现。
+任务回收与环境复用检查见 [最新验收](ci_cleanup_verification/verification.md) 和 [覆盖说明](ci_cleanup_verification/coverage.md)。单向交付的 472 项报告保留在 ci_oneway_verification；Skill 结构迁移的 442 项报告保留在 ci_skill_verification，原回执相关测试仅代表当时实现。

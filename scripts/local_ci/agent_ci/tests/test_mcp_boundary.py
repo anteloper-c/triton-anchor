@@ -30,7 +30,7 @@ class BoundaryExecutor:
         self.root = root
         self.calls = []
         self.config = {"max_jobs": 8, "tool_timeouts": {"environment": 60}}
-        self.generation = {"environment_fingerprint": "fixture-environment", "backend_enabled": False}
+        self.generation = {"generation": "fixture-generation", "environment_fingerprint": "fixture-environment", "backend_enabled": False}
 
     def prepare(self, variant="candidate"):
         path = self.root / variant

@@ -23,6 +23,10 @@
   "codex_attempts": 3,
   "retry_delay_seconds": 30,
   "results_retention_days": 30,
+  "task_workspace_retention_hours": 24,
+  "task_workspace_max_bytes": 107374182400,
+  "cleanup_timeout_seconds": 60,
+  "hygiene_snapshot_timeout_seconds": 600,
   "max_jobs": 8,
   "generation_retention_hours": 72,
   "minimum_free_bytes": 10737418240,
@@ -35,7 +39,8 @@
       "build_jobs": 8, "daily_calendar": "*-*-* 02:00:00 Asia/Shanghai",
       "llvm": {"mode": "source", "repository": "", "patches": [], "cmake_args": ["-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", "-DLLVM_ENABLE_ASSERTIONS=ON", "-DLLVM_ENABLE_PROJECTS=mlir;clang;lld", "-DLLVM_TARGETS_TO_BUILD=host;NVPTX;AMDGPU"]},
       "env": {"PYTHON_VENV_ACTIVATE": "/opt/venv/bin/activate", "BACKEND_PROFILE": "", "BACKEND_PATH": "", "BACKEND_WHEEL_PATTERN": "", "BACKEND_ENVSETUP": "", "BACKEND_ENVSETUP_ARGS": "", "BACKEND_TEST_COMMAND": "", "EXPECTED_TRITON_BACKEND": "", "PPL_ROOT": "", "FLAGGEMS_CLONE_DIR": "", "MAX_JOBS": "8"},
-      "repositories": {}, "mounts": [], "devices": [], "prepare_commands": [], "validation_commands": {}
+      "repositories": {}, "mounts": [], "devices": [], "prepare_commands": [], "validation_commands": {},
+      "post_task_validation_commands": [], "post_task_validation_timeout_seconds": 120
     },
     "triton_v3.3": {
       "name": "triton-3.3", "triton_version": "3.3",
@@ -45,7 +50,8 @@
       "build_jobs": 8, "daily_calendar": "*-*-* 03:00:00 Asia/Shanghai",
       "llvm": {"mode": "source", "repository": ""},
       "env": {"PYTHON_VENV_ACTIVATE": "/opt/venv/bin/activate", "MAX_JOBS": "8"},
-      "repositories": {}, "prepare_commands": [], "validation_commands": {}
+      "repositories": {}, "prepare_commands": [], "validation_commands": {},
+      "post_task_validation_commands": [], "post_task_validation_timeout_seconds": 120
     },
     "triton_v3.6": {
       "name": "triton-3.6", "triton_version": "3.6",
@@ -55,7 +61,8 @@
       "build_jobs": 8, "daily_calendar": "*-*-* 04:00:00 Asia/Shanghai",
       "llvm": {"mode": "source", "repository": ""},
       "env": {"PYTHON_VENV_ACTIVATE": "/opt/venv/bin/activate", "MAX_JOBS": "8"},
-      "repositories": {}, "prepare_commands": [], "validation_commands": {}
+      "repositories": {}, "prepare_commands": [], "validation_commands": {},
+      "post_task_validation_commands": [], "post_task_validation_timeout_seconds": 120
     }
   }
 }

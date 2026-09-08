@@ -32,7 +32,7 @@ Triton 3.0：环境、前端 build、wheel install/import、frontend smoke、bac
 
 发布目录为 `runs/v4/<task_id>/<run_id>/`。result.json 封存后不可修改，Codex 到此结束；上传失败只重发原有结果，Harness 保留 outbox 并在后续轮询重试，不再调用模型。GitHub 独立读取、校验并发布结果，没有 Gitee 回执和本地等待。保留原有 status → comment → Dashboard 顺序，GitHub 发布失败由 Actions 显示并由后续定时任务重试；因此 PR status 成功不单独证明 Dashboard 已更新。旧 schema 只用于历史读取，不能满足 v4 门禁。
 
-显式续跑：`python3 scripts/local_ci/agent_ci/worker.py --config CONFIG --resume TASK_ID`。已上传的 infra_error 可开启新 run，复用仍有效的通过项；仍待上传则继续原 outbox，不重新构建。服务重启自动接续未封存任务，已上传的旧回执等待状态迁移为本地 complete。
+显式续跑：先停止 worker，再执行 `python3 scripts/local_ci/agent_ci/worker.py --config CONFIG --resume TASK_ID`，随后启动 worker。续跑与接单、目录回收共用 poll.lock，避免新 run 与旧目录清理并发。已上传的 infra_error 可开启新 run，复用仍有效的通过项；目录已回收或代际改变时重新执行检查；仍待上传则继续原 outbox，不重新构建。服务重启自动接续未封存任务，已上传的旧回执等待状态迁移为本地 complete。
 
 Gitee v4 结果默认保留 30 天，按结果文件的 Git 上传提交时间计算；每日 retention timer 删除过期 run 目录并保留摘要和过期记录。保留周期独立于 GitHub 发布，过期任务显示 expired，不回退发布更老的 run。此清理不改写 Git 历史，也不删除服务器任务证据；长时间接收中断需在到期前修复或调整 `results_retention_days`。
 
@@ -41,6 +41,14 @@ Gitee v4 结果默认保留 30 天，按结果文件的 Git 上传提交时间�
 环境按版本及精确 LLVM/recipe 指纹管理活动、候选和上一代。每日错峰准备候选，验证后切换新任务；旧任务 lease 释放前不能回收。PR 新 LLVM 候选不自动晋升为正式活动环境。3.0 仍尝试匹配后端，失败阻断；source/archive 必须来自公司可达镜像或本地缓存并验证来源。
 
 默认全局一个构建测试任务、MAX_JOBS=8，环境重建共用资源锁。Codex 专用非 root 账户不具备 Docker 和 journal 写权限；候选代码在常驻容器的任务目录执行。API 凭据与 Gitee 写 token 不进入候选容器。任务描述、源码和生成文件不能授予权限。
+
+任务收尾由 `agent_ci/workspaces.py` 管理：持久登记目录与代际 → 标记环境 dirty → 执行检查 → 回收专用 CI UID 的进程 → 检查共享依赖、公共目录和设备 → 封存证据 → 按策略回收任务目录 → 释放占用。PID1/管理进程使用 root，任务 UID 不能用于任何常驻服务；任务进程设置 no_new_privs，可信 reaper 用 Linux pidfd 确认没有仍运行的子进程。正常退出、取消和重启均执行回收。
+
+复用检查失败会隔离并停止精确代际，未确认停止时阻止新构建；3.0 必须配置真实设备检查。未知公共目录残留不会被盲删，按环境异常处理。检查含有独立时限，MCP finish 的等待上限由这些可信时限计算；进入封存后不能再启动测试。结果中保留 `environment_cleanup`，检查失败不能给出整体通过。
+
+成功封存后删除任务源码、venv、构建和缓存目录，上传只使用宿主机 outbox。失败/待恢复目录默认保留 24 小时，保留目录的逻辑容量预算默认 100 GiB；超预算优先回收较旧的非活动目录，活动任务不可删。日志优先引用已有封存证据，尚未封存的执行证据先归档并落盘。回收使对应通过记录失去复用资格，但不抹除历史事实。该预算不包含持久证据；磁盘不足时告警、阻止新构建并继续尝试上传。配置和运维命令见 `deploy/README.md`。
+
+启动恢复同时登记旧版本遗留的已知任务目录，先在原代际终止孤儿进程，再释放旧租约。无法确认归属的目录保留供检查。目录回收失败、环境隔离和磁盘预算状态进入独立健康快照、Dashboard 与异常/恢复通知。
 
 ## 监控
 

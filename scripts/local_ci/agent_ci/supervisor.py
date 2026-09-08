@@ -25,7 +25,7 @@ ARCHITECTURE_RULES = {
 
 
 class Supervisor:
-    def __init__(self, task: dict, policy: dict, journal, executor, run_dir: Path, *, changes: list[dict] | None = None):
+    def __init__(self, task: dict, policy: dict, journal, executor, run_dir: Path, *, changes: list[dict] | None = None, before_seal=None):
         self.task, self.policy, self.journal, self.executor = task, policy, journal, executor
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -35,6 +35,8 @@ class Supervisor:
         self.futures: dict[str, concurrent.futures.Future] = {}
         self.closed = False
         self.guard = threading.RLock()
+        self.before_seal = before_seal
+        self.sealing_started = False
 
     def recover(self) -> None:
         for record in self.journal.executions(self.task["task_id"]):
@@ -46,6 +48,8 @@ class Supervisor:
     def fresh(self, tool_id: str, variant: str = "candidate") -> bool:
         record = self.journal.latest(self.task["task_id"], tool_id, variant)
         if not record or record["status"] != "pass" or record.get("environment_fingerprint") != self.executor.generation["environment_fingerprint"]:
+            return False
+        if record.get("reuse_invalidated") or record.get("workspace_generation", self.executor.generation["generation"]) != self.executor.generation["generation"]:
             return False
         if tool_id in (*TOOLS, "contract_tests") and (record.get("execution_kind") == "custom" or
                 any(key in record for key in ("script_digest", "script_name", "source_only"))):
@@ -79,7 +83,7 @@ class Supervisor:
                      variant: str = "candidate", force: bool = False, custom: dict | None = None) -> dict:
         """Internal queue shared by built-ins and the validated run_custom path."""
         with self.guard:
-            if self.closed or self.cancelled.is_set():
+            if self.closed or self.cancelled.is_set() or self.sealing_started:
                 raise ContractError("Task has finished or was cancelled")
             if not isinstance(reason, str) or not reason.strip():
                 raise ContractError("Each check needs a selection reason")
@@ -124,6 +128,7 @@ class Supervisor:
         if custom:
             result["source_only"] = custom.get("source_only", False)
         result["required"] = tool_id in self.policy["required_checks"] and variant == "candidate"
+        result["workspace_generation"] = self.executor.generation["generation"]
         self.journal.execution(self.task["task_id"], tool_id, variant, result)
         if result.get("reason") == "oom" and not self.cancelled.is_set():
             retry = uuid.uuid4().hex
@@ -132,6 +137,7 @@ class Supervisor:
             self.journal.execution(self.task["task_id"], tool_id, variant, {"execution_id": retry, "status": "running", "retry_of": ident})
             result = self._invoke(tool_id, retry, variant, params, custom)
             result.update(retry_of=ident, selection_reason=reason, dependency_executions=dependencies, required=tool_id in self.policy["required_checks"] and variant == "candidate")
+            result["workspace_generation"] = self.executor.generation["generation"]
             result["execution_kind"] = "custom" if custom is not None else "builtin"
             if custom:
                 result["source_only"] = custom.get("source_only", False)
@@ -265,7 +271,14 @@ class Supervisor:
                 return json.loads((self.run_dir / "published/result.json").read_text())
             if any(not future.done() for future in self.futures.values()):
                 raise ContractError("Wait for running checks before sealing results")
+            # If evidence storage fails after the environment check, retries
+            # may finish sealing but must not launch new candidate work against
+            # an already validated/released installation.
+            self.sealing_started = True
+            cleanup = self.before_seal() if self.before_seal is not None else None
             checks, unfinished, blockers, performance = [], [], [], []
+            if cleanup is not None and cleanup.get("status") != "pass":
+                unfinished.append("environment cleanup: " + cleanup.get("reason", "reuse validation failed"))
             for tool_id in self.policy["required_checks"]:
                 record = self.journal.latest(self.task["task_id"], tool_id)
                 if not record or not self.fresh(tool_id):
@@ -315,6 +328,8 @@ class Supervisor:
                       "performance": performance, "unfinished": unfinished,
                       "environment": {k: self.executor.generation[k] for k in ("profile", "generation", "environment_fingerprint", "backend_enabled")},
                       "publication": {"status": "pending_upload", "completion_requires": ["gitee_upload"]}}
+            if cleanup is not None:
+                result["environment_cleanup"] = cleanup
             published = self.run_dir / "published"
             published.mkdir(exist_ok=True)
             for record in records:

@@ -76,15 +76,43 @@ class Fixture:
 class FakeManager:
     def __init__(self, root, backend=True):
         self.root, self.backend, self.acquired, self.released = root, backend, [], []
+        self.registry, self._leases, self.quarantined = {}, {}, []
+        self.validation_failure = None
 
     def acquire(self, task_id, target_branch, llvm_hash):
         self.acquired.append(task_id)
-        return {"profile": "simulated-3.0" if self.backend else "simulated-frontend", "generation": "simulation-1",
+        generation = {"profile": "simulated-3.0" if self.backend else "simulated-frontend", "generation": "simulation-1",
                 "workspace_host": str(self.root / "workspace"), "workspace_container": "/workspace",
                 "container": "persistent-simulation", "environment_fingerprint": "f" * 64, "backend_enabled": self.backend, "env": {}}
+        self.registry[generation["generation"]] = generation
+        self._leases[task_id] = {"generation": generation["generation"]}
+        return generation
+
+    def leases(self):
+        return dict(self._leases)
+
+    def generation(self, ident):
+        return self.registry[ident]
+
+    def generations(self):
+        return dict(self.registry)
+
+    def mark_dirty(self, ident, task_id):
+        self.registry[ident]["dirty"] = True
+
+    def validate_reuse(self, ident):
+        if self.validation_failure:
+            raise RuntimeError(self.validation_failure)
+        self.registry[ident]["dirty"] = False
+        return {"status": "pass"}
+
+    def quarantine(self, ident, reason):
+        self.quarantined.append((ident, reason))
+        return {"stopped": True}
 
     def release(self, task_id):
         self.released.append(task_id)
+        self._leases.pop(task_id, None)
 
 
 class FakeExecutor:
@@ -94,7 +122,7 @@ class FakeExecutor:
 
     def __init__(self, config, state_dir, generation, task, relay):
         self.config, self.generation, self.task, self.relay = config, generation, task, relay
-        self.root = Path(generation["workspace_host"]) / task["task_id"]
+        self.root = Path(generation["workspace_host"]) / "tasks" / task["task_id"]
 
     def prepare(self, variant="candidate"):
         path = self.root / variant
@@ -104,6 +132,9 @@ class FakeExecutor:
 
     def stop(self, execution_id):
         self.calls.append(("stop", execution_id))
+
+    def stop_task(self):
+        return {"verified": True, "remaining": []}
 
     def run(self, tool_id, execution_id, variant, parameters, cancelled, custom=None):
         self.calls.append((tool_id, variant, parameters))
@@ -279,6 +310,23 @@ class AgentTests(unittest.TestCase):
         self.assertFalse(supervisor.fresh("frontend_smoke"))
         with self.assertRaises(ContractError):
             supervisor.start_check("backend_rebuild", "Stale frontend must not be consumed")
+
+    def test_same_recipe_in_new_generation_does_not_reuse_installation(self):
+        supervisor = self.supervisor()
+        supervisor.poll_check(supervisor.start_check("environment", "Original generation")["execution_id"], 30)
+        self.assertTrue(supervisor.fresh("environment"))
+        supervisor.executor.generation["generation"] = "replacement-generation"
+        self.assertFalse(supervisor.fresh("environment"))
+
+    def test_failed_sealing_cannot_launch_more_code_after_reuse_check(self):
+        supervisor = self.supervisor()
+        supervisor.poll_check(supervisor.start_check("environment", "Prepare evidence")["execution_id"], 30)
+        with patch("agent_ci.supervisor.shutil.copyfile", side_effect=OSError("disk error")):
+            with self.assertRaises(OSError):
+                supervisor.finish("Seal attempt")
+        with self.assertRaises(ContractError):
+            supervisor.start_check("environment", "Mutate checked environment", force=True)
+        self.assertEqual("infra_error", supervisor.finish("Retry sealing existing evidence")["status"])
 
     def test_execution_setup_failure_is_a_terminal_infrastructure_record(self):
         supervisor = self.supervisor()

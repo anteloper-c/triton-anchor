@@ -30,6 +30,25 @@ MODEL_SETTINGS = {
 }
 
 
+def finish_timeout_seconds(config: dict) -> int:
+    """Two host/container snapshots, device check, reaping and evidence storage."""
+    snapshot = config.get("hygiene_snapshot_timeout_seconds", 600)
+    cleanup = config.get("cleanup_timeout_seconds", 60)
+    checks = [profile.get("post_task_validation_timeout_seconds", 120)
+              for profile in config.get("profiles", {}).values()]
+    if any(type(value) is not int or not 1 <= value <= 3600 for value in [snapshot, *checks]):
+        raise ContractError("Invalid environment validation timeout")
+    if type(cleanup) is not int or cleanup < 1:
+        raise ContractError("Invalid process cleanup timeout")
+    device_checks = [profile.get("post_task_validation_timeout_seconds", 120)
+                     * max(1, len(profile.get("post_task_validation_commands", [])))
+                     for profile in config.get("profiles", {}).values()]
+    seconds = 4 * snapshot + max(device_checks, default=120) + 2 * cleanup + 600
+    if seconds > 86300:
+        raise ContractError("Combined finish deadline exceeds one day")
+    return seconds
+
+
 def load_toml(path: Path) -> dict:
     try:
         import tomllib
@@ -148,6 +167,7 @@ class CodexDriver:
         atomic_json(supervisor.run_dir / "skill-manifest.json", {"task_id": task_id, **skill.manifest})
         # Preserve the deployed model/provider, not unrelated hooks or MCP servers.
         effective = {key: value for key, value in settings.items() if key in MODEL_SETTINGS}
+        finish_timeout = finish_timeout_seconds(self.config)
         effective.update({"model_providers": {provider_name: provider},
                           "sandbox_mode": "read-only", "approval_policy": "never", "web_search": "disabled",
                           "cli_auth_credentials_store": "file", "project_doc_max_bytes": 0,
@@ -155,9 +175,9 @@ class CodexDriver:
                           "mcp_servers": {"local_ci": {
                               "command": self.config.get("python_bin", "python3"),
                               "args": [str(local_root / "agent_ci/mcp_server.py")],
-                              "env_vars": ["LOCAL_CI_RPC_SOCKET", "LOCAL_CI_RPC_TOKEN"],
+                              "env_vars": ["LOCAL_CI_RPC_SOCKET", "LOCAL_CI_RPC_TOKEN", "LOCAL_CI_FINISH_TIMEOUT_SECONDS"],
                               "required": True, "enabled": True, "enabled_tools": sorted(SCHEMAS),
-                              "startup_timeout_sec": 30, "tool_timeout_sec": 90,
+                              "startup_timeout_sec": 30, "tool_timeout_sec": finish_timeout + 30,
                           }}})
         for name in ("config.toml", "auth.json"):
             self.safe_path(home / name)
@@ -170,7 +190,8 @@ class CodexDriver:
                 os.chown(path, account.pw_uid, account.pw_gid)
         child_env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": str(session),
                      "CODEX_HOME": str(home), "LANG": "C.UTF-8",
-                     "LOCAL_CI_RPC_SOCKET": str(service.path), "LOCAL_CI_RPC_TOKEN": service.token}
+                     "LOCAL_CI_RPC_SOCKET": str(service.path), "LOCAL_CI_RPC_TOKEN": service.token,
+                     "LOCAL_CI_FINISH_TIMEOUT_SECONDS": str(finish_timeout)}
         provider_env = [provider["env_key"]] if provider.get("env_key") else []
         provider_env += list(provider.get("env_http_headers", {}).values())
         for key in provider_env:

@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from agent_ci.codex import CodexDriver, DISABLED_FEATURES
+from agent_ci.codex import CodexDriver, DISABLED_FEATURES, finish_timeout_seconds
 from agent_ci.protocol import ContractError
 from agent_ci.skill import load_skill, SkillBundle
 
@@ -115,7 +115,9 @@ hooks = true
         self.assertIn('https://company.invalid/v1', config)
         self.assertNotIn('do-not-run-personal', config)
         self.assertNotIn(self.service.token, config)
-        self.assertIn('"env_vars" = ["LOCAL_CI_RPC_SOCKET", "LOCAL_CI_RPC_TOKEN"]', config)
+        self.assertIn('"env_vars" = ["LOCAL_CI_RPC_SOCKET", "LOCAL_CI_RPC_TOKEN", "LOCAL_CI_FINISH_TIMEOUT_SECONDS"]', config)
+        self.assertEqual('3240', env['LOCAL_CI_FINISH_TIMEOUT_SECONDS'])
+        self.assertIn('"tool_timeout_sec" = 3270', config)
         self.assertIn('"required" = true', config)
         self.assertIn('"shell_tool" = false', config)
         self.assertIn('"hooks" = false', config)
@@ -141,6 +143,13 @@ hooks = true
         self.assertNotEqual(first['event_log'], second['event_log'])
         self.assertEqual(first['skill_digest'], second['skill_digest'])
         self.assertTrue(self.processes[1].input_payload.decode().startswith(bundle.prompt))
+
+    def test_finish_deadline_covers_configured_hygiene_checks(self):
+        config = {"hygiene_snapshot_timeout_seconds": 300, "cleanup_timeout_seconds": 40,
+                  "profiles": {"3.0": {"post_task_validation_timeout_seconds": 180}}}
+        self.assertEqual(2060, finish_timeout_seconds(config))
+        with self.assertRaises(ContractError):
+            finish_timeout_seconds({"hygiene_snapshot_timeout_seconds": True})
 
     def test_missing_skill_stops_before_codex_launch(self):
         with mock.patch('agent_ci.codex.load_skill', side_effect=ContractError('Missing Skill reference')):

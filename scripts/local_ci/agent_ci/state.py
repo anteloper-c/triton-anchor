@@ -143,6 +143,18 @@ class Journal:
                              (task_id, tool_id, variant)).fetchone()
         return json.loads(row[0]) if row else None
 
+    def invalidate_workspace(self, task_id: str, reason: str, *, generation: str | None = None) -> None:
+        """Retain execution facts, but forbid reusing removed installation state."""
+        with self.connect() as db:
+            for row in db.execute("SELECT execution_id,record FROM executions WHERE task_id=?", (task_id,)).fetchall():
+                record = json.loads(row["record"])
+                if generation is not None and record.get("workspace_generation", generation) != generation:
+                    continue
+                record["reuse_invalidated"] = reason
+                db.execute("UPDATE executions SET record=?,updated=? WHERE execution_id=?",
+                           (canonical(record).decode(), time.time(), row["execution_id"]))
+        self.event(task_id, "workspace:checks_invalidated", {"reason": reason, "generation": generation})
+
     def review(self, task_id: str, kind: str, record: dict) -> None:
         with self.connect() as db:
             db.execute("INSERT OR REPLACE INTO reviews VALUES(?,?,?)", (task_id, kind, canonical(record).decode()))

@@ -6,8 +6,10 @@ import argparse
 import grp
 import importlib.util
 import json
+import math
 import os
 import pwd
+import re
 import shutil
 import subprocess
 import sys
@@ -42,6 +44,18 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
     retention = config.get("results_retention_days", 30)
     check("results_retention_days", type(retention) is int and retention > 0,
           "Keep uploaded result runs for a positive whole number of days; the default is 30")
+    workspace_retention = config.get("task_workspace_retention_hours", 24)
+    check("task_workspace_retention_hours", type(workspace_retention) in (int, float) and 0 <= workspace_retention <= 87600 and math.isfinite(workspace_retention),
+          "Retain inactive failed or resumable task workspaces for 0 to 87600 finite hours; 0 requests immediate collection")
+    workspace_budget = config.get("task_workspace_max_bytes", 100 * 1024**3)
+    check("task_workspace_max_bytes", type(workspace_budget) is int and workspace_budget > 0,
+          "Set a positive byte budget for task workspaces; active tasks and sealed outbox evidence remain protected")
+    cleanup_timeout = config.get("cleanup_timeout_seconds", 60)
+    check("cleanup_timeout_seconds", type(cleanup_timeout) is int and cleanup_timeout > 0,
+          "Task process cleanup requires a positive whole-number timeout in seconds; the default is 60")
+    snapshot_timeout = config.get("hygiene_snapshot_timeout_seconds", 600)
+    check("hygiene_snapshot_timeout_seconds", type(snapshot_timeout) is int and 1 <= snapshot_timeout <= 3600,
+          "Shared dependency and public-state probes require a timeout from 1 to 3600 seconds; the default is 600")
     if isinstance(state_value, str) and isinstance(sessions_value, str):
         state_path, sessions_path = Path(state_value).resolve(), Path(sessions_value).resolve()
         check("session_state_separation", not sessions_path.is_relative_to(state_path) and not state_path.is_relative_to(sessions_path), "Codex sessions and trusted worker state must use independent, non-overlapping directories")
@@ -65,11 +79,13 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
         names.add(name)
         check(prefix + ":llvm_hash", bool(SHA_RE.fullmatch(str(profile.get("llvm_hash", "")))), "Current exact LLVM revision is required")
         backend = profile.get("backend_enabled", False)
-        check(prefix + ":backend", isinstance(backend, bool) and (not backend or str(profile.get("triton_version", "")).split(".")[:2] == ["3", "0"]), "Only current Triton 3.0 may enable backend capability")
+        triton_30 = str(profile.get("triton_version", "")).split(".")[:2] == ["3", "0"]
+        check(prefix + ":backend", isinstance(backend, bool) and (not backend or triton_30), "Only current Triton 3.0 may enable backend capability")
         image = profile.get("image")
         check(prefix + ":image", isinstance(image, str) and bool(image) and "<" not in image, "Provide an actual approved image; daily rotation has no guessed image fallback")
         user = profile.get("execution_user", config.get("container_execution_user", ""))
-        check(prefix + ":execution_user", isinstance(user, str) and bool(user) and user not in {"root", "0", "0:0"}, "Configure the actual non-root user present in the candidate image")
+        numeric_user = isinstance(user, str) and bool(re.fullmatch(r"[1-9][0-9]*(?::[1-9][0-9]*)?", user))
+        check(prefix + ":execution_user", numeric_user, "Configure a dedicated non-root numeric task UID or UID:GID, unused by resident container services and distinct from the host Codex UID")
         root = profile.get("workspace_root")
         check(prefix + ":workspace_root", isinstance(root, str) and Path(root).is_absolute() and root != "/", "Use an absolute dedicated generation workspace root")
         env = profile.get("env", {})
@@ -94,6 +110,16 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
             check(prefix + ":backend_workspace", backend_path.is_absolute() and backend_path != workspace_path and backend_path.is_relative_to(workspace_path) and ".." not in backend_path.parts, "Backend source must be inside the generation workspace for isolated task checkouts")
         validations = profile.get("validation_commands", {})
         check(prefix + ":daily_validation", isinstance(validations, dict) and required.issubset(validations) and all(isinstance(command, list) and command and all(isinstance(arg, str) for arg in command) for command in validations.values()), "Daily candidates must run required validation commands before promotion")
+        post_commands = profile.get("post_task_validation_commands", [])
+        post_valid = (isinstance(post_commands, list) and (bool(post_commands) or not (backend or triton_30))
+                      and all(isinstance(command, list) and bool(command)
+                              and all(isinstance(arg, str) and bool(arg.strip()) and "\x00" not in arg for arg in command)
+                              and Path(command[0]).name not in {"true", ":"} for command in post_commands))
+        check(prefix + ":post_task_validation_commands", post_valid,
+              "Triton 3.0 requires actual device readiness checks as non-empty argv lists before reuse; true/: placeholders are rejected")
+        post_timeout = profile.get("post_task_validation_timeout_seconds", 120)
+        check(prefix + ":post_task_validation_timeout_seconds", type(post_timeout) is int and 1 <= post_timeout <= 3600,
+              "Post-task validation requires a timeout from 1 to 3600 seconds; the default is 120")
         schedule = profile.get("daily_calendar")
         check(prefix + ":daily_calendar", isinstance(schedule, str) and bool(schedule) and "\n" not in schedule, "Provide a staggered systemd OnCalendar value")
         env = profile.get("env", {})
@@ -124,7 +150,7 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
             groups = {group.gr_name for group in grp.getgrall() if user in group.gr_mem or group.gr_gid == account.pw_gid}
             check("codex_user", account.pw_uid != 0 and not groups.intersection({"root", "docker", "sudo", "wheel", "admin", "adm", "systemd-journal", "lxd", "libvirt"}), "Codex account must be non-root without Docker, sudo, journal or host administration access")
             numeric_users = [profile.get("execution_user", config.get("container_execution_user", "")) for profile in profiles.values()]
-            check("container_host_identity_separation", not any(str(value).split(":")[0] == str(account.pw_uid) for value in numeric_users), "Container task UID must differ from the host Codex UID; manager also probes actual image identities")
+            check("container_host_identity_separation", not any(str(value).split(":")[0].isdigit() and int(str(value).split(":")[0]) == account.pw_uid for value in numeric_users), "Container task UID must differ from the host Codex UID; manager also probes actual image identities")
             if os.geteuid() == 0 and sessions_value:
                 parents = [path for path in Path(sessions_value).parents if path.exists()]
                 traversable = all(subprocess.run(["runuser", "-u", user, "--", "test", "-x", str(path)], capture_output=True).returncode == 0 for path in parents)
