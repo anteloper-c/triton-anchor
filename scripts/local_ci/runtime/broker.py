@@ -235,9 +235,8 @@ class Broker:
             completed = [t for t, result in self.checks.items() if result['status'] == 'passed']
             context = {**self.context, 'profile': self.profile, 'completed_tools': completed}
             if tool == 'control_plane':
-                plan = {'status': 'ready', 'commands': [{
-                    'argv': [self.context['python_bin'], '-m', 'pytest', '-q', 'scripts/local_ci/tests', 'scripts/ci/tests'],
-                    'cwd': self.context['source_dir'], 'env': {}, 'timeout': 900}]}
+                from .control_plane import plan as control_plan
+                plan = control_plan(context)
             elif tool == 'custom_test':
                 path = parameters.get('path', '')
                 if not isinstance(path, str) or not path.endswith('.py') or path.startswith('/') or '..' in Path(path).parts:

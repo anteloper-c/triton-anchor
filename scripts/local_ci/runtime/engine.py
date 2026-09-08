@@ -133,6 +133,7 @@ class Engine:
             (host_task / directory).mkdir(parents=True, exist_ok=True)
         container_task = '/workspace/tasks/' + task['task_id'] + '/' + run_id
         context = {'task_id': task['task_id'], 'target_sha': task['tested_sha'],
+                   'target_branch': task['target_branch'],
                    'event_kind': task['event_kind'],
                    'control_identity': control_identity,
                    'validation_scope': 'local_acceptance' if self.config.get('local_acceptance') else 'production',

@@ -46,25 +46,25 @@ def minimum_checks(changed_paths, profile, manual_full=False):
     """Conservative floor. Documentation allowlist excludes executable config."""
     paths = list(changed_paths)
     supported = [tool for tool in TOOLS if tool not in BACKEND_TOOLS or re.fullmatch(r'3\.0(?:\.\d+)?', profile['triton_version'])]
-    docs = bool(paths) and all(
-        (p.startswith('docs/') and p.lower().endswith(('.md', '.rst', '.txt', '.png', '.svg', '.jpg')))
-        or ('/' not in p and p.lower().endswith(('.md', '.rst')))
-        for p in paths)
+    def documentation(path):
+        return ((path.startswith('docs/') and path.lower().endswith(('.md', '.rst', '.txt', '.png', '.svg', '.jpg')))
+                or ('/' not in path and path.lower().endswith(('.md', '.rst'))))
+    docs = bool(paths) and all(documentation(p) for p in paths)
     control = any(p.startswith(('.github/', 'scripts/local_ci/', 'scripts/dashboard/', 'dashboard/')) for p in paths)
     known = ('python/', 'csrc/', 'include/', 'tests/', 'docs/', 'scripts/', '.github/', 'dashboard/')
     packaging = ('setup.py', 'pyproject.toml', 'MANIFEST.in', 'CMakeLists.txt', 'envsetup.sh')
-    unknown = not paths or any(not p.startswith(known) and p not in packaging for p in paths)
+    unknown = not paths or any(not documentation(p) and not p.startswith(known) and p not in packaging for p in paths)
     compiler = any(p.startswith(('python/', 'csrc/', 'include/', 'tests/')) or p in packaging for p in paths)
-    control_only = bool(paths) and all(p.startswith(('.github/', 'scripts/local_ci/', 'scripts/dashboard/', 'dashboard/')) for p in paths)
+    control_only = control and all(documentation(p) or p.startswith(('.github/', 'scripts/local_ci/', 'scripts/dashboard/', 'dashboard/')) for p in paths)
     required = [] if docs else ['environment'] if control_only else list(MINIMUM_FRONTEND)
     reasons = {t: 'minimum frontend coverage' for t in required}
     if not docs and compiler:
         required.append('frontend_tests')
         reasons['frontend_tests'] = 'frontend code or test behavior changed'
-    deep_compiler = any(p.startswith(('csrc/', 'include/', 'triton/')) or
+    deep_compiler = any(not documentation(p) and (p.startswith(('csrc/', 'include/', 'triton/')) or
                         p in ('CMakeLists.txt', '.gitmodules', 'envsetup.sh') or
-                        any(part in p.lower() for part in ('lowering', 'pipeline', 'adapter', 'hwcapability', 'jit', 'cache')) for p in paths)
-    if not docs and (unknown or deep_compiler or manual_full):
+                        any(part in p.lower() for part in ('lowering', 'pipeline', 'adapter', 'hwcapability', 'jit', 'cache'))) for p in paths)
+    if not docs and (unknown or (deep_compiler and not control_only) or manual_full):
         required = supported[:]
         reasons.update({t: 'compiler impact or unknown scope' for t in required})
     if control:
