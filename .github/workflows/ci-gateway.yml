@@ -15,10 +15,10 @@ on:
       - converted_to_draft
   workflow_dispatch:
     inputs:
-      gateway_contract_version:
-        description: "Internal gateway contract version"
+      gateway_kind:
+        description: "Internal gateway message kind"
         required: false
-        default: "4"
+        default: "triton-anchor-ci-gateway"
         type: string
       mode:
         description: "Gateway operation; use push for a manual branch task"
@@ -131,7 +131,7 @@ on:
 permissions: {}
 
 env:
-  GATEWAY_CONTRACT_VERSION: "4"
+  GATEWAY_KIND: "triton-anchor-ci-gateway"
   FALLBACK_WORKER_BRANCH: ${{ vars.LOCAL_CI_FALLBACK_WORKER_BRANCH || 'ci_repo' }}
   FALLBACK_PR_ENABLED: ${{ vars.LOCAL_CI_FALLBACK_PR_ENABLED || 'true' }}
   FALLBACK_PUSH_ENABLED: ${{ vars.LOCAL_CI_FALLBACK_PUSH_ENABLED || 'true' }}
@@ -240,7 +240,7 @@ jobs:
                   Buffer.from(response.data.content, 'base64').toString('utf8')
                 );
                 const compatible =
-                  manifest.gateway_contract_version === process.env.GATEWAY_CONTRACT_VERSION &&
+                  manifest.kind === process.env.GATEWAY_KIND &&
                   manifest.role === 'worker' &&
                   manifest.capabilities?.includes('cancel') &&
                   (!requireCrossBranch ||
@@ -286,7 +286,7 @@ jobs:
                   workflow_id: 'ci-gateway.yml',
                   ref: worker.ref,
                   inputs: {
-                    gateway_contract_version: process.env.GATEWAY_CONTRACT_VERSION,
+                    gateway_kind: process.env.GATEWAY_KIND,
                     mode: 'cancel',
                     pr_number: String(pull.number),
                     expected_head_sha: action === 'synchronize' && shaPattern.test(previousHeadSha) ? previousHeadSha : pull.head.sha,
@@ -583,13 +583,13 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const prNumber = Number.parseInt(process.env.PR_NUMBER, 10);
-            const expectedContract = process.env.GATEWAY_CONTRACT_VERSION;
+            const expectedKind = process.env.GATEWAY_KIND;
             const shaPattern = /^[0-9a-f]{40}$/i;
             const baseCapabilities = [
               'pr-information',
               'basic-ci',
               'api-compatibility',
-              'result-v4',
+              'task-result',
               'security-scan',
               'codeql',
               'dispatch',
@@ -689,17 +689,15 @@ jobs:
               } catch (error) {
                 throw new Error(`Worker manifest on ${ref} is invalid JSON: ${error.message}`);
               }
-              if (allowMissingManifest && manifest.role === 'router' && manifest.gateway_contract_version === expectedContract) {
+              if (allowMissingManifest && manifest.role === 'router' && manifest.kind === expectedKind) {
                 return null;
               }
-              if (allowMissingManifest && manifest.schema_version === 1 && manifest.role === 'worker' &&
-                  manifest.gateway_contract_version === '3') {
-                core.notice(`Branch ${ref} still has a legacy worker; route through the verified v4 fallback.`);
+              if (allowMissingManifest && !Object.hasOwn(manifest, 'kind')) {
+                core.notice(`Branch ${ref} does not declare a worker kind; use the verified fallback.`);
                 return null;
               }
               if (
-                manifest.schema_version !== 1 ||
-                manifest.gateway_contract_version !== expectedContract ||
+                manifest.kind !== expectedKind ||
                 manifest.role !== 'worker' ||
                 manifest.tested_revision !== 'merge-result' ||
                 !Array.isArray(manifest.capabilities)
@@ -809,7 +807,7 @@ jobs:
                 workflow_id: 'ci-gateway.yml',
                 ref: worker.ref,
                 inputs: {
-                  gateway_contract_version: expectedContract,
+                  gateway_kind: expectedKind,
                   mode: 'dispatch',
                   pr_number: String(prNumber),
                   expected_head_sha: latestPull.head.sha,
@@ -982,8 +980,7 @@ jobs:
                 throw new Error(`Fallback worker manifest is invalid JSON: ${error.message}`);
               }
               if (
-                manifest.schema_version !== 1 ||
-                manifest.gateway_contract_version !== process.env.GATEWAY_CONTRACT_VERSION ||
+                manifest.kind !== process.env.GATEWAY_KIND ||
                 manifest.role !== 'worker' ||
                 requiredCapabilities.some(
                   (capability) => !manifest.capabilities?.includes(capability)
@@ -1015,7 +1012,7 @@ jobs:
                 workflow_id: 'ci-gateway.yml',
                 ref: fallbackRef,
                 inputs: {
-                  gateway_contract_version: process.env.GATEWAY_CONTRACT_VERSION,
+                  gateway_kind: process.env.GATEWAY_KIND,
                   mode: 'push',
                   worker_revision_sha: workerRevision,
                   authorization_source: `manual-push:${context.actor}`,
