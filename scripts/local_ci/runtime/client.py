@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+from pathlib import Path
 import urllib.error
 import urllib.request
 
@@ -10,9 +11,20 @@ import urllib.request
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('tool', help='status, finalize, or a registered tool ID')
-    parser.add_argument('--parameters', default='{}', help='JSON parameters')
+    parameters = parser.add_mutually_exclusive_group()
+    parameters.add_argument('--parameters', default='{}', help='JSON parameters')
+    parameters.add_argument('--parameters-file', type=Path, help='JSON file; avoids quoting a review in a shell command')
     args = parser.parse_args()
-    body = json.dumps({'tool': args.tool, 'parameters': json.loads(args.parameters)}).encode()
+    if args.parameters_file:
+        with args.parameters_file.open('rb') as stream:
+            raw = stream.read(256001)
+        if len(raw) > 256000:
+            parser.error('parameters file exceeds the broker request limit')
+    else:
+        raw = args.parameters
+    body = json.dumps({'tool': args.tool, 'parameters': json.loads(raw)}).encode()
+    if len(body) > 256000:
+        parser.error('parameters exceed the broker request limit')
     request = urllib.request.Request(os.environ['LOCAL_CI_BROKER_URL'], data=body,
               headers={'Authorization': 'Bearer ' + os.environ['LOCAL_CI_BROKER_TOKEN'],
                        'Content-Type': 'application/json'})

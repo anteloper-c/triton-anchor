@@ -17,7 +17,7 @@ flowchart LR
   G --> H[GitHub复核身份并更新检查与Dashboard]
 ```
 
-同仓贡献通过前置检查后自动继续；外部贡献者 PR 进入 `local-ci-fork-approval` environment，由维护者审批。审批绑定当前 head、base 和被测合并提交，force-push 后不能沿用旧审批。缺少有效任务信息、前置检查或审批时不能投递成功任务。
+同仓贡献通过前置检查后自动继续，不发布审批卡片或提供审批入口；仅外部贡献者 PR 发布审批卡片并进入 `local-ci-fork-approval` environment，由维护者审批。审批绑定当前 head、base 和被测合并提交，force-push 后不能沿用旧审批。缺少有效任务信息、前置检查或外部 PR 所需审批时不能投递成功任务。
 
 | 身份 | 用途 |
 | --- | --- |
@@ -47,35 +47,39 @@ Gitee 保存代码和任务信息，不决定是否授权。Poller 在执行期�
 
 性能测量必须真实执行。基线须匹配比较提交、profile、LLVM 和内容哈希；没有可信基线时只报告候选测量。耗时变化用于诊断，不单独阻塞合入；测量命令失败仍阻塞。
 
-Codex 使用受信主机配置的 `gpt-5.5` 模型和 `high` 推理强度。其编排入口为 [ai_ci_program.md](../scripts/local_ci/ai_ci_program.md)。它可以调整当前任务的计划、并行度和辅助用例；长期规则、基础工具、架构契约和生产配置的修改交由维护者采纳。
+Codex 通过常驻容器中的 `codex exec` 执行，CLI 调用 DeepSeek 官方 Responses API；受信配置使用 `deepseek-v4-flash` 和 `high` 推理强度，恢复会话保持同一模型与服务。其编排入口为 [ai_ci_program.md](../scripts/local_ci/ai_ci_program.md)。简短计划、按需读取日志、文件提交评审和提前压缩历史共同控制上下文占用；模型错误仍如实阻塞。它可以调整当前任务的计划、并行度和辅助用例；长期规则、基础工具、架构契约和生产配置的修改交由维护者采纳。
 
 ## 查看与触发任务
 
-PR 的四项必要检查是 `local-ci/basic`、`local-ci/api`、`local-ci/security`、`local-ci/summary`。仓库分支保护必须实际要求这些检查；工作流文件存在并不等于门禁已启用。其他既有必要检查按仓库保护规则保留。
+PR 的四项必要检查是 `local-ci/basic`、`local-ci/api`、`local-ci/security`、`local-ci/summary`。普通 push 和手动 full 分别写入 `local-ci/summary/push`、`local-ci/summary/full`，包括等待、失败与结果续跑；即使与 PR 使用同一提交，也不能覆盖 PR 门禁。仓库分支保护必须实际要求这些检查；工作流文件存在并不等于门禁已启用。其他既有必要检查按仓库保护规则保留。
 
 自动 PR 和 push 任务由 GitHub 工作流投递。手动验证从 `main` 的 `ci-gateway.yml` 入口选择 `mode=push`、`source_branch=<目标分支>`，需要固定提交时填写 `requested_sha`；FlagGems 全量另设 `flaggems_mode=full`。不要在 Gitee 手工伪造 task metadata。手动入口仍校验权限、提交身份和环境能力。
 
 Dashboard 展示工具选择、未执行原因、AI 架构审查与发现、阻塞项、性能变化、命令日志和 worker 健康。以 `task_id`、`run_id` 和 `tested_sha` 对照 GitHub 检查与结果，不能只凭页面颜色判断是否测试了当前 PR。
 
+本机实时视图读取持续更新的数据源；公开 GitHub Pages 展示最近一次结果或手动发布时同步的历史快照，页面刷新不会触发服务器重新采样。快照心跳超过 15 分钟时显示“快照已过期 / 状态待刷新”，不能据此判断主机当前离线；新鲜快照中的离线状态才表示该次监控的结论。
+
 ## 主机与 GitHub 配置
 
-从 [config.example.json](../scripts/local_ci/config.example.json) 生成主机配置，实际凭据和部署值保存在仓库之外。安装步骤见 [部署入口](../scripts/local_ci/deploy/README.md)。生产执行关闭 `local_acceptance`，控制文件必须与冻结 worker revision 一致；不应在正在执行任务时更新其只读挂载的控制目录。
+正式服务器以 Linux、Python 3.11 或更新版本、Docker 和 systemd 为部署目标。从 [config.example.json](../scripts/local_ci/config.example.json) 生成主机配置，实际凭据和部署值保存在仓库之外。安装步骤见 [部署入口](../scripts/local_ci/deploy/README.md)。生产执行关闭 `local_acceptance`，控制文件必须与冻结 worker revision 一致；不应在正在执行任务时更新其只读挂载的控制目录。Windows 计划任务仅用于本机验收。
 
 | 配置 | 必须落实的内容 |
 | --- | --- |
 | `control_root` | 维护者管理的 `ci_repo` checkout；完整控制文件与受信提交一致 |
-| `state_dir` | 主机租约、结果、发布重试和通知状态，不挂载给候选代码 |
+| `state_dir` | 主机租约、结果和发布重试状态，不挂载给候选代码 |
 | `workspace_host` | 统一任务根目录；各版本固定容器挂载为 `/workspace` |
 | `profiles` / `branch_profiles` | Triton 版本、固定容器名、可信镜像/配方、LLVM 与真实目标分支映射 |
 | `dependency_sources` | 所需 Triton/FlagGems 依赖的受信本地 Git 源；按精确 gitlink 检出 |
 | `profile.tools` | 前后端测试根、后端 checkout/JIT 命令、FlagGems 路径及性能配置；`backend_env_scripts` 只为后端/算子/性能加载 SDK 环境 |
-| `codex` | 独立认证文件、`model: gpt-5.5`、`reasoning_effort: high`、命令与时间预算 |
+| `codex` | `model: deepseek-v4-flash`、`reasoning_effort: high`、受信 `provider`、只读模型目录、命令与时间预算；密钥由宿主环境提供 |
 | `relay` | 明确的新 Gitee 仓库 URL、结果分支和凭据环境变量名 |
-| `smtp` | SMTP 服务与指定 Gitee 用户对应的真实收件邮箱，不能使用用户名代替邮箱 |
+| GitHub 运维 Issue | 配置 `LOCAL_CI_OPERATIONS_ISSUE_NUMBER`；维护者订阅该 Issue，并按需启用 GitHub 邮件通知 |
 
-容器只读挂载 **主机 `control_root/scripts/local_ci` 到 `/opt/anchor-ci`**。测试以 UID 1000 执行，Codex 使用 UID 1001；共享 seed `/opt/ci-venv` 和控制程序由 root 所有，候选包只安装到本任务环境。Python 测试和子进程通过受信 `runtime/task_python` 入口，可信预检使用系统 Python `-I -S`。主机 Docker socket、Gitee/GitHub 凭据不进入候选容器。
+容器只读挂载 **主机 `control_root/scripts/local_ci` 到 `/opt/anchor-ci`**。受信宿主控制服务以 root 运行并管理 Docker；候选测试以 UID 1000 执行，Codex 使用 UID 1001。任务共同父目录只允许穿越，Codex 私有目录保持隔离；共享 seed `/opt/ci-venv` 和控制程序由 root 所有，候选包只安装到本任务环境。Python 测试和子进程通过受信 `runtime/task_python` 入口，可信预检使用系统 Python `-I -S`。主机 Docker socket、Gitee/GitHub 凭据不进入候选容器。
 
 LLVM 从本次精确代码中的 `triton/cmake/llvm-hash.txt` 读取；若 Triton 是 gitlink，则读取其精确 Git 对象。首次部署需准备可读取该对象的受信依赖源。LLVM 变化只调用主机受信配方，不执行 PR 提供的环境脚本；成功选择持久保存，完整 profile 配置更新后旧选择失效。
+
+前端构建默认采用被测项目的构建模式；不要统一覆盖为 `Release`。当前 3.0 项目默认 `TritonRelBuildWithAsserts`，与带断言的 LLVM 配套；强制 `-DNDEBUG` 会破坏 Triton 调用的 LLVM 调试宏。并行度由受信环境和工具参数单独控制。
 
 GitHub Actions 与主机必须指向同一个新 Gitee relay。配置投递/读取凭据、`local-ci-fork-approval` 的 Required reviewers、四项必要检查、Pages 来源分支及独立 watchdog。`main` 的定时入口转发给 `ci_repo` 实现；普通源码分支不需要复制完整 CI 实施。
 
@@ -97,13 +101,23 @@ journalctl -u anchor-ci-poller -u anchor-ci-maintenance
 | LLVM 或依赖配置缺失 | 补齐受信 profile/配方与精确依赖对象，不能跳过必检 |
 | 维护 `outside_window` | 正常等待配置窗口，无需手动强制重建 |
 | 无法确认进程停止 | 保留租约并处理具体进程错误，不能直接删租约放行 |
-| 邮件或心跳发布失败 | 查看独立健康服务，修复凭据/连通性后由持久重试继续 |
+| 心跳发布或告警更新失败 | 查看独立健康服务或 watchdog 工作流，修复连通性、Issue 配置与权限后重试 |
 
 命令启动与停止按调用身份串行登记，提前取消会阻止迟到的执行；任务结束还清理两个固定 UID 的残留进程，包括脱离进程组的后台进程。确认清理完成后才释放租约。不要删除正在使用的 PID/锁记录或全局清理 Docker。
 
-主机账本在 `state_dir/runs/<task_id>/<run_id>/`。结果分支以 `runs/<task_id>/<run_id>/` 保存不可变运行，`tasks/<task_id>/latest.json` 指向最新结果；日志和附件逐文件校验哈希。原始设计、用户提示词、操作记录和认证材料只保存在本地，不随代码推送。
+每条环境准备命令默认允许 300 秒，可通过主机配置 `preparation_timeout` 设置正整数秒数；容器内独立计时，宿主另留 30 秒清理余量并每 20 秒更新准备心跳。失败或断联后只停止该次登记的命令，无法确认停止时保留租约。恢复先停止保存的准备命令；本任务环境的复制和权限设置均成功后才写入完成标记，半成品环境拒绝复用。此时保留原结果，在 `main` 的 `ci-gateway.yml` 用 `mode=dispatch` 和 PR 编号重新投递任务。
 
-健康服务独立于 Poller，发布 `health/<worker_id>.json`。同机 watchdog 可以发现服务故障，整机离线需要另一主机或 GitHub 定时检查这个心跳。邮件对故障与恢复去重，发送失败保留重试状态；`--dry-run` 同时禁止邮件和 Git 发布。
+架构审查的路径和行号依据首次 checkout 后、授予任务写权限前生成的主机源码索引核对，不按模型路径重新打开任务源码。索引绑定原始文件清单，恢复时缺失或不匹配即停止；仅覆盖本仓库受检普通文件，不展开子模块、符号链接或生成文件。源码和发布结果的最终哈希校验仍独立执行。
+
+主机 `state_dir` 与 Gitee 结果分支采用同一分类：PR 为 `runs/pr/<目标分支>/pr-<PR号>/<task_id>/<run_id>/`，push 为 `runs/push/<目标分支>/<task_id>/<run_id>/`。例如 PR #3 合入 main 的结果位于 `runs/pr/main/pr-3/` 下；分支名按安全规则编码，手动全量测试仍归 push 并保留模式信息。历史平铺目录保持不可变，读取端兼容；`tasks/<task_id>/latest.json` 保存准确路径。日志和附件逐文件校验哈希。原始设计、用户提示词、操作记录和认证材料只保存在本地，不随代码推送。
+
+健康服务独立于 Poller，发布 `health/<worker_id>.json`。GitHub watchdog 在服务器之外读取心跳，检测服务故障及整机离线。完整实现和手动入口保存在 `ci_repo`；GitHub 原生定时触发要求默认分支保留入口，因此 `main` 仍有一个薄调度工作流。`--dry-run` 不更新远端。
+
+通知使用 GitHub 原生订阅，无需 SMTP、发件邮箱或 Outlook 应用。先创建本仓库的专用运维 Issue 并保持打开，再配置心跳 URL、worker ID 和 `LOCAL_CI_OPERATIONS_ISSUE_NUMBER`，最后启用 `LOCAL_CI_WATCHDOG_ENABLED`。watchdog 作业使用临时 `GITHUB_TOKEN` 的 `issues:write` 权限；主机不持有该写令牌。
+
+故障类别变化或恢复时发布一条中文评论，并更新 Issue 当前状态；状态不变时不重复评论。已发布的受信机器人评论用于下次运行去重，网络错误或更新失败保留可重试状态。Issue 只展示对维护者有用的公开说明，不复制主机路径、私有邮箱或原始错误内容。缺少 Issue 或权限时工作流明确失败，不能当作通知已完成。
+
+维护者在运维 Issue 点击 **Subscribe**，并在个人 GitHub 通知设置启用参与和订阅事项的邮件通知。收件地址由每个人的 GitHub 账户决定，CI 不指定任意邮箱；评论成功也不等于邮件已送达。工作流运行邮件还可在 GitHub Actions 通知设置中单独启用。[GitHub 通知配置](https://docs.github.com/en/subscriptions-and-notifications/get-started/configuring-notifications)
 
 ## 修改 CI 与验证
 
@@ -117,4 +131,4 @@ python3 -m pytest -q scripts/local_ci/tests scripts/ci/tests
 
 真实 wheel 集成可用 `CI_TOOLS_TEST_PYTHON` 指向可写的独立测试解释器开启。固定 UID 清理和任务解释器隔离测试须在空闲、独占的常驻验收容器内显式启用，不能对通用宿主执行。工作流修改同时检查 `main` 调度与 `ci_repo` 实现。
 
-交付记录分别列出源码/契约测试、本机容器链路、实际 Triton/LLVM 编译、3.0 后端/算子/性能、真实 Gitee/GitHub 回写与实际邮件送达。合成夹具通过不能代替其他层次的验证。
+交付记录分别列出源码/契约测试、本机 Linux 容器链路、实际 Triton/LLVM 编译、3.0 后端/算子/性能、真实 Gitee/GitHub 回写与告警 Issue 更新。Linux systemd 部署与重启验收须有真实服务器证据；合成夹具、Windows 计划任务和容器中的单次命令不能代替它。

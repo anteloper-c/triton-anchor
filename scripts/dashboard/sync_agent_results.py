@@ -8,12 +8,16 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
+import sys
 from urllib.parse import quote, urlparse
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'local_ci'))
+from runtime.result_paths import iter_run_files, validate_result_path
 
 SCHEMA = 'triton-anchor-dashboard-local-ci'
 RESULT_SCHEMA = 'triton-anchor-local-ci-result'
 HEALTH_SCHEMA = 'triton-anchor-local-ci-worker-health'
-ID = re.compile(r'[A-Za-z0-9_.-]{1,160}')
+ID = re.compile(r'[A-Za-z0-9_-]{1,160}')
 SHA = re.compile(r'[0-9a-f]{40}')
 
 
@@ -46,14 +50,11 @@ def web_link(web_url, branch, relative, tree=False):
 
 
 def normalize_result(document, relative, web_url, branch, latest):
-    parts = PurePosixPath(relative).parts
-    if len(parts) != 4 or parts[0] != 'runs' or parts[3] != 'result.json':
-        raise ValueError('unsupported result layout')
     if document.get('schema') != RESULT_SCHEMA:
         raise ValueError('unsupported result schema')
-    if document.get('task_id') != parts[1] or document.get('run_id') != parts[2]:
-        raise ValueError('result identity differs from publication path')
-    if not ID.fullmatch(parts[1]) or not ID.fullmatch(parts[2]) or not SHA.fullmatch(document.get('tested_sha', '')):
+    task_id, run_id = document.get('task_id'), document.get('run_id')
+    validate_result_path(relative, document, run_id)
+    if not SHA.fullmatch(document.get('tested_sha', '')):
         raise ValueError('invalid task/run/commit identity')
     if document.get('repository') != 'anteloper-c/triton-anchor':
         raise ValueError('result belongs to an unauthorized repository')
@@ -66,8 +67,8 @@ def normalize_result(document, relative, web_url, branch, latest):
     for check in document['checks']:
         if not isinstance(check, dict) or not isinstance(check.get('id'), str) or check.get('status') not in {'passed', 'failed', 'error', 'skipped', 'not_applicable'}:
             raise ValueError('invalid check entry')
-    directory = '/'.join(parts[:3])
-    value = {**document, 'is_latest': latest.get(parts[1]) == parts[2],
+    directory = str(PurePosixPath(relative).parent)
+    value = {**document, 'is_latest': latest.get(task_id) == relative,
              'result_url': web_link(web_url, branch, relative),
              'artifacts_url': web_link(web_url, branch, directory, tree=True)}
     evidence = []
@@ -90,19 +91,39 @@ def sync_agent_results(results_dir, output_dir, results_web_url='', results_bran
             task_id, run_id = pointer['task_id'], pointer['run_id']
             if path.parent.name != task_id or not ID.fullmatch(task_id) or not ID.fullmatch(run_id):
                 raise ValueError('latest index identity mismatch')
-            relative = f'runs/{task_id}/{run_id}/result.json'
-            if pointer.get('result_path') != relative:
+            relative = pointer.get('result_path')
+            if not isinstance(relative, str) or PurePosixPath(relative).as_posix() != relative or ':' in relative:
+                raise ValueError('latest index result path is not canonical')
+            parts = PurePosixPath(relative).parts
+            grouped = ((len(parts) == 7 and parts[:2] == ('runs', 'pr') and re.fullmatch(r'pr-[1-9][0-9]*', parts[3]))
+                       or (len(parts) == 6 and parts[:2] == ('runs', 'push')))
+            legacy = len(parts) == 4 and parts[0] == 'runs'
+            if not (grouped or legacy) or parts[-3:] != (task_id, run_id, 'result.json'):
                 raise ValueError('latest index result path mismatch')
             result_path = local_path(root, relative)
+            if result_path.is_symlink() or result_path.stat().st_size > 20 * 1024 * 1024:
+                raise ValueError('unsafe or oversized JSON source')
             expected = pointer.get('result_sha256', '')
             if not re.fullmatch(r'[0-9a-f]{64}', expected) or hashlib.sha256(result_path.read_bytes()).hexdigest() != expected:
                 invalid.add(relative)
                 raise ValueError('latest result digest mismatch')
-            latest[task_id] = run_id
+            # Path shape and index hash are checked before trusting any identity
+            # inside the result, then the complete identity must bind that path.
+            invalid.add(relative)
+            source = read_json(result_path)
+            if source.get('task_id') != task_id or source.get('run_id') != run_id:
+                raise ValueError('latest result task/run differs from its index')
+            validate_result_path(relative, source, run_id)
+            if 'manifest_path' in pointer:
+                manifest_path = validate_result_path(pointer['manifest_path'], source, run_id, 'publish-manifest.json')
+                if PurePosixPath(manifest_path).parent != PurePosixPath(relative).parent:
+                    raise ValueError('latest manifest/result directories differ')
+            invalid.discard(relative)
+            latest[task_id] = relative
         except (OSError, ValueError, KeyError, TypeError) as exc:
             warnings.append({'path': path.relative_to(root).as_posix(), 'reason': str(exc)})
     runs = []
-    for path in sorted((root / 'runs').glob('*/*/result.json')):
+    for path in iter_run_files(root, 'result.json'):
         relative = path.relative_to(root).as_posix()
         if relative in invalid:
             continue

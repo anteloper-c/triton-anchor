@@ -85,6 +85,8 @@ class GatewayContractTests(unittest.TestCase):
         self.assertIn("needs.validate-dispatch.outputs.requires_approval == 'true'", approval)
         self.assertIn("pull.head.repo.full_name !== `${owner}/${repo}`", job(self.gateway, 'validate-dispatch'))
         self.assertIn("rule.type === 'required_reviewers'", job(self.gateway, 'approval-review-card'))
+        self.assertIn("if: ${{ needs.validate-dispatch.outputs.requires_approval == 'true' }}", job(self.gateway, 'approval-review-card'))
+        self.assertIn('security-result', dependencies(job(self.gateway, 'dispatch')))
         self.assertIn("needs.approve-external-fork.result == 'success'", job(self.gateway, 'dispatch'))
         self.assertNotIn('approve-external-fork', dependencies(job(self.gateway, 'route-pull-request')))
 

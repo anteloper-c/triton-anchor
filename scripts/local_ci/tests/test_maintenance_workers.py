@@ -284,11 +284,15 @@ class PersistentWorkers(unittest.TestCase):
 
     def test_os_file_lock_excludes_an_independent_process(self):
         lock = self.root / "process.lock"
-        script = "from scripts.local_ci.maintenance.workers import file_lock, WorkerBusy\nimport sys\ntry:\n with file_lock(sys.argv[1]): pass\nexcept WorkerBusy:\n sys.exit(23)\n"
+        # The task launcher deliberately omits cwd; the child must select the
+        # same source explicitly instead of relying on pytest's parent sys.path.
+        script = ("import sys\nsys.path.insert(0, sys.argv.pop(1))\n"
+                  "from scripts.local_ci.maintenance.workers import file_lock, WorkerBusy\ntry:\n with file_lock(sys.argv[1]): pass\nexcept WorkerBusy:\n sys.exit(23)\n")
+        command = [sys.executable, "-c", script, str(Path(__file__).resolve().parents[3]), str(lock)]
         with file_lock(lock):
-            result = subprocess.run([sys.executable, "-c", script, str(lock)], capture_output=True, text=True)
+            result = subprocess.run(command, capture_output=True, text=True)
         self.assertEqual(result.returncode, 23, result.stderr)
-        result = subprocess.run([sys.executable, "-c", script, str(lock)], capture_output=True, text=True)
+        result = subprocess.run(command, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_window_staggers_and_wraps_midnight(self):

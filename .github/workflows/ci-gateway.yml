@@ -151,7 +151,7 @@ jobs:
       - name: Cancel obsolete Local CI work
         uses: actions/github-script@v7
         env:
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const pull = context.payload.pull_request;
@@ -354,7 +354,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           MANUAL_PR_NUMBER: ${{ inputs.pr_number }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -578,7 +578,7 @@ jobs:
           BASE_REF: ${{ needs.prepare-route.outputs.base_ref }}
           AUTHORIZATION_SOURCE: ${{ needs.prepare-route.outputs.authorization_source }}
           RUN_TITLE: ${{ needs.prepare-route.outputs.run_title }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -848,7 +848,7 @@ jobs:
           REQUESTED_BRANCH: ${{ inputs.source_branch }}
           REQUESTED_SHA: ${{ inputs.requested_sha }}
           FLAGGEMS_MODE: ${{ inputs.flaggems_mode || 'sample' }}
-          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: ${{ inputs.flaggems_mode == 'full' && 'local-ci/summary/full' || 'local-ci/summary/push' }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -856,7 +856,7 @@ jobs:
             const sourceBranch = process.env.REQUESTED_BRANCH.trim();
             const requestedSha = process.env.REQUESTED_SHA.trim();
             const flaggemsMode = process.env.FLAGGEMS_MODE;
-            const statusContext = process.env.STATUS_CONTEXT + (flaggemsMode === 'full' ? '/full' : '');
+            const statusContext = process.env.STATUS_CONTEXT;
             const fallbackRef = process.env.FALLBACK_WORKER_BRANCH.trim();
             const requiredCapabilities = ['cross-branch-push', 'dispatch', 'receive'];
             const requiredPaths = [
@@ -1050,7 +1050,7 @@ jobs:
         env:
           HEAD_SHA: ${{ needs.prepare-route.outputs.head_sha }}
           TESTED_SHA: ${{ needs.prepare-route.outputs.tested_sha }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const targetUrl =
@@ -1112,7 +1112,7 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           WORKFLOW_SHA: ${{ github.sha }}
           INPUT_RUN_TITLE: ${{ inputs.run_title }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -1377,6 +1377,7 @@ jobs:
   approval-review-card:
     name: Publish approval review card
     needs: [validate-dispatch, basic-and-api, security-gate, security-result]
+    if: ${{ needs.validate-dispatch.outputs.requires_approval == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -1394,19 +1395,19 @@ jobs:
           TESTED_SHA: ${{ needs.validate-dispatch.outputs.tested_sha }}
           CONTROL_SHA: ${{ needs.validate-dispatch.outputs.worker_revision_sha }}
           APPROVAL_ENVIRONMENT: ${{ vars.LOCAL_CI_FORK_APPROVAL_ENVIRONMENT || 'local-ci-fork-approval' }}
-          APPROVAL_REQUIRED: ${{ needs.validate-dispatch.outputs.requires_approval }}
         with:
           script: |
             const { data: pull } = await github.rest.pulls.get({...context.repo, pull_number: Number(process.env.PR_NUMBER)});
-            if (pull.state !== 'open' || pull.draft || pull.head.sha !== process.env.HEAD_SHA) {
+            if (pull.state !== 'open' || pull.draft || pull.head.sha !== process.env.HEAD_SHA || pull.base.sha !== process.env.BASE_SHA) {
               throw new Error('PR changed before approval review card');
             }
+            if (!pull.head.repo?.full_name || pull.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`) {
+              throw new Error('Approval cards are only available for external fork PRs');
+            }
             const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            if (process.env.APPROVAL_REQUIRED === 'true') {
-              const { data: environment } = await github.rest.repos.getEnvironment({...context.repo, environment_name: process.env.APPROVAL_ENVIRONMENT});
-              if (!environment.protection_rules?.some(rule => rule.type === 'required_reviewers' && rule.reviewers?.length > 0)) {
-                throw new Error('External fork approval environment has no required reviewers; configure it before admission');
-              }
+            const { data: environment } = await github.rest.repos.getEnvironment({...context.repo, environment_name: process.env.APPROVAL_ENVIRONMENT});
+            if (!environment.protection_rules?.some(rule => rule.type === 'required_reviewers' && rule.reviewers?.length > 0)) {
+              throw new Error('External fork approval environment has no required reviewers; configure it before admission');
             }
             const marker = '<!-- local-ci-approval-card -->';
             const body = [marker, '### Local CI 前置检查与审批',
@@ -1414,7 +1415,7 @@ jobs:
               `- Head: ${process.env.HEAD_SHA}`, `- Base: ${process.env.BASE_SHA}`,
               `- 被测合并提交: ${process.env.TESTED_SHA}`, `- 控制面: ${process.env.CONTROL_SHA}`,
               '- 任务范围：Codex 按最低必检规则选择构建、测试与架构审查；仅 Triton 3.0 有后端、算子和性能能力。',
-              process.env.APPROVAL_REQUIRED === 'true' ? '外部贡献者 PR：等待维护者审批后进入 Local CI。' : '仓库内部 PR：前置检查通过后投递 Local CI。',
+              '外部贡献者 PR：等待维护者审批后进入 Local CI。',
               `[检查证据和审批入口](${url})`].join('\n\n');
             const comments = await github.paginate(github.rest.issues.listComments, {...context.repo, issue_number: pull.number});
             const previous = comments.find(c => c.user?.type === 'Bot' && c.body?.includes(marker));
@@ -1444,7 +1445,7 @@ jobs:
           COMPARISON_BASE_SHA: ${{ needs.validate-dispatch.outputs.comparison_base_sha }}
           TESTED_SHA: ${{ needs.validate-dispatch.outputs.tested_sha }}
           BASE_REF: ${{ needs.validate-dispatch.outputs.base_ref }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -1508,10 +1509,12 @@ jobs:
     name: Dispatch local CI task
     needs:
       - validate-dispatch
+      - basic-and-api
       - security-gate
+      - security-result
       - approval-review-card
       - approve-external-fork
-    if: ${{ always() && needs.validate-dispatch.result == 'success' && needs.security-gate.result == 'success' && needs.approval-review-card.result == 'success' && (needs.validate-dispatch.outputs.requires_approval != 'true' || needs.approve-external-fork.result == 'success') }}
+    if: ${{ always() && needs.validate-dispatch.result == 'success' && needs.basic-and-api.result == 'success' && needs.security-gate.result == 'success' && needs.security-result.result == 'success' && ((needs.validate-dispatch.outputs.requires_approval == 'false' && needs.approval-review-card.result == 'skipped' && needs.approve-external-fork.result == 'skipped') || (needs.validate-dispatch.outputs.requires_approval == 'true' && needs.approval-review-card.result == 'success' && needs.approve-external-fork.result == 'success')) }}
     permissions:
       actions: write
       contents: read
@@ -1539,10 +1542,11 @@ jobs:
       - validate-dispatch
       - basic-and-api
       - security-gate
+      - security-result
       - approval-review-card
       - approve-external-fork
       - dispatch
-    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.mode == 'dispatch' && inputs.expected_head_sha != '' && inputs.worker_revision_sha != '' && (needs.basic-and-api.result == 'failure' || needs.approval-review-card.result == 'failure' || needs.approve-external-fork.result == 'failure' || needs.approve-external-fork.result == 'cancelled' || needs.validate-dispatch.result == 'failure' || needs.validate-dispatch.result == 'cancelled' || needs.security-gate.result == 'failure' || needs.security-gate.result == 'cancelled' || needs.dispatch.result == 'failure' || needs.dispatch.result == 'cancelled') }}
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.mode == 'dispatch' && inputs.expected_head_sha != '' && inputs.worker_revision_sha != '' && (needs.basic-and-api.result == 'failure' || needs.approval-review-card.result == 'failure' || needs.approval-review-card.result == 'cancelled' || needs.approve-external-fork.result == 'failure' || needs.approve-external-fork.result == 'cancelled' || needs.validate-dispatch.result == 'failure' || needs.validate-dispatch.result == 'cancelled' || needs.security-gate.result == 'failure' || needs.security-gate.result == 'cancelled' || needs.security-result.result == 'failure' || needs.security-result.result == 'cancelled' || needs.dispatch.result == 'failure' || needs.dispatch.result == 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -1553,7 +1557,7 @@ jobs:
         env:
           SHA: ${{ inputs.tested_sha }}
           HEAD_SHA: ${{ inputs.expected_head_sha }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: local-ci/summary
         with:
           script: |
             const shaPattern = /^[0-9a-f]{40}$/i;
@@ -1613,7 +1617,7 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           WORKFLOW_SHA: ${{ github.sha }}
           INPUT_RUN_TITLE: ${{ inputs.run_title }}
-          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: ${{ inputs.flaggems_mode == 'full' && 'local-ci/summary/full' || 'local-ci/summary/push' }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -1765,7 +1769,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           SHA: ${{ inputs.tested_sha }}
-          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: ${{ inputs.flaggems_mode == 'full' && 'local-ci/summary/full' || 'local-ci/summary/push' }}
         with:
           script: |
             const shaPattern = /^[0-9a-f]{40}$/i;
@@ -1811,7 +1815,7 @@ jobs:
           TARGET_REF: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
           WORKFLOW_SHA: ${{ github.sha }}
-          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+          STATUS_CONTEXT: ${{ startsWith(inputs.task_ref, 'ci/pr-') && 'local-ci/summary' || (startsWith(inputs.task_ref, 'ci/full/') && 'local-ci/summary/full' || 'local-ci/summary/push') }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -1831,6 +1835,7 @@ jobs:
                 description: description.slice(0, 140),
               });
               if (
+                process.env.TASK_REF.startsWith(`ci/pr-${process.env.PR_NUMBER}/`) &&
                 /^[1-9][0-9]*$/.test(process.env.PR_NUMBER) &&
                 shaPattern.test(process.env.EXPECTED_HEAD_SHA)
               ) {
@@ -1874,6 +1879,10 @@ jobs:
                 (prMatch && prMatch[2] === process.env.SOURCE_BRANCH);
               if (!taskMatchesSource) {
                 throw new Error('task_ref does not match source_branch');
+              }
+
+              if (!prMatch && process.env.PR_NUMBER !== '') {
+                throw new Error('Branch receiver must not claim a PR identity');
               }
 
               if (prMatch) {
@@ -1957,7 +1966,7 @@ jobs:
       target_branch: ${{ inputs.target_branch }}
       task_ref: ${{ inputs.task_ref }}
       task_id: ${{ inputs.task_id }}
-      context: ${{ inputs.context }}
+      context: ${{ startsWith(inputs.task_ref, 'ci/pr-') && 'local-ci/summary' || (startsWith(inputs.task_ref, 'ci/full/') && 'local-ci/summary/full' || 'local-ci/summary/push') }}
       attempt: ${{ inputs.attempt }}
       started_at: ${{ inputs.started_at }}
       wait_seconds: ${{ inputs.wait_seconds }}

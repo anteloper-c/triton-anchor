@@ -10,7 +10,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .health import issue, timestamp
-from .notify import Notifier
+from .notify import Notifier, NotificationError, public_faults
 from .workers import atomic_json
 
 
@@ -34,6 +34,15 @@ def evaluate(snapshot, worker_id, max_age=300, now=None):
     return issues
 
 
+def notify(config, issues, dry_run=False):
+    """Fail visibly if the preconfigured Issue is missing or cannot be updated."""
+    try:
+        return Notifier(config.get("github", {})).update(config["worker_id"], issues, dry_run)
+    except NotificationError as exc:
+        return {"status": "error", "message": str(exc)}
+    except (ValueError, TypeError, KeyError, AttributeError, OSError):
+        return {"status": "error", "message": "运维 Issue 通知失败；请检查受信配置和 GitHub 服务状态。"}
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path, help="trusted watchdog JSON")
@@ -56,11 +65,13 @@ def main(argv=None):
         issues = evaluate(snapshot, config["worker_id"], config.get("max_age_seconds", 300))
     except (OSError, URLError, ValueError, TypeError, AttributeError):
         issues = [issue("heartbeat_unreachable", "外部监控无法读取健康快照；请检查主机与健康发布通道。")]
-    result = {"checked_at": time.time(), "worker_id": config["worker_id"], "issues": issues}
-    result["notification"] = Notifier(config["state_dir"], config.get("smtp", {})).update(config["worker_id"], issues, args.dry_run)
+    # The uploaded artifact is public-facing too: never copy private host details.
+    result = {"checked_at": time.time(), "state": "degraded" if issues else "healthy",
+              "issues": [{"message": message} for message in public_faults(issues)]}
+    result["notification"] = notify(config, issues, args.dry_run)
     atomic_json(Path(config["state_dir"]) / "watchdog-latest.json", result)
-    print(json.dumps({"issues": [i["code"] for i in issues], "notification": result["notification"]["status"]}))
-    return 1 if issues else 0
+    print(json.dumps(result, ensure_ascii=False))
+    return 1 if issues or result["notification"]["status"] == "error" else 0
 
 
 if __name__ == "__main__":

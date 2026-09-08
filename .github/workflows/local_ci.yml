@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install contract test dependencies
-        run: python -m pip install pytest
+        run: python -m pip install pytest PyYAML
       - name: Validate shell and Python syntax
         shell: bash
         run: |

@@ -12,7 +12,7 @@ Codex 通过运行时客户端向证据 broker 请求工具。控制器选择并
 | `frontend_tests` | 对已安装 wheel 运行选定 pytest 套件或具体用例，输出 JUnit 与计数 | frontend_install |
 | `frontend_smoke` | 对已安装 wheel 执行仓库 `tests/test_smoke.py` | frontend_install |
 | `backend_build` | 仅在已准备的后端 checkout 构建 wheel，记录身份与哈希 | environment |
-| `backend_install` | 仅安装本任务后端 wheel，验证 Triton 后端发现 | backend_build |
+| `backend_install` | 仅安装本任务后端 wheel，验证 Triton 后端发现 | backend_build、frontend_install |
 | `backend_tests` | 对已安装前后端运行受信 profile 选择的真实测试套件 | frontend_install、backend_install |
 | `backend_smoke` | 后端发现及受信 profile 指定的真实 JIT 测试命令 | frontend_install、backend_install |
 | `flaggems` | 按影响选择算子，逐算子 pytest，保留超时、日志、CSV/JSON | backend_smoke |

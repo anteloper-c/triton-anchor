@@ -44,7 +44,8 @@ def _files(root: Path) -> dict[str, str]:
 
 def _git(root: Path, *args) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True,
-                          encoding="utf-8", errors="strict", timeout=30)
+                          encoding="utf-8", errors="strict", timeout=30,
+                          creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
 
 
 def _identity(verified: bool, mode: str, revision: str | None, files: dict) -> dict:
@@ -172,7 +173,8 @@ def verify_container_control(config: dict, profile: dict, control_identity: dict
         raise ValueError('Invalid persistent worker name')
     docker = config.get('docker', 'docker')
     inspected = run([docker, 'inspect', '--type', 'container', name], capture_output=True,
-                    text=True, encoding='utf-8', timeout=30)
+                    text=True, encoding='utf-8', timeout=30,
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if inspected.returncode:
         raise ValueError('Cannot inspect the persistent worker control mount')
     records = json.loads(inspected.stdout)
@@ -189,7 +191,8 @@ def verify_container_control(config: dict, profile: dict, control_identity: dict
         if root in path.parents and mount.get('RW') is not False:
             raise ValueError('Persistent worker has a writable mount inside its control tree')
     observed = run([docker, 'exec', '--user', '0', name, '/usr/bin/python3', '-I', '-c', CONTAINER_PROBE],
-                   capture_output=True, text=True, encoding='utf-8', timeout=60)
+                   capture_output=True, text=True, encoding='utf-8', timeout=60,
+                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if observed.returncode:
         raise ValueError('Persistent worker control bytes or actual mount permissions could not be verified')
     actual = json.loads(observed.stdout)

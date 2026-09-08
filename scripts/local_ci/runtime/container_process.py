@@ -9,6 +9,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -191,6 +192,9 @@ def validate_spec(spec):
     env = spec.get('env', {})
     if not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str) or '=' in k or '\x00' in k + v for k, v in env.items()):
         raise ValueError('invalid command environment')
+    timeout = spec.get('timeout')
+    if 'timeout' in spec and (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0):
+        raise ValueError('timeout must be a finite positive number')
 
 
 def run(spec):
@@ -220,7 +224,7 @@ def run(spec):
                 raise RuntimeError('child process identity unavailable')
             identity['spec_sha256'] = fingerprint
             atomic_pidfile(pidfile, identity)
-        return proc.wait()
+        return proc.wait(timeout=spec.get('timeout'))
     finally:
         for sig in previous:
             signal.signal(sig, signal.SIG_IGN)

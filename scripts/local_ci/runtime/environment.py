@@ -17,7 +17,8 @@ class EnvironmentSelectionError(ValueError):
 
 def _run(argv):
     result = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
-                            errors="strict", timeout=30)
+                            errors="strict", timeout=30,
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if result.returncode:
         raise EnvironmentSelectionError("Cannot read the frozen LLVM dependency object")
     return result.stdout

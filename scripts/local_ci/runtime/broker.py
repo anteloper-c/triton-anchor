@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 
 from .common import digest, execute, read_json, utcnow, write_json
 from .policy import TOOLS
+from .report import validate_architecture_evidence
 from tools.basic_tools.runner import DEPENDENCIES
 
 
@@ -28,6 +29,7 @@ class Broker:
         self.receipts, self.checks = [], {}
         self.lock = threading.RLock()
         self.active = None
+        self.active_command = None
         self.closed = False
         self.review = None
         self.artifact_fingerprints = {}
@@ -74,14 +76,17 @@ class Broker:
                   self.profile['container']['name'], '/usr/bin/python3', '-I', '/opt/anchor-ci/runtime/container_process.py']
         argv = prefix + ['run', encoded]
         def stop():
-            subprocess.run(prefix + ['stop', encoded], capture_output=True, timeout=15)
+            subprocess.run(prefix + ['stop', encoded], capture_output=True, timeout=15,
+                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self.active = stop
         log = self.output / 'logs' / (receipt_id + '.log')
         started = utcnow()
-        write_json(self.output / 'active-command.json', {'id': receipt_id, 'tool': tool, 'started_at': started})
+        self.active_command = {'id': receipt_id, 'tool': tool, 'started_at': started}
+        write_json(self.output / 'active-command.json', self.active_command)
         result = execute(argv, log, timeout=min(command.get('timeout', 900), self.max_seconds-used),
                          cancelled=self.cancelled, terminate=stop)
         self.active = None
+        self.active_command = None
         receipt = {'id': receipt_id, 'tool': tool, 'argv': command['argv'],
                    'cwd': command['cwd'], 'started_at': started, 'completed_at': utcnow(),
                    'log_path': 'logs/' + log.name, **result}
@@ -169,10 +174,19 @@ class Broker:
                 raise ValueError('FlagGems did not complete a nonempty passing test selection')
 
     def invoke(self, tool, parameters):
+        if tool == 'status':
+            if not self.lock.acquire(blocking=False):
+                # Build/test calls keep their serialization lock. Status must
+                # remain available while the agent reviews source alongside them.
+                return {'status': 'running', 'policy': self.policy,
+                        'active_command': self.active_command, 'cancelled': self.cancelled(),
+                        'message': 'Wait for the original tool call; do not repeat the active check.'}
+            try:
+                return {'status': 'ready', 'policy': self.policy, 'checks': dict(self.checks),
+                        'receipts': list(self.receipts), 'cancelled': self.cancelled()}
+            finally:
+                self.lock.release()
         with self.lock:
-            if tool == 'status':
-                return {'status': 'ready', 'policy': self.policy, 'checks': self.checks,
-                        'receipts': self.receipts, 'cancelled': self.cancelled()}
             if tool == 'log':
                 receipt = next((r for r in self.receipts if r['id'] == parameters.get('receipt_id')), None)
                 if not receipt:
@@ -201,9 +215,11 @@ class Broker:
                         raise ValueError(f'review.{name}.status must be one of: ' + ', '.join(sorted(allowed)))
                     if not isinstance(section.get('summary'), str) or not section['summary'].strip():
                         raise ValueError(f'review.{name}.summary must be a nonempty string')
-                evidence = review['architecture'].get('evidence')
-                if not isinstance(evidence, list) or not evidence:
-                    raise ValueError('review.architecture.evidence must be a nonempty list')
+                evidence = review['architecture'].get('evidence', [])
+                if review['architecture']['status'] == 'passed':
+                    validate_architecture_evidence(evidence, self.context.get('source_index'))
+                elif not isinstance(evidence, list):
+                    raise ValueError('review.architecture.evidence must be a list; an incomplete failed review may use []')
                 for name in ('findings', 'uncompleted'):
                     if name in review and not isinstance(review[name], list):
                         raise ValueError(f'review.{name} must be a list')
@@ -235,9 +251,8 @@ class Broker:
             completed = [t for t, result in self.checks.items() if result['status'] == 'passed']
             context = {**self.context, 'profile': self.profile, 'completed_tools': completed}
             if tool == 'control_plane':
-                plan = {'status': 'ready', 'commands': [{
-                    'argv': [self.context['python_bin'], '-m', 'pytest', '-q', 'scripts/local_ci/tests', 'scripts/ci/tests'],
-                    'cwd': self.context['source_dir'], 'env': {}, 'timeout': 900}]}
+                from .control_plane import plan as control_plan
+                plan = control_plan(context)
             elif tool == 'custom_test':
                 path = parameters.get('path', '')
                 if not isinstance(path, str) or not path.endswith('.py') or path.startswith('/') or '..' in Path(path).parts:

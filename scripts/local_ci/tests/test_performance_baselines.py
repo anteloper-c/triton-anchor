@@ -12,6 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime.common import digest, read_json, write_json  # noqa: E402
 from runtime.performance import prepare_baselines  # noqa: E402
+from runtime.result_paths import run_relative  # noqa: E402
 
 
 class PerformanceBaselineTests(unittest.TestCase):
@@ -26,13 +27,16 @@ class PerformanceBaselineTests(unittest.TestCase):
         self.profile = {"id": "triton-3.0", "triton_version": "3.0", "llvm_revision": "a" * 40}
         self.task = {"repository": "anteloper-c/triton-anchor", "base_sha": "b" * 40}
 
-    def historical(self, run_id="run-old", tool="compile_time", **overrides):
-        run = self.root / "state/runs/previous" / run_id
+    def historical(self, run_id="run-old", tool="compile_time", grouped=False, **overrides):
+        identity = {'task_id': 'previous', 'event_kind': 'push', 'pr_number': 0,
+                    'target_branch': 'main', 'task_ref': 'ci/push/main'}
+        run = self.root / 'state' / run_relative(identity, run_id) if grouped else self.root / "state/runs/previous" / run_id
         artifact = run / "artifacts" / tool / "candidate.json"
         artifact.parent.mkdir(parents=True)
         artifact.write_text(json.dumps({"kernels": {"add": {"median_ms": 1.25}}}))
         result = {"schema": "triton-anchor-local-ci-result", "repository": self.task["repository"],
                   "task_id": "previous", "run_id": run_id, "tested_sha": self.task["base_sha"],
+                  "event_kind": "push", "pr_number": 0, "target_branch": "main", "task_ref": "ci/push/main",
                   "conclusion": "success", "completed_at": "2026-09-08T10:00:00Z",
                   "environment": {"profile_id": self.profile["id"], "llvm_revision": self.profile["llvm_revision"]},
                   "checks": [{"id": tool, "status": "passed", "evidence": ["command-1"]}],
@@ -65,6 +69,13 @@ class PerformanceBaselineTests(unittest.TestCase):
         artifact.write_text("{" + " " * (artifact.stat().st_size - 2) + "}")
         self.assertEqual(self.prepare(), {})
         self.assertFalse((self.host_task / "baselines").exists())
+
+    def test_grouped_baseline_is_found_but_wrong_target_directory_is_rejected(self):
+        run, result, artifact = self.historical(grouped=True)
+        self.assertEqual(self.prepare()['compile_time']['sha256'], digest(artifact))
+        result.update(target_branch='other', task_ref='ci/push/other')
+        write_json(run / 'result.json', result)
+        self.assertEqual(self.prepare(), {})
 
     def test_recovery_reuses_existing_snapshot_without_rewriting_it(self):
         self.historical()

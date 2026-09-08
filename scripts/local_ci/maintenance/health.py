@@ -9,7 +9,6 @@ import shutil
 import subprocess
 import time
 
-from .notify import Notifier, recipients
 from .workers import WorkerError, WorkerManager, atomic_json, read_json
 
 
@@ -40,7 +39,7 @@ def read_status(path, issues, code):
 
 
 def collect(config, manager=None, now=None, service_runner=subprocess.run):
-    """Read actual Docker/disk/service/heartbeat state. Never repair or send mail."""
+    """Read Docker/disk/service/heartbeat state; external watchdog owns alerts."""
     now = time.time() if now is None else now
     root = Path(config["state_dir"])
     health = config.get("health", {})
@@ -88,36 +87,27 @@ def collect(config, manager=None, now=None, service_runner=subprocess.run):
             issues.append(issue("docker_unavailable", "无法读取 Docker worker 状态。", profile_id=profile["id"]))
     for service in health.get("systemd_services", []):
         try:
-            result = service_runner(["systemctl", "is-active", "--quiet", service], timeout=15, capture_output=True)
+            result = service_runner(["systemctl", "is-active", "--quiet", service], timeout=15, capture_output=True,
+                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             if result.returncode:
                 issues.append(issue("service_unavailable", f"systemd 服务未运行：{service}", service=service))
         except (OSError, subprocess.SubprocessError):
             issues.append(issue("service_unavailable", f"无法读取 systemd 服务：{service}", service=service))
-    smtp = config.get("smtp", {})
-    try:
-        recipients(smtp)
-        if not smtp.get("host") or not smtp.get("from"):
-            raise ValueError("SMTP host/from not configured")
-        notification_config = "configured"
-    except ValueError as exc:
-        notification_config = str(exc)
-        issues.append(issue("notification_not_configured", notification_config))
     return {"schema": "triton-anchor-local-ci-worker-health", "worker_id": config["worker_id"],
             "heartbeat_at": now, "generated_at": datetime.fromtimestamp(now, timezone.utc).isoformat(),
             "state": "degraded" if issues else "healthy", "issues": issues, "workers": workers,
-            "poller": poller, "task": task, "disks": disks, "notification_config": notification_config}
+            "poller": poller, "task": task, "disks": disks}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--dry-run", action="store_true", help="collect health but never send mail")
+    parser.add_argument("--dry-run", action="store_true", help="collect health without publishing")
     parser.add_argument("--publish", action="store_true", help="publish health through the independent trusted Git checkout")
     args = parser.parse_args(argv)
     config = json.loads(args.config.read_text(encoding="utf-8-sig"))
     result = collect(config)
     root = Path(config["state_dir"]) / "health"
-    result["notification"] = Notifier(root, config.get("smtp", {})).update(config["worker_id"], result["issues"], args.dry_run)
     atomic_json(root / "latest.json", result)
     if not args.dry_run and (args.publish or config.get("health", {}).get("publish", False)):
         from .publish_health import HealthPublisher, PublicationError
@@ -127,7 +117,6 @@ def main(argv=None):
             result["publication"] = {"status": "pending", "error_type": type(exc).__name__, "updated_at": time.time()}
             atomic_json(Path(config["state_dir"]) / "health-publication/latest.json", result["publication"])
     print(json.dumps({"state": result["state"], "issues": [i["code"] for i in result["issues"]],
-                      "notification": result["notification"]["status"],
                       "publication": result.get("publication", {}).get("status", "not_requested")}, ensure_ascii=False))
     return 0
 

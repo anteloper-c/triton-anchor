@@ -124,6 +124,37 @@ class TaskPythonIntegrationTests(unittest.TestCase):
         self.assertIn('pip ', result.stdout)
         self.assertIn(str(SEED), result.stdout)
 
+    def test_control_plane_plan_imports_frozen_source_without_startup_hooks(self):
+        sys.path.insert(0, str(WRAPPER.parents[1]))
+        from runtime.control_plane import plan
+        source = self.directory / 'control-source'
+        for name in ('scripts/local_ci/tests', 'scripts/ci/tests', 'scripts/dashboard'):
+            (source / name).mkdir(parents=True, exist_ok=True)
+        (source / 'scripts/dashboard/probe.py').write_text("VALUE = 'frozen-source'\n")
+        marker = self.directory / 'source-startup-executed'
+        poison = f"import pathlib,os; pathlib.Path({str(marker)!r}).touch(); os._exit(0)\n"
+        for name in ('sitecustomize.py', 'usercustomize.py', 'poison.pth', 'pytest.py'):
+            (source / name).write_text(poison)
+        for path, name in (('scripts/local_ci/tests/test_import.py', 'dashboard'),
+                           ('scripts/ci/tests/test_ci_import.py', 'worker')):
+            (source / path).write_text(
+                'from pathlib import Path\nimport pytest\nfrom scripts.dashboard.probe import VALUE\n'
+                f'def test_{name}():\n    assert VALUE == "frozen-source"\n'
+                f'    assert Path(pytest.__file__).is_relative_to({str(SEED)!r})\n')
+        for path in [source, *source.rglob('*')]:
+            os.chown(path, 1000, 1000)
+        command = plan({'source_host_dir': str(source), 'source_dir': str(source),
+                        'target_branch': 'ci_repo', 'python_bin': str(WRAPPER)})['commands'][0]
+        legacy = command['argv'][:]
+        option = legacy.index('-o')
+        del legacy[option:option + 2]
+        failed = self.command('old isolated pytest cannot import scripts', legacy, expected=2, cwd=source)
+        self.assertIn("No module named 'scripts'", failed.stdout)
+        passed = self.command('planned pytest imports frozen control source', command['argv'], cwd=source)
+        self.assertIn('2 passed', passed.stdout)
+        self.assertFalse(marker.exists(), 'source startup hook or pytest shadow was executed')
+        self.assertFalse((self.directory / 'startup-executed').exists(), 'task startup hook was executed')
+
     def test_wheel_build_install_and_import(self):
         wheel_dir = self.directory / 'wheels'
         self.command('wheel backend and its subprocess use wrapper',

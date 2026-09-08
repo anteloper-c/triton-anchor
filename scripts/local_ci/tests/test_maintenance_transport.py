@@ -12,6 +12,7 @@ from scripts.local_ci.maintenance.transport import git_environment, validate_rel
 from scripts.local_ci.maintenance.workers import atomic_json
 from scripts.local_ci.runtime.common import digest
 from scripts.local_ci.runtime.relay import Relay
+from scripts.local_ci.runtime.result_paths import run_relative
 
 
 class GitCredentialEnvironment(unittest.TestCase):
@@ -52,7 +53,8 @@ class RealArtifactPublication(unittest.TestCase):
         self.relay = Relay({'url': str(self.remote)}, self.root / 'state')
         self.output = self.root / 'run'
         self.output.mkdir()
-        self.result = {'task_id': 'task-1', 'run_id': 'run-1', 'evidence': []}
+        self.result = {'task_id': 'task-1', 'run_id': 'run-1', 'evidence': [],
+                       'event_kind': 'push', 'pr_number': 0, 'target_branch': 'main', 'task_ref': 'ci/push/main'}
         atomic_json(self.output / 'result.json', self.result)
 
     def git_show(self, relative):
@@ -111,7 +113,7 @@ class RealArtifactPublication(unittest.TestCase):
         self.assertTrue((self.output / 'result.json').is_file())
         hook.unlink()
         self.relay.publish(self.output, self.result)
-        self.assertEqual(json.loads(self.git_show('runs/task-1/run-rejected/result.json')), self.result)
+        self.assertEqual(json.loads(self.git_show(run_relative(self.result, 'run-rejected') + '/result.json')), self.result)
 
     def test_relay_subprocess_uses_env_and_redacts_server_error(self):
         self.relay.config = {'url': 'https://gitee.com/heron-mc/fixture-repo.git',
