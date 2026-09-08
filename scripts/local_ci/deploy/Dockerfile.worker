@@ -1,0 +1,35 @@
+# Build only from a host-owned recipe copy, never from the candidate PR.
+# BASE_IMAGE must be a trusted Ubuntu/Debian image pinned by digest. The Triton
+# 3.0 backend profile supplies its prepared backend base image here.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG LLVM_REVISION
+ARG CODEX_VERSION
+ARG LLVM_BUILD_JOBS=4
+ARG LLVM_TARGETS_TO_BUILD=host
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates git cmake ninja-build build-essential clang lld \
+      python3 python3-dev python3-venv python3-pip ccache nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+RUN test -n "$CODEX_VERSION" && npm install -g "@openai/codex@$CODEX_VERSION"
+COPY prepare_llvm.sh /usr/local/libexec/anchor-ci-prepare-llvm
+RUN LLVM_BUILD_JOBS="$LLVM_BUILD_JOBS" LLVM_TARGETS_TO_BUILD="$LLVM_TARGETS_TO_BUILD" \
+    bash /usr/local/libexec/anchor-ci-prepare-llvm "$LLVM_REVISION" /opt/llvm
+RUN python3 -m venv /opt/ci-venv \
+    && /opt/ci-venv/bin/python -m pip install --no-cache-dir \
+      build setuptools wheel pybind11 pytest jsonschema pyyaml
+# Match Engine.seed_venv and its test/agent identities. Both the interpreter and
+# seed packages stay root-owned; Engine copies the seed into each task workspace.
+RUN if getent passwd 1000 >/dev/null; then userdel "$(getent passwd 1000 | cut -d: -f1)"; fi \
+    && if ! getent group 1000 >/dev/null; then groupadd --gid 1000 ci; fi \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash build \
+    && useradd --uid 1001 --gid 1000 --create-home --shell /bin/bash agent \
+    && install -d -m 0700 -o 1001 -g 1000 /home/agent/.codex \
+    && install -d -m 0700 -o 1000 -g 1000 /tmp/anchor-ci-processes-1000 \
+    && install -d -m 0700 -o 1001 -g 1000 /tmp/anchor-ci-processes-1001 \
+    && install -d -m 2775 -o 1000 -g 1000 /workspace \
+    && install -d -m 0755 /opt/anchor-ci
+ENV PATH="/opt/ci-venv/bin:${PATH}" LLVM_BUILD_DIR=/opt/llvm
+WORKDIR /workspace
+CMD ["sleep", "infinity"]

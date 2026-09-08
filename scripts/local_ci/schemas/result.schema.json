@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "triton-anchor-local-ci-result/v4",
+  "title": "Local CI host-verified result",
+  "type": "object",
+  "required": ["schema", "repository", "task_id", "run_id", "task_ref", "event_kind", "pr_number", "target_branch", "tested_sha", "base_sha", "head_sha", "worker_revision_sha", "control_identity", "validation_scope", "conclusion", "checks", "blocking_reasons", "ai_review", "evidence", "performance", "policy", "started_at", "completed_at", "source_unchanged"],
+  "properties": {
+    "schema": {"const": "triton-anchor-local-ci-result/v4"},
+    "repository": {"const": "anteloper-c/triton-anchor"},
+    "task_id": {"$ref": "#/$defs/id"},
+    "run_id": {"$ref": "#/$defs/id"},
+    "task_ref": {"type": "string", "pattern": "^ci/"},
+    "event_kind": {"enum": ["pull_request", "push", "workflow_dispatch"]},
+    "pr_number": {"type": "integer", "minimum": 0},
+    "target_branch": {"type": "string", "minLength": 1},
+    "tested_sha": {"$ref": "#/$defs/sha"},
+    "base_sha": {"$ref": "#/$defs/sha"},
+    "head_sha": {"$ref": "#/$defs/sha"},
+    "worker_revision_sha": {"$ref": "#/$defs/sha"},
+    "control_identity": {"type": "object", "required": ["verified"], "properties": {"verified": {"type": "boolean"}, "actual_sha": {"$ref": "#/$defs/sha"}, "tree_sha256": {"$ref": "#/$defs/digest"}}},
+    "validation_scope": {"enum": ["production", "local_acceptance"]},
+    "conclusion": {"enum": ["success", "failure", "error", "cancelled"]},
+    "source_unchanged": {"type": "boolean"},
+    "checks": {"type": "array", "items": {"type": "object", "required": ["id", "status", "required", "reason", "evidence"], "properties": {
+      "id": {"type": "string"}, "status": {"enum": ["passed", "failed", "error", "skipped", "not_applicable"]},
+      "required": {"type": "boolean"}, "reason": {"type": "string"}, "evidence": {"type": "array"}
+    }}},
+    "blocking_reasons": {"type": "array", "items": {"type": "string"}},
+    "ai_review": {"type": "object", "properties": {
+      "summary": {"type": "string"}, "selection_reason": {"type": "string"},
+      "pr_information": {"type": "object"}, "architecture": {"type": "object"},
+      "findings": {"type": "array"}, "uncompleted": {"type": "array"}, "improvement_proposals": {"type": "array"}
+    }},
+    "evidence": {"type": "array", "items": {"type": "object", "required": ["id", "tool", "argv", "cwd", "returncode", "termination", "elapsed_seconds", "log_path", "log_sha256", "started_at", "completed_at"], "properties": {
+      "id": {"$ref": "#/$defs/id"}, "tool": {"type": "string"}, "argv": {"type": "array", "items": {"type": "string"}},
+      "cwd": {"type": "string"}, "returncode": {"type": "integer"}, "termination": {"enum": [null, "timeout", "cancelled"]},
+      "elapsed_seconds": {"type": "number", "minimum": 0}, "log_path": {"type": "string", "pattern": "^logs/command-[0-9]+\\.log$"},
+      "log_sha256": {"$ref": "#/$defs/digest"}, "started_at": {"type": "string", "format": "date-time"}, "completed_at": {"type": "string", "format": "date-time"}
+    }}},
+    "performance": {"type": "array"}, "policy": {"type": "object"},
+    "artifacts": {"type": "object", "required": ["files", "omitted", "total_bytes"], "properties": {
+      "files": {"type": "array", "items": {"type": "object", "required": ["path", "sha256", "size"], "properties": {"path": {"type": "string", "pattern": "^artifacts/"}, "sha256": {"$ref": "#/$defs/digest"}, "size": {"type": "integer", "minimum": 0}}}},
+      "omitted": {"type": "array"}, "total_bytes": {"type": "integer", "minimum": 0}
+    }},
+    "started_at": {"type": "string", "format": "date-time"}, "completed_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "worker_id": "anchor-ci-server",
+  "state_dir": "/var/lib/anchor-ci-watchdog",
+  "heartbeat_url": "https://example.invalid/local-ci/health/anchor-ci-server.json",
+  "token_env": "LOCAL_CI_HEARTBEAT_READ_TOKEN",
+  "max_age_seconds": 900,
+  "smtp": {
+    "accounts": ["heron-mc", "likehupochuan"],
+    "account_emails": {"heron-mc": "", "likehupochuan": ""},
+    "host": "",
+    "port": 587,
+    "from": "",
+    "starttls": true,
+    "username_env": "LOCAL_CI_SMTP_USERNAME",
+    "password_env": "LOCAL_CI_SMTP_PASSWORD"
+  }
+}

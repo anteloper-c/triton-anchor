@@ -1,0 +1,17 @@
+[Unit]
+Description=Collect Local CI service health and send incident notifications
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=anchor-ci
+Group=anchor-ci
+SupplementaryGroups=docker
+WorkingDirectory=/opt/anchor-ci
+EnvironmentFile=-/etc/anchor-ci/service.env
+ExecStart=/usr/bin/python3 -m scripts.local_ci.maintenance.health --config /etc/anchor-ci/config.json --publish
+TimeoutStartSec=300
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true

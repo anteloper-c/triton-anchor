@@ -1,0 +1,94 @@
+name: Local CI independent watchdog
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-ci-independent-watchdog
+  cancel-in-progress: false
+
+jobs:
+  check-heartbeat:
+    if: ${{ github.repository == 'anteloper-c/triton-anchor' && (github.event_name == 'workflow_dispatch' || vars.LOCAL_CI_WATCHDOG_ENABLED == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ vars.LOCAL_CI_CONTROL_BRANCH || 'ci_repo' }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Restore notification deduplication state
+        uses: actions/cache/restore@v4
+        with:
+          path: .watchdog-state
+          key: local-ci-watchdog-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            local-ci-watchdog-${{ runner.os }}-
+
+      - name: Prepare explicitly configured watchdog
+        env:
+          WATCHDOG_URL: ${{ vars.LOCAL_CI_HEARTBEAT_URL }}
+          WATCHDOG_WORKER: ${{ vars.LOCAL_CI_WORKER_ID }}
+          WATCHDOG_MAX_AGE: ${{ vars.LOCAL_CI_HEARTBEAT_MAX_AGE_SECONDS || '1800' }}
+          SMTP_HOST: ${{ vars.LOCAL_CI_SMTP_HOST }}
+          SMTP_PORT: ${{ vars.LOCAL_CI_SMTP_PORT || '587' }}
+          SMTP_FROM: ${{ secrets.LOCAL_CI_SMTP_FROM }}
+          EMAIL_HERON_MC: ${{ secrets.LOCAL_CI_EMAIL_HERON_MC }}
+          EMAIL_LIKEHUPOCHUAN: ${{ secrets.LOCAL_CI_EMAIL_LIKEHUPOCHUAN }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          required = ['WATCHDOG_URL', 'WATCHDOG_WORKER', 'SMTP_HOST', 'SMTP_FROM', 'EMAIL_HERON_MC', 'EMAIL_LIKEHUPOCHUAN']
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit('Watchdog configuration is incomplete: ' + ', '.join(missing))
+          config = {
+              'worker_id': os.environ['WATCHDOG_WORKER'],
+              'state_dir': str(Path('.watchdog-state').resolve()),
+              'heartbeat_url': os.environ['WATCHDOG_URL'],
+              'max_age_seconds': int(os.environ['WATCHDOG_MAX_AGE']),
+              'token_env': 'LOCAL_CI_HEARTBEAT_READ_TOKEN',
+              'smtp': {
+                  'accounts': ['heron-mc', 'likehupochuan'],
+                  'account_emails': {'heron-mc': os.environ['EMAIL_HERON_MC'], 'likehupochuan': os.environ['EMAIL_LIKEHUPOCHUAN']},
+                  'host': os.environ['SMTP_HOST'], 'port': int(os.environ['SMTP_PORT']),
+                  'from': os.environ['SMTP_FROM'], 'starttls': True,
+                  'username_env': 'LOCAL_CI_SMTP_USERNAME', 'password_env': 'LOCAL_CI_SMTP_PASSWORD'
+              }
+          }
+          Path(os.environ['RUNNER_TEMP'], 'watchdog.json').write_text(json.dumps(config), encoding='utf-8')
+          PY
+
+      - name: Check remote heartbeat and notify incident or recovery
+        env:
+          LOCAL_CI_HEARTBEAT_READ_TOKEN: ${{ secrets.LOCAL_CI_HEARTBEAT_READ_TOKEN }}
+          LOCAL_CI_SMTP_USERNAME: ${{ secrets.LOCAL_CI_SMTP_USERNAME }}
+          LOCAL_CI_SMTP_PASSWORD: ${{ secrets.LOCAL_CI_SMTP_PASSWORD }}
+        run: python -m scripts.local_ci.maintenance.watchdog --config "${RUNNER_TEMP}/watchdog.json"
+
+      - name: Preserve notification delivery state
+        if: ${{ always() }}
+        uses: actions/cache/save@v4
+        with:
+          path: .watchdog-state
+          key: local-ci-watchdog-${{ runner.os }}-${{ github.run_id }}
+
+      - name: Preserve watchdog result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-ci-watchdog-result
+          path: .watchdog-state/watchdog-latest.json
+          if-no-files-found: ignore
+          retention-days: 14

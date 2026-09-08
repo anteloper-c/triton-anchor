@@ -1,0 +1,9 @@
+{
+  "schema": "triton-anchor-dashboard-local-ci/v1",
+  "data_mode": "live",
+  "generated_at": null,
+  "runs": [],
+  "total_runs": 0,
+  "workers": [],
+  "warnings": []
+}

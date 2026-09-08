@@ -14,9 +14,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-LOCAL_CI_SHARED_DIR = Path(__file__).resolve().parents[1] / "local_ci" / "shared"
-sys.path.insert(0, str(LOCAL_CI_SHARED_DIR))
-from result_paths import gitee_tree_url, result_run_dir, result_task_dir  # noqa: E402
+if __package__:
+    from .legacy_result_paths import gitee_tree_url, result_run_dir, result_task_dir
+    from .sync_agent_results import sync_agent_results
+else:
+    from legacy_result_paths import gitee_tree_url, result_run_dir, result_task_dir
+    from sync_agent_results import sync_agent_results
 
 
 DEFAULT_PROFILE = "sophgo-cmodel"
@@ -569,9 +572,12 @@ def sync_dashboard(
     results_branch: str = "local-ci-results",
     results_web_url: str = DEFAULT_RESULTS_WEB_URL,
 ) -> None:
+    agent_results = sync_agent_results(results_dir, output_dir, results_web_url, results_branch)
     main_runs = discover_runs(results_dir, source_branch)
     if not main_runs:
-        raise RuntimeError(f"No Gitee CI runs found for {source_branch!r}")
+        # A new deployment can contain only v4 results or health snapshots. The
+        # new page still receives an explicit empty feed when nothing is published.
+        return
     full_test_runs = discover_runs(results_dir, full_test_source_branch)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(

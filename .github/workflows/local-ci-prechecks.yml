@@ -1,0 +1,137 @@
+name: Local CI prechecks
+
+on:
+  workflow_call:
+    inputs:
+      tested_sha: {required: true, type: string}
+      comparison_base_sha: {required: true, type: string}
+      expected_head_sha: {required: true, type: string}
+      trusted_ref: {required: true, type: string}
+      pr_number: {required: true, type: string}
+
+permissions:
+  contents: read
+
+jobs:
+  basic:
+    name: Basic CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tested_sha }}
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install pinned checker and test dependencies
+        run: python -m pip install 'ruff==0.15.22' pytest pytest-cov
+      - name: Check Python errors and run existing unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          paths=(python tests)
+          for path in scripts/local_ci scripts/ci; do
+            [ ! -d "$path" ] || paths+=("$path")
+          done
+          ruff check --exclude 'triton/**' --select E9,F63,F7,F82 --output-format=github "${paths[@]}"
+          PYTHONPATH=python python -m pytest python/triton_anchor/tests/ -v --tb=short
+
+  api:
+    name: API compatibility
+    needs: basic
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted API checker
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.trusted_ref }}
+          path: control
+          persist-credentials: false
+          submodules: false
+      - name: Check out frozen base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.comparison_base_sha }}
+          path: base
+          persist-credentials: false
+          submodules: false
+      - name: Check out tested merge
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tested_sha }}
+          path: candidate
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compare existing public API using trusted rules
+        env:
+          BASE_SHA: ${{ inputs.comparison_base_sha }}
+          TESTED_SHA: ${{ inputs.tested_sha }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          ACTOR: ${{ github.actor }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          scope=control/api_contract/public_api.json
+          candidate_scope=()
+          if [ -f base/api_contract/public_api.json ]; then
+            scope=base/api_contract/public_api.json
+            candidate_scope=(--candidate-scope candidate/api_contract/public_api.json)
+          elif [ -f candidate/api_contract/public_api.json ]; then
+            candidate_scope=(--candidate-scope candidate/api_contract/public_api.json)
+          fi
+          python control/scripts/api_contract/check_public_api.py \
+            --base-root base --candidate-root candidate \
+            --scope "$scope" "${candidate_scope[@]}" \
+            --json-output api-compat-result.json --markdown-output api-compat-report.md \
+            --event-name pull_request --actor "$ACTOR" --pr-number "$PR_NUMBER" \
+            --base-sha "$BASE_SHA" --head-sha "$TESTED_SHA"
+      - name: Retain API evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-ci-api-compatibility
+          path: |
+            api-compat-result.json
+            api-compat-report.md
+          if-no-files-found: warn
+      - name: Add API evidence to summary
+        if: always()
+        run: |
+          if [ -f api-compat-report.md ]; then
+            cat api-compat-report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  report:
+    name: Record preflight checks
+    needs: [basic, api]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          HEAD_SHA: ${{ inputs.expected_head_sha }}
+          BASIC_RESULT: ${{ needs.basic.result }}
+          API_RESULT: ${{ needs.api.result }}
+        with:
+          script: |
+            const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            for (const [name, result] of [['basic', process.env.BASIC_RESULT], ['api', process.env.API_RESULT]]) {
+              await github.rest.repos.createCommitStatus({
+                ...context.repo, sha: process.env.HEAD_SHA, context: `local-ci/${name}`,
+                state: result === 'success' ? 'success' : result === 'failure' ? 'failure' : 'error',
+                description: `${name}: ${result}`, target_url: url,
+              });
+            }

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>AI Local CI · Triton Anchor</title>
+  <link rel="icon" href="assets/triton-anchor-logo.png">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="local-ci.css">
+  <script src="local-ci.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand"><img src="assets/triton-anchor-logo.png" alt="" class="brand-logo"><div><p class="brand-kicker">TRITON ANCHOR</p><h1>AI Local CI</h1></div></div>
+    <div class="header-meta"><span id="updatedAt">等待结果同步</span><button id="refresh" class="button secondary" type="button">刷新</button></div>
+  </header>
+  <nav class="view-tabs" aria-label="Dashboard 导航"><a class="tab-button active" href="local-ci.html" aria-current="page">任务与证据</a><a class="tab-button" href="index.html">全量算子 · 后端与性能</a></nav>
+  <main class="ci-main">
+    <div id="dataNotice" class="ci-notice" role="status" aria-live="polite" hidden></div>
+    <section aria-labelledby="workerHeading" class="ci-section"><div class="section-heading"><div><p class="eyebrow">PERSISTENT WORKERS</p><h2 id="workerHeading">版本环境与服务状态</h2></div><span class="ci-muted">任务复用常驻容器 · 心跳独立呈现</span></div><div id="workers" class="ci-workers"></div></section>
+    <div class="ci-layout">
+      <aside class="ci-task-panel" aria-labelledby="tasksHeading">
+        <div class="ci-panel-title"><h2 id="tasksHeading">CI 任务</h2><span id="taskCount" class="ci-count">0</span></div>
+        <label class="ci-field" for="taskSearch">搜索任务、PR 或提交<input type="search" id="taskSearch" placeholder="PR 编号、分支、SHA…"></label>
+        <label class="ci-field" for="resultFilter">结果筛选<select id="resultFilter"><option value="all">全部结果</option><option value="failure">失败 / 错误</option><option value="success">通过</option><option value="cancelled">已取消</option></select></label>
+        <div id="taskList" class="ci-task-list"></div>
+      </aside>
+      <section id="taskDetail" class="ci-detail" aria-label="任务详情" aria-live="polite"></section>
+    </div>
+    <section id="syncWarnings" class="ci-notice" hidden aria-label="数据同步异常"></section>
+    <footer class="ci-footer">结论对应页面显示的被测提交。检查未执行、不适用和性能变化均保留原始原因；邮件、硬件和外部监控状态以实际证据为准。</footer>
+  </main>
+</body>
+</html>

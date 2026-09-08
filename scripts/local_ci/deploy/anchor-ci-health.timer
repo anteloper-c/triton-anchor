@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Local CI health every minute independently of Poller
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+AccuracySec=5
+Unit=anchor-ci-health.service
+
+[Install]
+WantedBy=timers.target

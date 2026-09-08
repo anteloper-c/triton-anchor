@@ -287,7 +287,7 @@ uv pip install -e ".[dev]"
 pytest python/triton_anchor/tests/ -v
 
 # 运行 Local CI/Codex 契约测试
-pytest scripts/local_ci/codex_ai/tests scripts/local_ci/tests scripts/local_ci/results/tests -v
+python -m pytest scripts/local_ci/tests scripts/ci/tests -v
 ```
 
 > 更详细的 Local CI 使用、维护和故障排查说明见 `scripts/local_ci/README.md` 和 `scripts/local_ci/DEVELOPMENT_GUIDE.md`。
@@ -493,12 +493,9 @@ pytest tests/ -v
 
 ### 9.3 CI
 
-项目已配置 [GitHub Actions Basic CI](.github/workflows/ci_basic.yml)，每次 push / PR 自动运行：
+[GitHub CI gateway](.github/workflows/ci-gateway.yml) 执行 PR 信息、Basic CI、API compatibility 和 Security Gate 前置检查，外部贡献者 PR 经人工审批后投递 Local CI。Codex 在对应 Triton 版本的常驻环境中自主组织构建、测试和架构审查，主机 broker 保存执行证据，GitHub 校验结果后回写状态。
 
-| Job | 内容 | 矩阵 |
-|-----|------|------|
-| **lint** | `ruff check` + `ruff format --check` | Python 3.10 |
-| **unit-test** | 纯 Python 单元测试 + 覆盖率 | Python 3.9 / 3.10 / 3.11 / 3.12 |
+目标分支保护规则应要求 `local-ci/basic`、`local-ci/api`、`local-ci/security`、`local-ci/summary`。只有 Triton 3.0 支持后端、算子及性能检查；其他版本执行适用的前端检查。配置、部署与验收边界见 [Local CI 文档](scripts/local_ci/README.md)。
 
 ## 10 参与贡献
 

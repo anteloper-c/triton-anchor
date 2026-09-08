@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "gateway_contract_version": "3",
+  "gateway_contract_version": "4",
   "role": "worker",
   "tested_revision": "merge-result",
   "capabilities": [
@@ -13,6 +13,11 @@
     "cancel",
     "cross-branch-pr",
     "cross-branch-push",
-    "merge-result"
+    "merge-result",
+    "pr-information",
+    "basic-ci",
+    "api-compatibility",
+    "ai-orchestration",
+    "result-v4"
   ]
 }

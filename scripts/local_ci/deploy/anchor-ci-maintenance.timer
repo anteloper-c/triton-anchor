@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for due Local CI environment rebuilds
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=300
+AccuracySec=30
+Unit=anchor-ci-maintenance.service
+
+[Install]
+WantedBy=timers.target

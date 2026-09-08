@@ -1,0 +1,11 @@
+[Unit]
+Description=Check independent Local CI heartbeat every five minutes
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=300
+AccuracySec=10
+Unit=anchor-ci-watchdog.service
+
+[Install]
+WantedBy=timers.target

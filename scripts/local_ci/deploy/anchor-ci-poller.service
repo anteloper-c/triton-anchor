@@ -1,0 +1,26 @@
+[Unit]
+Description=Triton Anchor Local CI task poller
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=anchor-ci
+Group=anchor-ci
+SupplementaryGroups=docker
+WorkingDirectory=/opt/anchor-ci
+EnvironmentFile=-/etc/anchor-ci/service.env
+ExecStart=/usr/bin/python3 scripts/local_ci/ci.py poll --config /etc/anchor-ci/config.json
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=120
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

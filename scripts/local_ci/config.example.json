@@ -1,0 +1,255 @@
+{
+  "repository": "anteloper-c/triton-anchor",
+  "worker_id": "anchor-ci-host-1",
+  "control_root": "/opt/anchor-ci",
+  "local_acceptance": false,
+  "state_dir": "/var/lib/anchor-ci",
+  "workspace_host": "/srv/anchor-ci/workspace",
+  "docker": "docker",
+  "broker_host": "host.docker.internal",
+  "poll_interval": 30,
+  "validity_interval": 10,
+  "relay": {
+    "url": "https://gitee.com/heron-mc/REPLACE_WITH_NEW_RELAY_REPOSITORY.git",
+    "results_branch": "local-ci-results",
+    "username_env": "GITEE_USERNAME",
+    "token_env": "GITEE_TOKEN",
+    "git_timeout_seconds": 60
+  },
+  "branch_profiles": {
+    "REPLACE_WITH_TRITON_3_0_BRANCH": "triton-3.0",
+    "REPLACE_WITH_TRITON_3_3_BRANCH": "triton-3.3",
+    "REPLACE_WITH_TRITON_3_6_BRANCH": "triton-3.6"
+  },
+  "codex": {
+    "bin": "codex",
+    "home": "/home/agent/.codex",
+    "auth_file": "/etc/anchor-ci/codex/auth.json",
+    "timeout": 14400,
+    "max_commands": 100,
+    "publication_recovery_attempts": 1,
+    "publication_recovery_timeout": 180
+  },
+  "profiles": [
+    {
+      "id": "triton-3.0",
+      "triton_version": "3.0",
+      "llvm_revision": "10dc3a8e916d73291269e5e2b82dd22681489aa1",
+      "seed_venv": "/opt/ci-venv",
+      "agent_user": "1001:1000",
+      "dependency_sources": {
+        "FlagGems": "/opt/dependencies/FlagGems"
+      },
+      "performance_baselines": {},
+      "container": {
+        "name": "anchor-ci-triton-3-0",
+        "image": "anchor-ci/triton-3.0:maintained",
+        "run_args": [
+          "--add-host",
+          "host.docker.internal:host-gateway",
+          "--mount",
+          "type=bind,src=/opt/anchor-ci/scripts/local_ci,dst=/opt/anchor-ci,readonly",
+          "--mount",
+          "type=bind,src=/srv/anchor-ci/workspace,dst=/workspace"
+        ],
+        "healthcheck": [
+          "sh",
+          "-c",
+          "test -x /opt/llvm/bin/mlir-opt && test -s /opt/llvm/anchor-ci-llvm-revision && /opt/ci-venv/bin/python -c 'import build, pytest, jsonschema, yaml' && codex --version"
+        ]
+      },
+      "maintenance": {
+        "window_start": "18:00",
+        "window_minutes": 180,
+        "stagger_minutes": 0,
+        "disk_path": "/var/lib/docker",
+        "min_free_gb": 40,
+        "build_timeout_seconds": 14400,
+        "recipe": {
+          "context": "/etc/anchor-ci/recipes/triton-3.0",
+          "dockerfile": "Dockerfile.worker",
+          "build_args": {
+            "BASE_IMAGE": "REPLACE_WITH_TRUSTED_IMAGE_AT_SHA256_DIGEST",
+            "CODEX_VERSION": "REPLACE_WITH_VERIFIED_VERSION",
+            "LLVM_BUILD_JOBS": "4"
+          }
+        }
+      },
+      "tools": {
+        "python_bin": "/opt/ci-venv/bin/python",
+        "llvm_dir": "/opt/llvm",
+        "required_modules": [
+          "build",
+          "setuptools",
+          "wheel",
+          "pybind11"
+        ],
+        "required_commands": [
+          "git",
+          "cmake",
+          "ninja"
+        ],
+        "env": {},
+        "backend_dir": "/opt/backend",
+        "backend_wheel_pattern": "*.whl",
+        "expected_backend": "REPLACE_WITH_BACKEND_NAME",
+        "backend_smoke_argv": [
+          "{python}",
+          "-m",
+          "pytest",
+          "-q",
+          "REPLACE_WITH_REAL_BACKEND_JIT_TEST"
+        ],
+        "flaggems_dir": "/opt/FlagGems",
+        "flaggems_pytest_args": "--ref cpu -vs"
+      }
+    },
+    {
+      "id": "triton-3.3",
+      "triton_version": "3.3",
+      "llvm_revision": "a66376b0dc3b2ea8a84fda26faca287980986f78",
+      "seed_venv": "/opt/ci-venv",
+      "agent_user": "1001:1000",
+      "dependency_sources": {},
+      "container": {
+        "name": "anchor-ci-triton-3-3",
+        "image": "anchor-ci/triton-3.3:maintained",
+        "run_args": [
+          "--add-host",
+          "host.docker.internal:host-gateway",
+          "--mount",
+          "type=bind,src=/opt/anchor-ci/scripts/local_ci,dst=/opt/anchor-ci,readonly",
+          "--mount",
+          "type=bind,src=/srv/anchor-ci/workspace,dst=/workspace"
+        ],
+        "healthcheck": [
+          "sh",
+          "-c",
+          "test -x /opt/llvm/bin/mlir-opt && test -s /opt/llvm/anchor-ci-llvm-revision && /opt/ci-venv/bin/python -c 'import build, pytest, jsonschema, yaml' && codex --version"
+        ]
+      },
+      "maintenance": {
+        "window_start": "18:00",
+        "window_minutes": 180,
+        "stagger_minutes": 45,
+        "disk_path": "/var/lib/docker",
+        "min_free_gb": 40,
+        "build_timeout_seconds": 14400,
+        "recipe": {
+          "context": "/etc/anchor-ci/recipes/triton-3.3",
+          "dockerfile": "Dockerfile.worker",
+          "build_args": {
+            "BASE_IMAGE": "REPLACE_WITH_TRUSTED_IMAGE_AT_SHA256_DIGEST",
+            "CODEX_VERSION": "REPLACE_WITH_VERIFIED_VERSION",
+            "LLVM_BUILD_JOBS": "4"
+          }
+        }
+      },
+      "tools": {
+        "python_bin": "/opt/ci-venv/bin/python",
+        "llvm_dir": "/opt/llvm",
+        "required_modules": [
+          "build",
+          "setuptools",
+          "wheel",
+          "pybind11"
+        ],
+        "required_commands": [
+          "git",
+          "cmake",
+          "ninja"
+        ],
+        "env": {}
+      }
+    },
+    {
+      "id": "triton-3.6",
+      "triton_version": "3.6",
+      "llvm_revision": "a992f29451b9e140424f35ac5e20177db4afbdc0",
+      "seed_venv": "/opt/ci-venv",
+      "agent_user": "1001:1000",
+      "dependency_sources": {},
+      "container": {
+        "name": "anchor-ci-triton-3-6",
+        "image": "anchor-ci/triton-3.6:maintained",
+        "run_args": [
+          "--add-host",
+          "host.docker.internal:host-gateway",
+          "--mount",
+          "type=bind,src=/opt/anchor-ci/scripts/local_ci,dst=/opt/anchor-ci,readonly",
+          "--mount",
+          "type=bind,src=/srv/anchor-ci/workspace,dst=/workspace"
+        ],
+        "healthcheck": [
+          "sh",
+          "-c",
+          "test -x /opt/llvm/bin/mlir-opt && test -s /opt/llvm/anchor-ci-llvm-revision && /opt/ci-venv/bin/python -c 'import build, pytest, jsonschema, yaml' && codex --version"
+        ]
+      },
+      "maintenance": {
+        "window_start": "18:00",
+        "window_minutes": 180,
+        "stagger_minutes": 90,
+        "disk_path": "/var/lib/docker",
+        "min_free_gb": 40,
+        "build_timeout_seconds": 14400,
+        "recipe": {
+          "context": "/etc/anchor-ci/recipes/triton-3.6",
+          "dockerfile": "Dockerfile.worker",
+          "build_args": {
+            "BASE_IMAGE": "REPLACE_WITH_TRUSTED_IMAGE_AT_SHA256_DIGEST",
+            "CODEX_VERSION": "REPLACE_WITH_VERIFIED_VERSION",
+            "LLVM_BUILD_JOBS": "4"
+          }
+        }
+      },
+      "tools": {
+        "python_bin": "/opt/ci-venv/bin/python",
+        "llvm_dir": "/opt/llvm",
+        "required_modules": [
+          "build",
+          "setuptools",
+          "wheel",
+          "pybind11"
+        ],
+        "required_commands": [
+          "git",
+          "cmake",
+          "ninja"
+        ],
+        "env": {}
+      }
+    }
+  ],
+  "health": {
+    "publish": true,
+    "poller_max_age_seconds": 180,
+    "task_heartbeat_max_age_seconds": 300,
+    "task_max_age_seconds": 14400,
+    "min_free_gb": 20,
+    "disk_paths": [
+      "/var/lib/anchor-ci",
+      "/srv/anchor-ci/workspace",
+      "/var/lib/docker"
+    ],
+    "systemd_services": [
+      "anchor-ci-poller.service"
+    ]
+  },
+  "smtp": {
+    "accounts": [
+      "heron-mc",
+      "likehupochuan"
+    ],
+    "account_emails": {
+      "heron-mc": "",
+      "likehupochuan": ""
+    },
+    "host": "",
+    "from": "",
+    "port": 587,
+    "starttls": true,
+    "username_env": "LOCAL_CI_SMTP_USERNAME",
+    "password_env": "LOCAL_CI_SMTP_PASSWORD"
+  }
+}

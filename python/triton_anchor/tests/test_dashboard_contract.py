@@ -151,11 +151,8 @@ class DashboardContractTest(unittest.TestCase):
         ):
             self.assertTrue((ROOT / relative_path).is_file(), relative_path)
 
-    def test_worker_health_resource_display_contract(self):
+    def test_legacy_worker_health_resource_display_contract(self):
         app = (ROOT / "dashboard" / "app.js").read_text(encoding="utf-8")
-        health = (
-            ROOT / "scripts" / "local_ci" / "maintenance" / "local_ci_health.py"
-        ).read_text(encoding="utf-8")
         fixture = read_json(DATA_DIR / "worker-health.json")
 
         self.assertIn("const usedCpus = rawPercent / 100;", app)
@@ -163,7 +160,6 @@ class DashboardContractTest(unittest.TestCase):
         self.assertIn("container.available_cpus ?? limits.cpus", app)
         self.assertIn('value: memoryUsage,', app)
         self.assertIn('detail: "实际使用 / 可用内存"', app)
-        self.assertIn('"available_cpus": round(available_cpus, 3)', health)
         self.assertIsNone(fixture["container"]["available_cpus"])
 
 

@@ -9,6 +9,8 @@ on:
       - reopened
       - ready_for_review
       - edited
+      - labeled
+      - unlabeled
       - closed
       - converted_to_draft
   workflow_dispatch:
@@ -16,7 +18,7 @@ on:
       gateway_contract_version:
         description: "Internal gateway contract version"
         required: false
-        default: "3"
+        default: "4"
         type: string
       mode:
         description: "Gateway operation; use push for a manual branch task"
@@ -64,6 +66,12 @@ on:
         required: false
         default: ""
         type: string
+      flaggems_mode:
+        description: "Manual branch task selection; full retains the full FlagGems run"
+        required: false
+        default: "sample"
+        type: choice
+        options: [sample, full]
       source_branch:
         description: "Source branch represented by the local CI task"
         required: false
@@ -76,6 +84,11 @@ on:
         type: string
       task_ref:
         description: "Gitee task branch"
+        required: false
+        default: ""
+        type: string
+      task_id:
+        description: "Immutable Local CI task identity"
         required: false
         default: ""
         type: string
@@ -118,8 +131,8 @@ on:
 permissions: {}
 
 env:
-  GATEWAY_CONTRACT_VERSION: "3"
-  FALLBACK_WORKER_BRANCH: ${{ vars.LOCAL_CI_FALLBACK_WORKER_BRANCH || 'CI_dev' }}
+  GATEWAY_CONTRACT_VERSION: "4"
+  FALLBACK_WORKER_BRANCH: ${{ vars.LOCAL_CI_FALLBACK_WORKER_BRANCH || 'ci_repo' }}
   FALLBACK_PR_ENABLED: ${{ vars.LOCAL_CI_FALLBACK_PR_ENABLED || 'true' }}
   FALLBACK_PUSH_ENABLED: ${{ vars.LOCAL_CI_FALLBACK_PUSH_ENABLED || 'true' }}
 
@@ -138,7 +151,7 @@ jobs:
       - name: Cancel obsolete Local CI work
         uses: actions/github-script@v7
         env:
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
+          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
         with:
           script: |
             const pull = context.payload.pull_request;
@@ -163,9 +176,9 @@ jobs:
               reason = 'pull request converted to draft';
               deleteTaskRef = true;
               cancellationLabel = 'cancel-draft';
-            } else if (action === 'synchronize' && externalFork) {
+            } else if (action === 'synchronize') {
               targetRef = pull.base.ref;
-              reason = 'external fork head changed; maintainer authorization expired';
+              reason = 'PR head changed; prior task and approval expired';
               deleteTaskRef = false;
               cancellationLabel = 'cancel-stale';
             } else if (action === 'edited' && previousBaseRef) {
@@ -276,7 +289,7 @@ jobs:
                     gateway_contract_version: process.env.GATEWAY_CONTRACT_VERSION,
                     mode: 'cancel',
                     pr_number: String(pull.number),
-                    expected_head_sha: pull.head.sha,
+                    expected_head_sha: action === 'synchronize' && shaPattern.test(previousHeadSha) ? previousHeadSha : pull.head.sha,
                     worker_revision_sha: worker.revision,
                     tested_sha: '',
                     source_branch: pull.head.ref,
@@ -341,7 +354,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           MANUAL_PR_NUMBER: ${{ inputs.pr_number }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
+          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -440,13 +453,6 @@ jobs:
                   context.payload.action === 'converted_to_draft'
                 ) {
                   core.notice('The lifecycle cancellation job handles this event.');
-                  return;
-                }
-                if (
-                  context.payload.action === 'edited' &&
-                  !context.payload.changes?.base?.ref?.from
-                ) {
-                  core.notice('The PR was edited without changing its target branch.');
                   return;
                 }
               }
@@ -548,96 +554,12 @@ jobs:
               throw error;
             }
 
-  approve-external-fork:
-    name: Approve external fork Local CI
-    needs: prepare-route
-    if: ${{ needs.prepare-route.outputs.requires_approval == 'true' }}
-    runs-on: ubuntu-latest
-    concurrency:
-      group: local-ci-fork-approval-${{ needs.prepare-route.outputs.pr_number }}
-      cancel-in-progress: true
-    environment:
-      name: ${{ vars.LOCAL_CI_FORK_APPROVAL_ENVIRONMENT || 'local-ci-fork-approval' }}
-    permissions:
-      contents: read
-      pull-requests: read
-      statuses: write
-    steps:
-      - name: Revalidate approved PR revision
-        uses: actions/github-script@v7
-        env:
-          PR_NUMBER: ${{ needs.prepare-route.outputs.pr_number }}
-          EXPECTED_HEAD_SHA: ${{ needs.prepare-route.outputs.head_sha }}
-          COMPARISON_BASE_SHA: ${{ needs.prepare-route.outputs.base_sha }}
-          TESTED_SHA: ${{ needs.prepare-route.outputs.tested_sha }}
-          BASE_REF: ${{ needs.prepare-route.outputs.base_ref }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const prNumber = Number.parseInt(process.env.PR_NUMBER, 10);
-            const markError = async (description) => {
-              await github.rest.repos.createCommitStatus({
-                owner,
-                repo,
-                sha: process.env.TESTED_SHA,
-                state: 'error',
-                context: process.env.STATUS_CONTEXT,
-                description: description.slice(0, 140),
-                target_url:
-                  `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
-              });
-            };
-
-            try {
-              const { data: pull } = await github.rest.pulls.get({
-                owner,
-                repo,
-                pull_number: prNumber,
-              });
-              if (
-                pull.state !== 'open' ||
-                pull.draft ||
-                pull.head.sha.toLowerCase() !== process.env.EXPECTED_HEAD_SHA.toLowerCase() ||
-                pull.base.ref !== process.env.BASE_REF
-              ) {
-                throw new Error('Pull request changed while waiting for environment approval');
-              }
-              const mergeRef = await github.rest.git.getRef({
-                owner,
-                repo,
-                ref: `pull/${prNumber}/merge`,
-              });
-              const approvedMergeSha = String(mergeRef.data.object?.sha || '');
-              if (approvedMergeSha.toLowerCase() !== process.env.TESTED_SHA.toLowerCase()) {
-                throw new Error('Pull request merge result changed while waiting for approval');
-              }
-              const mergeCommit = await github.rest.git.getCommit({
-                owner,
-                repo,
-                commit_sha: process.env.TESTED_SHA,
-              });
-              const parents = mergeCommit.data.parents?.map((parent) => parent.sha) || [];
-              if (
-                parents.length !== 2 ||
-                parents[0].toLowerCase() !== process.env.COMPARISON_BASE_SHA.toLowerCase() ||
-                parents[1].toLowerCase() !== process.env.EXPECTED_HEAD_SHA.toLowerCase()
-              ) {
-                throw new Error('Pull request merge-result parents changed while waiting for approval');
-              }
-              core.info(`External fork PR #${prNumber} is approved for ${process.env.TESTED_SHA}.`);
-            } catch (error) {
-              await markError(`external fork approval expired: ${error.message}`);
-              throw error;
-            }
-
   route-pull-request:
     name: Route PR to target branch CI
     needs:
       - route-cancellation
       - prepare-route
-      - approve-external-fork
-    if: ${{ always() && (needs.route-cancellation.result == 'success' || needs.route-cancellation.result == 'skipped') && needs.prepare-route.result == 'success' && needs.prepare-route.outputs.should_route == 'true' && (needs.prepare-route.outputs.requires_approval != 'true' || needs.approve-external-fork.result == 'success') }}
+    if: ${{ always() && (needs.route-cancellation.result == 'success' || needs.route-cancellation.result == 'skipped') && needs.prepare-route.result == 'success' && needs.prepare-route.outputs.should_route == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -656,7 +578,7 @@ jobs:
           BASE_REF: ${{ needs.prepare-route.outputs.base_ref }}
           AUTHORIZATION_SOURCE: ${{ needs.prepare-route.outputs.authorization_source }}
           RUN_TITLE: ${{ needs.prepare-route.outputs.run_title }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
+          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -664,6 +586,10 @@ jobs:
             const expectedContract = process.env.GATEWAY_CONTRACT_VERSION;
             const shaPattern = /^[0-9a-f]{40}$/i;
             const baseCapabilities = [
+              'pr-information',
+              'basic-ci',
+              'api-compatibility',
+              'result-v4',
               'security-scan',
               'codeql',
               'dispatch',
@@ -674,6 +600,9 @@ jobs:
             ];
             const requiredPaths = [
               '.github/workflows/ci-gateway.yml',
+              '.github/workflows/local-ci-prechecks.yml',
+              'scripts/local_ci/github/build_task_metadata.py',
+              'scripts/local_ci/github/receive_result.py',
               '.github/workflows/security-gate.yml',
               'scripts/ci/scan_pr_security.py',
               '.github/workflows/dispatch-local-ci.yml',
@@ -759,6 +688,14 @@ jobs:
                 manifest = JSON.parse(manifestText);
               } catch (error) {
                 throw new Error(`Worker manifest on ${ref} is invalid JSON: ${error.message}`);
+              }
+              if (allowMissingManifest && manifest.role === 'router' && manifest.gateway_contract_version === expectedContract) {
+                return null;
+              }
+              if (allowMissingManifest && manifest.schema_version === 1 && manifest.role === 'worker' &&
+                  manifest.gateway_contract_version === '3') {
+                core.notice(`Branch ${ref} still has a legacy worker; route through the verified v4 fallback.`);
+                return null;
               }
               if (
                 manifest.schema_version !== 1 ||
@@ -912,13 +849,16 @@ jobs:
         env:
           REQUESTED_BRANCH: ${{ inputs.source_branch }}
           REQUESTED_SHA: ${{ inputs.requested_sha }}
-          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
+          FLAGGEMS_MODE: ${{ inputs.flaggems_mode || 'sample' }}
+          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
         with:
           script: |
             const { owner, repo } = context.repo;
             const shaPattern = /^[0-9a-f]{40}$/i;
             const sourceBranch = process.env.REQUESTED_BRANCH.trim();
             const requestedSha = process.env.REQUESTED_SHA.trim();
+            const flaggemsMode = process.env.FLAGGEMS_MODE;
+            const statusContext = process.env.STATUS_CONTEXT + (flaggemsMode === 'full' ? '/full' : '');
             const fallbackRef = process.env.FALLBACK_WORKER_BRANCH.trim();
             const requiredCapabilities = ['cross-branch-push', 'dispatch', 'receive'];
             const requiredPaths = [
@@ -939,7 +879,7 @@ jobs:
                 repo,
                 sha: statusSha,
                 state,
-                context: process.env.STATUS_CONTEXT,
+                context: statusContext,
                 description: description.slice(0, 140),
                 target_url: statusTarget,
               });
@@ -987,6 +927,9 @@ jobs:
               }
               if (!sourceBranch) {
                 throw new Error('source_branch is required for mode=push');
+              }
+              if (!['sample', 'full'].includes(flaggemsMode)) {
+                throw new Error('flaggems_mode must be sample or full');
               }
               if (!fallbackRef) {
                 throw new Error('No fallback worker branch is configured');
@@ -1078,9 +1021,10 @@ jobs:
                   authorization_source: `manual-push:${context.actor}`,
                   tested_sha: statusSha,
                   requested_sha: requestedSha,
+                  flaggems_mode: flaggemsMode,
                   source_branch: sourceBranch,
                   target_branch: sourceBranch,
-                  context: process.env.STATUS_CONTEXT,
+                  context: statusContext,
                   run_title: runTitle,
                 },
               });
@@ -1097,9 +1041,8 @@ jobs:
     needs:
       - route-cancellation
       - prepare-route
-      - approve-external-fork
       - route-pull-request
-    if: ${{ always() && needs.prepare-route.outputs.should_route == 'true' && ((needs.route-cancellation.result == 'failure' || needs.route-cancellation.result == 'cancelled') || (needs.prepare-route.outputs.requires_approval == 'true' && (needs.approve-external-fork.result == 'failure' || needs.approve-external-fork.result == 'cancelled')) || needs.route-pull-request.result == 'failure' || needs.route-pull-request.result == 'cancelled') }}
+    if: ${{ always() && needs.prepare-route.outputs.should_route == 'true' && ((needs.route-cancellation.result == 'failure' || needs.route-cancellation.result == 'cancelled') || needs.route-pull-request.result == 'failure' || needs.route-pull-request.result == 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -1110,7 +1053,7 @@ jobs:
         env:
           HEAD_SHA: ${{ needs.prepare-route.outputs.head_sha }}
           TESTED_SHA: ${{ needs.prepare-route.outputs.tested_sha }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
+          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
         with:
           script: |
             const targetUrl =
@@ -1152,6 +1095,7 @@ jobs:
       base_ref: ${{ steps.validate.outputs.base_ref }}
       head_repo: ${{ steps.validate.outputs.head_repo }}
       head_ref: ${{ steps.validate.outputs.head_ref }}
+      requires_approval: ${{ steps.validate.outputs.requires_approval }}
       run_title: ${{ steps.validate.outputs.run_title }}
     steps:
       - name: Revalidate exact PR and worker revisions
@@ -1171,7 +1115,7 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           WORKFLOW_SHA: ${{ github.sha }}
           INPUT_RUN_TITLE: ${{ inputs.run_title }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
+          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -1308,7 +1252,11 @@ jobs:
                 Buffer.from(manifestResponse.data.content, 'base64').toString('utf8')
               );
               const requiredCapabilities = [
-                'security-scan',
+                'pr-information',
+              'basic-ci',
+              'api-compatibility',
+              'result-v4',
+              'security-scan',
                 'codeql',
                 'dispatch',
                 'receive',
@@ -1331,6 +1279,18 @@ jobs:
                 throw new Error('The running worker manifest is incompatible');
               }
 
+              const meaningful = (value) => String(value || '').replace(/<!--[\s\S]*?-->/g, '').trim();
+              if (meaningful(pull.title).length < 8 || meaningful(pull.body).length < 30) {
+                throw new Error('PR needs a descriptive title (at least 8 characters) and a body explaining intent and validation (at least 30 characters)');
+              }
+              core.setOutput('requires_approval', pull.head.repo.full_name !== `${owner}/${repo}` ? 'true' : 'false');
+              for (const check of ['basic', 'api', 'security', 'summary']) {
+                await github.rest.repos.createCommitStatus({
+                  owner, repo, sha: pull.head.sha, state: 'pending',
+                  context: `local-ci/${check}`, description: 'Frozen PR checks are pending',
+                  target_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+                });
+              }
               const cleanTitle = String(
                 process.env.INPUT_RUN_TITLE ||
                   `PR ${prNumber} | h:${pull.head.sha.slice(0, 7)} m:${process.env.TESTED_SHA.slice(0, 7)} | dispatch`
@@ -1367,9 +1327,23 @@ jobs:
               throw error;
             }
 
+  basic-and-api:
+    name: Basic CI then API compatibility
+    needs: validate-dispatch
+    permissions:
+      contents: read
+      statuses: write
+    uses: ./.github/workflows/local-ci-prechecks.yml
+    with:
+      pr_number: ${{ needs.validate-dispatch.outputs.pr_number }}
+      expected_head_sha: ${{ needs.validate-dispatch.outputs.head_sha }}
+      comparison_base_sha: ${{ needs.validate-dispatch.outputs.comparison_base_sha }}
+      tested_sha: ${{ needs.validate-dispatch.outputs.tested_sha }}
+      trusted_ref: ${{ needs.validate-dispatch.outputs.worker_revision_sha }}
+
   security-gate:
     name: Security Gate
-    needs: validate-dispatch
+    needs: [validate-dispatch, basic-and-api]
     permissions:
       contents: read
       pull-requests: read
@@ -1382,17 +1356,174 @@ jobs:
       tested_sha: ${{ needs.validate-dispatch.outputs.tested_sha }}
       trusted_ref: ${{ needs.validate-dispatch.outputs.worker_revision_sha }}
 
+  security-result:
+    name: Record Security Gate result
+    needs: [validate-dispatch, basic-and-api, security-gate]
+    if: ${{ always() && needs.validate-dispatch.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          HEAD_SHA: ${{ needs.validate-dispatch.outputs.head_sha }}
+          TESTED_SHA: ${{ needs.validate-dispatch.outputs.tested_sha }}
+          SECURITY_RESULT: ${{ needs.security-gate.result }}
+        with:
+          script: |
+            const result = process.env.SECURITY_RESULT;
+            await github.rest.repos.createCommitStatus({...context.repo, sha: process.env.HEAD_SHA,
+              state: result === 'success' ? 'success' : result === 'failure' ? 'failure' : 'error',
+              context: 'local-ci/security',
+              description: `Security Gate ${result}: ${process.env.TESTED_SHA.slice(0, 12)}`,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`});
+
+  approval-review-card:
+    name: Publish approval review card
+    needs: [validate-dispatch, basic-and-api, security-gate, security-result]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      statuses: write
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Summarize completed preflight and frozen task
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ needs.validate-dispatch.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.validate-dispatch.outputs.head_sha }}
+          BASE_SHA: ${{ needs.validate-dispatch.outputs.comparison_base_sha }}
+          TESTED_SHA: ${{ needs.validate-dispatch.outputs.tested_sha }}
+          CONTROL_SHA: ${{ needs.validate-dispatch.outputs.worker_revision_sha }}
+          APPROVAL_ENVIRONMENT: ${{ vars.LOCAL_CI_FORK_APPROVAL_ENVIRONMENT || 'local-ci-fork-approval' }}
+          APPROVAL_REQUIRED: ${{ needs.validate-dispatch.outputs.requires_approval }}
+        with:
+          script: |
+            const { data: pull } = await github.rest.pulls.get({...context.repo, pull_number: Number(process.env.PR_NUMBER)});
+            if (pull.state !== 'open' || pull.draft || pull.head.sha !== process.env.HEAD_SHA) {
+              throw new Error('PR changed before approval review card');
+            }
+            const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            if (process.env.APPROVAL_REQUIRED === 'true') {
+              const { data: environment } = await github.rest.repos.getEnvironment({...context.repo, environment_name: process.env.APPROVAL_ENVIRONMENT});
+              if (!environment.protection_rules?.some(rule => rule.type === 'required_reviewers' && rule.reviewers?.length > 0)) {
+                throw new Error('External fork approval environment has no required reviewers; configure it before admission');
+              }
+            }
+            const marker = '<!-- local-ci-approval-card -->';
+            const body = [marker, '### Local CI 前置检查与审批',
+              'Basic CI、API 兼容性与 Security Gate 已通过。',
+              `- Head: ${process.env.HEAD_SHA}`, `- Base: ${process.env.BASE_SHA}`,
+              `- 被测合并提交: ${process.env.TESTED_SHA}`, `- 控制面: ${process.env.CONTROL_SHA}`,
+              '- 任务范围：Codex 按最低必检规则选择构建、测试与架构审查；仅 Triton 3.0 有后端、算子和性能能力。',
+              process.env.APPROVAL_REQUIRED === 'true' ? '外部贡献者 PR：等待维护者审批后进入 Local CI。' : '仓库内部 PR：前置检查通过后投递 Local CI。',
+              `[检查证据和审批入口](${url})`].join('\n\n');
+            const comments = await github.paginate(github.rest.issues.listComments, {...context.repo, issue_number: pull.number});
+            const previous = comments.find(c => c.user?.type === 'Bot' && c.body?.includes(marker));
+            if (previous) await github.rest.issues.updateComment({...context.repo, comment_id: previous.id, body});
+            else await github.rest.issues.createComment({...context.repo, issue_number: pull.number, body});
+
+  approve-external-fork:
+    name: Approve external fork Local CI
+    needs: [validate-dispatch, security-gate, approval-review-card]
+    if: ${{ needs.validate-dispatch.outputs.requires_approval == 'true' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: local-ci-fork-approval-${{ needs.validate-dispatch.outputs.pr_number }}
+      cancel-in-progress: true
+    environment:
+      name: ${{ vars.LOCAL_CI_FORK_APPROVAL_ENVIRONMENT || 'local-ci-fork-approval' }}
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Revalidate approved PR revision
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ needs.validate-dispatch.outputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ needs.validate-dispatch.outputs.head_sha }}
+          COMPARISON_BASE_SHA: ${{ needs.validate-dispatch.outputs.comparison_base_sha }}
+          TESTED_SHA: ${{ needs.validate-dispatch.outputs.tested_sha }}
+          BASE_REF: ${{ needs.validate-dispatch.outputs.base_ref }}
+          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = Number.parseInt(process.env.PR_NUMBER, 10);
+            const markError = async (description) => {
+              await github.rest.repos.createCommitStatus({
+                owner,
+                repo,
+                sha: process.env.TESTED_SHA,
+                state: 'error',
+                context: process.env.STATUS_CONTEXT,
+                description: description.slice(0, 140),
+                target_url:
+                  `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              });
+            };
+
+            try {
+              const { data: pull } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: prNumber,
+              });
+              if (
+                pull.state !== 'open' ||
+                pull.draft ||
+                pull.head.sha.toLowerCase() !== process.env.EXPECTED_HEAD_SHA.toLowerCase() ||
+                pull.base.ref !== process.env.BASE_REF
+              ) {
+                throw new Error('Pull request changed while waiting for environment approval');
+              }
+              const mergeRef = await github.rest.git.getRef({
+                owner,
+                repo,
+                ref: `pull/${prNumber}/merge`,
+              });
+              const approvedMergeSha = String(mergeRef.data.object?.sha || '');
+              if (approvedMergeSha.toLowerCase() !== process.env.TESTED_SHA.toLowerCase()) {
+                throw new Error('Pull request merge result changed while waiting for approval');
+              }
+              const mergeCommit = await github.rest.git.getCommit({
+                owner,
+                repo,
+                commit_sha: process.env.TESTED_SHA,
+              });
+              const parents = mergeCommit.data.parents?.map((parent) => parent.sha) || [];
+              if (
+                parents.length !== 2 ||
+                parents[0].toLowerCase() !== process.env.COMPARISON_BASE_SHA.toLowerCase() ||
+                parents[1].toLowerCase() !== process.env.EXPECTED_HEAD_SHA.toLowerCase()
+              ) {
+                throw new Error('Pull request merge-result parents changed while waiting for approval');
+              }
+              core.info(`External fork PR #${prNumber} is approved for ${process.env.TESTED_SHA}.`);
+            } catch (error) {
+              await markError(`external fork approval expired: ${error.message}`);
+              throw error;
+            }
+
   dispatch:
     name: Dispatch local CI task
     needs:
       - validate-dispatch
       - security-gate
+      - approval-review-card
+      - approve-external-fork
+    if: ${{ always() && needs.validate-dispatch.result == 'success' && needs.security-gate.result == 'success' && needs.approval-review-card.result == 'success' && (needs.validate-dispatch.outputs.requires_approval != 'true' || needs.approve-external-fork.result == 'success') }}
     permissions:
       actions: write
       contents: read
       statuses: write
     uses: ./.github/workflows/dispatch-local-ci.yml
     with:
+      preflight_passed: true
+      external_approval: ${{ needs.approve-external-fork.result == 'success' }}
       pr_number: ${{ needs.validate-dispatch.outputs.pr_number }}
       head_sha: ${{ needs.validate-dispatch.outputs.head_sha }}
       comparison_base_sha: ${{ needs.validate-dispatch.outputs.comparison_base_sha }}
@@ -1410,9 +1541,12 @@ jobs:
     name: Publish worker dispatch failure
     needs:
       - validate-dispatch
+      - basic-and-api
       - security-gate
+      - approval-review-card
+      - approve-external-fork
       - dispatch
-    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.mode == 'dispatch' && inputs.expected_head_sha != '' && inputs.worker_revision_sha != '' && (needs.validate-dispatch.result == 'failure' || needs.validate-dispatch.result == 'cancelled' || needs.security-gate.result == 'failure' || needs.security-gate.result == 'cancelled' || needs.dispatch.result == 'failure' || needs.dispatch.result == 'cancelled') }}
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.mode == 'dispatch' && inputs.expected_head_sha != '' && inputs.worker_revision_sha != '' && (needs.basic-and-api.result == 'failure' || needs.approval-review-card.result == 'failure' || needs.approve-external-fork.result == 'failure' || needs.approve-external-fork.result == 'cancelled' || needs.validate-dispatch.result == 'failure' || needs.validate-dispatch.result == 'cancelled' || needs.security-gate.result == 'failure' || needs.security-gate.result == 'cancelled' || needs.dispatch.result == 'failure' || needs.dispatch.result == 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -1423,7 +1557,7 @@ jobs:
         env:
           SHA: ${{ inputs.tested_sha }}
           HEAD_SHA: ${{ inputs.expected_head_sha }}
-          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
+          STATUS_CONTEXT: ${{ vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
         with:
           script: |
             const shaPattern = /^[0-9a-f]{40}$/i;
@@ -1483,7 +1617,7 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           WORKFLOW_SHA: ${{ github.sha }}
           INPUT_RUN_TITLE: ${{ inputs.run_title }}
-          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
+          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -1607,6 +1741,7 @@ jobs:
       statuses: write
     uses: ./.github/workflows/dispatch-local-ci.yml
     with:
+      flaggems_mode: ${{ inputs.flaggems_mode || 'sample' }}
       pr_number: ""
       head_sha: ${{ needs.validate-push.outputs.tested_sha }}
       tested_sha: ${{ needs.validate-push.outputs.tested_sha }}
@@ -1635,7 +1770,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           SHA: ${{ inputs.tested_sha }}
-          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
+          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
         with:
           script: |
             const shaPattern = /^[0-9a-f]{40}$/i;
@@ -1681,7 +1816,7 @@ jobs:
           TARGET_REF: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
           WORKFLOW_SHA: ${{ github.sha }}
-          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/sophgo-cmodel' }}
+          STATUS_CONTEXT: ${{ inputs.context || vars.LOCAL_CI_CONTEXT || 'local-ci/summary' }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -1826,6 +1961,7 @@ jobs:
       source_branch: ${{ inputs.source_branch }}
       target_branch: ${{ inputs.target_branch }}
       task_ref: ${{ inputs.task_ref }}
+      task_id: ${{ inputs.task_id }}
       context: ${{ inputs.context }}
       attempt: ${{ inputs.attempt }}
       started_at: ${{ inputs.started_at }}
@@ -1850,7 +1986,7 @@ jobs:
           TARGET_REF: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
           WORKFLOW_SHA: ${{ github.sha }}
-          PAGES_BRANCH: ${{ vars.LOCAL_CI_PAGES_BRANCH || 'CI_dev' }}
+          PAGES_BRANCH: ${{ vars.LOCAL_CI_PAGES_BRANCH || 'ci_repo' }}
         with:
           script: |
             if (process.env.REQUESTED_CONTRACT !== process.env.GATEWAY_CONTRACT_VERSION) {
@@ -1868,7 +2004,7 @@ jobs:
             if (process.env.SOURCE_BRANCH !== process.env.TARGET_REF) {
               throw new Error('Pages source_branch must match the gateway target branch');
             }
-            if (process.env.TARGET_REF !== (process.env.PAGES_BRANCH || 'CI_dev')) {
+            if (process.env.TARGET_REF !== (process.env.PAGES_BRANCH || 'ci_repo')) {
               throw new Error('This worker branch may validate the dashboard but may not deploy it');
             }
             const allowedTaskRefs = new Set([
@@ -1903,10 +2039,10 @@ jobs:
       actions: write
       contents: read
     env:
-      GITEE_CI_OWNER: ${{ vars.GITEE_RESULTS_OWNER || vars.GITEE_OWNER || 'likehupochuan' }}
-      GITEE_CI_REPO: ${{ vars.GITEE_RESULTS_REPO || 'triton-anchor-local-ci-results' }}
+      GITEE_CI_OWNER: ${{ vars.GITEE_RESULTS_OWNER || 'heron-mc' }}
+      GITEE_CI_REPO: ${{ vars.GITEE_RESULTS_REPO }}
       GITEE_CI_REPO_URL: ${{ vars.GITEE_RESULTS_REPO_URL }}
-      GITEE_USERNAME: ${{ vars.GITEE_USERNAME || 'likehupochuan' }}
+      GITEE_USERNAME: ${{ vars.GITEE_USERNAME || 'heron-mc' }}
       GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
     steps:
       - name: Validate cancellation and stop matching receivers
@@ -1941,6 +2077,7 @@ jobs:
               throw new Error('Cancellation task_ref does not match the PR metadata');
             }
 
+            const { data: cancellationRun } = await github.rest.actions.getWorkflowRun({...context.repo, run_id: context.runId});
             const legacyPrefix = `Receive PR #${process.env.PR_NUMBER}:`;
             const receiverPrefix = `PR ${process.env.PR_NUMBER} |`;
             const runs = [];
@@ -1959,8 +2096,10 @@ jobs:
               const title = run.display_title || '';
               const isReceiver =
                 title.startsWith(legacyPrefix) ||
-                (title.startsWith(receiverPrefix) && title.includes(' | receive'));
-              if (run.id === context.runId || !isReceiver) {
+                (title.startsWith(receiverPrefix) && (title.includes(' | receive') || title.includes(' | dispatch')));
+              if (run.id === context.runId || !isReceiver ||
+                  !title.includes(`h:${process.env.EXPECTED_HEAD_SHA.slice(0, 7)}`) ||
+                  Date.parse(run.created_at) > Date.parse(cancellationRun.created_at)) {
                 continue;
               }
               await github.rest.actions.cancelWorkflowRun({
@@ -1972,47 +2111,35 @@ jobs:
               );
             }
 
-      - name: Delete unconsumed Gitee task refs
-        if: ${{ inputs.delete_task_ref }}
+
+      - name: Publish cancellation for the local worker
         env:
           TASK_REF: ${{ inputs.task_ref }}
+          HEAD_SHA: ${{ inputs.expected_head_sha }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          REASON: ${{ inputs.cancellation_reason }}
+          CANCEL_ALL: ${{ inputs.delete_task_ref }}
+        shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${GITEE_TOKEN}" ]; then
-            echo "GITEE_TOKEN is empty"
-            exit 1
-          fi
-
-          repo_url="${GITEE_CI_REPO_URL:-https://gitee.com/${GITEE_CI_OWNER}/${GITEE_CI_REPO}.git}"
-          askpass="${RUNNER_TEMP}/gitee-askpass.sh"
-          cat > "${askpass}" <<'SH'
-          #!/usr/bin/env sh
-          case "$1" in
-            *Username*) printf '%s\n' "${GITEE_USERNAME}" ;;
-            *) printf '%s\n' "${GITEE_TOKEN}" ;;
-          esac
-          SH
-          chmod 700 "${askpass}"
-
-          git_dir="${RUNNER_TEMP}/gitee-cancel.git"
-          git init --bare "${git_dir}" >/dev/null
-
-          refs=("${TASK_REF}")
-          if [[ "${TASK_REF}" =~ ^ci/pr-([0-9]+)/(.+)$ ]]; then
-            refs+=(
-              "ci/base/pr-${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
-              "ci/head/pr-${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
-              "ci/meta/pr-${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
-            )
-          fi
-          for ref in "${refs[@]}"; do
-            if GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
-              git ls-remote --exit-code --heads "${repo_url}" "refs/heads/${ref}" \
-              >/dev/null 2>&1; then
-              GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 \
-                git --git-dir="${git_dir}" push "${repo_url}" ":refs/heads/${ref}"
-              echo "Deleted Gitee task ref: ${ref}"
-            else
-              echo "Gitee task ref already absent: ${ref}"
-            fi
-          done
+          [ "${GITEE_CI_OWNER}" = heron-mc ] && [[ "${GITEE_CI_REPO}" =~ ^[A-Za-z0-9_.-]+$ ]] && [ -n "${GITEE_TOKEN}" ] || { echo "::error::New production relay configuration is missing; no cancellation was sent to Gitee"; exit 1; }
+          repo_url="https://gitee.com/${GITEE_CI_OWNER}/${GITEE_CI_REPO}.git"
+          [ -z "${GITEE_CI_REPO_URL}" ] || [ "${GITEE_CI_REPO_URL}" = "${repo_url}" ]
+          askpass="${RUNNER_TEMP}/gitee-cancel-askpass.sh"
+          printf '#!/bin/sh\ncase "$1" in *Username*) printf "%%s\n" "$GITEE_USERNAME" ;; *) printf "%%s\n" "$GITEE_TOKEN" ;; esac\n' > "$askpass"
+          chmod 700 "$askpass"
+          export GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0
+          git_dir="${RUNNER_TEMP}/gitee-cancellation.git"
+          git init --bare "$git_dir"
+          git --git-dir="$git_dir" config user.name github-actions
+          git --git-dir="$git_dir" config user.email github-actions@github.com
+          jq -n --arg schema triton-anchor-local-ci-cancellation/v1 \
+            --arg repository "$GITHUB_REPOSITORY" --arg task_ref "$TASK_REF" \
+            --arg head_sha "$HEAD_SHA" --arg target_branch "$TARGET_BRANCH" \
+            --arg reason "$REASON" --arg cancelled_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson cancel_all "$CANCEL_ALL" \
+            '{schema:$schema,repository:$repository,task_ref:$task_ref,head_sha:$head_sha,target_branch:$target_branch,reason:$reason,cancelled_at:$cancelled_at,cancel_all:$cancel_all}' > "${RUNNER_TEMP}/cancellation.json"
+          blob="$(git --git-dir="$git_dir" hash-object -w "${RUNNER_TEMP}/cancellation.json")"
+          tree="$(printf '100644 blob %s\tcancellation.json\n' "$blob" | git --git-dir="$git_dir" mktree)"
+          commit="$(printf 'Cancel obsolete Local CI task\n' | git --git-dir="$git_dir" commit-tree "$tree")"
+          git --git-dir="$git_dir" push --force "$repo_url" "$commit:refs/heads/ci/cancel/${TASK_REF#ci/}"
