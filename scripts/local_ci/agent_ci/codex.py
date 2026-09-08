@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .protocol import ContractError, atomic_json
 from .mcp_server import SCHEMAS
+from .skill import load_skill
 
 UUID = re.compile(r"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}")
 DISABLED_FEATURES = {
@@ -92,6 +93,7 @@ class CodexDriver:
     def run(self, supervisor, service, *, recovery: str = "") -> dict:
         if supervisor.cancelled.is_set():
             return {"exit_code": None, "reason": "cancelled", "finished": supervisor.closed, "session_id": None}
+        skill = load_skill()
         source = Path(self.config.get("codex_home") or os.environ.get("CODEX_AI_CI_HOME", ""))
         self.safe_path(source)
         if not all((source / name).is_file() and not (source / name).is_symlink() for name in ("config.toml", "auth.json")):
@@ -110,6 +112,17 @@ class CodexDriver:
         task_id = supervisor.task["task_id"]
         if not re.fullmatch(r"[a-f0-9]{64}", task_id):
             raise ContractError("Invalid task identity")
+        saved = supervisor.run_dir / "codex-session.json"
+        provider_identity = hashlib.sha256(json.dumps({"model": settings["model"], "provider": provider_name,
+                                                       "base_url": provider["base_url"]}, sort_keys=True).encode()).hexdigest()
+        session_id = None
+        if saved.exists():
+            value = json.loads(saved.read_text())
+            if (value.get("task_id") != task_id or value.get("provider_identity") != provider_identity
+                    or value.get("skill_digest") != skill.manifest["digest"]
+                    or not UUID.fullmatch(value.get("session_id", ""))):
+                raise ContractError("Saved Codex session identity differs from this task/provider/Skill; resume with its trusted control revision")
+            session_id = value["session_id"]
         session_root = Path(self.config.get("codex_sessions_root", str(self.state_dir / "codex-sessions")))
         self.safe_path(session_root)
         session_root.mkdir(parents=True, exist_ok=True)
@@ -125,11 +138,12 @@ class CodexDriver:
         self.readable_ancestors(home, account)
         self.readable_ancestors(Path(service.path), account)
         local_root = Path(__file__).resolve().parents[1]
-        program = "\n".join((local_root / name).read_text(encoding="utf-8") for name in ("ai_ci_program.md", "architecture_review.md", "ai_review.md"))
-        program_path = workspace / "TASK_PROGRAM.md"
+        program = skill.prompt
+        program_path = workspace / "TASK_SKILL.md"
         self.safe_path(program_path)
         program_path.write_text(program, encoding="utf-8")
         program_path.chmod(0o444)
+        atomic_json(supervisor.run_dir / "skill-manifest.json", {"task_id": task_id, **skill.manifest})
         # Preserve the deployed model/provider, not unrelated hooks or MCP servers.
         effective = {key: value for key, value in settings.items() if key in MODEL_SETTINGS}
         effective.update({"model_providers": {provider_name: provider},
@@ -181,15 +195,6 @@ class CodexDriver:
         # Resume has no --sandbox option. Global overrides apply to both forms.
         command = [*prefix, executable, "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',
                    "-c", "features.shell_tool=false", "-c", "features.unified_exec=false", "-c", 'web_search="disabled"']
-        saved = supervisor.run_dir / "codex-session.json"
-        provider_identity = hashlib.sha256(json.dumps({"model": settings["model"], "provider": provider_name,
-                                                       "base_url": provider["base_url"]}, sort_keys=True).encode()).hexdigest()
-        session_id = None
-        if saved.exists():
-            value = json.loads(saved.read_text())
-            if value.get("task_id") != task_id or value.get("provider_identity") != provider_identity or not UUID.fullmatch(value.get("session_id", "")):
-                raise ContractError("Saved Codex session identity differs from this task/provider")
-            session_id = value["session_id"]
         prompt = program + "\n\n先调用 context，完成当前任务。所有工具只能作用于当前任务。"
         if recovery:
             prompt += "\n恢复信息（可信监督器）：" + recovery
@@ -218,7 +223,8 @@ class CodexDriver:
                     if session_id and session_id != event["thread_id"]:
                         raise ContractError("Codex resumed a different session")
                     session_id = event["thread_id"]
-                    atomic_json(saved, {"task_id": task_id, "session_id": session_id, "provider_identity": provider_identity})
+                    atomic_json(saved, {"task_id": task_id, "session_id": session_id, "provider_identity": provider_identity,
+                                        "skill_digest": skill.manifest["digest"]})
 
         with output.open("wb") as stream:
             process = subprocess.Popen(command, cwd=workspace, env=child_env, stdin=subprocess.PIPE,
@@ -248,4 +254,4 @@ class CodexDriver:
                 consume_events()
         return {"exit_code": process.returncode, "reason": reason,
                 "duration_seconds": round(time.monotonic() - started, 3), "finished": supervisor.closed,
-                "session_id": session_id, "event_log": str(output)}
+                "session_id": session_id, "event_log": str(output), "skill_digest": skill.manifest["digest"]}

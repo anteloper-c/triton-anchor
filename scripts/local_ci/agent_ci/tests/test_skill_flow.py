@@ -1,0 +1,331 @@
+"""Local Skill flow through real MCP, tools, Git publication and acknowledgement.
+
+The single scripted Codex peer replaces the model. A fake Docker executable
+provides fixture compiler/package probes; run_tool and contract_checks execute
+unchanged. Gitee is a local bare repository, GitHub/Pages are recording peers.
+This exercises orchestration and evidence, not compiler/backend correctness.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import select
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+LOCAL_ROOT = HERE.parents[1]
+sys.path.insert(0, str(LOCAL_ROOT))
+sys.path.insert(0, str(HERE))
+from agent_ci.executor import DockerExecutor
+from agent_ci.protocol import ContractError, canonical, current_key, metadata_digest, task_id
+from agent_ci.skill import load_skill
+from agent_ci.worker import Worker
+from test_agent_ci import FakeManager, Fixture, git
+from test_executor import FAKE_DOCKER
+
+
+# Keep the existing exec/UID/env/venv boundary; seed only package metadata used
+# by environment probes. No handler result or contract outcome is fabricated.
+DOCKER = FAKE_DOCKER.replace(
+    'os.execvpe(args[0],args,env)',
+    '''if len(args)>3 and args[1]=='-c' and '.local-ci-environment.json' in args[2]:
+    code=subprocess.call(args,env=env)
+    if code: sys.exit(code)
+    python=str(pathlib.Path(args[3])/'bin/python')
+    site=pathlib.Path(subprocess.check_output([python,'-c','import sysconfig;print(sysconfig.get_path("purelib"))'],env=env).decode().strip())
+    for name in ('build','setuptools','wheel','pybind11'):
+        info=site/(name+'-0.0.dist-info');info.mkdir(exist_ok=True)
+        (info/'METADATA').write_text('Metadata-Version: 2.1\\nName: '+name+'\\nVersion: 0.0\\n')
+    sys.exit(0)
+os.execvpe(args[0],args,env)''',
+)
+
+
+class MCPPeer:
+    """A deterministic single model peer; every CI action uses stdio MCP."""
+
+    def __init__(self, *, interrupt_once=False, reject_pr=False):
+        self.interrupt_once, self.reject_pr = interrupt_once, reject_pr
+        self.attempts = []
+        self.environment_ids = []
+        self.artifacts = []
+        self.requests = []
+        self.manifests = []
+        self.prompts = []
+        self.active = 0
+        self.max_active = 0
+
+    def rpc(self, process, method, params=None):
+        ident = len(self.requests) + 1
+        request = {"jsonrpc": "2.0", "id": ident, "method": method}
+        if params is not None:
+            request["params"] = params
+        self.requests.append(request)
+        process.stdin.write(json.dumps(request) + "\n")
+        process.stdin.flush()
+        if not select.select([process.stdout], [], [], 40)[0]:
+            raise TimeoutError("MCP peer timed out")
+        response = json.loads(process.stdout.readline())
+        if response.get("id") != ident or "error" in response:
+            raise AssertionError(response)
+        return response["result"]
+
+    def call(self, process, name, **arguments):
+        reply = self.rpc(process, "tools/call", {"name": name, "arguments": arguments})
+        if reply.get("isError"):
+            raise AssertionError(reply)
+        return json.loads(reply["content"][0]["text"])
+
+    def run(self, supervisor, service, recovery=""):
+        # The production loader supplies the complete trusted bundle explicitly;
+        # candidate repository SKILL.md files are never discovery inputs.
+        bundle = load_skill()
+        self.manifests.append(bundle.manifest)
+        self.prompts.append(bundle.prompt)
+        self.attempts.append(recovery)
+        env = {"PATH": os.defpath, "LANG": "C.UTF-8", "LOCAL_CI_RPC_SOCKET": str(service.path),
+               "LOCAL_CI_RPC_TOKEN": service.token}
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        process = subprocess.Popen([sys.executable, "-u", str(LOCAL_ROOT / "agent_ci/mcp_server.py")],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, env=env)
+        try:
+            initialized = self.rpc(process, "initialize", {"protocolVersion": "2024-11-05"})
+            assert initialized["serverInfo"]["name"] == "local-ci"
+            listing = self.rpc(process, "tools/list")
+            assert {item["name"] for item in listing["tools"]} >= {"context", "start_check", "finish"}
+            context = self.call(process, "context")
+            assert context["policy"]["required_checks"] == ["environment", "contract_tests"]
+            for tool in context["policy"]["required_checks"]:
+                started = self.call(process, "start_check", tool_id=tool,
+                                    reason="Follow the Skill and the actual mandatory impact policy")
+                record = self.call(process, "poll_check", execution_id=started["execution_id"], wait_seconds=30)
+                assert record["status"] in {"pass", "fail"}, record
+                if tool == "environment":
+                    self.environment_ids.append(record["execution_id"])
+                    if self.interrupt_once and len(self.attempts) == 1:
+                        raise OSError("Simulated model disconnect after saved environment evidence")
+                self.artifacts.append(self.call(process, "read_artifact", execution_id=record["execution_id"]))
+                if record["status"] == "fail":
+                    break
+            source = self.call(process, "read_file", path="docs/flow.md")
+            assert "flow.md" == Path(source["path"]).name
+            self.call(process, "submit_review", kind="pr_info", status="fail" if self.reject_pr else "pass",
+                      summary="Missing required reproduction detail" if self.reject_pr else "The frozen PR and change intent agree",
+                      evidence=[])
+            self.call(process, "submit_review", kind="architecture", status="pass",
+                      summary="Documentation change preserves the referenced architecture contract",
+                      evidence=[{"rule_id": "abi-isolation", "path": "python/triton_anchor/adapters/base.py", "line": 1}])
+            self.call(process, "finish", summary="Model wording cannot override recorded tool or review failures")
+            return {"exit_code": 0}
+        finally:
+            self.active -= 1
+            process.stdin.close()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+            error = process.stderr.read()
+            process.stdout.close()
+            process.stderr.close()
+            if process.returncode:
+                raise AssertionError(error)
+
+
+class GitHubPeer:
+    def __init__(self, task):
+        self.task, self.repository, self.calls = task, task["repository"], []
+
+    def request(self, path):
+        task = self.task
+        if path == "pulls/7":
+            return {"title": task["title"], "body": task["description"], "labels": [], "state": "open", "draft": False,
+                    "head": {"sha": task["head_sha"]}, "base": {"ref": task["target_branch"]}}
+        if path == "git/ref/pull/7/merge":
+            return {"object": {"sha": task["tested_sha"]}}
+        raise AssertionError("Unexpected external request: " + path)
+
+    optional = request
+
+    def status(self, task, state, description, url=""):
+        self.calls.append(("status", state))
+
+    def comment(self, task, body):
+        self.calls.append(("comment", body))
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux subprocess and Unix socket integration")
+class SkillFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="ci-skill-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.root.chmod(0o755)
+        self.fixture = Fixture(self.root)
+        self.fake_docker = self.root / "docker-fixture"
+        self.fake_docker.write_text(DOCKER)
+        self.fake_docker.chmod(0o755)
+        self.control = self.root / "control"
+        tools = self.control / "scripts/local_ci/tools"
+        tools.mkdir(parents=True)
+        for name in ("run_tool.sh", "run_tool.py", "contract_checks.py"):
+            shutil.copyfile(LOCAL_ROOT / "tools" / name, tools / name)
+        self.probes = self.root / "probes"
+        self.probes.mkdir()
+        for name in ("cmake", "ninja", "c++", "uv"):
+            path = self.probes / name
+            path.write_text("#!/bin/sh\nprintf 'fixture dependency probe\\n'\n")
+            path.chmod(0o755)
+        self.llvm = self.root / "llvm"
+        for directory in ("bin", "include/llvm", "include/mlir", "lib"):
+            (self.llvm / directory).mkdir(parents=True, exist_ok=True)
+        binary = self.llvm / "bin/llvm-config"
+        binary.write_text("#!/bin/sh\nprintf 'fixture-llvm-version\\n'\n")
+        binary.chmod(0o755)
+
+    def worker(self, *, conflict=False, reject_pr=False, interrupt_once=False):
+        fixture = self.fixture
+        base = fixture.task["tested_sha"]
+        git(fixture.source, "checkout", "-qb", "docs-flow")
+        (fixture.source / "docs").mkdir()
+        content = "<<<<<<< unresolved\n" if conflict else "The documented CI flow preserves the contract.\n"
+        (fixture.source / "docs/flow.md").write_text(content)
+        git(fixture.source, "add", ".")
+        git(fixture.source, "commit", "-qm", "documentation fixture")
+        head = git(fixture.source, "rev-parse", "HEAD")
+        git(fixture.source, "checkout", "-q", "main")
+        git(fixture.source, "merge", "--no-ff", "-qm", "docs merge fixture", head)
+        tested = git(fixture.source, "rev-parse", "HEAD")
+        git(fixture.bare, "fetch", str(fixture.source), "main", "docs-flow")
+        task = fixture.task
+        task.update(base_sha=base, head_sha=head, tested_sha=tested,
+                    title="docs: clarify the CI flow", description="Purpose: document the CI flow; validation: changed-document contract checks.")
+        task["metadata_digest"] = metadata_digest(task)
+        task["task_id"] = task_id(task)
+        for key, sha in (("task_ref", tested), ("base_task_ref", base), ("head_task_ref", head)):
+            git(fixture.bare, "update-ref", "refs/heads/" + task[key], sha)
+        fixture.relay.write("local-ci-control", {
+            f"tasks/{task['task_id']}.json": canonical(task),
+            f"current/{current_key(task)}.json": canonical({"task_id": task["task_id"]}),
+        })
+        fixture.relay.refresh()
+        uid = 65534 if os.geteuid() == 0 else os.geteuid()
+        gid = 65534 if os.geteuid() == 0 else os.getegid()
+        root, probes, llvm = self.root, self.probes, self.llvm
+
+        class Manager(FakeManager):
+            def acquire(self, *args):
+                generation = super().acquire(*args)
+                generation.update(workspace_container=str(root / "workspace"), execution_user=f"{uid}:{gid}",
+                                  execution_uid=uid, execution_gid=gid)
+                generation["env"] = {"SEED_PYTHON": sys.executable, "LLVM_BUILD_DIR": str(llvm),
+                                     "PATH": str(probes) + ":" + os.defpath, "PACKAGE_TOOL": "uv", "LOCAL_CI_MIN_FREE_BYTES": "0"}
+                return generation
+
+        self.peer = MCPPeer(interrupt_once=interrupt_once, reject_pr=reject_pr)
+        self.manager = Manager(root, backend=False)
+        config = {"state_dir": str(root / "state"), "simulation": True, "codex_attempts": 2 if interrupt_once else 1,
+                  "retry_delay_seconds": 0, "rpc_socket_dir": str(root / "rpc"), "docker_bin": str(self.fake_docker),
+                  "container_control_root": str(self.control)}
+        return Worker(config, relay=fixture.relay, manager=self.manager, driver=self.peer, executor_factory=DockerExecutor)
+
+    def result(self, worker):
+        task = self.fixture.task
+        row = worker.journal.task(task["task_id"])
+        self.assertEqual("awaiting_receipt", row["phase"])
+        result_path = Path(worker.journal.outbox(task["task_id"])["payload_path"])
+        return json.loads(result_path.read_text()), result_path
+
+    def acknowledge(self, worker, expected_status, *, stale_receipt=False):
+        spec = importlib.util.spec_from_file_location("skill_flow_gateway", LOCAL_ROOT.parent / "ci/gateway_v4.py")
+        gateway = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = gateway
+        spec.loader.exec_module(gateway)
+        task = self.fixture.task
+        gh = GitHubPeer(task)
+        control = gateway.GitStore(str(self.fixture.bare), "local-ci-control")
+        results = gateway.GitStore(str(self.fixture.bare), "local-ci-results")
+        self.addCleanup(control.close)
+        self.addCleanup(results.close)
+        receipts = gateway.collect_results(gh, control, results, self.root / "dashboard")
+        self.assertEqual(1, len(receipts))
+        self.assertEqual(("status", expected_status), gh.calls[0])
+        self.assertEqual("comment", gh.calls[1][0])
+        worker.deliver(worker.journal.task(task["task_id"]))
+        self.assertEqual("awaiting_receipt", worker.journal.task(task["task_id"])["phase"])
+        if stale_receipt:
+            invalid = {**receipts[0], "result_digest": "0" * 64}
+            with self.assertRaisesRegex(ValueError, "changed before acknowledgement"):
+                gateway.acknowledge(gh, control, results, [invalid])
+            self.assertEqual("awaiting_receipt", worker.journal.task(task["task_id"])["phase"])
+        # The Pages boundary is recorded as successful before this real ACK.
+        gateway.acknowledge(gh, control, results, receipts)
+        if stale_receipt:
+            receipt_path = f"receipts/{task['task_id']}/{receipts[0]['run_id']}.json"
+            self.fixture.relay.write("local-ci-control", {receipt_path: canonical(invalid)})
+            with self.assertRaisesRegex(ContractError, "stale, partial or mismatched"):
+                worker.deliver(worker.journal.task(task["task_id"]))
+            self.assertEqual("awaiting_receipt", worker.journal.task(task["task_id"])["phase"])
+            self.fixture.relay.write("local-ci-control", {receipt_path: canonical(receipts[0])})
+        worker.deliver(worker.journal.task(task["task_id"]))
+        self.assertEqual("complete", worker.journal.task(task["task_id"])["phase"])
+
+    def test_skill_resumes_real_mcp_checks_and_waits_for_matching_receipt(self):
+        worker = self.worker(interrupt_once=True)
+        worker.scan()
+        result, path = self.result(worker)
+        self.assertEqual("pass", result["status"], result)
+        self.assertEqual(2, len(self.peer.attempts))
+        self.assertTrue(self.peer.attempts[1])
+        self.assertEqual(1, self.peer.max_active)
+        self.assertEqual(1, len(set(self.peer.environment_ids)))
+        self.assertEqual(self.peer.manifests[0]["digest"], self.peer.manifests[1]["digest"])
+        self.assertEqual(load_skill().prompt, self.peer.prompts[0])
+        self.assertEqual("SKILL.md", self.peer.manifests[0]["entrypoint"])
+        checks = {row["tool_id"]: row for row in result["checks"]}
+        contract = checks["contract_tests"]
+        self.assertEqual("pass", contract["status"])
+        evidence = json.loads((path.parent / "evidence" / contract["execution_id"] / "contracts.json").read_text())
+        self.assertEqual(self.fixture.task["tested_sha"], evidence["tested_sha"])
+        self.assertEqual("docs/flow.md", evidence["verified_files"][0]["path"])
+        self.assertIn("no_conflict_markers", evidence["verified_files"][0]["checks"])
+        self.assertTrue(any("contract_checks.py" in item["content"] for item in self.peer.artifacts))
+        self.acknowledge(worker, "success", stale_receipt=True)
+
+    def test_real_contract_failure_overrides_model_summary_and_is_delivered(self):
+        worker = self.worker(conflict=True)
+        worker.scan()
+        result, path = self.result(worker)
+        self.assertEqual("fail", result["status"], result)
+        self.assertTrue(any(row["kind"] == "check_failure" and row["tool_id"] == "contract_tests" for row in result["blockers"]))
+        contract = next(row for row in result["checks"] if row["tool_id"] == "contract_tests")
+        self.assertNotEqual(0, contract["exit_code"])
+        logs = "\n".join(item.read_text() for item in (path.parent / "evidence" / contract["execution_id"]).glob("*.log"))
+        # Git's whitespace/conflict check rejects the candidate before the
+        # Markdown-specific parser; the retained command identifies both SHAs.
+        self.assertIn("'diff', '--check'", logs)
+        self.assertIn("non-zero exit status 2", logs)
+        self.assertIn(self.fixture.task["tested_sha"], logs)
+        self.acknowledge(worker, "failure")
+
+    def test_pr_information_failure_blocks_passing_real_tools(self):
+        worker = self.worker(reject_pr=True)
+        worker.scan()
+        result, _ = self.result(worker)
+        self.assertEqual("fail", result["status"], result)
+        required = {item["tool_id"]: item["status"] for item in result["checks"] if item.get("required")}
+        self.assertEqual({"environment": "pass", "contract_tests": "pass"}, required)
+        self.assertTrue(any(item["kind"] == "pr_information" for item in result["blockers"]))
+        self.acknowledge(worker, "failure")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -17,6 +17,8 @@ LOCAL_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LOCAL_ROOT))
 from environments.manager import DIGEST_RE, NAME_RE, SHA_RE, safe_source
 from maintenance.watchdog import smtp_configuration
+from agent_ci.skill import load_skill
+from agent_ci.protocol import ContractError
 
 
 def check_configuration(config: dict, *, runtime: bool = True, require_notifications: bool = True) -> dict:
@@ -41,6 +43,11 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
     if config.get("control_root"):
         control = Path(config["control_root"])
         check("trusted_control", (control / "scripts/local_ci/agent_ci/worker.py").is_file() and (control / "scripts/local_ci/tools").is_dir(), "Trusted worker and tools must exist in control_root")
+        try:
+            skill = load_skill(control / "scripts/local_ci/skills/local-ci")
+            check("trusted_skill", True, "Loaded Skill entry and references: " + skill.manifest["digest"])
+        except ContractError as exc:
+            check("trusted_skill", False, str(exc))
     source("gitee_repo_url", config.get("gitee_repo_url"))
     source("health_repo_url", config.get("health_repo_url"))
     profiles = config.get("profiles", {})

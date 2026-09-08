@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .protocol import ContractError, atomic_json, within
 from .control import validate_control_revision
+from .policy import TOOLS
 
 ALLOWED_PARAMETERS = {"max_jobs", "timeout_seconds", "operators", "kernels"}
 PERFORMANCE_TOOLS = {"compile_time", "pass_profile", "ir_serialization"}
@@ -320,6 +321,8 @@ class DockerExecutor:
 
     def run(self, tool_id: str, execution_id: str, variant: str, parameters: dict,
             cancelled: threading.Event, custom: dict | None = None) -> dict:
+        if custom is not None and tool_id in (*TOOLS, "contract_tests"):
+            raise ContractError("Custom execution cannot replace a built-in tool")
         if not re.fullmatch(r"[a-f0-9]{32}", execution_id) or variant not in {"candidate", "base"}:
             raise ContractError("Invalid execution identity or variant")
         if not re.fullmatch(r"[a-z][a-z0-9_]{0,80}", tool_id):

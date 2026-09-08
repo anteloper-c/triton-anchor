@@ -408,7 +408,7 @@ class AgentTests(unittest.TestCase):
             supervisor.run_custom("../bad.py", "pass", "python", "bad")
 
     def test_policy_cannot_treat_program_or_renamed_code_as_docs(self):
-        program = minimum_checks([{"path": "scripts/local_ci/ai_ci_program.md"}], backend_enabled=True)
+        program = minimum_checks([{"path": "scripts/local_ci/skills/local-ci/references/AI_CI_PROGRAM.md"}], backend_enabled=True)
         self.assertIn("contract_tests", program["required_checks"])
         renamed = minimum_checks([{"path": "docs/example.md", "old_path": "csrc/old.cpp", "status": "R100"}], backend_enabled=True)
         self.assertEqual(renamed["required_checks"], list(TOOLS))

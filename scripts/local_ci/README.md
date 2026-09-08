@@ -8,7 +8,11 @@
 
 配置示例、预检、安装、轮换、健康发布和回滚见 `deploy/`。配置由服务器维护，不能从 PR checkout 读取。原 `config.env` 不再被执行器自动 source；请按 JSON 示例迁移，模型继续使用专用 CODEX_AI_CI_HOME 中实际的 config.toml/auth.json。
 
-主入口运行 `agent_ci/worker.py`。它验证冻结任务及 merge parents、准备版本环境、启动 Codex，并持久保存状态。Codex 通过 MCP 调用独立工具，执行顺序由 `ai_ci_program.md` 编排。最低检查由 `agent_ci/policy.py` 和可信 diff 决定，模型不能减免。
+主入口运行 `agent_ci/worker.py`。它验证冻结任务及 merge parents、准备版本环境、启动 Codex，并持久保存状态。Codex 的唯一 Skill 入口为 [skills/local-ci/SKILL.md](skills/local-ci/SKILL.md)：`agent_ci/codex.py` 通过 `agent_ci/skill.py` 显式读取入口，再按入口声明加载 references，随后启动 `codex exec`。最低检查由 `agent_ci/policy.py` 和可信 diff 决定，模型不能减免。
+
+Skill 规定工作方法；Harness（`agent_ci/`）管理任务、状态、权限和生命周期；MCP 提供任务工具接口；`tools/` 执行真实构建和测试。每任务只有一个 Codex 会话，业务决定为 `continue/block`；检查结果与发布状态保持原协议，具体映射见 [Skill 说明](skills/local-ci/README.md)。
+
+每次启动保存只读 `TASK_SKILL.md` 会话快照和任务目录内的 `skill-manifest.json`（入口、文件 SHA256 和整体摘要）。恢复要求任务、公司模型配置及 Skill 摘要一致；缺失入口、引用越界、文件缺失或摘要变化均在模型启动前失败，不回退到旧提示词。旧平铺提示词已删除，历史 `codex_ai/` 中的审查提示词不参与当前驱动加载。
 
 ## 基础工具和能力
 

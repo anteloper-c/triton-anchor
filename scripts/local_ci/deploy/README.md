@@ -30,6 +30,8 @@ LLVM 缓存以工具链配方、LLVM SHA 和实际 image ID 为键，保存完�
 
 ## 安装与回退
 
+控制版本必须完整包含 `scripts/local_ci/skills/local-ci/SKILL.md` 和其 `references/`。预检会实际解析入口及引用；复制部分提示词不能通过。Skill 与 Harness 一起版本化，`tools/` 保持原位置。更新此版本前先停止旧接单并处理在途任务，保存旧控制 checkout、状态和会话；没有 Skill 摘要的旧会话不能在新驱动上继续，应在原可信版本收尾或取消后重新投递。回退使用原控制版本及匹配的任务/会话记录，不能手改摘要混用规则。
+
 将实际私有 EnvironmentFile 导入管理员环境后，执行只读预检，不调用模型、下载依赖或发邮件：
 
 ```bash

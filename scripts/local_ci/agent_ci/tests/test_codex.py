@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from agent_ci.codex import CodexDriver, DISABLED_FEATURES
 from agent_ci.protocol import ContractError
 from agent_ci.publication import PublicationSupervisor
+from agent_ci.skill import load_skill, SkillBundle
 
 
 SESSION_ID = '01234567-1234-1234-1234-0123456789ab'
@@ -119,6 +120,15 @@ hooks = true
         self.assertIn('"required" = true', config)
         self.assertIn('"shell_tool" = false', config)
         self.assertIn('"hooks" = false', config)
+        self.assertIn('"multi_agent" = false', config)
+        bundle = load_skill()
+        self.assertTrue(self.processes[0].input_payload.decode().startswith(bundle.prompt))
+        snapshot = Path(self.processes[0].options['cwd']) / 'TASK_SKILL.md'
+        self.assertEqual(bundle.prompt, snapshot.read_text())
+        self.assertEqual(0o444, snapshot.stat().st_mode & 0o777)
+        manifest = json.loads((self.run_dir / 'skill-manifest.json').read_text())
+        self.assertEqual(bundle.manifest['digest'], manifest['digest'])
+        self.assertEqual(self.supervisor.task['task_id'], manifest['task_id'])
         self.assertIn('context', self.processes[0].input_payload.decode())
         self.assertEqual(SESSION_ID, first['session_id'])
         (self.run_dir / 'codex-events.jsonl').write_text(json.dumps({'type': 'thread.started', 'thread_id': 'ffffffff-1234-1234-1234-0123456789ab'}) + '\n')
@@ -130,6 +140,31 @@ hooks = true
         self.assertIn('approval_policy="never"', command)
         self.assertEqual(SESSION_ID, second['session_id'])
         self.assertNotEqual(first['event_log'], second['event_log'])
+        self.assertEqual(first['skill_digest'], second['skill_digest'])
+        self.assertTrue(self.processes[1].input_payload.decode().startswith(bundle.prompt))
+
+    def test_missing_skill_stops_before_codex_launch(self):
+        with mock.patch('agent_ci.codex.load_skill', side_effect=ContractError('Missing Skill reference')):
+            with self.assertRaisesRegex(ContractError, 'Missing Skill'):
+                self.run_driver()
+        self.assertFalse(self.processes)
+
+    def test_resume_rejects_different_skill_or_flat_prompt_session(self):
+        self.run_driver()
+        path = self.run_dir / 'codex-session.json'
+        original = json.loads(path.read_text())
+        before_manifest = (self.run_dir / 'skill-manifest.json').read_bytes()
+        bundle = load_skill()
+        changed = SkillBundle(bundle.prompt + '\nNew rule', {**bundle.manifest, 'digest': '0' * 64})
+        with mock.patch('agent_ci.codex.load_skill', return_value=changed):
+            with self.assertRaisesRegex(ContractError, 'task/provider/Skill'):
+                self.run_driver()
+        self.assertEqual(before_manifest, (self.run_dir / 'skill-manifest.json').read_bytes())
+        original.pop('skill_digest')
+        path.write_text(json.dumps(original))
+        with self.assertRaisesRegex(ContractError, 'task/provider/Skill'):
+            self.run_driver()
+        self.assertEqual(1, len(self.processes))
 
     def test_session_is_saved_while_codex_is_still_running(self):
         observed = []

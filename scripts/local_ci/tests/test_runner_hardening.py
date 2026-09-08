@@ -12,7 +12,10 @@ from agent_ci.relay import GitRelay
 
 
 def test_prompt_and_schema_changes_require_control_contracts():
-    for path in ('scripts/local_ci/ai_ci_program.md', 'scripts/local_ci/agent_ci/schemas/result.schema.json'):
+    for path in ('scripts/local_ci/skills/local-ci/SKILL.md',
+                 'scripts/local_ci/skills/local-ci/references/AI_CI_PROGRAM.md',
+                 'scripts/local_ci/skills/local-ci/references/project_conventions.md',
+                 'scripts/local_ci/agent_ci/schemas/result.schema.json'):
         assert 'contract_tests' in minimum_checks([{'path': path}], backend_enabled=False)['required_checks']
 
 

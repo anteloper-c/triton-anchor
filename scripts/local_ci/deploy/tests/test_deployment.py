@@ -75,6 +75,18 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn("profile:triton_v3.0:image", failed)
         self.assertIn("profile:triton_v3.0:daily_validation", failed)
 
+    def test_preflight_loads_skill_and_rejects_partial_control_package(self):
+        config = json.loads((DEPLOY / "config.example.json").read_text())
+        config['control_root'] = str(DEPLOY.parents[2])
+        result = preflight.check_configuration(config, runtime=False, require_notifications=False)
+        skill = next(row for row in result['checks'] if row['check'] == 'trusted_skill')
+        self.assertEqual('pass', skill['status'])
+        config['control_root'] = str(self.root / 'partial-control')
+        result = preflight.check_configuration(config, runtime=False, require_notifications=False)
+        skill = next(row for row in result['checks'] if row['check'] == 'trusted_skill')
+        self.assertEqual('fail', skill['status'])
+        self.assertIn('SKILL.md', skill['message'])
+
     def test_collection_detects_stopped_poller_independently(self):
         state = Path(self.config["state_dir"])
         (state / "health").mkdir(parents=True)

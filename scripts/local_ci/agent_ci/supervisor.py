@@ -12,6 +12,7 @@ import threading
 import uuid
 from pathlib import Path
 
+from .mcp_server import SCHEMAS, schema, validate_arguments, validate_value
 from .policy import DEPENDENCIES, TOOLS
 from .protocol import ContractError, RESULT_SCHEMA, atomic_json, within
 
@@ -46,6 +47,9 @@ class Supervisor:
         record = self.journal.latest(self.task["task_id"], tool_id, variant)
         if not record or record["status"] != "pass" or record.get("environment_fingerprint") != self.executor.generation["environment_fingerprint"]:
             return False
+        if tool_id in (*TOOLS, "contract_tests") and (record.get("execution_kind") == "custom" or
+                any(key in record for key in ("script_digest", "script_name", "source_only"))):
+            return False
         for dependency in DEPENDENCIES.get(tool_id, ["environment"]):
             latest = self.journal.latest(self.task["task_id"], dependency, variant)
             if not self.fresh(dependency, variant) or record.get("dependency_executions", {}).get(dependency) != latest["execution_id"]:
@@ -63,7 +67,17 @@ class Supervisor:
         return {k: v for k, v in record.items() if k != "artifact_dir"}
 
     def start_check(self, tool_id: str, reason: str, *, parameters: dict | None = None,
-                    variant: str = "candidate", force: bool = False, custom: dict | None = None) -> dict:
+                    variant: str = "candidate", force: bool = False) -> dict:
+        """Public built-in check entry; custom execution is never accepted here."""
+        arguments = {"tool_id": tool_id, "reason": reason, "variant": variant, "force": force}
+        if parameters is not None:
+            arguments["parameters"] = parameters
+        validate_arguments("start_check", arguments)
+        return self._start_check(tool_id, reason, parameters=parameters, variant=variant, force=force)
+
+    def _start_check(self, tool_id: str, reason: str, *, parameters: dict | None = None,
+                     variant: str = "candidate", force: bool = False, custom: dict | None = None) -> dict:
+        """Internal queue shared by built-ins and the validated run_custom path."""
         with self.guard:
             if self.closed or self.cancelled.is_set():
                 raise ContractError("Task has finished or was cancelled")
@@ -73,6 +87,14 @@ class Supervisor:
                 raise ContractError("Unknown variant")
             if custom is None and tool_id not in self.policy["capabilities"]:
                 raise ContractError("Tool unavailable in this version environment")
+            if custom is not None and tool_id != "custom_" + hashlib.sha256(custom["content"].encode()).hexdigest()[:16]:
+                raise ContractError("Custom execution cannot use a built-in tool identity")
+            config = getattr(self.executor, "config", {})
+            parameters = parameters or {}
+            if parameters.get("max_jobs", 1) > config.get("max_jobs", 8):
+                raise ContractError("Parallelism exceeds the trusted budget")
+            if parameters.get("timeout_seconds", 1) > config.get("tool_timeouts", {}).get(tool_id, 3600):
+                raise ContractError("Tool deadline exceeds the trusted budget")
             previous = self.journal.latest(self.task["task_id"], tool_id, variant)
             if previous and (previous["status"] in {"running", "queued"} or self.fresh(tool_id, variant)) and not force and custom is None:
                 return self.public_record(previous)
@@ -83,7 +105,8 @@ class Supervisor:
                     raise ContractError(f"Dependency {required} must pass first for {variant}")
             ident = uuid.uuid4().hex
             record = {"execution_id": ident, "status": "queued", "reason": reason,
-                      "parameters": parameters or {}, "required": tool_id in self.policy["required_checks"] and variant == "candidate"}
+                      "parameters": parameters, "execution_kind": "custom" if custom is not None else "builtin",
+                      "required": tool_id in self.policy["required_checks"] and variant == "candidate"}
             self.journal.execution(self.task["task_id"], tool_id, variant, record)
             self.futures[ident] = self.pool.submit(self._run, tool_id, ident, variant, parameters or {}, reason, custom)
             return {**record, "tool_id": tool_id, "variant": variant}
@@ -97,6 +120,7 @@ class Supervisor:
         result = self._invoke(tool_id, ident, variant, parameters, custom)
         result["selection_reason"] = reason
         result["dependency_executions"] = dependencies
+        result["execution_kind"] = "custom" if custom is not None else "builtin"
         if custom:
             result["source_only"] = custom.get("source_only", False)
         result["required"] = tool_id in self.policy["required_checks"] and variant == "candidate"
@@ -108,6 +132,7 @@ class Supervisor:
             self.journal.execution(self.task["task_id"], tool_id, variant, {"execution_id": retry, "status": "running", "retry_of": ident})
             result = self._invoke(tool_id, retry, variant, params, custom)
             result.update(retry_of=ident, selection_reason=reason, dependency_executions=dependencies, required=tool_id in self.policy["required_checks"] and variant == "candidate")
+            result["execution_kind"] = "custom" if custom is not None else "builtin"
             if custom:
                 result["source_only"] = custom.get("source_only", False)
             self.journal.execution(self.task["task_id"], tool_id, variant, result)
@@ -163,6 +188,8 @@ class Supervisor:
         raise ContractError("Unknown artifact")
 
     def run_custom(self, name: str, content: str, language: str, reason: str, variant: str = "candidate", source_only: bool = False) -> dict:
+        validate_arguments("run_custom", {"name": name, "content": content, "language": language,
+                                          "reason": reason, "variant": variant, "source_only": source_only})
         if language not in {"python", "bash"} or not isinstance(content, str) or not 1 <= len(content.encode()) <= 128 * 1024:
             raise ContractError("Invalid task-local script")
         if Path(name).name != name or not name.endswith(".py" if language == "python" else ".sh"):
@@ -174,8 +201,8 @@ class Supervisor:
             if not self.fresh(required, variant):
                 raise ContractError(f"Runtime reproduction requires a verified {variant} installation: {required}")
         key = "custom_" + hashlib.sha256(content.encode()).hexdigest()[:16]
-        return self.start_check(key, reason, variant=variant, force=True,
-                                custom={"name": name, "content": content, "language": language, "source_only": source_only})
+        return self._start_check(key, reason, variant=variant, force=True,
+                                 custom={"name": name, "content": content, "language": language, "source_only": source_only})
 
     def submit_review(self, kind: str, status: str, summary: str, evidence: list, findings: list | None = None) -> dict:
         if self.closed or self.cancelled.is_set():
@@ -318,7 +345,7 @@ class Supervisor:
 
 class ToolService:
     """A bearer-scoped local socket; the MCP process has no journal write access."""
-    METHODS = {"context", "start_check", "poll_check", "read_file", "read_artifact", "run_custom", "submit_review", "finish", "retry_publication"}
+    METHODS = frozenset(SCHEMAS)
 
     def __init__(self, supervisor: Supervisor, socket_path: Path):
         self.supervisor = supervisor
@@ -340,12 +367,16 @@ class ToolService:
                     if len(raw) > 1024 * 1024:
                         raise ContractError("Request too large")
                     request = json.loads(raw)
+                    validate_value(request, schema({"token": {"type": "string"}, "method": {"type": "string"},
+                                                    "arguments": {"type": "object"}}, ["token", "method", "arguments"]), "RPC request")
                     if not secrets.compare_digest(str(request.get("token", "")), service.token):
                         raise ContractError("Invalid task capability")
                     method = request.get("method")
                     if method not in ToolService.METHODS:
                         raise ContractError("Unknown task method")
-                    result = getattr(service.supervisor, method)(**request.get("arguments", {}))
+                    arguments = request["arguments"]
+                    validate_arguments(method, arguments)
+                    result = getattr(service.supervisor, method)(**arguments)
                     response = {"result": result}
                 except Exception as exc:
                     response = {"error": str(exc)}
