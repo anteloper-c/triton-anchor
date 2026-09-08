@@ -28,6 +28,7 @@ class Broker:
         self.receipts, self.checks = [], {}
         self.lock = threading.RLock()
         self.active = None
+        self.active_command = None
         self.closed = False
         self.review = None
         self.artifact_fingerprints = {}
@@ -78,10 +79,12 @@ class Broker:
         self.active = stop
         log = self.output / 'logs' / (receipt_id + '.log')
         started = utcnow()
-        write_json(self.output / 'active-command.json', {'id': receipt_id, 'tool': tool, 'started_at': started})
+        self.active_command = {'id': receipt_id, 'tool': tool, 'started_at': started}
+        write_json(self.output / 'active-command.json', self.active_command)
         result = execute(argv, log, timeout=min(command.get('timeout', 900), self.max_seconds-used),
                          cancelled=self.cancelled, terminate=stop)
         self.active = None
+        self.active_command = None
         receipt = {'id': receipt_id, 'tool': tool, 'argv': command['argv'],
                    'cwd': command['cwd'], 'started_at': started, 'completed_at': utcnow(),
                    'log_path': 'logs/' + log.name, **result}
@@ -169,10 +172,19 @@ class Broker:
                 raise ValueError('FlagGems did not complete a nonempty passing test selection')
 
     def invoke(self, tool, parameters):
+        if tool == 'status':
+            if not self.lock.acquire(blocking=False):
+                # Build/test calls keep their serialization lock. Status must
+                # remain available while the agent reviews source alongside them.
+                return {'status': 'running', 'policy': self.policy,
+                        'active_command': self.active_command, 'cancelled': self.cancelled(),
+                        'message': 'Wait for the original tool call; do not repeat the active check.'}
+            try:
+                return {'status': 'ready', 'policy': self.policy, 'checks': dict(self.checks),
+                        'receipts': list(self.receipts), 'cancelled': self.cancelled()}
+            finally:
+                self.lock.release()
         with self.lock:
-            if tool == 'status':
-                return {'status': 'ready', 'policy': self.policy, 'checks': self.checks,
-                        'receipts': self.receipts, 'cancelled': self.cancelled()}
             if tool == 'log':
                 receipt = next((r for r in self.receipts if r['id'] == parameters.get('receipt_id')), None)
                 if not receipt:

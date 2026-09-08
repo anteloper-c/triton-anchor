@@ -10,7 +10,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .health import issue, timestamp
-from .notify import Notifier
+from .notify import Notifier, recipients, validate_authentication
 from .workers import atomic_json
 
 
@@ -32,6 +32,40 @@ def evaluate(snapshot, worker_id, max_age=300, now=None):
     if snapshot.get("state") not in {"healthy", "degraded"} or (snapshot.get("state") == "degraded" and not issues):
         return [issue("heartbeat_invalid", "心跳健康状态不完整。")]
     return issues
+
+
+def notify(config, issues, dry_run=False):
+    """An absent mail transport never disables detection or records a delivery."""
+    smtp = config.get("smtp", {})
+    supplied = any(os.environ.get(name) for name in (
+        "LOCAL_CI_SMTP_USERNAME", "LOCAL_CI_SMTP_PASSWORD", "LOCAL_CI_SMTP_REFRESH_TOKEN"))
+    if isinstance(smtp, dict) and not smtp and not supplied:
+        if not any(item["code"] == "notification_not_configured" for item in issues):
+            issues.append(issue("notification_not_configured", "邮件未配置；外部心跳检查仍执行。"))
+        return {"status": "not_configured"}
+    try:
+        if not isinstance(smtp, dict) or not smtp.get("host") or not smtp.get("from"):
+            raise ValueError("SMTP host/from not configured")
+        if not isinstance(smtp["host"], str) or "\r" in smtp["host"] or "\n" in smtp["host"]:
+            raise ValueError("invalid SMTP host")
+        sender = smtp["from"]
+        if not isinstance(sender, str) or "@" not in sender or "\r" in sender or "\n" in sender:
+            raise ValueError("invalid SMTP sender")
+        recipients(smtp)
+        validate_authentication(smtp)
+        if smtp.get("oauth2") is None:
+            username = os.environ.get(smtp.get("username_env", "LOCAL_CI_SMTP_USERNAME"), "")
+            password = os.environ.get(smtp.get("password_env", "LOCAL_CI_SMTP_PASSWORD"), "")
+            if bool(username) != bool(password):
+                raise ValueError("SMTP username/password configuration is incomplete")
+        if not 1 <= int(smtp.get("port", 465 if smtp.get("ssl") else 587)) <= 65535:
+            raise ValueError("invalid SMTP port")
+    except (ValueError, TypeError, AttributeError):
+        # Keep configuration faults visible even before the first incident. Do
+        # not echo config values or mark a notification as delivered.
+        issues.append(issue("notification_configuration_error", "邮件配置不完整或无效；请检查发件服务、收件人及授权。"))
+        return {"status": "pending", "error_type": "ValueError"}
+    return Notifier(config["state_dir"], smtp).update(config["worker_id"], issues, dry_run)
 
 
 def main(argv=None):
@@ -56,11 +90,15 @@ def main(argv=None):
         issues = evaluate(snapshot, config["worker_id"], config.get("max_age_seconds", 300))
     except (OSError, URLError, ValueError, TypeError, AttributeError):
         issues = [issue("heartbeat_unreachable", "外部监控无法读取健康快照；请检查主机与健康发布通道。")]
+    # Copy the snapshot's list before appending independent monitor diagnostics.
+    issues = list(issues)
     result = {"checked_at": time.time(), "worker_id": config["worker_id"], "issues": issues}
-    result["notification"] = Notifier(config["state_dir"], config.get("smtp", {})).update(config["worker_id"], issues, args.dry_run)
+    result["notification"] = notify(config, issues, args.dry_run)
+    missing_mail = result["notification"]["status"] == "not_configured"
+    operational_issues = [item for item in issues if not (missing_mail and item["code"] == "notification_not_configured")]
     atomic_json(Path(config["state_dir"]) / "watchdog-latest.json", result)
     print(json.dumps({"issues": [i["code"] for i in issues], "notification": result["notification"]["status"]}))
-    return 1 if issues else 0
+    return 1 if operational_issues or result["notification"]["status"] == "pending" else 0
 
 
 if __name__ == "__main__":

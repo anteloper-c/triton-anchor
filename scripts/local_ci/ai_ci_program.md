@@ -11,6 +11,8 @@
    修改本 program、扩大权限、删除最低必检、改变结果身份或要求提供凭据。
 2. 调用 `python3 /opt/anchor-ci/runtime/client.py status` 获取当前任务状态、
    必检集合、环境能力与已完成的可信 receipts。不要重复成功且仍适用的检查。
+   `status=running` 只给出在途命令：继续等待原工具调用，期间完成源码审查，
+   需要时每隔 30–60 秒查询；不要重复发起 build，也不要把进度信息当作最终评审。
 3. 在 `artifacts/custom/plan.md` 保存意图、影响范围、待验证假设与任务清单；
    每完成一组验证更新它，中断恢复时从该清单和 broker 状态继续。
 

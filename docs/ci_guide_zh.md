@@ -105,6 +105,8 @@ journalctl -u anchor-ci-poller -u anchor-ci-maintenance
 
 健康服务独立于 Poller，发布 `health/<worker_id>.json`。同机 watchdog 可以发现服务故障，整机离线需要另一主机或 GitHub 定时检查这个心跳。邮件对故障与恢复去重，发送失败保留重试状态；`--dry-run` 同时禁止邮件和 Git 发布。
 
+外部 watchdog 只需配置真实心跳 URL 与 worker ID 即可运行。尚未配置 SMTP 时仍检查心跳，结果保留 `notification_not_configured` 和 `notification.status=not_configured`；单独缺少邮件不会令正常心跳检查失败。心跳过期、读取失败或其他运行故障仍失败。已填写部分邮件配置、授权失败或发送失败也会明确报错，不伪装成已送达；实际启用邮件需再完成授权和收件验证。
+
 Outlook.com 发信使用 `smtp-mail.outlook.com:587`、STARTTLS 和 OAuth2。`smtp.oauth2` 配置受信 HTTPS `token_endpoint`、专用应用 `client_id`、`scope` 和 `refresh_token_env`；主机也可用 `access_token_env` 传入已经续期的令牌。存在 `oauth2` 区块时必须完成应用注册及用户授权，缺失会显示通知未配置，不回退到密码。普通 SMTP 密码服务删除此区块，继续使用原用户名/密码环境变量。[微软 SMTP 配置](https://support.microsoft.com/en-US/Outlook/pop-imap-and-smtp-settings-for-outlook-com) · [OAuth2 发信要求](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth)
 
 个人 Outlook 账户需专用应用支持个人账户，授权请求使用 `https://outlook.office.com/SMTP.Send offline_access`。应用注册需要可用的 Azure/Entra 目录与权限；不能猜用其他应用的 client ID，也不收集邮箱登录密码。首次由用户在微软页面登录并同意发信/离线权限，此后才能续期无人值守运行。[应用注册前提](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app)

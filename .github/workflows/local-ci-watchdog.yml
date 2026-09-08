@@ -68,7 +68,7 @@ jobs:
           python - <<'PY'
           import json, os
           from pathlib import Path
-          required = ['WATCHDOG_URL', 'WATCHDOG_WORKER', 'SMTP_HOST', 'SMTP_FROM', 'EMAIL_HERON_MC', 'EMAIL_LIKEHUPOCHUAN']
+          required = ['WATCHDOG_URL', 'WATCHDOG_WORKER']
           missing = [name for name in required if not os.environ.get(name)]
           if missing:
               raise SystemExit('Watchdog configuration is incomplete: ' + ', '.join(missing))
@@ -76,8 +76,6 @@ jobs:
           mode = os.environ['SMTP_AUTH_MODE']
           if mode not in {'password', 'oauth2'}:
               raise SystemExit('SMTP_AUTH_MODE must be password or oauth2')
-          if mode == 'oauth2' and (not os.environ.get('SMTP_CLIENT_ID') or not os.environ.get('SMTP_TOKEN_ENDPOINT', '').startswith('https://')):
-              raise SystemExit('OAuth2 application registration is not configured')
           config = {
               'worker_id': os.environ['WATCHDOG_WORKER'],
               'state_dir': str(Path('.watchdog-state').resolve()),
@@ -99,10 +97,15 @@ jobs:
                   'scope': os.environ.get('SMTP_OAUTH_SCOPE', ''),
                   'refresh_token_env': 'LOCAL_CI_SMTP_REFRESH_TOKEN'
               }
+          # Recipient mappings alone do not configure a mail transport. Keep
+          # partial transport/auth settings so the watchdog reports them as errors.
+          if mode == 'password' and not smtp_ssl and not any(os.environ.get(name) for name in (
+              'SMTP_HOST', 'SMTP_FROM', 'SMTP_PORT', 'SMTP_TOKEN_ENDPOINT', 'SMTP_CLIENT_ID', 'SMTP_OAUTH_SCOPE')):
+              config['smtp'] = {}
           Path(os.environ['RUNNER_TEMP'], 'watchdog.json').write_text(json.dumps(config), encoding='utf-8')
           PY
 
-      - name: Check remote heartbeat and notify incident or recovery
+      - name: Check remote heartbeat and report notification availability
         env:
           LOCAL_CI_HEARTBEAT_READ_TOKEN: ${{ secrets.LOCAL_CI_HEARTBEAT_READ_TOKEN }}
           LOCAL_CI_SMTP_USERNAME: ${{ secrets.LOCAL_CI_SMTP_USERNAME }}

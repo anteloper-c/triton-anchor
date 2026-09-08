@@ -1,6 +1,6 @@
 /* Render remote result text as text nodes. No result field can inject HTML. */
 const labels = {success:'通过',passed:'通过',failure:'失败',failed:'失败',error:'执行错误',cancelled:'已取消',skipped:'未执行',not_applicable:'不适用',healthy:'正常',degraded:'异常',offline:'心跳过期',unknown:'状态未知',waiting:'等待',ready:'就绪'};
-const names = {environment:'环境与依赖',frontend_build:'Frontend build',wheel_install:'Wheel 安装 / import',frontend_smoke:'Frontend smoke',backend_rebuild:'Backend rebuild',backend_smoke:'Backend smoke / JIT',flaggems:'FlagGems',compile_time:'Compile-time performance',pass_profile:'Pass profiling',ir_serialization:'IR serialization',architecture_review:'架构契约审查',control_plane:'CI 控制面检查',custom_test:'定向测试'};
+const names = {environment:'环境与依赖',frontend_build:'Frontend build',frontend_install:'Frontend 安装 / import',frontend_tests:'Frontend tests',wheel_install:'Wheel 安装 / import',frontend_smoke:'Frontend smoke',backend_build:'Backend build',backend_install:'Backend 安装 / 发现',backend_tests:'Backend tests',backend_rebuild:'Backend rebuild',backend_smoke:'Backend smoke / JIT',flaggems:'FlagGems',compile_time:'Compile-time performance',pass_profile:'Pass profiling',ir_serialization:'IR serialization',pr_information:'PR 信息核验',architecture_review:'架构契约审查',control_plane:'CI 控制面检查',custom_test:'定向测试'};
 const model = {data:null, selected:null};
 const $ = id => document.getElementById(id);
 const arr = value => Array.isArray(value) ? value : [];
@@ -29,7 +29,10 @@ function renderWorkers() {
       item.append(el('p','ci-muted',(profile.profile_id||profile.container||'版本环境')+' · '+(profile.draining?'维护排空':profile.lease?'执行任务 '+profile.lease.task_id:profile.running?'常驻 / 空闲':'容器未运行')));
     }
     if(arr(worker.issues).length) { const list=el('ul'); for(const issue of worker.issues)list.append(el('li','',issue.message||issue.code)); item.append(list); }
-    if(worker.notification)item.append(el('p','ci-muted','邮件通知：'+({sent:'已发送',pending:'待发送 / 重试',unchanged:'无新增异常',dry_run:'仅验证，未发送',healthy:'无异常'}[worker.notification.status]||worker.notification.status)));
+    if(worker.notification) {
+      const status=arr(worker.issues).some(issue=>issue.code==='notification_not_configured')?'not_configured':worker.notification.status;
+      item.append(el('p','ci-muted','邮件通知：'+({sent:'已发送',pending:'待发送 / 重试',not_configured:'未配置',unchanged:'无新增异常',dry_run:'仅验证，未发送',healthy:'无异常'}[status]||status)));
+    }
     root.append(item);
   }
 }

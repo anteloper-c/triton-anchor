@@ -15,6 +15,7 @@ from maintenance.workers import WorkerBusy
 
 from .broker import Broker
 from .common import digest, execute, git, read_json, utcnow, write_json
+from .codex_events import read_events
 from .policy import minimum_checks, validate_task
 from .report import build_result, markdown
 
@@ -53,6 +54,95 @@ class Engine:
         self.docker_run(profile, 'chown', '-R', profile.get('agent_user', '1001:1000'), agent_home)
         self.docker_run(profile, 'chmod', '700', agent_home)
         return agent_home
+
+    def execute_codex(self, spec, prefix, environment, output, cancelled, validate):
+        """Keep the broker/lease alive across at most two transient service errors."""
+        settings = self.config['codex']
+        deadline = time.monotonic() + settings.get('timeout', 14400)
+        original = copy.deepcopy(spec)
+        attempts, session_id = [], None
+        failure, outcome = None, {'returncode': 1, 'termination': None}
+        for attempt in range(3):
+            if cancelled.is_set():
+                failure = 'Codex cancelled'
+                break
+            if time.monotonic() >= deadline:
+                failure = 'Codex timeout: original execution budget exhausted'
+                break
+            if attempt:
+                # The same frozen task and trusted control must still be valid.
+                try:
+                    validate()
+                except Exception as exc:
+                    failure = 'Codex recovery validation failed: ' + str(exc)
+                    break
+                if cancelled.is_set():
+                    failure = 'Codex cancelled'
+                    break
+                prompt = ('A transient Codex service failure interrupted this CI task. '
+                          'The same task, frozen source, broker, worker lease and running build are retained. '
+                          'Read /opt/anchor-ci/ai_ci_program.md and ' + original['cwd'] +
+                          '/context.json. First inspect broker status and wait for any active command; '
+                          'status=running means continue review or wait 30-60 seconds before polling again. '
+                          'Do not repeat active or completed checks. Continue the saved plan and host '
+                          'receipts, then submit the review through finalize. If already finalized, '
+                          'preserve that review and finish. No extra execution budget was granted.')
+                if session_id:
+                    command = [settings.get('bin', 'codex'), 'exec', 'resume', '--json',
+                               '--ignore-user-config', '--skip-git-repo-check',
+                               '-c', 'approval_policy="never"', '-c', 'sandbox_mode="danger-full-access"']
+                    if settings.get('model'):
+                        command += ['-m', settings['model']]
+                    if settings.get('reasoning_effort'):
+                        command += ['-c', 'model_reasoning_effort=' + json.dumps(settings['reasoning_effort'])]
+                    command += [session_id, prompt]
+                else:
+                    # Failure before thread.started: use the same on-disk task
+                    # context and broker receipts, without claiming a resumed session.
+                    command = original['argv'][:-1] + [original['argv'][-1] + '\n' + prompt]
+                spec = {**original, 'id': original['id'] + f'-recovery-{attempt}', 'argv': command}
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                failure = 'Codex timeout: original execution budget exhausted'
+                break
+            encoded = base64.urlsafe_b64encode(json.dumps(spec).encode()).decode()
+            log = output / ('agent-events.jsonl' if not attempt else f'agent-events-recovery-{attempt}.jsonl')
+            try:
+                outcome = execute(prefix + ['run', encoded], log, env=environment, timeout=remaining,
+                    cancelled=cancelled.is_set, terminate=lambda encoded=encoded: subprocess.run(
+                        prefix + ['stop', encoded], env=environment, capture_output=True, timeout=15))
+            except Exception as exc:
+                failure = 'Codex execution failed: ' + str(exc)
+                attempts.append({'attempt': attempt, 'log_path': log.name, 'error': failure})
+                break
+            observed_session, error = read_events(log)
+            session_id = observed_session or session_id
+            failure = ('Codex ' + outcome['termination'] if outcome['termination'] else
+                       'Codex service error: ' + error.get('message', error.get('code', 'turn failed')) if error else
+                       f"Codex exited with code {outcome['returncode']}" if outcome['returncode'] else None)
+            record = {'attempt': attempt, 'session_id': session_id, 'log_path': log.name,
+                      'service_error': error, **outcome}
+            attempts.append(record)
+            retry = bool(error and error['retryable'] and outcome['returncode'] and
+                         not outcome['termination'] and not cancelled.is_set() and attempt < 2)
+            if retry:
+                delay = (30, 60)[attempt]
+                if deadline - time.monotonic() <= delay:
+                    failure += '; recovery skipped: insufficient remaining execution budget'
+                    retry = False
+                else:
+                    record['backoff_seconds'] = delay
+            if error and error['retryable'] and attempt == 2:
+                failure += '; two service recoveries exhausted'
+            write_json(output / 'agent-recovery.json', {'attempts': attempts, 'error': failure,
+                       'state': 'backoff' if retry else 'finished'})
+            if not retry:
+                break
+            if cancelled.wait(delay):
+                failure = 'Codex cancelled during service recovery'
+                break
+        write_json(output / 'agent-recovery.json', {'attempts': attempts, 'error': failure, 'state': 'finished'})
+        return outcome['returncode'], failure
 
     def run(self, task, profile, resume_record=None):
         validate_task(task, self.config.get('repository', 'anteloper-c/triton-anchor'))
@@ -235,12 +325,16 @@ class Engine:
                     'cwd': container_task + '/agent',
                     'env': {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'safe.directory',
                             'GIT_CONFIG_VALUE_0': context['source_dir']}}
-            encoded = base64.urlsafe_b64encode(json.dumps(spec).encode()).decode()
             prefix = [self.docker, 'exec', '--user', profile.get('agent_user', '1001:1000'),
                       '-e', 'LOCAL_CI_BROKER_URL', '-e', 'LOCAL_CI_BROKER_TOKEN', '-e', 'CODEX_HOME',
                       profile['container']['name'], '/usr/bin/python3', '-I', '/opt/anchor-ci/runtime/container_process.py']
-            def stop_codex():
-                subprocess.run(prefix + ['stop', encoded], env=environment, capture_output=True, timeout=15)
+            def validate_recovery():
+                if not self.relay.current(task):
+                    cancelled.set()
+                    return
+                if verify_control(self.config, task)['tree_sha256'] != control_identity['tree_sha256']:
+                    raise RuntimeError('trusted control files changed before Codex recovery')
+                verify_container_control(self.config, profile, control_identity)
             def monitor():
                 while not stopped.wait(self.config.get('validity_interval', 10)):
                     self.heartbeat('running', task['task_id'])
@@ -259,12 +353,7 @@ class Engine:
             write_json(output / 'execution.json', {'profile_id': profile['id'], 'host_task': str(host_task),
                        'run_id': run_id, 'started_at': started_at, 'phase': 'running'})
             self.heartbeat('running', task['task_id'])
-            outcome = execute(prefix + ['run', encoded], output / 'agent-events.jsonl', env=environment,
-                              timeout=settings.get('timeout', 14400), cancelled=cancelled.is_set,
-                              terminate=stop_codex)
-            exitcode = outcome['returncode']
-            if outcome['termination']:
-                failure = 'Codex ' + outcome['termination']
+            exitcode, failure = self.execute_codex(spec, prefix, environment, output, cancelled, validate_recovery)
             if monitor_errors and cancelled.is_set():
                 failure = 'task validity could not be verified'
         except Exception as exc:
@@ -334,18 +423,13 @@ class Engine:
         host_task = execution.get('host_task')
         if not host_task:
             return
-        event_path = Path(record).parent / 'agent-events.jsonl'
         session_id = None
-        if event_path.exists():
-            for line in event_path.read_text(encoding='utf-8', errors='replace').splitlines():
-                try:
-                    event = json.loads(line)
-                except ValueError:
-                    continue
-                if event.get('type') == 'thread.started':
-                    session_id = event.get('thread_id')
-                    break
-        if not session_id or not re.fullmatch(r'[0-9a-f-]{36}', session_id):
+        for event_path in [Path(record).parent / name for name in (
+                'agent-events.jsonl', 'agent-events-recovery-1.jsonl', 'agent-events-recovery-2.jsonl')]:
+            if event_path.exists():
+                observed, _ = read_events(event_path)
+                session_id = observed or session_id
+        if not session_id:
             return
         task = read_json(Path(record).parent / 'task.json')
         profile = next(p for p in self.config['profiles'] if p['id'] == execution['profile_id'])
