@@ -105,6 +105,12 @@ journalctl -u anchor-ci-poller -u anchor-ci-maintenance
 
 健康服务独立于 Poller，发布 `health/<worker_id>.json`。同机 watchdog 可以发现服务故障，整机离线需要另一主机或 GitHub 定时检查这个心跳。邮件对故障与恢复去重，发送失败保留重试状态；`--dry-run` 同时禁止邮件和 Git 发布。
 
+Outlook.com 发信使用 `smtp-mail.outlook.com:587`、STARTTLS 和 OAuth2。`smtp.oauth2` 配置受信 HTTPS `token_endpoint`、专用应用 `client_id`、`scope` 和 `refresh_token_env`；主机也可用 `access_token_env` 传入已经续期的令牌。存在 `oauth2` 区块时必须完成应用注册及用户授权，缺失会显示通知未配置，不回退到密码。普通 SMTP 密码服务删除此区块，继续使用原用户名/密码环境变量。[微软 SMTP 配置](https://support.microsoft.com/en-US/Outlook/pop-imap-and-smtp-settings-for-outlook-com) · [OAuth2 发信要求](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth)
+
+个人 Outlook 账户需专用应用支持个人账户，授权请求使用 `https://outlook.office.com/SMTP.Send offline_access`。应用注册需要可用的 Azure/Entra 目录与权限；不能猜用其他应用的 client ID，也不收集邮箱登录密码。首次由用户在微软页面登录并同意发信/离线权限，此后才能续期无人值守运行。[应用注册前提](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app)
+
+GitHub watchdog 设置 `LOCAL_CI_SMTP_AUTH_MODE=oauth2`、`LOCAL_CI_SMTP_TOKEN_ENDPOINT`、`LOCAL_CI_SMTP_CLIENT_ID`、`LOCAL_CI_SMTP_OAUTH_SCOPE`，将授权所得刷新令牌存入 secret `LOCAL_CI_SMTP_REFRESH_TOKEN`。该流程不会更新仓库 secret；旧刷新令牌不会因一次刷新立即失效，但仍有期限且可被撤销，失效时通知明确失败并需重新授权。本机受限缓存可以保存轮换后的令牌。配置存在不代表已经授权或真实邮件送达。[微软令牌有效期](https://learn.microsoft.com/en-us/entra/identity-platform/refresh-tokens)
+
 ## 修改 CI 与验证
 
 新增基础工具时，在 `tools/basic_tools/runner.py` 登记 `plan(tool_id, context, parameters)`，返回 argv、cwd、env、timeout 与产物约束。主机计划不能假定容器路径存在于宿主；候选参数只接受有界选择，不能替换 profile、宿主路径、命令或成功状态。工具变化同步最低检查策略、结果校验、Dashboard 与参数说明。

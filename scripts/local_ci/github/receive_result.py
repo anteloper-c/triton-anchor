@@ -199,6 +199,10 @@ class API:
     def contents(self, owner: str, repo: str, path: str, ref: str) -> bytes:
         route = f"repos/{owner}/{repo}/contents/{urllib.parse.quote(path, safe='/')}?ref={urllib.parse.quote(ref, safe='')}"
         data = self.call("GET", route)
+        if self.gitee and data == []:
+            # Gitee returns HTTP 200 with [] for a file that is not published yet.
+            # Normalize only that response into the existing bounded polling path.
+            raise urllib.error.HTTPError(self.base + "/" + route, 404, "Relay file is not published", None, None)
         if not isinstance(data, dict) or data.get("encoding") != "base64":
             raise ValueError("Relay contents API did not return a base64 file")
         return base64.b64decode(data["content"], validate=False)
@@ -356,6 +360,7 @@ def main(argv=None) -> int:
             print(f"Stale task ignored: {exc}")
             return 11
         except urllib.error.HTTPError as exc:
+            exc.close()
             if exc.code not in {404, 409, 429, 500, 502, 503, 504}:
                 raise
             print(f"Waiting for relay or service recovery (HTTP {exc.code})")

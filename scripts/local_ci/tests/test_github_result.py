@@ -90,6 +90,23 @@ class MetadataAdmissionTests(unittest.TestCase):
         self.assertEqual((task["event_kind"], task["flaggems_mode"], task["execution_mode"]), ("push", "full", "ai"))
 
 
+class RelayContentsTests(unittest.TestCase):
+    def test_gitee_missing_file_response_uses_existing_wait_path(self):
+        api = receiver.API("https://gitee.com/api/v5", gitee=True)
+        with patch.object(api, "call", return_value=[]):
+            with self.assertRaises(receiver.urllib.error.HTTPError) as caught:
+                api.contents("heron-mc", "new-relay", "tasks/task-test/latest.json", "local-ci-results")
+        self.assertEqual(caught.exception.code, 404)
+        caught.exception.close()
+
+    def test_other_non_file_responses_remain_errors(self):
+        for gitee, response in ((False, []), (True, [{"type": "file"}]), (True, {})):
+            with self.subTest(gitee=gitee, response=response):
+                api = receiver.API("https://example.invalid", gitee=gitee)
+                with patch.object(api, "call", return_value=response), self.assertRaises(ValueError):
+                    api.contents("owner", "repo", "file.json", "branch")
+
+
 class ResultGateTests(unittest.TestCase):
     def test_current_complete_result_passes(self):
         task, expected, result = result_fixture(True)
@@ -230,7 +247,7 @@ class ResultGateTests(unittest.TestCase):
 class ReceiverHTTPTests(unittest.TestCase):
     """Real HTTP requests against local fixtures; no live GitHub or Gitee writes."""
 
-    def run_receiver(self, tamper=False):
+    def run_receiver(self, tamper=False, missing_result=False):
         task, expected, result = result_fixture()
         data = json.dumps(result).encode()
         digest = hashlib.sha256(data).hexdigest()
@@ -260,8 +277,11 @@ class ReceiverHTTPTests(unittest.TestCase):
                     value = {"parents": [{"sha": expected["base_sha"]}, {"sha": expected["head_sha"]}]}
                 elif "/contents/" in path:
                     name = path.split("/contents/", 1)[1]
-                    content = b"__version__ = '3.0.0'\n" if name == "triton/python/triton/__init__.py" else relay[name]
-                    value = {"encoding": "base64", "content": base64.b64encode(content).decode()}
+                    if missing_result and name.endswith("/latest.json"):
+                        value = []
+                    else:
+                        content = b"__version__ = '3.0.0'\n" if name == "triton/python/triton/__init__.py" else relay[name]
+                        value = {"encoding": "base64", "content": base64.b64encode(content).decode()}
                 elif path.endswith("/comments"):
                     value = []
                 else:
@@ -295,7 +315,7 @@ class ReceiverHTTPTests(unittest.TestCase):
                         with self.assertRaises(ValueError):
                             receiver.main(argv)
                     else:
-                        self.assertEqual(receiver.main(argv), 0)
+                        self.assertEqual(receiver.main(argv), 3 if missing_result else 0)
             finally:
                 server.shutdown()
                 thread.join(timeout=5)
@@ -310,6 +330,9 @@ class ReceiverHTTPTests(unittest.TestCase):
 
     def test_bad_published_bytes_produce_no_remote_writes(self):
         self.assertEqual(self.run_receiver(tamper=True), [])
+
+    def test_unpublished_gitee_result_waits_until_timeout_without_writes(self):
+        self.assertEqual(self.run_receiver(missing_result=True), [])
 
 
 if __name__ == "__main__":

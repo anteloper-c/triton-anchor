@@ -10,7 +10,8 @@ from pathlib import Path
 from maintenance.workers import WorkerManager, WorkerBusy, file_lock
 from .common import read_json, utcnow, write_json
 from .engine import Engine
-from .policy import validate_task
+from .policy import TOOLS, identity, validate_task
+from .report import markdown
 from .relay import Relay
 
 
@@ -23,6 +24,38 @@ class Poller:
         self.manager = WorkerManager(self.state, docker=config.get('docker', 'docker'))
         self.engine = Engine(config, self.relay, self.manager)
         self.profiles = {p['id']: p for p in config['profiles']}
+
+    def reject_task(self, task, reason, *, cancelled=False):
+        """Persist an admission failure through the normal immutable result publisher."""
+        output = self.state / 'runs' / task['task_id'] / 'admission'
+        output.mkdir(parents=True, exist_ok=True)
+        now = utcnow()
+        conclusion = 'cancelled' if cancelled else 'error'
+        checks = [{'id': tool, 'required': False, 'status': 'skipped',
+                   'reason': 'task was rejected before tool execution', 'evidence': []} for tool in TOOLS]
+        checks.extend([{'id': 'architecture_review', 'required': True, 'status': 'error',
+                        'reason': 'task was rejected before AI review', 'evidence': []},
+                       {'id': 'pr_information', 'required': task['event_kind'] == 'pull_request',
+                        'status': 'error' if task['event_kind'] == 'pull_request' else 'not_applicable',
+                        'reason': 'task was rejected before AI review' if task['event_kind'] == 'pull_request' else 'not a PR event',
+                        'evidence': []}])
+        result = {'schema': 'triton-anchor-local-ci-result', **identity(task), 'run_id': 'admission',
+                  'conclusion': conclusion, 'checks': checks, 'blocking_reasons': [reason],
+                  'ai_review': {}, 'evidence': [], 'performance': [], 'source_unchanged': False,
+                  'policy': {'required': [check['id'] for check in checks if check['required']],
+                             'admission': 'rejected', 'reason': reason},
+                  'control_identity': {'verified': False},
+                  'validation_scope': 'local_acceptance' if self.config.get('local_acceptance') else 'production',
+                  'started_at': now, 'completed_at': now}
+        write_json(output / 'task.json', task)
+        write_json(output / 'result.json', result)
+        (output / 'report.md').write_text(markdown(result), encoding='utf-8')
+        write_json(self.state / 'rejected' / (task['task_id'] + '.json'),
+                   {**identity(task), 'conclusion': conclusion, 'reason': reason, 'at': now})
+        # Journal last: an interrupted write is rebuilt before any publication.
+        write_json(output / 'execution.json', {'phase': 'publish_pending', 'run_id': 'admission',
+                   'profile_id': None, 'started_at': now})
+        return result
 
     def retry_publications(self):
         pending = False
@@ -101,7 +134,14 @@ class Poller:
                 if list((self.state / 'runs' / task['task_id']).glob('*/execution.json')):
                     # A crash never silently duplicates a running build. Recovery is explicit.
                     continue
-                profile_id = self.config['branch_profiles'][task['target_branch']]
+                if not self.relay.current(task):
+                    outcomes.append(self.reject_task(task, 'Task is no longer current or has been cancelled', cancelled=True))
+                    continue
+                profile_id = self.config['branch_profiles'].get(task['target_branch'])
+                if profile_id not in self.profiles:
+                    outcomes.append(self.reject_task(task,
+                        'No trusted environment profile is configured for target branch: ' + task['target_branch']))
+                    continue
                 profile = self.profiles[profile_id]
                 output, result = self.engine.run(task, profile)
                 outcomes.append(result)

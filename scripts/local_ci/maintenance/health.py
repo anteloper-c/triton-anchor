@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import time
 
-from .notify import Notifier, recipients
+from .notify import Notifier, recipients, validate_authentication
 from .workers import WorkerError, WorkerManager, atomic_json, read_json
 
 
@@ -98,6 +98,7 @@ def collect(config, manager=None, now=None, service_runner=subprocess.run):
         recipients(smtp)
         if not smtp.get("host") or not smtp.get("from"):
             raise ValueError("SMTP host/from not configured")
+        validate_authentication(smtp)
         notification_config = "configured"
     except ValueError as exc:
         notification_config = str(exc)

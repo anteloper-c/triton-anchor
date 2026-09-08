@@ -16,6 +16,8 @@ on:
         required: false
       LOCAL_CI_SMTP_PASSWORD:
         required: false
+      LOCAL_CI_SMTP_REFRESH_TOKEN:
+        required: false
 
 permissions:
   contents: read
@@ -55,6 +57,10 @@ jobs:
           SMTP_HOST: ${{ vars.LOCAL_CI_SMTP_HOST }}
           SMTP_SSL: ${{ vars.LOCAL_CI_SMTP_SSL == 'true' }}
           SMTP_PORT: ${{ vars.LOCAL_CI_SMTP_PORT }}
+          SMTP_AUTH_MODE: ${{ vars.LOCAL_CI_SMTP_AUTH_MODE || 'password' }}
+          SMTP_TOKEN_ENDPOINT: ${{ vars.LOCAL_CI_SMTP_TOKEN_ENDPOINT }}
+          SMTP_CLIENT_ID: ${{ vars.LOCAL_CI_SMTP_CLIENT_ID }}
+          SMTP_OAUTH_SCOPE: ${{ vars.LOCAL_CI_SMTP_OAUTH_SCOPE }}
           SMTP_FROM: ${{ secrets.LOCAL_CI_SMTP_FROM }}
           EMAIL_HERON_MC: ${{ secrets.LOCAL_CI_EMAIL_HERON_MC }}
           EMAIL_LIKEHUPOCHUAN: ${{ secrets.LOCAL_CI_EMAIL_LIKEHUPOCHUAN }}
@@ -67,6 +73,11 @@ jobs:
           if missing:
               raise SystemExit('Watchdog configuration is incomplete: ' + ', '.join(missing))
           smtp_ssl = os.environ.get('SMTP_SSL') == 'true'
+          mode = os.environ['SMTP_AUTH_MODE']
+          if mode not in {'password', 'oauth2'}:
+              raise SystemExit('SMTP_AUTH_MODE must be password or oauth2')
+          if mode == 'oauth2' and (not os.environ.get('SMTP_CLIENT_ID') or not os.environ.get('SMTP_TOKEN_ENDPOINT', '').startswith('https://')):
+              raise SystemExit('OAuth2 application registration is not configured')
           config = {
               'worker_id': os.environ['WATCHDOG_WORKER'],
               'state_dir': str(Path('.watchdog-state').resolve()),
@@ -81,6 +92,13 @@ jobs:
                   'username_env': 'LOCAL_CI_SMTP_USERNAME', 'password_env': 'LOCAL_CI_SMTP_PASSWORD'
               }
           }
+          if mode == 'oauth2':
+              config['smtp']['oauth2'] = {
+                  'token_endpoint': os.environ['SMTP_TOKEN_ENDPOINT'],
+                  'client_id': os.environ['SMTP_CLIENT_ID'],
+                  'scope': os.environ.get('SMTP_OAUTH_SCOPE', ''),
+                  'refresh_token_env': 'LOCAL_CI_SMTP_REFRESH_TOKEN'
+              }
           Path(os.environ['RUNNER_TEMP'], 'watchdog.json').write_text(json.dumps(config), encoding='utf-8')
           PY
 
@@ -89,6 +107,7 @@ jobs:
           LOCAL_CI_HEARTBEAT_READ_TOKEN: ${{ secrets.LOCAL_CI_HEARTBEAT_READ_TOKEN }}
           LOCAL_CI_SMTP_USERNAME: ${{ secrets.LOCAL_CI_SMTP_USERNAME }}
           LOCAL_CI_SMTP_PASSWORD: ${{ secrets.LOCAL_CI_SMTP_PASSWORD }}
+          LOCAL_CI_SMTP_REFRESH_TOKEN: ${{ secrets.LOCAL_CI_SMTP_REFRESH_TOKEN }}
         run: python -m scripts.local_ci.maintenance.watchdog --config "${RUNNER_TEMP}/watchdog.json"
 
       - name: Preserve notification delivery state

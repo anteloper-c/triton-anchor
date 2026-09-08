@@ -113,5 +113,69 @@ class PublicationRecoveryTests(unittest.TestCase):
             self.assertIsNone(read_json(worker).get("lease"))
 
 
+class AdmissionRejectionTests(unittest.TestCase):
+    setUp = PublicationRecoveryTests.setUp
+
+    def test_terminal_result_preserves_actual_validation_scope(self):
+        for configured, expected in ((True, 'local_acceptance'), (False, 'production')):
+            with self.subTest(local_acceptance=configured):
+                self.poller.config['local_acceptance'] = configured
+                result = self.poller.reject_task(self.task, 'scope validation fixture')
+                self.assertEqual(result['validation_scope'], expected)
+                self.assertFalse(result['control_identity']['verified'])
+                self.assertEqual(result['conclusion'], 'error')
+
+    def test_unknown_branch_rejection_is_published_once_and_survives_restart(self):
+        self.config['branch_profiles'] = {}
+        with mock.patch.object(self.poller.engine, 'run', side_effect=AssertionError('no environment for unknown branch')):
+            outcomes = self.poller.once()
+        self.assertEqual([r['conclusion'] for r in outcomes], ['error'])
+        result = outcomes[0]
+        self.assertEqual(result['task_id'], self.task['task_id'])
+        self.assertEqual(result['tested_sha'], self.task['tested_sha'])
+        self.assertIn('No trusted environment profile', result['blocking_reasons'][0])
+        self.assertFalse(result['evidence'])
+        self.assertFalse(any(c['status'] == 'passed' for c in result['checks']))
+        rejected = Path(self.config['state_dir']) / 'rejected' / (self.task['task_id'] + '.json')
+        before = rejected.read_bytes()
+        published = json.loads(git(self.remote, 'show', f"local-ci-results:runs/{self.task['task_id']}/admission/result.json"))
+        self.assertEqual(published, result)
+        from scripts.dashboard.sync_agent_results import normalize_result
+        dashboard = normalize_result(published, f"runs/{self.task['task_id']}/admission/result.json", '',
+                                     'local-ci-results', {self.task['task_id']: 'admission'})
+        self.assertEqual(dashboard['blocking_reasons'], result['blocking_reasons'])
+        restarted = Poller(self.config)
+        with mock.patch.object(restarted.engine, 'run', side_effect=AssertionError('terminal task must not rerun')):
+            self.assertEqual(restarted.once(), [])
+        self.assertEqual(rejected.read_bytes(), before)
+
+    def test_stale_task_is_recorded_before_profile_lookup(self):
+        class UnreachableProfiles(dict):
+            def get(self, *args):
+                raise AssertionError('stale task must not select an environment')
+        self.config['branch_profiles'] = UnreachableProfiles()
+        with mock.patch.object(self.poller.relay, 'current', return_value=False), \
+             mock.patch.object(self.poller.engine, 'run', side_effect=AssertionError('stale task cannot run')):
+            outcomes = self.poller.once()
+        self.assertEqual(outcomes[0]['conclusion'], 'cancelled')
+        record = read_json(Path(self.config['state_dir']) / 'rejected' / (self.task['task_id'] + '.json'))
+        self.assertEqual(record['head_sha'], self.task['head_sha'])
+        self.assertEqual(record['conclusion'], 'cancelled')
+
+    def test_rejection_publish_failure_retries_same_bytes_without_reexecution(self):
+        self.config['branch_profiles'] = {}
+        with mock.patch.object(self.poller.relay, 'publish', side_effect=RuntimeError('temporary publication outage')), \
+             mock.patch.object(self.poller.engine, 'run', side_effect=AssertionError('no task execution')):
+            self.poller.once()
+        output = Path(self.config['state_dir']) / 'runs' / self.task['task_id'] / 'admission'
+        before = (output / 'result.json').read_bytes()
+        self.assertEqual(read_json(output / 'execution.json')['phase'], 'publish_pending')
+        restarted = Poller(self.config)
+        with mock.patch.object(restarted.engine, 'run', side_effect=AssertionError('only retry publication')):
+            restarted.once()
+        self.assertEqual((output / 'result.json').read_bytes(), before)
+        self.assertEqual(read_json(output / 'execution.json')['phase'], 'published')
+
+
 if __name__ == "__main__":
     unittest.main()

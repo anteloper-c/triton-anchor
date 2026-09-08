@@ -15,10 +15,10 @@ python3 -m http.server 8000 --directory dashboard --bind 127.0.0.1
 
 打开 `http://127.0.0.1:8000/local-ci.html`。同步脚本只读取 checkout，不负责认证、fetch 或推送。GitHub Pages 工作流负责取得配置的结果分支。
 
-- 结果来源：`runs/<task_id>/<run_id>/result.json`，Schema `triton-anchor-local-ci-result/v4`。
+- 结果来源：`runs/<task_id>/<run_id>/result.json`，Schema `triton-anchor-local-ci-result`。
 - 最新索引：`tasks/<task_id>/latest.json`，核验身份、相对路径与结果 SHA-256；不匹配时给出同步异常，不将其提升为最新通过结果。
-- 健康来源：`health/<worker_id>.json`，Schema `triton-anchor-local-ci-worker-health/v2`。
-- 页面数据：`data/local-ci.json`，Schema `triton-anchor-dashboard-local-ci/v1`。仓库初始文件是空 feed，未发布真实结果时明确显示暂无数据。
+- 健康来源：`health/<worker_id>.json`，Schema `triton-anchor-local-ci-worker-health`。
+- 页面数据：`data/local-ci.json`，Schema `triton-anchor-dashboard-local-ci`。仓库初始文件是空 feed，未发布真实结果时明确显示暂无数据。
 
 页面文本按文本节点呈现，不解释结果中的 HTML。日志链接仅接受 HTTPS。超过 15 分钟的 worker 心跳在页面标记为过期；邮件投递和整机离线告警由独立维护/监控服务完成，页面不是告警发送器。
 
