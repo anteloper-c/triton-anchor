@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""External Local CI watchdog: health/receipt JSON to durable incidents and mail.
+"""External Local CI watchdog: health/queue JSON to durable incidents and mail.
 
 This runs independently of the worker (for example in GitHub Actions). It never
 uses a model. --mail-outbox simulates SMTP delivery with reviewable .eml files;
@@ -65,7 +65,7 @@ def atomic_json(path: Path, document: dict[str, Any]) -> None:
 
 
 def evaluate(document: dict[str, Any], previous: dict[str, Any] | None = None, *, now: datetime | None = None,
-             stale_seconds: int = 1200, acknowledgement_seconds: int = 1200,
+             stale_seconds: int = 1200, upload_seconds: int = 1200,
              progress_seconds: int = 1800, queue_seconds: int = 3600, disk_free_bytes: int = 5 * 1024**3) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     previous = previous or {"schema": SCHEMA, "active": {}, "pending_notifications": [], "history": []}
@@ -90,9 +90,9 @@ def evaluate(document: dict[str, Any], previous: dict[str, Any] | None = None, *
     if document.get("source_error"):
         incident("monitor", "health_source_unavailable", "无法读取 Gitee 健康快照；检查中转仓库、网络和监控凭据。")
         unknown_workers.update(str(item.get("worker_id")) for item in previous["active"].values())
-    if document.get("receipts_source_error"):
+    if document.get("tasks_source_error"):
         unknown_workers.add("receiver")
-        incident("monitor", "receipt_source_unavailable", "无法读取任务与结果队列；检查 Gitee 中转认证和接收服务。")
+        incident("monitor", "task_source_unavailable", "无法读取任务队列；检查 Gitee 中转认证和接收服务。")
     seen: set[str] = set()
     for worker in workers:
         if not isinstance(worker, dict) or not worker.get("worker_id"):
@@ -140,33 +140,29 @@ def evaluate(document: dict[str, Any], previous: dict[str, Any] | None = None, *
         if active_task:
             task_id = str(active_task.get("task_id", active_task.get("run_id", "")))
             stage = active_task.get("stage", active_task.get("state", ""))
-            if stage in {"awaiting_ack", "awaiting_receipt", "awaiting_receipt_ack", "published", "await_ack"}:
-                elapsed = age(now, active_task.get("published_at", active_task.get("updated_at", active_task.get("started_at"))))
-                if elapsed is None or elapsed > acknowledgement_seconds:
-                    incident(worker_id, "receipt_overdue", "结果已保存但 GitHub 接收回写未确认；检查 receiver 和 ACK，仅恢复发布链路。", task_id=task_id)
             progress = active_task.get("last_progress_at", active_task.get("heartbeat_at"))
-            if progress is not None and (age(now, progress) or 0) > progress_seconds:
+            if stage != "publishing" and progress is not None and (age(now, progress) or 0) > progress_seconds:
                 incident(worker_id, "task_no_progress", "任务长时间无有效进展；检查 Codex、工具进程、编译资源和公司模型中转。", task_id=task_id)
-            if active_task.get("codex_alive") is False:
+            if stage != "publishing" and active_task.get("codex_alive") is False:
                 incident(worker_id, "codex_unavailable", "Codex 进程已退出但任务未完成；从持久任务记录恢复并检查公司模型配置。", task_id=task_id)
+        for upload in worker.get("uploads", []):
+            elapsed = age(now, upload.get("queued_at"))
+            if upload.get("attempts", 0) or elapsed is None or elapsed > upload_seconds:
+                incident(worker_id, "result_upload_failed", "封存结果尚未上传 Gitee；检查中转网络、认证及本地 outbox，仅重试上传。", task_id=str(upload.get("task_id", "")))
         last = worker.get("last_result", {}) or {}
         if last.get("failure_code") in {"result_publish_failed", "publish_failed"}:
             incident(worker_id, "result_publish_failed", "结果发布失败；保留构建产物，仅重试 Gitee 发布。")
     for worker_id in expected - seen:
         incident(worker_id, "worker_offline", "没有收到预期服务器的快照；检查主机以及独立健康发布服务。")
         unknown_workers.add(worker_id)
-    for receipt in document.get("receipts", []):
-        if not isinstance(receipt, dict):
-            raise ValueError("Receipt entries must be objects")
-        state = receipt.get("state", receipt.get("status"))
+    for task in document.get("tasks", []):
+        if not isinstance(task, dict):
+            raise ValueError("Task entries must be objects")
+        state = task.get("state", task.get("status", task.get("stage")))
         if state == "queued":
-            elapsed = age(now, receipt.get("created_at"))
+            elapsed = age(now, task.get("created_at", task.get("updated_at")))
             if elapsed is None or elapsed > queue_seconds:
-                incident(str(receipt.get("worker_id", "receiver")), "queue_overdue", "已投递任务长时间未返回结果；检查 worker、排队资源和任务进展。", task_id=str(receipt.get("task_id", "unknown")))
-        elif state in {"pending", "published", "awaiting_ack", "awaiting_receipt", "await_ack"}:
-            elapsed = age(now, receipt.get("published_at", receipt.get("created_at")))
-            if elapsed is None or elapsed > acknowledgement_seconds:
-                incident(str(receipt.get("worker_id", "receiver")), "receipt_overdue", "GitHub 结果接收回写超时；核对任务身份并恢复 receiver。", task_id=str(receipt.get("task_id", receipt.get("run_id", "unknown"))))
+                incident(str(task.get("worker_id", "receiver")), "queue_overdue", "已投递任务长时间未返回结果；检查 worker、排队资源和任务进展。", task_id=str(task.get("task_id", "unknown")))
 
     active: dict[str, dict[str, Any]] = {}
     history = list(previous.get("history", []))
@@ -277,16 +273,16 @@ def read_input(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("Watchdog input must be a JSON object")
     if args.expected_worker:
         document["expected_workers"] = args.expected_worker
-    if args.receipts_file:
-        path = Path(args.receipts_file)
-        receipts = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
-        if isinstance(receipts, dict):
-            if receipts.get("source_error"):
-                document["receipts_source_error"] = True
-            receipts = receipts.get("receipts", [])
-        if not isinstance(receipts, list):
-            raise ValueError("receipts-file must contain a list or a receipts object")
-        document["receipts"] = [*document.get("receipts", []), *receipts]
+    if args.tasks_file:
+        path = Path(args.tasks_file)
+        tasks = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"source_error": True}
+        if isinstance(tasks, dict):
+            if tasks.get("source_error"):
+                document["tasks_source_error"] = True
+            tasks = tasks.get("tasks", [])
+        if not isinstance(tasks, list):
+            raise ValueError("tasks-file must contain a list or a tasks object")
+        document["tasks"] = [*document.get("tasks", []), *tasks]
     return document
 
 
@@ -298,18 +294,18 @@ def main() -> int:
     parser.add_argument("--state", required=True)
     parser.add_argument("--output")
     parser.add_argument("--mail-outbox")
-    parser.add_argument("--receipts-file", help="Additional receipt records, combinable with --url; absent file means []")
+    parser.add_argument("--tasks-file", help="Additional queued task records, combinable with --url")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--expected-worker", action="append", default=[])
     parser.add_argument("--stale-seconds", type=int, default=1200)
-    parser.add_argument("--acknowledgement-seconds", type=int, default=1200)
+    parser.add_argument("--upload-seconds", type=int, default=1200)
     parser.add_argument("--progress-seconds", type=int, default=1800)
     parser.add_argument("--queue-seconds", type=int, default=3600)
     parser.add_argument("--disk-free-bytes", type=int, default=5 * 1024**3)
     parser.add_argument("--now", help="Explicit UTC time for deterministic simulation")
     args = parser.parse_args()
     try:
-        if min(args.stale_seconds, args.acknowledgement_seconds, args.progress_seconds, args.queue_seconds) <= 0 or args.disk_free_bytes < 0:
+        if min(args.stale_seconds, args.upload_seconds, args.progress_seconds, args.queue_seconds) <= 0 or args.disk_free_bytes < 0:
             raise ValueError("Watchdog thresholds must be positive")
         state_path = Path(args.state)
         now = timestamp(args.now) if args.now else datetime.now(timezone.utc)
@@ -324,7 +320,7 @@ def main() -> int:
                 fcntl.flock(handle, fcntl.LOCK_EX)
             previous = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else None
             state = evaluate(document, previous, now=now, stale_seconds=args.stale_seconds,
-                             acknowledgement_seconds=args.acknowledgement_seconds, progress_seconds=args.progress_seconds,
+                             upload_seconds=args.upload_seconds, progress_seconds=args.progress_seconds,
                              queue_seconds=args.queue_seconds, disk_free_bytes=args.disk_free_bytes)
             if not args.dry_run:
                 # Validate SMTP even for a healthy run: an inert monitor is a deployment error.

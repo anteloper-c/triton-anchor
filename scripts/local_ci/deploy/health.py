@@ -44,7 +44,7 @@ def collect(config: dict, *, now: float | None = None, manager=None) -> dict:
         except OSError:
             pass
     stale = not heartbeat or now - heartbeat > int(config.get("heartbeat_stale_seconds", 180))
-    tasks, receipts = [], []
+    tasks, uploads = [], []
     database = state / "journal.sqlite3"
     if database.exists():
         with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=5) as connection:
@@ -52,18 +52,19 @@ def collect(config: dict, *, now: float | None = None, manager=None) -> dict:
             for row in connection.execute("SELECT task_id,run_id,phase,updated FROM tasks WHERE phase NOT IN ('complete','cancelled') ORDER BY updated"):
                 task = {"task_id": row["task_id"], "run_id": row["run_id"], "stage": row["phase"], "updated_at": iso(row["updated"])}
                 tasks.append(task)
-            for row in connection.execute("SELECT outbox.task_id,published,receipt,attempts,tasks.updated FROM outbox JOIN tasks USING(task_id) WHERE receipt IS NULL"):
-                receipts.append({"worker_id": config.get("worker_id", "local-ci"), "task_id": row["task_id"], "state": "published" if row["published"] else "pending",
-                                 "published_at": iso(row["published"]) if row["published"] else iso(row["updated"]), "attempts": row["attempts"]})
+            for row in connection.execute("""SELECT outbox.task_id,attempts,tasks.updated,
+                    (SELECT MIN(at) FROM events WHERE events.task_id=outbox.task_id AND kind='phase:publishing'
+                     AND at >= COALESCE((SELECT MAX(at) FROM events AS resumed
+                                         WHERE resumed.task_id=outbox.task_id AND resumed.kind='explicit_resume'), 0)) AS queued
+                    FROM outbox JOIN tasks USING(task_id) WHERE published IS NULL AND phase='publishing'"""):
+                uploads.append({"worker_id": config.get("worker_id", "local-ci"), "task_id": row["task_id"], "state": "pending_upload",
+                                "queued_at": iso(row["queued"] or row["updated"]), "attempts": row["attempts"]})
     active = next((entry for entry in tasks if entry["stage"] == "running"), tasks[0] if tasks else None)
-    if active:
+    if active and active["stage"] == "running":
         for key in ("last_progress_at", "codex_alive"):
             if key in worker:
                 value = worker[key]
                 active[key] = iso(value) if key.endswith("_at") and isinstance(value, (int, float)) else value
-        receipt = next((entry for entry in receipts if entry["task_id"] == active["task_id"]), None)
-        if receipt:
-            active["published_at"] = receipt["published_at"]
     roots = {str(state)}
     for profile in config.get("profiles", {}).values():
         roots.update(str(profile[key]) for key in ("workspace_root", "existing_workspace_host") if profile.get(key))
@@ -97,7 +98,7 @@ def collect(config: dict, *, now: float | None = None, manager=None) -> dict:
                 "state": "offline" if not alive or stale else "busy" if active else "healthy",
                 "poller": {"alive": alive, "heartbeat_at": iso(heartbeat) if heartbeat else None, "heartbeat_stale": stale,
                            "last_poll_status": "error" if worker.get("control_channel") == "unreachable" else "success"},
-                "active_task": active, "tasks": tasks, "receipts": receipts, "environments": environments, "storage": storage, "services": services}
+                "active_task": active, "tasks": tasks, "uploads": uploads, "environments": environments, "storage": storage, "services": services}
     return snapshot
 
 

@@ -15,7 +15,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from agent_ci.codex import CodexDriver, DISABLED_FEATURES
 from agent_ci.protocol import ContractError
-from agent_ci.publication import PublicationSupervisor
 from agent_ci.skill import load_skill, SkillBundle
 
 
@@ -187,12 +186,22 @@ hooks = true
             self.run_driver()
         self.assertEqual(1, len(self.processes))
 
-    def test_publication_recovery_resumes_without_executor(self):
-        self.run_driver()
-        self.supervisor = PublicationSupervisor(self.supervisor.task, mock.Mock(), self.run_dir, 'relay unavailable')
-        result = self.run_driver(recovery='Publication only; builds remain sealed')
+    def test_sealed_task_never_launches_or_resumes_codex(self):
+        self.supervisor.closed = True
+        result = self.run_driver()
         self.assertTrue(result['finished'])
-        self.assertIn('resume', self.processes[-1].command)
+        self.assertEqual('sealed', result['reason'])
+        self.assertFalse(self.processes)
+
+    def test_sealing_ends_current_codex_process(self):
+        def seal(seconds):
+            self.supervisor.closed = True
+            return False
+        self.supervisor.cancelled = mock.Mock(is_set=mock.Mock(return_value=False), wait=mock.Mock(side_effect=seal))
+        with mock.patch.object(FakeProcess, 'poll', lambda process: process.returncode), mock.patch('agent_ci.codex.os.killpg'):
+            result = self.run_driver()
+        self.assertTrue(result['finished'])
+        self.assertEqual('sealed', result['reason'])
         self.assertEqual(SESSION_ID, result['session_id'])
 
     def test_cancel_stops_process_and_retains_session(self):

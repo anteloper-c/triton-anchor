@@ -33,11 +33,14 @@ def render_units(config: dict, config_path: Path, credentials_path: Path) -> dic
     common = f"EnvironmentFile={quoted(str(credentials_path))}\nWorkingDirectory={quoted(config['control_root'])}\nUMask=0077\n"
     worker = f"{python} {quoted(str(root / 'agent_ci/worker.py'))} --config {quoted(str(config_path))}"
     health = f"{python} {quoted(str(root / 'deploy/health.py'))} --config {quoted(str(config_path))} --publish"
+    retention = f"{python} {quoted(str(root / 'maintenance/retain_results.py'))} --config {quoted(str(config_path))} --apply"
     units = {
         "triton-anchor-local-ci.service": "[Unit]\nDescription=Triton Anchor AI-driven Local CI worker\nAfter=network-online.target docker.service\nWants=network-online.target\n\n[Service]\nType=simple\n" + common + f"ExecStart={worker}\nRestart=always\nRestartSec=15\nTimeoutStopSec=60\nKillMode=mixed\n\n[Install]\nWantedBy=multi-user.target\n",
         "triton-anchor-local-ci-health.service": "[Unit]\nDescription=Publish independent Local CI worker health\nAfter=network-online.target\n\n[Service]\nType=oneshot\n" + common + f"ExecStart={health}\nTimeoutStartSec=10min\n",
         "triton-anchor-local-ci-health.timer": "[Unit]\nDescription=Refresh Local CI health independently of poller\n\n[Timer]\nOnBootSec=1min\nOnUnitActiveSec=5min\nRandomizedDelaySec=15\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n",
     }
+    units["triton-anchor-local-ci-retention.service"] = "[Unit]\nDescription=Expire Local CI result evidence by upload age\nAfter=network-online.target\n\n[Service]\nType=oneshot\n" + common + f"ExecStart={retention}\nTimeoutStartSec=1h\n"
+    units["triton-anchor-local-ci-retention.timer"] = "[Unit]\nDescription=Daily Local CI result retention\n\n[Timer]\nOnBootSec=30min\nOnUnitActiveSec=1d\nPersistent=true\nRandomizedDelaySec=5min\n\n[Install]\nWantedBy=timers.target\n"
     for branch, profile in config["profiles"].items():
         name = profile.get("name", branch.replace("/", "-"))
         if not __import__("re").fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,100}", name):

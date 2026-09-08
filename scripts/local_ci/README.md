@@ -28,11 +28,13 @@ Triton 3.0：环境、前端 build、wheel install/import、frontend smoke、bac
 
 宿主机 state_dir 下保存 SQLite journal、任务 metadata/policy、工具记录、Codex session 标识和发布 outbox。模型会话/凭据位于单独的 codex_sessions_root，不发布到结果仓库。
 
-任务状态：queued → preparing → running → publishing → awaiting_receipt → complete。基础设施预算耗尽保存为 incomplete；取消和 supersede 保存 cancelled。工具证据记录 SHA、环境指纹、依赖执行 ID、命令、退出码和 artifacts。重复构建使旧下游证据失效；更换环境也不能重用旧通过记录。
+任务状态：queued → preparing → running → publishing → complete。`publishing` 仅表示封存结果待上传 Gitee，上传成功即 `complete`。完成表示本地交付完成，`pass/fail/infra_error` 仍分别表示检查通过、失败和未完成。取消和 supersede 保存 cancelled。工具证据记录 SHA、环境指纹、依赖执行 ID、命令、退出码和 artifacts。重复构建使旧下游证据失效；更换环境也不能重用旧通过记录。
 
-发布目录为 `runs/v4/<task_id>/<run_id>/`。result.json 封存后不可修改；发布失败只重发原有结果，Codex 可恢复到仅发布诊断模式。只有 GitHub status、PR comment、Dashboard 成功，并通过 Gitee 得到一致回执，任务才完成。旧 schema 只用于历史读取，不能满足 v4 门禁。
+发布目录为 `runs/v4/<task_id>/<run_id>/`。result.json 封存后不可修改，Codex 到此结束；上传失败只重发原有结果，Harness 保留 outbox 并在后续轮询重试，不再调用模型。GitHub 独立读取、校验并发布结果，没有 Gitee 回执和本地等待。保留原有 status → comment → Dashboard 顺序，GitHub 发布失败由 Actions 显示并由后续定时任务重试；因此 PR status 成功不单独证明 Dashboard 已更新。旧 schema 只用于历史读取，不能满足 v4 门禁。
 
-显式续跑：`python3 scripts/local_ci/agent_ci/worker.py --config CONFIG --resume TASK_ID`。测试未完成可复用仍有效的通过项；发布/回执超时继续原 outbox，不重新构建。服务重启自动接续未封存任务。
+显式续跑：`python3 scripts/local_ci/agent_ci/worker.py --config CONFIG --resume TASK_ID`。已上传的 infra_error 可开启新 run，复用仍有效的通过项；仍待上传则继续原 outbox，不重新构建。服务重启自动接续未封存任务，已上传的旧回执等待状态迁移为本地 complete。
+
+Gitee v4 结果默认保留 30 天，按结果文件的 Git 上传提交时间计算；每日 retention timer 删除过期 run 目录并保留摘要和过期记录。保留周期独立于 GitHub 发布，过期任务显示 expired，不回退发布更老的 run。此清理不改写 Git 历史，也不删除服务器任务证据；长时间接收中断需在到期前修复或调整 `results_retention_days`。
 
 ## 常驻环境与权限
 

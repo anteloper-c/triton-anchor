@@ -21,8 +21,7 @@ DESCRIPTIONS = {
     "read_artifact": "Read bounded log or evidence from one execution belonging to this task.",
     "run_custom": "Save and execute a task-local Python or Bash reproduction. Do not modify frozen source or shared environments. Each execution is retained.",
     "submit_review": "Record PR information, architecture or specialized review with verifiable references. High risk blocking requires two candidate failures and a passing base using the same reproduction.",
-    "finish": "Seal real evidence and queue publication. Missing mandatory checks/reviews prevent success. After this call only context/log reads are useful.",
-    "retry_publication": "During publication recovery only, request a retry of the saved result or receipt without restarting any builds.",
+    "finish": "Validate and seal real evidence, then end Codex work. The durable outbox uploads independently; missing mandatory checks/reviews prevent a passing result.",
 }
 
 
@@ -48,7 +47,6 @@ SCHEMAS = {
     "run_custom": schema({"name": {"type": "string", "pattern": r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}$(?!\s)"}, "content": {"type": "string", "minLength": 1, "maxLength": 128 * 1024}, "language": {"type": "string", "enum": ["python", "bash"]}, "reason": REASON, "variant": VARIANT, "source_only": {"type": "boolean", "description": "Python-only -I -S reproduction using standard library and explicit source reads; no installed packages."}}, ["name", "content", "language", "reason"]),
     "submit_review": schema({"kind": {"type": "string", "enum": ["pr_info", "architecture", "specialized"]}, "status": {"type": "string", "enum": ["pass", "fail", "incomplete"]}, "summary": REASON, "evidence": {"type": "array", "items": {"type": "object"}}, "findings": {"type": "array", "items": {"type": "object"}}}, ["kind", "status", "summary", "evidence"]),
     "finish": schema({"summary": S}, []),
-    "retry_publication": schema({"reason": REASON}, ["reason"]),
 }
 
 

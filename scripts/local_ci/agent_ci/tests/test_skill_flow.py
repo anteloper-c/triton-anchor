@@ -1,4 +1,4 @@
-"""Local Skill flow through real MCP, tools, Git publication and acknowledgement.
+"""Local Skill flow through MCP/tools and independent one-way GitHub publication.
 
 The single scripted Codex peer replaces the model. A fake Docker executable
 provides fixture compiler/package probes; run_tool and contract_checks execute
@@ -17,13 +17,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 LOCAL_ROOT = HERE.parents[1]
 sys.path.insert(0, str(LOCAL_ROOT))
 sys.path.insert(0, str(HERE))
 from agent_ci.executor import DockerExecutor
-from agent_ci.protocol import ContractError, canonical, current_key, metadata_digest, task_id
+from agent_ci.protocol import canonical, current_key, metadata_digest, task_id
 from agent_ci.skill import load_skill
 from agent_ci.worker import Worker
 from test_agent_ci import FakeManager, Fixture, git
@@ -143,6 +144,7 @@ class MCPPeer:
 class GitHubPeer:
     def __init__(self, task):
         self.task, self.repository, self.calls = task, task["repository"], []
+        self.latest_status, self.latest_comment = None, None
 
     def request(self, path):
         task = self.task
@@ -157,9 +159,17 @@ class GitHubPeer:
 
     def status(self, task, state, description, url=""):
         self.calls.append(("status", state))
+        self.latest_status = (task["tested_sha"], state, description)
+
+    def status_matches(self, task, state, description):
+        return self.latest_status == (task["tested_sha"], state, description)
 
     def comment(self, task, body):
+        if self.latest_comment == body:
+            return False
         self.calls.append(("comment", body))
+        self.latest_comment = body
+        return True
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux subprocess and Unix socket integration")
@@ -240,11 +250,18 @@ class SkillFlowTests(unittest.TestCase):
     def result(self, worker):
         task = self.fixture.task
         row = worker.journal.task(task["task_id"])
-        self.assertEqual("awaiting_receipt", row["phase"])
-        result_path = Path(worker.journal.outbox(task["task_id"])["payload_path"])
+        self.assertEqual("complete", row["phase"])
+        self.assertEqual("gitee_upload", json.loads(row["detail"])["completion_boundary"])
+        box = worker.journal.outbox(task["task_id"])
+        self.assertIsNotNone(box["published"])
+        self.assertNotIn("receipt", box)
+        result_path = Path(box["payload_path"])
+        self.fixture.relay.refresh()
+        remote = self.fixture.relay.read("local-ci-results", f"runs/v4/{task['task_id']}/{row['run_id']}/result.json")
+        self.assertEqual(result_path.read_bytes(), remote)
         return json.loads(result_path.read_text()), result_path
 
-    def acknowledge(self, worker, expected_status, *, stale_receipt=False):
+    def github(self):
         spec = importlib.util.spec_from_file_location("skill_flow_gateway", LOCAL_ROOT.parent / "ci/gateway_v4.py")
         gateway = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = gateway
@@ -255,30 +272,39 @@ class SkillFlowTests(unittest.TestCase):
         results = gateway.GitStore(str(self.fixture.bare), "local-ci-results")
         self.addCleanup(control.close)
         self.addCleanup(results.close)
-        receipts = gateway.collect_results(gh, control, results, self.root / "dashboard")
-        self.assertEqual(1, len(receipts))
+        return gateway, gh, control, results
+
+    def no_receipts(self):
+        paths = git(self.fixture.bare, "ls-tree", "-r", "--name-only", "refs/heads/local-ci-control").splitlines()
+        self.assertFalse(any(path.startswith("receipts/") for path in paths))
+
+    def publish_on_github(self, worker, expected_status):
+        task = self.fixture.task
+        # The task is already complete while GitHub and Pages have done nothing.
+        self.assertEqual("complete", worker.journal.task(task["task_id"])["phase"])
+        attempts = list(self.peer.attempts)
+        control_head = git(self.fixture.bare, "rev-parse", "refs/heads/local-ci-control")
+        gateway, gh, control, results = self.github()
+        self.assertEqual([], gh.calls)
+        self.assertFalse((self.root / "dashboard").exists())
+        published = gateway.collect_results(gh, control, results, self.root / "dashboard")
+        self.assertEqual(1, len(published))
+        self.assertEqual(task["tested_sha"], published[0]["tested_sha"])
         self.assertEqual(("status", expected_status), gh.calls[0])
         self.assertEqual("comment", gh.calls[1][0])
-        worker.deliver(worker.journal.task(task["task_id"]))
-        self.assertEqual("awaiting_receipt", worker.journal.task(task["task_id"])["phase"])
-        if stale_receipt:
-            invalid = {**receipts[0], "result_digest": "0" * 64}
-            with self.assertRaisesRegex(ValueError, "changed before acknowledgement"):
-                gateway.acknowledge(gh, control, results, [invalid])
-            self.assertEqual("awaiting_receipt", worker.journal.task(task["task_id"])["phase"])
-        # The Pages boundary is recorded as successful before this real ACK.
-        gateway.acknowledge(gh, control, results, receipts)
-        if stale_receipt:
-            receipt_path = f"receipts/{task['task_id']}/{receipts[0]['run_id']}.json"
-            self.fixture.relay.write("local-ci-control", {receipt_path: canonical(invalid)})
-            with self.assertRaisesRegex(ContractError, "stale, partial or mismatched"):
-                worker.deliver(worker.journal.task(task["task_id"]))
-            self.assertEqual("awaiting_receipt", worker.journal.task(task["task_id"])["phase"])
-            self.fixture.relay.write("local-ci-control", {receipt_path: canonical(receipts[0])})
-        worker.deliver(worker.journal.task(task["task_id"]))
+        # Preserve the existing GitHub status -> comment -> Pages order.
+        self.assertTrue((self.root / "dashboard").is_dir())
+        (self.root / "pages-simulation.json").write_text(json.dumps({"published": True}))
+        before = list(gh.calls)
+        self.assertEqual([], gateway.collect_results(gh, control, results, self.root / "dashboard"))
+        self.assertEqual(before, gh.calls)
+        self.no_receipts()
+        self.assertEqual(control_head, git(self.fixture.bare, "rev-parse", "refs/heads/local-ci-control"))
         self.assertEqual("complete", worker.journal.task(task["task_id"])["phase"])
+        worker.scan()
+        self.assertEqual(attempts, self.peer.attempts)
 
-    def test_skill_resumes_real_mcp_checks_and_waits_for_matching_receipt(self):
+    def test_skill_resumes_checks_and_completes_on_upload_before_github(self):
         worker = self.worker(interrupt_once=True)
         worker.scan()
         result, path = self.result(worker)
@@ -298,7 +324,7 @@ class SkillFlowTests(unittest.TestCase):
         self.assertEqual("docs/flow.md", evidence["verified_files"][0]["path"])
         self.assertIn("no_conflict_markers", evidence["verified_files"][0]["checks"])
         self.assertTrue(any("contract_checks.py" in item["content"] for item in self.peer.artifacts))
-        self.acknowledge(worker, "success", stale_receipt=True)
+        self.publish_on_github(worker, "success")
 
     def test_real_contract_failure_overrides_model_summary_and_is_delivered(self):
         worker = self.worker(conflict=True)
@@ -314,7 +340,7 @@ class SkillFlowTests(unittest.TestCase):
         self.assertIn("'diff', '--check'", logs)
         self.assertIn("non-zero exit status 2", logs)
         self.assertIn(self.fixture.task["tested_sha"], logs)
-        self.acknowledge(worker, "failure")
+        self.publish_on_github(worker, "failure")
 
     def test_pr_information_failure_blocks_passing_real_tools(self):
         worker = self.worker(reject_pr=True)
@@ -324,7 +350,74 @@ class SkillFlowTests(unittest.TestCase):
         required = {item["tool_id"]: item["status"] for item in result["checks"] if item.get("required")}
         self.assertEqual({"environment": "pass", "contract_tests": "pass"}, required)
         self.assertTrue(any(item["kind"] == "pr_information" for item in result["blockers"]))
-        self.acknowledge(worker, "failure")
+        self.publish_on_github(worker, "failure")
+
+    def test_upload_failure_retries_sealed_evidence_without_codex_resume(self):
+        worker = self.worker()
+        with mock.patch.object(self.fixture.relay, "publish_result", side_effect=OSError("fixture Gitee upload outage")):
+            worker.scan()
+        task_id_value = self.fixture.task["task_id"]
+        self.assertEqual("publishing", worker.journal.task(task_id_value)["phase"])
+        box = worker.journal.outbox(task_id_value)
+        original = Path(box["payload_path"]).read_bytes()
+        executions = worker.journal.executions(task_id_value)
+        self.assertEqual(1, len(self.peer.attempts))
+        worker.scan()
+        _, path = self.result(worker)
+        self.assertEqual(original, path.read_bytes())
+        self.assertEqual(box["digest"], worker.journal.outbox(task_id_value)["digest"])
+        self.assertEqual(executions, worker.journal.executions(task_id_value))
+        self.assertEqual(1, len(self.peer.attempts))
+        self.no_receipts()
+        self.publish_on_github(worker, "success")
+
+    def test_lost_upload_response_retries_immutable_same_run_without_codex(self):
+        worker = self.worker()
+        publish = self.fixture.relay.publish_result
+        def lost_response(*args):
+            publish(*args)
+            raise OSError("fixture connection lost after immutable Git push")
+        with mock.patch.object(self.fixture.relay, "publish_result", side_effect=lost_response):
+            worker.scan()
+        task_id_value = self.fixture.task["task_id"]
+        row = worker.journal.task(task_id_value)
+        self.assertEqual("publishing", row["phase"])
+        before = git(self.fixture.bare, "rev-parse", "refs/heads/local-ci-results")
+        worker.scan()
+        self.result(worker)
+        self.assertEqual(before, git(self.fixture.bare, "rev-parse", "refs/heads/local-ci-results"))
+        self.assertEqual(row["run_id"], worker.journal.task(task_id_value)["run_id"])
+        self.assertEqual(1, len(self.peer.attempts))
+        self.no_receipts()
+
+    def test_github_comment_retries_independently_of_completed_worker(self):
+        worker = self.worker()
+        worker.scan()
+        self.result(worker)
+        gateway, gh, control, results = self.github()
+        with mock.patch.object(gh, "comment", side_effect=OSError("fixture GitHub comment outage")):
+            gateway.collect_results(gh, control, results, self.root / "dashboard")
+        published = gateway.collect_results(gh, control, results, self.root / "dashboard")
+        self.assertEqual(1, len(published))
+        self.assertEqual("comment", gh.calls[-1][0])
+        self.assertEqual("complete", worker.journal.task(self.fixture.task["task_id"])["phase"])
+        self.assertEqual(1, len(self.peer.attempts))
+        self.no_receipts()
+
+    def test_pages_failure_does_not_reopen_worker_or_delay_github_status(self):
+        worker = self.worker()
+        worker.scan()
+        self.result(worker)
+        gateway, gh, control, results = self.github()
+        self.assertEqual(1, len(gateway.collect_results(gh, control, results, self.root / "dashboard")))
+        self.assertEqual(("status", "success"), gh.calls[0])
+        self.assertEqual("comment", gh.calls[1][0])
+        (self.root / "pages-simulation.json").write_text(json.dumps({"published": False, "error": "fixture Pages outage"}))
+        worker.scan()
+        self.assertEqual("complete", worker.journal.task(self.fixture.task["task_id"])["phase"])
+        self.assertEqual(1, len(self.peer.attempts))
+        self.assertEqual("success", gh.latest_status[1])
+        self.no_receipts()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Poll Gitee, run Codex, and recover publication independently of builds."""
+"""Run Codex through evidence sealing, then deliver its immutable outbox to Gitee."""
 from __future__ import annotations
 
 import argparse
@@ -20,8 +20,7 @@ from agent_ci.codex import CodexDriver
 from agent_ci.control import validate_control_revision
 from agent_ci.executor import DockerExecutor
 from agent_ci.policy import changed_files, minimum_checks
-from agent_ci.publication import PublicationSupervisor
-from agent_ci.protocol import ContractError, RECEIPT_SCHEMA, RESULT_SCHEMA, atomic_json, validate_task
+from agent_ci.protocol import ContractError, RESULT_SCHEMA, atomic_json, validate_task
 from agent_ci.relay import GitRelay
 from agent_ci.state import Journal
 from agent_ci.supervisor import Supervisor, ToolService
@@ -65,7 +64,7 @@ class Worker:
         if not valid:
             return
         row = self.journal.register(task)
-        if row["phase"] in {"complete", "cancelled", "incomplete", "publishing", "awaiting_receipt"}:
+        if row["phase"] in {"complete", "cancelled", "incomplete", "publishing"}:
             return
         run_dir = self.state_dir / "tasks" / task["task_id"] / row["run_id"]
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -134,7 +133,8 @@ class Worker:
             result = {"schema": RESULT_SCHEMA, "task": task, "run_id": row["run_id"], "status": "infra_error",
                       "summary": "Environment or worker preparation failed", "required_checks": [], "checks": [],
                       "reviews": {}, "findings": [], "blockers": [], "performance": [],
-                      "unfinished": ["environment preparation", str(exc)], "environment": {}}
+                      "unfinished": ["environment preparation", str(exc)], "environment": {},
+                      "publication": {"status": "pending_upload", "completion_requires": ["gitee_upload"]}}
             atomic_json(published / "result.json", result)
             self.journal.queue_result(task["task_id"], published / "result.json", hashlib.sha256((published / "result.json").read_bytes()).hexdigest())
         finally:
@@ -150,71 +150,57 @@ class Worker:
 
     def deliver(self, row):
         task = json.loads(row["manifest"])
+        if self.journal.task(task["task_id"])["run_id"] != row["run_id"]:
+            return  # A stale caller must not upload the explicitly resumed run.
         box = self.journal.outbox(task["task_id"])
         if not box:
             return
+        if box["published"] is not None:
+            self.journal.published(task["task_id"])
+            return
         result_path = Path(box["payload_path"])
-        if hashlib.sha256(result_path.read_bytes()).hexdigest() != box["digest"]:
+        payload = result_path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != box["digest"]:
             raise ContractError("Sealed result digest changed")
+        result = json.loads(payload)
+        if result.get("task") != task or result.get("run_id") != row["run_id"] or result.get("schema") != RESULT_SCHEMA:
+            raise ContractError("Sealed result identity differs from the pending task/run")
         self.relay.refresh()
         valid, reason = self.relay.validity(task)
         if not valid:
             self.journal.phase(task["task_id"], "cancelled", {"reason": reason})
             return
-        if not box["published"]:
-            self.relay.publish_result(task, row["run_id"], result_path.parent)
-            self.journal.published(task["task_id"])
-            self.relay.refresh()
-        receipt = self.relay.receipt(task, row["run_id"])
-        if receipt:
-            expected = {"schema": RECEIPT_SCHEMA, "task_id": task["task_id"], "run_id": row["run_id"],
-                        "tested_sha": task["tested_sha"], "result_digest": box["digest"], "status": "complete",
-                        "github_status": True, "comment": True, "dashboard": True}
-            if any(receipt.get(key) != value for key, value in expected.items()):
-                raise ContractError("Receipt is stale, partial or mismatched")
-            self.journal.received(task["task_id"], receipt)
-            if json.loads(result_path.read_text())["status"] == "infra_error":
-                self.journal.phase(task["task_id"], "incomplete", {"receipt": receipt, "reason": "Explicit resume can reuse successful checks"})
-        elif time.time() - (self.journal.outbox(task["task_id"])["published"] or time.time()) > self.config.get("receipt_timeout_seconds", 86400):
-            self.recover_publication(row, "receipt_timeout")
-            self.journal.phase(task["task_id"], "incomplete", {"reason": "receipt_timeout"})
+        uploaded_digest = self.relay.publish_result(task, row["run_id"], result_path.parent)
+        if uploaded_digest != box["digest"]:
+            raise ContractError("Uploaded result digest differs from sealed outbox")
+        self.journal.published(task["task_id"])
 
-    def recover_publication(self, row, reason):
-        task = json.loads(row["manifest"])
-        self.journal.event(task["task_id"], "delivery_error", {"error": reason})
-        count = self.journal.publication_failure(task["task_id"])
-        if count <= self.config.get("publication_recovery_attempts", 3):
-            run_dir = Path(self.journal.outbox(task["task_id"])["payload_path"]).parent.parent
-            observer = PublicationSupervisor(task, self.journal, run_dir, reason)
-            socket_path = Path(self.config.get("rpc_socket_dir", "/tmp/local-ci-rpc")) / (task["task_id"][:16] + "-publish.sock")
-            try:
-                with ToolService(observer, socket_path) as service:
-                    outcome = self.driver.run(observer, service, recovery="Publishing failed. Inspect the sealed result and request retry_publication. Do not run builds or alter evidence.")
-                    self.journal.event(task["task_id"], "publication_codex_recovery", outcome)
-            except Exception as exc:
-                self.journal.event(task["task_id"], "publication_codex_unavailable", {"error": str(exc)})
-        if count >= self.config.get("publication_recovery_attempts", 3) and reason != "receipt_timeout":
-            self.journal.phase(task["task_id"], "incomplete", {"reason": "publication_failed"})
+    def retry_delivery(self, row):
+        """One durable upload attempt. Never invokes Codex or task tools."""
+        try:
+            self.deliver(row)
+        except Exception as exc:
+            count = self.journal.publication_failure(row["task_id"])
+            detail = {"upload_error": str(exc), "attempts": count, "reason": "retry_saved_upload"}
+            self.journal.event(row["task_id"], "delivery_error", detail)
+            self.journal.phase(row["task_id"], "publishing", detail)
 
     def scan(self):
         self.relay.refresh()
+        attempted = set()
         for row in self.journal.tasks():
-            if row["phase"] in {"publishing", "awaiting_receipt"}:
-                try:
-                    self.deliver(row)
-                except Exception as exc:
-                    self.recover_publication(row, str(exc))
+            if row["phase"] == "publishing":
+                self.retry_delivery(row)
+                attempted.add(row["task_id"])
         for task in self.relay.tasks():
             if self.stop_event.is_set():
                 break
             try:
                 self.process(task)
                 row = self.journal.task(task["task_id"])
-                if row["phase"] in {"publishing", "awaiting_receipt"}:
-                    try:
-                        self.deliver(row)
-                    except Exception as exc:
-                        self.recover_publication(row, str(exc))
+                if row["phase"] == "publishing" and row["task_id"] not in attempted:
+                    self.retry_delivery(row)
+                    attempted.add(row["task_id"])
             except Exception as exc:
                 self.journal.event(task.get("task_id", "invalid"), "task_error", {"error": str(exc)})
         self.heartbeat()

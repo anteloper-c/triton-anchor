@@ -24,7 +24,6 @@ from urllib.request import Request, urlopen
 
 TASK_SCHEMA = "triton-anchor-local-ci-task/v4"
 RESULT_SCHEMA = "triton-anchor-local-ci/v4"
-RECEIPT_SCHEMA = "triton-anchor-local-ci-receipt/v4"
 CONTROL_BRANCH = "local-ci-control"
 RESULTS_BRANCH = "local-ci-results"
 REPOSITORY = "likehupochuan/triton-anchor"
@@ -203,14 +202,29 @@ class GitHub:
         return base64.b64decode(data["content"], validate=False)
 
     def status(self, task: dict, state: str, description: str, url: str = "") -> None:
-        for sha, context in {(task["tested_sha"], "local-ci/sophgo-cmodel"),
-                             (task["head_sha"], "local-ci/summary")}:
+        # The PR-head summary is the last write, after the tested-merge status.
+        for sha, context in ((task["tested_sha"], "local-ci/sophgo-cmodel"),
+                             (task["head_sha"], "local-ci/summary")):
             self.request(f"statuses/{sha}", "POST", {"state": state, "context": context,
                          "description": description[:140], "target_url": url})
 
-    def comment(self, task: dict, body: str) -> None:
+    def status_matches(self, task: dict, state: str, description: str) -> bool:
+        """Read the latest status for both contexts; no relay delivery records."""
+        for sha, context in ((task["tested_sha"], "local-ci/sophgo-cmodel"),
+                             (task["head_sha"], "local-ci/summary")):
+            latest = None
+            for page in range(1, 21):
+                rows = self.request(f"commits/{sha}/statuses?per_page=100&page={page}")
+                latest = next((row for row in rows if row.get("context") == context), None)
+                if latest or len(rows) < 100:
+                    break
+            if not latest or latest.get("state") != state or latest.get("description") != description[:140]:
+                return False
+        return True
+
+    def comment(self, task: dict, body: str) -> bool:
         if not task["pr_number"]:
-            return
+            return False
         path = f"issues/{task['pr_number']}/comments"
         comments = []
         for page in range(1, 21):
@@ -224,8 +238,11 @@ class GitHub:
         if existing:
             if existing.get("body") != content["body"]:
                 self.request(f"issues/comments/{existing['id']}", "PATCH", content)
+                return True
         else:
             self.request(path, "POST", content)
+            return True
+        return False
 
 
 def prepare_task(gh: GitHub, worker_sha: str, pr_number: int = 0, branch: str = "",
@@ -502,102 +519,130 @@ def result_comment(result: dict) -> str:
     return "\n".join(lines)
 
 
+GITHUB_STATES = {"pass": "success", "fail": "failure", "infra_error": "error", "cancelled": "error"}
+
+
+def publication_description(status: str, result_digest: str) -> str:
+    # The digest binds task, run and all evidence without another delivery record.
+    return f"Local CI: {status} (result {result_digest})"
+
+
+def current_task(gh: GitHub, control: GitStore, task: dict) -> bool:
+    pointer = control.get(f"current/{current_key(task)}.json")
+    return bool(pointer and pointer.get("task_id") == task["task_id"]
+                and not control.get(f"cancel/{task['task_id']}.json") and is_current(gh, task))
+
+
+def retention_marker(path: Path, task: dict) -> dict:
+    marker = json.loads(path.read_text())
+    if (not RUN_ID.fullmatch(path.stem) or marker.get("task_id") != task["task_id"]
+            or marker.get("run_id") != path.stem or marker.get("reason") != "retention_expired"
+            or not DIGEST.fullmatch(str(marker.get("result_digest", "")))):
+        raise ValueError("Invalid result retention marker")
+    return marker
+
+
+def latest_result(task: dict, results: GitStore) -> tuple[Path | None, dict | None]:
+    """Expired latest runs never fall back to an older surviving result."""
+    live = {path.parent.name: path for path in (results.root / "runs/v4" / task["task_id"]).glob("*/result.json")}
+    expired = {path.stem: path for path in (results.root / "retention/v4" / task["task_id"]).glob("*.json")}
+    names = sorted(set(live) | set(expired), reverse=True)
+    if not names:
+        return None, None
+    run_id = names[0]
+    if run_id in expired:
+        return None, retention_marker(expired[run_id], task)
+    return live[run_id], None
+
+
+def read_result(path: Path, task: dict, results: GitStore) -> tuple[dict, str]:
+    raw = path.read_bytes()
+    result = validate_result(json.loads(raw), task)
+    if path.parent.name != result["run_id"]:
+        raise ValueError("Result path/run id mismatch")
+    if result["status"] == "pass":
+        minimum = trusted_minimum(task, results)
+        if not set(minimum["required_checks"]) <= set(result["required_checks"]):
+            raise ValueError("Result omitted trusted minimum checks")
+    return result, hashlib.sha256(raw).hexdigest()
+
+
+def publication_error(gh: GitHub, control: GitStore, task: dict) -> None:
+    # Failed transports may also prevent this best-effort error status.
+    try:
+        control.refresh()
+        if current_task(gh, control, task):
+            gh.status(task, "error", "Local CI result validation/publication failed; receiver will retry")
+    except (ValueError, OSError, RuntimeError):
+        pass
+
+
 def collect_results(gh: GitHub, control: GitStore, results: GitStore, dashboard: Path) -> list[dict]:
-    """Writeback status/comment and stage dashboard; ACK only after Pages succeeds."""
-    rows, pending = [], []
+    """Write current status/comment and stage the dashboard, without a return channel."""
+    rows, published = [], []
     for current in sorted((control.root / "current").glob("*.json")):
         pointer = json.loads(current.read_text())
         task = control.get(f"tasks/{pointer['task_id']}.json")
         validate_task(task)
-        active = is_current(gh, task) and not control.get(f"cancel/{task['task_id']}.json")
+        active = current_task(gh, control, task)
         row = {"task": task, "status": "pending" if active else "cancelled", "result": None}
-        candidates = sorted((results.root / "runs/v4" / task["task_id"]).glob("*/result.json"), reverse=True)
-        if candidates:
-            try:
-                path = candidates[0]
-                raw = path.read_bytes()
-                result = validate_result(json.loads(raw), task)
-                if result["status"] == "pass":
-                    minimum = trusted_minimum(task, results)
-                    if not set(minimum["required_checks"]) <= set(result["required_checks"]):
-                        raise ValueError("Result omitted trusted minimum checks")
-                if path.parent.name != result["run_id"]:
-                    raise ValueError("Result path/run id mismatch")
+        try:
+            path, expired = latest_result(task, results)
+            if expired:
+                row.update(status="expired" if active else "cancelled", retention=expired)
+            elif path:
+                result, result_digest = read_result(path, task, results)
                 row.update(status=result["status"] if active else "cancelled", result=result)
-                receipt_path = f"receipts/{task['task_id']}/{result['run_id']}.json"
-                if active and not control.get(receipt_path) and is_current(gh, task):
-                    state = {"pass": "success", "fail": "failure", "infra_error": "error", "cancelled": "error"}[result["status"]]
-                    gh.status(task, state, f"Local CI: {result['status']} (merge {task['tested_sha'][:12]})")
-                    if not is_current(gh, task):
+                if active and current_task(gh, control, task):
+                    state = GITHUB_STATES[result["status"]]
+                    description = publication_description(result["status"], result_digest)
+                    unchanged = gh.status_matches(task, state, description)
+                    if not unchanged:
+                        gh.status(task, state, description)
+                    control.refresh()
+                    if not current_task(gh, control, task):
                         row["status"] = "cancelled"
                         rows.append(row)
                         continue
-                    gh.comment(task, result_comment(result))
-                    pending.append({"schema": RECEIPT_SCHEMA, "task_id": task["task_id"], "run_id": result["run_id"],
-                                    "tested_sha": task["tested_sha"], "result_digest": hashlib.sha256(raw).hexdigest(),
-                                    "status": "complete", "github_status": True, "comment": True, "dashboard": True})
-            except (ValueError, OSError, RuntimeError) as error:
-                row.update(status="infra_error", receiver_error=type(error).__name__,
-                           receiver_message="结果校验或 GitHub 回写未完成；保留证据并重试接收，不重跑构建。")
-                # One broken result must not starve other tasks or hide the dashboard.
-                if active and is_current(gh, task):
-                    try:
-                        gh.status(task, "error", "Local CI result validation/writeback failed; receiver will retry")
-                    except (ValueError, OSError, RuntimeError):
-                        pass
+                    # Even if a previous status succeeded, a failed/deleted comment
+                    # still needs repair. Identical comment bodies perform no write.
+                    comment_changed = gh.comment(task, result_comment(result))
+                    if not unchanged or comment_changed:
+                        published.append({"task_id": task["task_id"], "run_id": result["run_id"],
+                                          "tested_sha": task["tested_sha"], "result_digest": result_digest, "status": result["status"]})
+        except (ValueError, OSError, RuntimeError) as error:
+            row.update(status="infra_error", receiver_error=type(error).__name__,
+                       receiver_message="结果校验或 GitHub 发布未完成；保留证据并重试接收，不重跑构建。")
+            if active:
+                publication_error(gh, control, task)
         rows.append(row)
     dashboard.mkdir(parents=True, exist_ok=True)
     (dashboard / "v4-tasks.json").write_bytes(canonical({"schema": "triton-anchor-dashboard/v4", "generated_at": now(), "tasks": rows}) + b"\n")
     output("receiver_errors", sum(bool(row.get("receiver_error")) for row in rows))
-    return pending
+    return published
 
 
-def monitor_receipts(control: GitStore, results: GitStore, state_file: Path) -> list[dict]:
-    previous = json.loads(state_file.read_text()) if state_file.is_file() else {}
-    seen, records = {}, []
+def monitor_tasks(control: GitStore, results: GitStore) -> list[dict]:
+    """Only tasks without uploaded valid results can be overdue in the queue."""
+    records = []
     for current in sorted((control.root / "current").glob("*.json")):
         task = control.get(f"tasks/{json.loads(current.read_text())['task_id']}.json")
         validate_task(task)
         if control.get(f"cancel/{task['task_id']}.json"):
             continue
-        candidates = sorted((results.root / "runs/v4" / task["task_id"]).glob("*/result.json"), reverse=True)
-        record = {"task_id": task["task_id"], "worker_id": "receiver", "status": "queued", "created_at": task["captured_at"]}
-        if candidates:
-            run_id = candidates[0].parent.name
-            if not RUN_ID.fullmatch(run_id):
-                continue
-            key = f"{task['task_id']}/{run_id}"
-            if control.get(f"receipts/{key}.json"):
-                continue
-            seen[key] = previous.get(key, now())
-            record.update(status="published", run_id=run_id, published_at=seen[key])
-        records.append(record)
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_bytes(canonical(seen) + b"\n")
-    return records
-
-
-def acknowledge(gh: GitHub, control: GitStore, results: GitStore, receipts: list[dict]) -> None:
-    for receipt in receipts:
-        if not DIGEST.fullmatch(str(receipt.get("task_id", ""))) or not RUN_ID.fullmatch(str(receipt.get("run_id", ""))):
-            raise ValueError("Invalid receipt task/run identity")
-        task = control.get(f"tasks/{receipt['task_id']}.json")
-        validate_task(task)
-        if receipt.get("tested_sha") != task["tested_sha"]:
-            raise ValueError("Receipt tested SHA differs from the task")
-        pointer = control.get(f"current/{current_key(task)}.json")
-        if (not pointer or pointer["task_id"] != task["task_id"] or
-                control.get(f"cancel/{task['task_id']}.json") or not is_current(gh, task)):
+        if any(retention_marker(path, task) for path in (results.root / "retention/v4" / task["task_id"]).glob("*.json")):
             continue
-        path = results.root / "runs/v4" / task["task_id"] / receipt["run_id"] / "result.json"
-        raw = path.read_bytes()
-        validate_result(json.loads(raw), task)
-        if hashlib.sha256(raw).hexdigest() != receipt["result_digest"]:
-            raise ValueError("Result changed before acknowledgement")
-        if receipt.get("schema") != RECEIPT_SCHEMA or receipt.get("status") != "complete" or any(receipt.get(k) is not True for k in ("github_status", "comment", "dashboard")):
-            raise ValueError("Incomplete receipt")
-        name = f"receipts/{task['task_id']}/{receipt['run_id']}.json"
-        control.put({name: receipt}, (name,))
+        uploaded = False
+        for path in (results.root / "runs/v4" / task["task_id"]).glob("*/result.json"):
+            try:
+                read_result(path, task, results)
+                uploaded = True
+                break
+            except (ValueError, OSError, RuntimeError):
+                continue
+        if not uploaded:
+            records.append({"task_id": task["task_id"], "worker_id": "receiver", "status": "queued", "created_at": task["captured_at"]})
+    return records
 
 
 def output(key: str, value: object) -> None:
@@ -657,7 +702,7 @@ def sarif_failures(root: Path) -> list[dict]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "info", "card", "approval", "enqueue", "cancel", "collect", "ack", "api", "security", "sarif"))
+    parser.add_argument("command", choices=("prepare", "info", "card", "approval", "enqueue", "cancel", "collect", "api", "security", "sarif"))
     parser.add_argument("--task", type=Path, default=Path("task.json"))
     parser.add_argument("--repository", default=os.getenv("GITHUB_REPOSITORY", REPOSITORY))
     parser.add_argument("--worker-sha", default=os.getenv("WORKER_SHA", ""))
@@ -670,7 +715,6 @@ def main() -> int:
     parser.add_argument("--base", type=Path, default=Path("base"))
     parser.add_argument("--stages", default=os.getenv("STAGES", "{}"))
     parser.add_argument("--dashboard", type=Path, default=Path("_site/data"))
-    parser.add_argument("--receipts", type=Path, default=Path("pending-receipts.json"))
     args = parser.parse_args()
     gh = GitHub(args.repository)
     if args.command == "prepare":
@@ -746,12 +790,8 @@ def main() -> int:
             try:
                 if args.command == "collect":
                     cancel_obsolete(gh, control)
-                    records = monitor_receipts(control, results, Path("monitor-state/receipt-age.json"))
-                    Path("monitor-receipts.json").write_bytes(canonical(records) + b"\n")
-                    receipts = collect_results(gh, control, results, args.dashboard)
-                    args.receipts.write_bytes(canonical(receipts) + b"\n")
-                elif args.command == "ack":
-                    acknowledge(gh, control, results, json.loads(args.receipts.read_text()))
+                    Path("monitor-tasks.json").write_bytes(canonical(monitor_tasks(control, results)) + b"\n")
+                    collect_results(gh, control, results, args.dashboard)
             finally:
                 results.close()
     finally:

@@ -12,9 +12,11 @@ Poller 校验快照及已安装控制代码，领取对应版本代际。Harness
 
 Codex 的业务工具入口绑定当前任务 MCP；可信 worker 控制容器、日志、状态与发布。模型认证保留在专用 Codex 账户，候选代码由另一执行账户运行。十个工具仍位于 `tools/`，经 `start_check(tool_id)` 独立执行，wheel 构建与安装拆开；候选/base 的安装及缓存隔离。生成测试保留源码、命令、退出状态及归因证据。结构化结果来自执行器，模型报告不能代替通过记录。
 
-Codex 的业务决定只有继续或阻塞。`pass/fail/infra_error` 说明证据结果或失败原因，`publishing/awaiting_receipt/complete` 说明交付进度，均保持兼容。缺少必要证据、恢复预算耗尽或回写未确认时不放行。运行期禁止多 Agent；GitHub 前置流程继续严格 Basic → API → Security 串行。
+Codex 的业务决定只有继续或阻塞。`pass/fail/infra_error` 说明证据结果或失败原因，`publishing/complete` 说明本地上传进度。缺少必要证据或恢复预算耗尽时不能生成通过结果；本地 complete 也不等于通过。运行期禁止多 Agent；GitHub 前置流程继续严格 Basic → API → Security 串行。
 
-`finish` 封存 result 和证据。发布阶段不持有构建锁；失败只重发封存结果，必要时恢复 Codex 进行发布调查。接收器再次从快照 diff 计算最低检查。GitHub status、统一 comment 与 Pages 成功后，Gitee 才写对应 run、SHA 与结果摘要的回执；worker 收到完整回执才结束。
+`finish` 封存 result 和证据，Codex 工作结束。上传阶段不持有构建锁；失败只重发同一封存结果，不恢复模型。成功上传 Gitee 后 worker 将本地任务置为 complete。GitHub 接收器独立校验任务和快照 diff 的最低检查，发布 status、统一 comment 和 Pages，不向 Gitee 写回执。
+
+按用户确认保留 status → comment → Pages 顺序；GitHub Actions 显示发布失败并由后续定时任务重试。PR 的两个 Commit Status context 保持现有名称，它们是检查结果的权威状态；整次 GitHub 发布是否完成还需查看对应 Actions 运行。没有跨系统完成确认，PR status 成功可早于 Dashboard 更新。
 
 ## 协议与恢复
 
@@ -24,12 +26,12 @@ Codex 的业务决定只有继续或阻塞。`pass/fail/infra_error` 说明证�
 | `current/<subject_digest>.json` | 当前 PR 或分支有效任务 |
 | `cancel/<task_id>.json` | 取消原因与可选替代任务 |
 | Gitee `local-ci-results/runs/v4/<task>/<run>/` | 封存结果、基础检查及生成测试证据 |
-| `local-ci-control/receipts/<task>/<run>.json` | 三项 GitHub 回写成功及结果字节摘要 |
+| `local-ci-results/retention/v4/<task>/<run>.json` | 过期结果的身份、摘要与时间；防止误用更旧结果，与发布确认无关 |
 | 宿主机 `state_dir` | SQLite journal、execution、outbox、环境 registry、lease 与恢复上下文 |
 
 声明式 schema 位于 `agent_ci/schemas/`；运行时还检查摘要、ref 安全、仓库白名单、merge parents、精确 LLVM、依赖执行 ID 和当前任务，不能仅以 JSON schema 合法判定任务可信。
 
-重启从 journal 恢复；成功项仅在环境及依赖证据仍一致时复用。OOM 自动降低并行度重试一次，API/网络有限重试。未完成任务明确显示基础设施异常，可显式续跑。相同任务重新投递不会强制重建，未完成任务使用 `worker.py --resume TASK_ID`。
+重启从 journal 恢复；成功项仅在环境及依赖证据仍一致时复用。OOM 自动降低并行度重试一次，API/网络有限重试。未完成测试结果仍显示基础设施异常，即使已上传并本地 complete 也可显式续跑。相同任务重新投递不会强制重建；`worker.py --resume TASK_ID` 对已上传 infra_error 创建新 run，对待上传任务继续原 outbox。
 
 ## 环境与运维
 
@@ -47,8 +49,8 @@ GitHub 侧需配置 `GITEE_RESULTS_REPO_URL`、`GITEE_USERNAME`、`LOCAL_CI_HEAL
 
 ## 验收范围
 
-本机运行真实网关、Git 中转、调度、MCP、状态机、工具接口、结果接收与回执代码，Docker、模型、硬件、GitHub HTTP、SMTP 等外部边界替换为 fixtures。用真实 Python 子进程验证归因与终止行为，用本地 bare Git 验证任务和回执流转。
+本机运行真实网关、Git 中转、调度、MCP、状态机、工具接口、结果接收及保留周期代码，Docker、模型、硬件、GitHub HTTP、SMTP 等外部边界替换为 fixtures。用真实 Python 子进程验证归因与终止行为，用本地 bare Git 验证任务投递、结果上传和过期清理。
 
 运行 `python3 scripts/local_ci/agent_ci/verify.py --output-dir /tmp/ci-v4-verification` 可重现验收。最终报告单独记录通过项及源码摘要。模拟结果不代表公司模型、LLVM/后端真实编译、硬件、实际邮件或线上 GitHub/Gitee 已通过验收。
 
-Skill 结构迁移后的最新本机结果为 442 项通过，见 [本轮验收](ci_skill_verification/verification.md)；唯一入口、继续/阻塞闭环及 MCP 参数修复的具体证据见 [覆盖说明](ci_skill_verification/coverage.md)。
+单向交付调整的本机结果见 [最新验收](ci_oneway_verification/verification.md) 和 [覆盖说明](ci_oneway_verification/coverage.md)。Skill 结构迁移的 442 项报告保留在 ci_skill_verification，原回执相关测试仅代表当时实现。

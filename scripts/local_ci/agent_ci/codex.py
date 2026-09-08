@@ -91,6 +91,8 @@ class CodexDriver:
                 raise ContractError("codex_user cannot traverse session/socket parent: " + str(parent))
 
     def run(self, supervisor, service, *, recovery: str = "") -> dict:
+        if supervisor.closed:
+            return {"exit_code": None, "reason": "sealed", "finished": True, "session_id": None}
         if supervisor.cancelled.is_set():
             return {"exit_code": None, "reason": "cancelled", "finished": supervisor.closed, "session_id": None}
         skill = load_skill()
@@ -234,6 +236,9 @@ class CodexDriver:
                 process.stdin.close()
                 while process.poll() is None:
                     consume_events()
+                    if supervisor.closed:
+                        reason = "sealed"
+                        break
                     if supervisor.cancelled.wait(0.2):
                         reason = "cancelled"
                         break

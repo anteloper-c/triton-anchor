@@ -29,7 +29,8 @@ async function refresh(){
       if(result){const table=el('table'),head=el('tr');for(const label of ['检查','结果','必检','原因'])head.append(el('th',label));table.append(head);
         for(const check of result.checks){const tr=el('tr');for(const value of [check.tool_id,check.status,check.required?'是':'否',check.reason||''])tr.append(el('td',value));table.append(tr)}
         article.append(table,detail('阻塞项与后续处理',result.blockers),detail('AI 审查、定向验证和证据',{reviews:result.reviews,findings:result.findings}),detail('性能变化（纯耗时回退不阻断）',result.performance),detail('未完成与环境', {unfinished:result.unfinished,environment:result.environment}));
-      }else article.append(el('p','任务尚未返回结果。过期、取消、未完成的任务不会显示为通过。'));
+      }else if(row.retention){article.append(el('p','结果已超过 Gitee 保留期，证据目录已清理；GitHub 已发布的状态保留。'),detail('过期结果身份与摘要',row.retention));
+      }else article.append(el('p','任务尚未返回结果。取消、未完成的任务不会显示为通过。'));
       target.append(article);
     }
   }catch(error){document.querySelector('#updated').textContent=error.message;}

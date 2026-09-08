@@ -35,3 +35,17 @@
 | 运行边界 | 真实MCP/Unix socket/工具契约与本地Git回执链路通过；模型、Docker环境及GitHub/Pages使用fixture。没有真实模型、编译后端、硬件、邮件或线上部署验收，没有远端推送。 |
 
 以上变更与验收材料随本轮同一个 CI_dev 本地提交保存，可用 `git log -1 -- docs/ci_refactor_log.md` 定位提交；main 无新增改动。
+
+## 2026-09-08：取消 GitHub 回执，按单向交付完成任务
+
+依据：用户明确同意取消反向回执，实施中进一步确认保持 status → comment → Dashboard 顺序。本轮基于 CI_dev `316eb31ab5e1ea187eb7f6eceaa2ef5413f0da05`；main 仍为 `4fc20aecb82113ca94c2043710cc6970b222eedf`。
+
+| 要求 | 变更与证据 |
+| --- | --- |
+| 拆分完成条件 | Codex 成功封存后结束；Harness 成功上传 Gitee 后 complete；GitHub 独立校验发布。上传失败只重传原 outbox，不再恢复模型。 |
+| 删除反向链路 | 删除 receipt schema、PublicationSupervisor、retry_publication MCP、GitHub ack 与回执监控。旧 SQLite 只做一次兼容转换；完整状态备份/回滚要求进入部署文档。 |
+| 保持 GitHub 顺序 | 不改前置门禁和 main 调度；继续 status → 幂等 comment → Pages。GitHub 状态按结果摘要去重，评论失败仍可修复，发布异常由 Actions 显示并重试。 |
+| 固定保留与监控 | 增加默认 30 天 Gitee run 保留及每日 timer，保留过期身份摘要；健康快照监控上传、队列和恢复，不监控回执。 |
+| 同步文档与验收 | 更新唯一 Skill、当前说明、配置预检、迁移 v2 与回滚材料；完整 8 套 472 项通过，Ruff F/E9、Python/shell 语法、Skill 校验与差异检查通过。见 [单向交付报告](ci_oneway_verification/verification.md) 和 [覆盖说明](ci_oneway_verification/coverage.md)。 |
+
+本轮代码、文档和验收材料在同一 CI_dev 本地提交中记录，用 `git log -1 -- docs/ci_oneway_verification/coverage.md` 定位。没有推送、服务器部署、真实模型调用、真实后端编译或邮件发送。此前两版验收作为历史记录保留，回执相关内容不再代表当前实现。

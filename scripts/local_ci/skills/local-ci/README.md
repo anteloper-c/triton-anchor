@@ -4,7 +4,7 @@
 
 原 `scripts/local_ci/ai_ci_program.md`、`architecture_review.md`、`ai_review.md` 分别迁入 `references/AI_CI_PROGRAM.md`、`references/architecture_review.md`、`references/ai_review.md`；旧文件删除，避免维护多个入口。`references/project_conventions.md` 补充实际 README、API 契约、编译配置与 Python 代码中的项目事实。
 
-修改应保持顶层设计：GitHub 前置检查串行、每任务单 Codex、Codex 分析调度与 tools 确定性执行分工、适用最低检查不可减免、Triton 3.0 的后端性能能力边界，以及仅服务器使用公司现有模型配置。业务决定仅为 `continue/block`；现有 `submit_review` 状态、检查和发布回执协议继续兼容。
+修改应保持顶层设计与已确认的单向交付调整：GitHub 前置检查串行、每任务单 Codex、Codex 分析调度与 tools 确定性执行分工、适用最低检查不可减免、Triton 3.0 的后端性能能力边界，以及仅服务器使用公司现有模型配置。业务决定仅为 `continue/block`；`submit_review` 和检查状态保留。回执及 Codex 发布恢复入口已删除。
 
 架构规则原文、冻结源码位置、高风险问题的两次 candidate 失败和 base 通过证据，以及恢复时复用已完成检查的要求均保留。Skill 内容由可信控制版本固定；候选 PR 不得替换运行中的 Skill。更新后检查入口 frontmatter、四个链接及顺序，并使用 skill-creator 的 `quick_validate.py` 校验结构。
 
@@ -14,9 +14,9 @@
 
 | 业务决定 | 既有执行与交付事实 |
 |---|---|
-| `continue` | 在能力和预算内继续取证、运行检查、审查或恢复；已封存则只继续发布与回执确认。 |
-| `block` | 已确认代码/架构阻塞，或必要证据、环境、模型、发布条件在有限恢复后仍不足；保留具体原因，不伪造成功。 |
+| `continue` | 在能力和预算内继续取证、运行检查、审查或恢复未完成验证；成功封存后 Codex 结束。 |
+| `block` | 已确认代码/架构阻塞，或必要证据、环境、模型在有限恢复后仍不足；保留具体原因，不伪造成功。 |
 
-通过、失败、环境异常是结果分类；取消、排队和发布等待是生命周期。最终成功由 Harness 验证充分证据及匹配回执后确认，不新增模型自报通过的接口。
+通过、失败、环境异常是结果分类；取消、排队和上传是生命周期。Harness 验证证据，封存后独立上传 Gitee；成功上传即本地交付完成。GitHub 独立发布，PR 状态仍先于 Dashboard 更新；GitHub 发布失败由 Actions 展示并重试。没有模型自报通过的接口，也没有 GitHub → Gitee 回执。
 
 本地目录格式依据 [OpenAI Skills 文档](https://learn.chatgpt.com/docs/build-skills)。这里由 Harness 显式加载可信包；维护时无需将公司 CI Skill 上传到模型平台。

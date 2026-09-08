@@ -52,9 +52,20 @@ class WatchdogTests(unittest.TestCase):
         result = watchdog.evaluate({"workers": [], "expected_workers": ["missing"]}, now=self.now)
         self.assertIn("missing:worker_offline", result["active"])
 
-    def test_publish_ack_delay(self):
-        result = watchdog.evaluate({"workers": [self.worker], "receipts": [{"task_id": "task-1", "state": "published", "published_at": watchdog.iso(self.now - timedelta(hours=1))}]}, now=self.now)
-        self.assertIn("receiver:receipt_overdue:task-1", result["active"])
+    def test_failed_upload_alerts_then_recovers_without_codex_or_github(self):
+        worker = {**self.worker, "active_task": {"task_id": "task-1", "stage": "publishing", "codex_alive": False},
+                  "uploads": [{"task_id": "task-1", "attempts": 1, "queued_at": watchdog.iso(self.now)}]}
+        result = watchdog.evaluate(worker, now=self.now)
+        self.assertEqual({"worker-1:result_upload_failed:task-1"}, set(result["active"]))
+        result["pending_notifications"] = []
+        self.assertFalse(watchdog.evaluate(worker, result, now=self.now)["pending_notifications"])
+        recovered = watchdog.evaluate(self.worker, result, now=self.now)
+        self.assertTrue(recovered["healthy"])
+        self.assertEqual("recovered", recovered["pending_notifications"][0]["transition"])
+
+    def test_uploaded_result_does_not_wait_for_github(self):
+        worker = {**self.worker, "tasks": [], "uploads": []}
+        self.assertTrue(watchdog.evaluate(worker, now=self.now)["healthy"])
 
     def test_disk_codex_and_stuck_task(self):
         worker = {**self.worker, "storage": [{"free_bytes": 12}], "active_task": {"task_id": "task", "codex_alive": False,
@@ -100,18 +111,17 @@ class WatchdogTests(unittest.TestCase):
             self.assertTrue((root / "dashboard.json").is_file())
 
     def test_queued_work_has_separate_threshold(self):
-        receipt = {"status": "queued", "task_id": "queued", "created_at": watchdog.iso(self.now - timedelta(minutes=30))}
-        result = watchdog.evaluate({"workers": [self.worker], "receipts": [receipt]}, now=self.now)
+        task = {"status": "queued", "task_id": "queued", "created_at": watchdog.iso(self.now - timedelta(minutes=30))}
+        result = watchdog.evaluate({"workers": [self.worker], "tasks": [task]}, now=self.now)
         self.assertTrue(result["healthy"])
-        result = watchdog.evaluate({"workers": [self.worker], "receipts": [receipt]}, now=self.now, queue_seconds=600)
+        result = watchdog.evaluate({"workers": [self.worker], "tasks": [task]}, now=self.now, queue_seconds=600)
         self.assertIn("receiver:queue_overdue:queued", result["active"])
-        self.assertNotIn("receiver:receipt_overdue:queued", result["active"])
 
-    def test_additional_receipt_file_with_stdin_snapshot(self):
+    def test_additional_task_file_with_stdin_snapshot(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / "receipts.json").write_text(json.dumps([{"task_id": "old", "status": "queued", "created_at": "2020-01-01T00:00:00Z"}]))
-            result = subprocess.run([sys.executable, str(MODULE), "--input", "-", "--state", str(root / "state.json"), "--receipts-file", str(root / "receipts.json"), "--dry-run", "--now", watchdog.iso(self.now)], input=json.dumps(self.worker), text=True, capture_output=True)
+            (root / "tasks.json").write_text(json.dumps([{"task_id": "old", "status": "queued", "created_at": "2020-01-01T00:00:00Z"}]))
+            result = subprocess.run([sys.executable, str(MODULE), "--input", "-", "--state", str(root / "state.json"), "--tasks-file", str(root / "tasks.json"), "--dry-run", "--now", watchdog.iso(self.now)], input=json.dumps(self.worker), text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("receiver:queue_overdue:old", json.loads(result.stdout)["active"])
             self.assertFalse((root / "state.json").exists())

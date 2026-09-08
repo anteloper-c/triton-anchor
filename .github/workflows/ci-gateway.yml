@@ -290,7 +290,7 @@ jobs:
           python3 scripts/local_ci/maintenance/watchdog.py \
           --url "$HEALTH_URL" --expected-worker "$EXPECTED_WORKER" \
           --state monitor-state/incidents.json --output _site/data/v4-incidents.json \
-          --receipts-file monitor-receipts.json
+          --tasks-file monitor-tasks.json
       - name: Preserve incidents and undelivered notifications
         if: always()
         uses: actions/upload-artifact@v4
@@ -303,13 +303,10 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         if: ${{ steps.collect.outcome == 'success' }}
         with: {path: _site}
-      - name: Publish dashboard before acknowledgement
+      - name: Publish dashboard
         if: ${{ steps.collect.outcome == 'success' }}
         id: pages
         uses: actions/deploy-pages@v4
-      - name: Acknowledge complete GitHub status, comment and dashboard
-        if: ${{ steps.pages.outcome == 'success' }}
-        run: python3 scripts/ci/gateway_v4.py ack
       - name: Surface monitor or receiver failures
         if: ${{ always() && (steps.monitor.outcome == 'failure' || steps.collect.outcome == 'failure' || steps.collect.outputs.receiver_errors != '0') }}
         run: exit 1

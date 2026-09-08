@@ -37,6 +37,11 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
         value = config.get(name)
         check(name, isinstance(value, str) and Path(value).is_absolute(), "Configure an absolute dedicated server path")
     state_value, sessions_value = config.get("state_dir"), config.get("codex_sessions_root")
+    check("one_way_delivery", "receipt_timeout_seconds" not in config,
+          "Remove receipt_timeout_seconds: local completion is immutable Gitee upload; GitHub publication runs independently")
+    retention = config.get("results_retention_days", 30)
+    check("results_retention_days", type(retention) is int and retention > 0,
+          "Keep uploaded result runs for a positive whole number of days; the default is 30")
     if isinstance(state_value, str) and isinstance(sessions_value, str):
         state_path, sessions_path = Path(state_value).resolve(), Path(sessions_value).resolve()
         check("session_state_separation", not sessions_path.is_relative_to(state_path) and not state_path.is_relative_to(sessions_path), "Codex sessions and trusted worker state must use independent, non-overlapping directories")

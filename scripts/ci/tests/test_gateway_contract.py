@@ -46,6 +46,7 @@ class FakeGitHub:
                      "head": {"sha": head, "ref": "docs-topic", "repo": {"full_name": "anteloper-c/triton-anchor"}},
                      "base": {"ref": "main"}}
         self.statuses, self.comments = [], []
+        self.latest_statuses, self.writes = {}, []
         self.environment = {"protection_rules": [{"type": "required_reviewers", "reviewers": [{"type": "User", "reviewer": {"login": "maintainer"}}]}]}
 
     def request(self, path, method="GET", data=None):
@@ -69,9 +70,18 @@ class FakeGitHub:
 
     def status(self, task, state, description, url=""):
         self.statuses.append((task["task_id"], state))
+        self.latest_statuses[task["task_id"]] = (state, description)
+        self.writes.append("status")
+
+    def status_matches(self, task, state, description):
+        return self.latest_statuses.get(task["task_id"]) == (state, description)
 
     def comment(self, task, content):
+        if self.comments and self.comments[-1] == content:
+            return False
         self.comments.append(content)
+        self.writes.append("comment")
+        return True
 
 
 class GatewayBehaviorTests(unittest.TestCase):
@@ -180,27 +190,40 @@ class GatewayBehaviorTests(unittest.TestCase):
         self.assertEqual(g.cancel_obsolete(self.gh, control, 7), 0)
         self.assertEqual(control.get("cancel/" + self.task["task_id"] + ".json")["task_id"], self.task["task_id"])
 
-    def test_result_receipt_requires_status_comment_then_dashboard_success(self):
+    def test_status_comment_dashboard_order_has_no_return_channel(self):
         control = self.store(g.CONTROL_BRANCH)
         g.enqueue(self.task, self.gh, control, self.source)
         results = self.store(g.RESULTS_BRANCH)
         result = self.result()
         name = "runs/v4/" + self.task["task_id"] + "/" + result["run_id"] + "/result.json"
         results.put({name: result})
-        receipts = g.collect_results(self.gh, control, results, self.root / "dashboard")
-        receipt_name = "receipts/" + self.task["task_id"] + "/" + result["run_id"] + ".json"
-        self.assertIsNone(control.get(receipt_name))
-        self.assertEqual(receipts[0]["result_digest"], hashlib.sha256((results.root / name).read_bytes()).hexdigest())
+        control_revision = git(control.root, "rev-parse", "HEAD")
+        result_revision = git(results.root, "rev-parse", "HEAD")
+        self.gh.writes.clear()
+        write_bytes = Path.write_bytes
+
+        def record_dashboard(path, data):
+            if path.name == "v4-tasks.json":
+                self.gh.writes.append("dashboard")
+            return write_bytes(path, data)
+
+        with patch.object(Path, "write_bytes", record_dashboard):
+            published = g.collect_results(self.gh, control, results, self.root / "dashboard")
+        self.assertEqual(self.gh.writes, ["status", "comment", "dashboard"])
+        self.assertEqual(published[0]["result_digest"], hashlib.sha256((results.root / name).read_bytes()).hexdigest())
         self.assertEqual(self.gh.statuses[-1][1], "success")
         self.assertIn("Local CI", self.gh.comments[-1])
-        g.acknowledge(self.gh, control, results, receipts)
-        self.assertEqual(control.get(receipt_name)["status"], "complete")
+        before = (len(self.gh.statuses), len(self.gh.comments))
         again = g.collect_results(self.gh, control, results, self.root / "dashboard")
         self.assertEqual(again, [])
+        self.assertEqual(before, (len(self.gh.statuses), len(self.gh.comments)))
+        self.assertEqual(control_revision, git(control.root, "rev-parse", "HEAD"))
+        self.assertEqual(result_revision, git(results.root, "rev-parse", "HEAD"))
+        self.assertFalse((control.root / "receipts").exists())
         self.gh.pull["draft"] = True
         self.assertEqual(g.collect_results(self.gh, control, results, self.root / "dashboard"), [])
 
-    def test_comment_failure_does_not_acknowledge(self):
+    def test_comment_failure_retries_same_uploaded_result(self):
         control = self.store(g.CONTROL_BRANCH)
         g.enqueue(self.task, self.gh, control, self.source)
         results = self.store(g.RESULTS_BRANCH)
@@ -210,9 +233,15 @@ class GatewayBehaviorTests(unittest.TestCase):
             self.assertEqual(g.collect_results(self.gh, control, results, self.root / "dashboard"), [])
         snapshot = json.loads((self.root / "dashboard/v4-tasks.json").read_text())
         self.assertEqual(snapshot["tasks"][0]["status"], "infra_error")
+        self.assertEqual(self.gh.statuses[-1][1], "error")
         self.assertFalse((control.root / "receipts").exists())
+        result_revision = git(results.root, "rev-parse", "HEAD")
+        self.assertEqual(len(g.collect_results(self.gh, control, results, self.root / "dashboard")), 1)
+        self.assertEqual(self.gh.statuses[-1][1], "success")
+        self.assertEqual(len(self.gh.comments), 1)
+        self.assertEqual(result_revision, git(results.root, "rev-parse", "HEAD"))
 
-    def test_infrastructure_failure_can_report_but_cancelled_receipt_cannot_complete(self):
+    def test_infrastructure_failure_reports_but_cancelled_results_do_not(self):
         control = self.store(g.CONTROL_BRANCH)
         g.enqueue(self.task, self.gh, control, self.source)
         results = self.store(g.RESULTS_BRANCH)
@@ -220,13 +249,89 @@ class GatewayBehaviorTests(unittest.TestCase):
         result.update(status="infra_error", checks=[], required_checks=[], reviews={}, unfinished=["environment failed"])
         results.put({"runs/v4/" + self.task["task_id"] + "/" + result["run_id"] + "/result.json": result})
         with patch.object(g, "trusted_minimum", side_effect=AssertionError("broken version need not be read for a failing result")):
-            receipts = g.collect_results(self.gh, control, results, self.root / "dashboard")
-        self.assertEqual(len(receipts), 1)
-        with self.assertRaises(ValueError):
-            g.acknowledge(self.gh, control, results, [{**receipts[0], "tested_sha": "e" * 40}])
+            published = g.collect_results(self.gh, control, results, self.root / "dashboard")
+        self.assertEqual(len(published), 1)
+        self.assertEqual(self.gh.statuses[-1][1], "error")
         control.put({"cancel/" + self.task["task_id"] + ".json": {"task_id": self.task["task_id"], "reason": "cancel after collection"}})
-        g.acknowledge(self.gh, control, results, receipts)
-        self.assertIsNone(control.get("receipts/" + self.task["task_id"] + "/" + result["run_id"] + ".json"))
+        before = (len(self.gh.statuses), len(self.gh.comments))
+        self.assertEqual(g.collect_results(self.gh, control, results, self.root / "dashboard"), [])
+        self.assertEqual(before, (len(self.gh.statuses), len(self.gh.comments)))
+        self.assertFalse((control.root / "receipts").exists())
+
+    def test_failed_dashboard_is_rebuilt_without_repeating_completed_writeback(self):
+        control = self.store(g.CONTROL_BRANCH)
+        g.enqueue(self.task, self.gh, control, self.source)
+        results = self.store(g.RESULTS_BRANCH)
+        result = self.result()
+        results.put({f"runs/v4/{self.task['task_id']}/{result['run_id']}/result.json": result})
+        dashboard = self.root / "dashboard"
+        dashboard.write_text("not a directory")
+        with self.assertRaises(OSError):
+            g.collect_results(self.gh, control, results, dashboard)
+        before = (len(self.gh.statuses), len(self.gh.comments))
+        self.assertEqual(self.gh.statuses[-1][1], "success")
+        dashboard.unlink()
+        self.assertEqual(g.collect_results(self.gh, control, results, dashboard), [])
+        self.assertEqual(before, (len(self.gh.statuses), len(self.gh.comments)))
+        self.assertTrue((dashboard / "v4-tasks.json").is_file())
+
+    def test_status_match_does_not_skip_missing_comment_repair(self):
+        control = self.store(g.CONTROL_BRANCH)
+        g.enqueue(self.task, self.gh, control, self.source)
+        results = self.store(g.RESULTS_BRANCH)
+        result = self.result()
+        path = f"runs/v4/{self.task['task_id']}/{result['run_id']}/result.json"
+        results.put({path: result})
+        raw_digest = hashlib.sha256((results.root / path).read_bytes()).hexdigest()
+        self.gh.status(self.task, "success", g.publication_description("pass", raw_digest))
+        status_count = len(self.gh.statuses)
+        self.assertEqual(len(g.collect_results(self.gh, control, results, self.root / "dashboard")), 1)
+        self.assertEqual(len(self.gh.statuses), status_count)
+        self.assertEqual(len(self.gh.comments), 1)
+
+    def test_head_change_during_status_write_skips_old_comment(self):
+        control = self.store(g.CONTROL_BRANCH)
+        g.enqueue(self.task, self.gh, control, self.source)
+        results = self.store(g.RESULTS_BRANCH)
+        result = self.result()
+        results.put({f"runs/v4/{self.task['task_id']}/{result['run_id']}/result.json": result})
+        status = self.gh.status
+
+        def update_head(*args, **kwargs):
+            status(*args, **kwargs)
+            self.gh.pull["head"]["sha"] = "e" * 40
+
+        with patch.object(self.gh, "status", side_effect=update_head):
+            self.assertEqual(g.collect_results(self.gh, control, results, self.root / "dashboard"), [])
+        self.assertFalse(self.gh.comments)
+        self.assertEqual(g.cancel_obsolete(self.gh, control), 1)
+        self.assertEqual(self.gh.statuses[-1][1], "error")
+
+    def test_queue_monitor_requires_valid_result_and_ignores_expiration(self):
+        control = self.store(g.CONTROL_BRANCH)
+        g.enqueue(self.task, self.gh, control, self.source)
+        results = self.store(g.RESULTS_BRANCH)
+        self.assertEqual(g.monitor_tasks(control, results)[0]["task_id"], self.task["task_id"])
+        result = self.result()
+        name = f"runs/v4/{self.task['task_id']}/{result['run_id']}/result.json"
+        result["required_checks"] = ["environment"]
+        results.put({name: result})
+        self.assertEqual(len(g.monitor_tasks(control, results)), 1)
+        self.assertEqual(g.collect_results(self.gh, control, results, self.root / "dashboard"), [])
+        self.assertEqual(self.gh.statuses[-1][1], "error")
+        results.put({name: self.result()})
+        self.assertEqual(g.monitor_tasks(control, results), [])
+        newer = "20260908T120000Z-2"
+        marker = {"task_id": self.task["task_id"], "run_id": newer, "result_digest": "a" * 64,
+                  "uploaded_at": "2026-09-08T12:00:00Z", "expired_at": "2026-10-08T12:00:00Z", "reason": "retention_expired"}
+        results.put({f"retention/v4/{self.task['task_id']}/{newer}.json": marker})
+        before = (len(self.gh.statuses), len(self.gh.comments))
+        self.assertEqual(g.collect_results(self.gh, control, results, self.root / "dashboard"), [])
+        snapshot = json.loads((self.root / "dashboard/v4-tasks.json").read_text())
+        self.assertEqual(snapshot["tasks"][0]["status"], "expired")
+        self.assertIsNone(snapshot["tasks"][0]["result"])
+        self.assertEqual(before, (len(self.gh.statuses), len(self.gh.comments)))
+        self.assertEqual(g.monitor_tasks(control, results), [])
 
     def test_invalid_results_cannot_claim_success(self):
         for mutate in (
@@ -284,7 +389,7 @@ class GatewayBehaviorTests(unittest.TestCase):
             g.GitStore("https://github.com/RACE-org/triton-anchor", g.CONTROL_BRANCH)
 
     def test_http_status_and_idempotent_comment_writeback(self):
-        calls, comments = [], []
+        calls, comments, statuses = [], [], {}
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_args):
@@ -293,13 +398,20 @@ class GatewayBehaviorTests(unittest.TestCase):
             def do_GET(self):
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(json.dumps(comments).encode())
+                if "/commits/" in self.path:
+                    sha = self.path.split("/commits/", 1)[1].split("/", 1)[0]
+                    response = statuses.get(sha, [])
+                else:
+                    response = comments
+                self.wfile.write(json.dumps(response).encode())
 
             def do_POST(self):
                 data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 calls.append(("POST", self.path, data))
                 if self.path.endswith("/comments"):
                     comments.append({"id": 11, "user": {"type": "Bot"}, **data})
+                elif "/statuses/" in self.path:
+                    statuses.setdefault(self.path.rsplit("/", 1)[1], []).insert(0, data)
                 self.send_response(201)
                 self.end_headers()
                 self.wfile.write(b"{}")
@@ -324,6 +436,12 @@ class GatewayBehaviorTests(unittest.TestCase):
             self.assertEqual(len(calls), 4)
             self.assertEqual(calls[-1][0], "PATCH")
             self.assertTrue(comments[0]["body"].startswith(g.MARKER))
+            self.assertTrue(client.status_matches(self.task, "pending", "Queued"))
+            self.assertFalse(client.status_matches(self.task, "success", "Queued"))
+            self.assertFalse(client.status_matches(self.task, "pending", "Different result"))
+            self.assertEqual(calls[1][2]["context"], "local-ci/summary")
+            statuses[self.head].insert(0, {"context": "local-ci/summary", "state": "error", "description": "Newer failure"})
+            self.assertFalse(client.status_matches(self.task, "pending", "Queued"))
         finally:
             server.shutdown()
             server.server_close()

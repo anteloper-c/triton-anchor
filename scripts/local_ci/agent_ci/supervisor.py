@@ -314,7 +314,7 @@ class Supervisor:
                       "reviews": reviews, "findings": findings, "blockers": blockers,
                       "performance": performance, "unfinished": unfinished,
                       "environment": {k: self.executor.generation[k] for k in ("profile", "generation", "environment_fingerprint", "backend_enabled")},
-                      "publication": {"status": "pending", "completion_requires": ["github_status", "comment", "dashboard", "gitee_receipt"]}}
+                      "publication": {"status": "pending_upload", "completion_requires": ["gitee_upload"]}}
             published = self.run_dir / "published"
             published.mkdir(exist_ok=True)
             for record in records:

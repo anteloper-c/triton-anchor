@@ -4,13 +4,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
 import urllib.parse
 from pathlib import Path
 
-from .protocol import ContractError, current_key, within
+from .protocol import RESULT_SCHEMA, ContractError, current_key, within
 
 
 class GitRelay:
@@ -131,13 +132,18 @@ class GitRelay:
                             self.git(["checkout", "--quiet", "-B", branch, "FETCH_HEAD"], cwd=work)
                         else:
                             self.git(["checkout", "--quiet", "--orphan", branch], cwd=work)
-                        for relative, content in files.items():
+                        # Retention and uploads share this fetched Git snapshot. A
+                        # competing push retries the whole decision against new HEAD.
+                        pending = self._unexpired_files(work, files) if immutable and branch == self.results_branch else files
+                        if not pending:
+                            return
+                        for relative, content in pending.items():
                             path = within(work, relative)
                             if immutable and path.exists() and path.read_bytes() != content:
                                 raise ContractError(f"Immutable relay artifact changed: {relative}")
                             path.parent.mkdir(parents=True, exist_ok=True)
                             path.write_bytes(content)
-                        self.git(["add", "--", *files.keys()], cwd=work)
+                        self.git(["add", "--", *pending.keys()], cwd=work)
                         if self.git(["diff", "--cached", "--quiet"], cwd=work, check=False).returncode == 0:
                             return
                         self.git(["-c", "user.name=local-ci", "-c", "user.email=local-ci@example.invalid",
@@ -147,6 +153,44 @@ class GitRelay:
                 except RuntimeError as exc:
                     last_error = exc
             raise RuntimeError("Relay publish failed after three attempts") from last_error
+
+    @staticmethod
+    def _unexpired_files(work: Path, files: dict[str, bytes]) -> dict[str, bytes]:
+        """A matching expiry marker proves this sealed result was uploaded earlier."""
+        work = work.resolve()
+        runs: dict[tuple[str, str], list[str]] = {}
+        for relative in files:
+            normalized = within(work, relative).relative_to(work).as_posix()
+            match = re.fullmatch(r"runs/v4/([0-9a-f]{64})/([A-Za-z0-9][A-Za-z0-9_.-]{0,119})/(.+)", normalized)
+            if match:
+                runs.setdefault((match[1], match[2]), []).append(relative)
+        skipped = set()
+        for (task_id, run_id), relatives in runs.items():
+            marker = work / "retention/v4" / task_id / (run_id + ".json")
+            if marker.is_symlink() or any(p.is_symlink() for p in marker.parents if p != work and p.is_relative_to(work)):
+                raise ContractError("Retention marker path contains a symlink")
+            if not marker.exists():
+                continue
+            prefix = f"runs/v4/{task_id}/{run_id}"
+            if not marker.is_file() or (work / prefix).exists():
+                raise ContractError("Invalid retention marker or expired result tree exists")
+            raw = files.get(prefix + "/result.json")
+            try:
+                saved = json.loads(marker.read_bytes())
+                result = json.loads(raw) if raw is not None else None
+                valid = (isinstance(saved, dict) and saved.get("schema") == "triton-anchor-result-retention/v1"
+                         and saved.get("task_id") == task_id and saved.get("run_id") == run_id
+                         and saved.get("reason") == "retention_expired"
+                         and raw is not None and saved.get("result_digest") == hashlib.sha256(raw).hexdigest()
+                         and isinstance(result, dict) and result.get("schema") == RESULT_SCHEMA
+                         and isinstance(result.get("task"), dict) and result["task"].get("task_id") == task_id
+                         and result.get("run_id") == run_id)
+            except (ValueError, TypeError, UnicodeError):
+                valid = False
+            if not valid:
+                raise ContractError("Expired result replay does not match its immutable retention marker")
+            skipped.update(relatives)
+        return {relative: content for relative, content in files.items() if relative not in skipped}
 
     def publish_result(self, task: dict, run_id: str, directory: Path) -> str:
         prefix = f"runs/v4/{task['task_id']}/{run_id}"
@@ -160,6 +204,3 @@ class GitRelay:
                 files[f"{prefix}/{source.relative_to(directory).as_posix()}"] = source.read_bytes()
         self.write(self.results_branch, files, immutable=True)
         return hashlib.sha256((directory / "result.json").read_bytes()).hexdigest()
-
-    def receipt(self, task: dict, run_id: str) -> dict | None:
-        return self.read_json(self.control_branch, f"receipts/{task['task_id']}/{run_id}.json")

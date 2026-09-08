@@ -122,6 +122,13 @@ class MCPBoundaryTests(unittest.TestCase):
         self.assertEqual([], self.records())
         self.assertEqual([], self.executor.calls)
 
+    def test_upload_retry_is_not_an_agent_capability(self):
+        self.assertNotIn("retry_publication", mcp_server.SCHEMAS)
+        self.assertNotIn("retry_publication", ToolService.METHODS)
+        self.assertIn("error", self.rpc("retry_publication", {"reason": "Try to upload from the agent"}))
+        self.assertEqual([], self.records())
+        self.assertEqual([], self.executor.calls)
+
     def test_invalid_types_ranges_and_nested_fields_never_schedule(self):
         base = {"tool_id": "environment", "reason": "fixture"}
         invalid = [

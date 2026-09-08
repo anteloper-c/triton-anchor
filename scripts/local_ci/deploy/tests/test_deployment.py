@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 import tempfile
@@ -106,14 +107,28 @@ class DeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "recorded in order"):
             migration.advance(state, "poller_ready", evidence)
 
-    def test_migration_requires_old_tasks_terminal_and_received(self):
+    def test_migration_drains_uploaded_old_tasks_without_github_confirmation(self):
         evidence = self.root / "old-result.json"
         evidence.write_text("fixture result")
         with self.assertRaisesRegex(ValueError, "nonterminal"):
             migration.drained([{"task_id": "old", "state": "running", "evidence_path": str(evidence)}])
-        with self.assertRaisesRegex(ValueError, "confirmation"):
+        with self.assertRaisesRegex(ValueError, "upload"):
             migration.drained([{"task_id": "old", "state": "complete", "evidence_path": str(evidence)}])
-        self.assertTrue(migration.drained([{"task_id": "old", "state": "complete", "receiver_confirmed": True, "evidence_path": str(evidence)}]))
+        record = {"task_id": "old", "state": "complete", "result_uploaded": True,
+                  "result_digest": hashlib.sha256(evidence.read_bytes()).hexdigest(), "evidence_path": str(evidence)}
+        self.assertTrue(migration.drained([record]))
+        self.assertTrue(migration.drained([{**record, "state": "failed"}]))
+        evidence.write_text("changed bytes")
+        with self.assertRaisesRegex(ValueError, "changed"):
+            migration.drained([record])
+
+    def test_migration_cancelled_old_task_needs_reason_and_saved_evidence(self):
+        evidence = self.root / "cancel.json"
+        evidence.write_text('{"reason":"superseded"}')
+        record = {"task_id": "old", "state": "cancelled", "evidence_path": str(evidence)}
+        with self.assertRaisesRegex(ValueError, "reason"):
+            migration.drained([record])
+        self.assertTrue(migration.drained([{**record, "reason": "superseded"}]))
 
     def test_migration_freezes_worker_identity_and_evidence_digest(self):
         state = migration.plan("a" * 40, "b" * 40)
@@ -123,6 +138,70 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result["next_phase"], "main_ready")
         self.assertEqual(len(result["events"][0]["evidence_sha256"]), 64)
         self.assertFalse(result["production_actions_executed"])
+
+    def test_migration_verifies_upload_and_github_publication_independently(self):
+        state = migration.plan("a" * 40, "b" * 40)
+        phases = {
+            "compatibility_ready": {"receiver_accepts_v4": True, "legacy_results_display_only": True, "worker_preflight_ready": True, "worker_revision_sha": "a" * 40},
+            "main_ready": {"minimal_main_dispatch_verified": True, "main_revision_sha": "b" * 40},
+            "old_intake_stopped": {"old_intake_stopped": True},
+            "old_tasks_drained": {"inventory_complete": True, "tasks": []},
+            "poller_ready": {"old_poller_stopped": True, "new_poller_ready": True, "independent_health_ready": True, "external_watchdog_ready": True, "worker_revision_sha": "a" * 40},
+        }
+        evidence = self.root / "phase.json"
+        for phase, payload in phases.items():
+            evidence.write_text(json.dumps(payload))
+            state = migration.advance(state, phase, evidence)
+        result = self.root / "uploaded-result.json"
+        result.write_text(json.dumps({"schema": "triton-anchor-local-ci/v4", "task": {"task_id": "c" * 64, "tested_sha": "d" * 40},
+                                      "run_id": "fixture-run", "status": "pass"}))
+        identity = {"task_id": "c" * 64, "tested_sha": "d" * 40, "run_id": "fixture-run",
+                    "result_digest": hashlib.sha256(result.read_bytes()).hexdigest()}
+        payload = {"one_way_delivery_verified": True, "immutable_upload_verified": True, "github_publication_verified": True,
+                   "cancel_verified": True, "publish_retry_verified": True, "rollback_available": True,
+                   "upload": {**identity, "result_uploaded": True, "evidence_path": str(result)},
+                   "github_publication": {**identity, "pages_published": True, "comment_published": True, "github_status_published": True}}
+        evidence.write_text(json.dumps(payload))
+        complete = migration.advance(state, "verified", evidence)
+        self.assertIsNone(complete["next_phase"])
+        self.assertEqual("one-way", complete["delivery_mode"])
+        self.assertFalse(complete["production_actions_executed"])
+        for field in ("immutable_upload_verified", "github_publication_verified"):
+            evidence.write_text(json.dumps({**payload, field: False}))
+            with self.assertRaisesRegex(ValueError, "Required migration evidence"):
+                migration.advance(state, "verified", evidence)
+        bad_publication = {**payload["github_publication"], "result_digest": "0" * 64}
+        evidence.write_text(json.dumps({**payload, "github_publication": bad_publication}))
+        with self.assertRaisesRegex(ValueError, "different immutable results"):
+            migration.advance(state, "verified", evidence)
+        evidence.write_text(json.dumps({**payload, "github_publication": {**payload["github_publication"], "pages_published": False}}))
+        with self.assertRaisesRegex(ValueError, "Pages, comment and GitHub status"):
+            migration.advance(state, "verified", evidence)
+
+    def test_migration_v1_receipt_plan_cannot_be_silently_reused(self):
+        state = migration.plan("a" * 40, "b" * 40)
+        state["schema"] = "triton-anchor-local-ci-migration/v1"
+        evidence = self.root / "phase.json"
+        evidence.write_text("{}")
+        with self.assertRaisesRegex(ValueError, "recorded in order"):
+            migration.advance(state, "compatibility_ready", evidence)
+
+    def test_one_way_configuration_rejects_receipt_timeout_and_checks_retention(self):
+        config = json.loads((DEPLOY / "config.example.json").read_text())
+        self.assertNotIn("receipt_timeout_seconds", config)
+        self.assertEqual(30, config["results_retention_days"])
+        def check(name):
+            result = preflight.check_configuration(config, runtime=False, require_notifications=False)
+            return next(row for row in result["checks"] if row["check"] == name)["status"]
+        self.assertEqual("pass", check("one_way_delivery"))
+        config["receipt_timeout_seconds"] = 60
+        self.assertEqual("fail", check("one_way_delivery"))
+        del config["receipt_timeout_seconds"]
+        for value in (0, -1, True, 1.5, "30"):
+            config["results_retention_days"] = value
+            self.assertEqual("fail", check("results_retention_days"))
+        del config["results_retention_days"]
+        self.assertEqual("pass", check("results_retention_days"))
 
     def test_sessions_cannot_live_inside_trusted_worker_state(self):
         config = json.loads((DEPLOY / "config.example.json").read_text())

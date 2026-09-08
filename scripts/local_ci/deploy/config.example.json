@@ -22,7 +22,7 @@
   "codex_timeout_seconds": 21600,
   "codex_attempts": 3,
   "retry_delay_seconds": 30,
-  "receipt_timeout_seconds": 86400,
+  "results_retention_days": 30,
   "max_jobs": 8,
   "generation_retention_hours": 72,
   "minimum_free_bytes": 10737418240,

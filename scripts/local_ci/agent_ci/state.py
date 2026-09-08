@@ -1,6 +1,7 @@
 """Durable task journal. Only the trusted worker writes this database."""
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
@@ -35,9 +36,48 @@ class Journal:
                   kind TEXT NOT NULL, detail TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS outbox (
                   task_id TEXT PRIMARY KEY, payload_path TEXT NOT NULL, digest TEXT NOT NULL,
-                  attempts INTEGER NOT NULL DEFAULT 0, published REAL, receipt TEXT);
+                  attempts INTEGER NOT NULL DEFAULT 0, published REAL);
             """)
+        self._migrate_delivery()
         self.path.chmod(0o600)
+
+    @staticmethod
+    def result_status(box: dict) -> str | None:
+        """Read the sealed outcome; delivery completion is not a green result."""
+        try:
+            data = Path(box["payload_path"]).read_bytes()
+            if hashlib.sha256(data).hexdigest() != box["digest"]:
+                return None
+            document = json.loads(data)
+            return document.get("status") if isinstance(document, dict) else None
+        except (OSError, ValueError):
+            return None
+
+    def _migrate_delivery(self) -> None:
+        """Close legacy uploaded runs without inspecting GitHub acknowledgements."""
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(outbox)")}
+            if "receipt" in columns:
+                # Rebuild transactionally, including on SQLite before DROP COLUMN.
+                db.execute("CREATE TABLE outbox_delivery (task_id TEXT PRIMARY KEY, payload_path TEXT NOT NULL, digest TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, published REAL)")
+                db.execute("INSERT INTO outbox_delivery SELECT task_id,payload_path,digest,attempts,published FROM outbox")
+                db.execute("DROP TABLE outbox")
+                db.execute("ALTER TABLE outbox_delivery RENAME TO outbox")
+            for row in db.execute("SELECT * FROM tasks WHERE phase NOT IN ('complete','cancelled')").fetchall():
+                box = db.execute("SELECT * FROM outbox WHERE task_id=?", (row["task_id"],)).fetchone()
+                if box and box["published"] is not None:
+                    phase = "complete"
+                    detail = {"completion_boundary": "gitee_upload", "uploaded_at": box["published"],
+                              "result_status": self.result_status(dict(box)), "migrated": True}
+                elif row["phase"] == "awaiting_receipt" or (box and row["phase"] == "incomplete"):
+                    phase = "publishing" if box else "incomplete"
+                    detail = {"reason": "legacy_pending_upload" if box else "legacy_upload_evidence_missing", "migrated": True}
+                else:
+                    continue
+                now = time.time()
+                db.execute("UPDATE tasks SET phase=?,updated=?,detail=? WHERE task_id=?", (phase, now, canonical(detail).decode(), row["task_id"]))
+                db.execute("INSERT INTO events(task_id,at,kind,detail) VALUES(?,?,?,?)", (row["task_id"], now, "delivery_migrated", canonical(detail).decode()))
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=30)
@@ -114,12 +154,15 @@ class Journal:
 
     def queue_result(self, task_id: str, path: Path, result_digest: str) -> None:
         with self.connect() as db:
-            row = db.execute("SELECT digest FROM outbox WHERE task_id=?", (task_id,)).fetchone()
-            if row and row[0] != result_digest:
+            row = db.execute("SELECT digest,published FROM outbox WHERE task_id=?", (task_id,)).fetchone()
+            if row and row["digest"] != result_digest:
                 raise ContractError("A sealed result cannot be rewritten; resume explicitly before republishing")
+            if row and row["published"] is not None:
+                return
             db.execute("INSERT OR IGNORE INTO outbox(task_id,payload_path,digest) VALUES(?,?,?)",
                        (task_id, str(path), result_digest))
-        self.phase(task_id, "publishing")
+            db.execute("UPDATE tasks SET phase='publishing',updated=?,detail='{}' WHERE task_id=?", (time.time(), task_id))
+        self.event(task_id, "phase:publishing", {})
 
     def outbox(self, task_id: str) -> dict | None:
         with self.connect() as db:
@@ -128,31 +171,34 @@ class Journal:
 
     def published(self, task_id: str) -> None:
         with self.connect() as db:
-            db.execute("UPDATE outbox SET attempts=attempts+1,published=? WHERE task_id=?", (time.time(), task_id))
-        self.phase(task_id, "awaiting_receipt")
+            box = db.execute("SELECT * FROM outbox WHERE task_id=?", (task_id,)).fetchone()
+            if not box:
+                raise ContractError("Cannot complete delivery without a sealed outbox")
+            now = time.time()
+            uploaded_at = box["published"] if box["published"] is not None else now
+            detail = {"completion_boundary": "gitee_upload", "uploaded_at": uploaded_at,
+                      "result_status": self.result_status(dict(box))}
+            if box["published"] is None:
+                db.execute("UPDATE outbox SET attempts=attempts+1,published=? WHERE task_id=?", (uploaded_at, task_id))
+            db.execute("UPDATE tasks SET phase='complete',updated=?,detail=? WHERE task_id=?", (now, canonical(detail).decode(), task_id))
+            db.execute("INSERT INTO events(task_id,at,kind,detail) VALUES(?,?,?,?)", (task_id, now, "gitee_upload_complete", canonical(detail).decode()))
 
     def publication_failure(self, task_id: str) -> int:
         with self.connect() as db:
             db.execute("UPDATE outbox SET attempts=attempts+1 WHERE task_id=?", (task_id,))
             return db.execute("SELECT attempts FROM outbox WHERE task_id=?", (task_id,)).fetchone()[0]
 
-    def received(self, task_id: str, receipt: dict) -> None:
-        with self.connect() as db:
-            db.execute("UPDATE outbox SET receipt=? WHERE task_id=?", (canonical(receipt).decode(), task_id))
-        self.phase(task_id, "complete")
-
     def resume(self, task_id: str) -> None:
         row = self.task(task_id)
-        if row["phase"] != "incomplete":
-            raise ContractError("Only incomplete tasks can be explicitly resumed")
-        detail = json.loads(row["detail"])
-        if detail.get("reason") in {"receipt_timeout", "publication_failed"} and self.outbox(task_id):
-            box = self.outbox(task_id)
-            self.phase(task_id, "awaiting_receipt" if box["published"] else "publishing", {"resumed": True})
+        box = self.outbox(task_id)
+        if box and box["published"] is None and row["phase"] in {"publishing", "incomplete"}:
+            self.phase(task_id, "publishing", {"resumed": True, "reason": "retry_saved_upload"})
             return
+        if row["phase"] not in {"incomplete", "complete"} or (row["phase"] == "complete" and (not box or self.result_status(box) != "infra_error")):
+            raise ContractError("Only unfinished infrastructure results or pending uploads can be explicitly resumed")
         with self.connect() as db:
-            # Previous evidence remains in the journal; a new run gets a new receipt identity.
+            # Preserve evidence; resumed tests use a new immutable run identity.
             run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "-" + uuid.uuid4().hex[:8]
-            db.execute("UPDATE tasks SET run_id=?,phase='queued',updated=? WHERE task_id=?", (run_id, time.time(), task_id))
+            db.execute("UPDATE tasks SET run_id=?,phase='queued',updated=?,detail='{}' WHERE task_id=?", (run_id, time.time(), task_id))
             db.execute("DELETE FROM outbox WHERE task_id=?", (task_id,))
         self.event(task_id, "explicit_resume", {"previous_run_id": row["run_id"], "run_id": run_id})

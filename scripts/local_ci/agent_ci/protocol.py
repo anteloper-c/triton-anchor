@@ -9,7 +9,6 @@ from typing import Any
 
 TASK_SCHEMA = "triton-anchor-local-ci-task/v4"
 RESULT_SCHEMA = "triton-anchor-local-ci/v4"
-RECEIPT_SCHEMA = "triton-anchor-local-ci-receipt/v4"
 POLICY_VERSION = "impact/v4"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 ID = re.compile(r"[0-9a-f]{64}\Z")
