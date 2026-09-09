@@ -307,14 +307,6 @@ function downloadFilteredXlsx() {
 }
 
 function bindEvents() {
-  $$(".tab-button[data-view]").forEach((button) => {
-    button.addEventListener("click", () => {
-      $$(".tab-button[data-view]").forEach((item) => item.classList.toggle("active", item === button));
-      $$(".view").forEach((view) => view.classList.remove("active"));
-      $(`#${button.dataset.view}View`).classList.add("active");
-    });
-  });
-
   $("#operatorSearch").addEventListener("input", (event) => {
     state.query = event.target.value;
     state.page = 1;
@@ -350,6 +342,14 @@ function bindEvents() {
 }
 
 async function initialize() {
+  const selectedView = new URLSearchParams(window.location.search).get("view") === "performance" ? "performance" : "operators";
+  $$(".tab-button[data-view]").forEach((link) => {
+    const selected = link.dataset.view === selectedView;
+    link.classList.toggle("active", selected);
+    if (selected) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  });
+  $$(".view").forEach((view) => view.classList.toggle("active", view.id === `${selectedView}View`));
   try {
     await loadData();
     renderHeader();
