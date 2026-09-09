@@ -78,6 +78,16 @@ class DeploymentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             installer.render_units(self.config, Path("/tmp/config\nExecStart=bad"), self.root / "env")
 
+    def test_path_settings_escape_specifiers_without_shell_quotes(self):
+        config = {**self.config, "control_root": "/srv/CI files/%instance"}
+        units = installer.render_units(config, self.root / "config.json", Path("/srv/CI files/%private.env"))
+        worker = units["triton-anchor-local-ci.service"]
+        self.assertIn("\nEnvironmentFile=/srv/CI files/%%private.env\n", worker)
+        self.assertIn("\nWorkingDirectory=/srv/CI files/%%instance\n", worker)
+        for path in ("relative/path", "/tmp/a\nExecStart=bad", "/tmp/a\rvalue", "/tmp/a\x00value", "/tmp/a\\b", "/tmp/*.env", "/tmp/a "):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                installer.unit_path(path)
+
     def test_ci_user_may_have_manual_sudo_but_not_rootful_runtime_groups(self):
         config = json.loads((DEPLOY / "config.example.json").read_text())
         account = SimpleNamespace(pw_name="ci_trial", pw_gid=1001)

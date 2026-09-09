@@ -27,6 +27,13 @@ def quoted(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
 
 
+def unit_path(value: str) -> str:
+    if (not Path(value).is_absolute() or value != value.strip()
+            or any(ord(char) < 32 or ord(char) == 127 or char in "\\*?[]" for char in value)):
+        raise ValueError("Systemd path must be absolute, without control characters, escapes or globs")
+    return value.replace("%", "%%")
+
+
 def render_units(config: dict, config_path: Path, credentials_path: Path) -> dict[str, str]:
     python = quoted(config.get("python_bin", "/usr/bin/python3"))
     root = Path(config["control_root"]) / "scripts/local_ci"
@@ -35,7 +42,7 @@ def render_units(config: dict, config_path: Path, credentials_path: Path) -> dic
     if not isinstance(docker_service, str) or not __import__("re").fullmatch(r"[A-Za-z0-9_.@-]+\.service", docker_service):
         raise ValueError("Configure the actual Rootless Docker user service")
     # These settings take path tokens, not ExecStart-style quoted arguments.
-    common = (f"EnvironmentFile={str(credentials_path)}\nWorkingDirectory={str(config['control_root'])}\nUMask=0077\nNoNewPrivileges=yes\n"
+    common = (f"EnvironmentFile={unit_path(str(credentials_path))}\nWorkingDirectory={unit_path(config['control_root'])}\nUMask=0077\nNoNewPrivileges=yes\n"
               f"Environment={quoted('DOCKER_HOST=' + runtime.get('endpoint', ''))}\nUnsetEnvironment=DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH\n")
     worker = f"{python} {quoted(str(root / 'agent_ci/worker.py'))} --config {quoted(str(config_path))}"
     health = f"{python} {quoted(str(root / 'deploy/health.py'))} --config {quoted(str(config_path))} --publish"
