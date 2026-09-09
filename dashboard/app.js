@@ -86,75 +86,6 @@ function formatDuration(ms) {
   return `${value.toFixed(2)} ms`;
 }
 
-function formatElapsed(seconds) {
-  if (seconds === null || seconds === undefined || seconds === "") return "--";
-  const value = Number(seconds);
-  if (!Number.isFinite(value) || value < 0) return "--";
-  if (value < 60) return `${Math.floor(value)} 秒`;
-  if (value < 3600) return `${Math.floor(value / 60)} 分 ${Math.floor(value % 60)} 秒`;
-  const hours = Math.floor(value / 3600);
-  const minutes = Math.floor((value % 3600) / 60);
-  return `${hours} 小时 ${minutes} 分`;
-}
-
-function formatBytes(bytes) {
-  if (bytes === null || bytes === undefined || bytes === "") return "--";
-  const value = Number(bytes);
-  if (!Number.isFinite(value) || value < 0) return "--";
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let scaled = value;
-  let index = 0;
-  while (scaled >= 1024 && index < units.length - 1) {
-    scaled /= 1024;
-    index += 1;
-  }
-  const digits = index === 0 || scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2;
-  return `${scaled.toFixed(digits)} ${units[index]}`;
-}
-
-function formatCpuUsage(cpuPercent, cpuCapacity) {
-  const rawPercent = Number.parseFloat(String(cpuPercent ?? "").replace(/%$/, ""));
-  const availableCpus = Number(cpuCapacity);
-  if (!Number.isFinite(rawPercent) || rawPercent < 0) {
-    return { used: "--", utilization: "--", ratio: "--" };
-  }
-
-  const usedCpus = rawPercent / 100;
-  const used = `${usedCpus.toFixed(2)} CPU`;
-  if (!Number.isFinite(availableCpus) || availableCpus <= 0) {
-    return { used, utilization: "--", ratio: `${usedCpus.toFixed(2)} / -- CPU` };
-  }
-
-  const capacity = Number.isInteger(availableCpus) ? availableCpus.toFixed(0) : availableCpus.toFixed(2);
-  return {
-    used,
-    utilization: `${((usedCpus / availableCpus) * 100).toFixed(2)}%`,
-    ratio: `${usedCpus.toFixed(2)} / ${capacity} CPU`,
-  };
-}
-
-function shortSha(value) {
-  return value ? String(value).slice(0, 12) : "--";
-}
-
-function renderFactList(target, rows, emptyText = "暂无数据。") {
-  if (!rows.length) {
-    $(target).innerHTML = `<p class="fact-empty">${escapeHtml(emptyText)}</p>`;
-    return;
-  }
-  $(target).innerHTML = rows
-    .map(([label, value, kind]) => {
-      let rendered = escapeHtml(value === null || value === undefined || value === "" ? "--" : value);
-      if (kind === "code") {
-        rendered = `<code title="${escapeHtml(value || "")}">${escapeHtml(value || "--")}</code>`;
-      } else if (kind === "status") {
-        rendered = statusBadge(value);
-      }
-      return `<div class="fact-row"><dt>${escapeHtml(label)}</dt><dd>${rendered}</dd></div>`;
-    })
-    .join("");
-}
-
 function safeExternalUrl(value) {
   if (!value) return "";
   try {
@@ -376,9 +307,9 @@ function downloadFilteredXlsx() {
 }
 
 function bindEvents() {
-   $$(".tab-button[data-view]").forEach((button) => {
+  $$(".tab-button[data-view]").forEach((button) => {
     button.addEventListener("click", () => {
-       $$(".tab-button[data-view]").forEach((item) => item.classList.toggle("active", item === button));
+      $$(".tab-button[data-view]").forEach((item) => item.classList.toggle("active", item === button));
       $$(".view").forEach((view) => view.classList.remove("active"));
       $(`#${button.dataset.view}View`).classList.add("active");
     });
