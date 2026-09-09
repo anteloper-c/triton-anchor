@@ -123,6 +123,7 @@ class Engine:
         write_json(self.state / 'health/poller.json', record)
         if task_id:
             write_json(self.state / 'health/task.json', {**record, 'phase': phase,
+                       **(getattr(self, 'public_task', {}) if task_id == getattr(self, 'public_task_id', None) else {}),
                        'started_at': getattr(self, 'task_started', time.time())})
 
     def stop_preparation(self, profile, saved):
@@ -369,6 +370,8 @@ class Engine:
         write_json(output / 'execution.json', {'profile_id': profile['id'], 'run_id': run_id,
                    'started_at': started_at, 'phase': 'preparing'})
         self.task_started = time.time()
+        self.public_task_id = task['task_id']
+        self.public_task = {key: task.get(key) for key in ('pr_number', 'target_branch', 'head_sha', 'tested_sha')}
         preparation_error = None
         changed = []
         try:

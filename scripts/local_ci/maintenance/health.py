@@ -85,6 +85,22 @@ def collect(config, manager=None, now=None, service_runner=subprocess.run):
                 issues.append(issue("maintenance_failed", "环境重建失败，检查维护日志及回滚状态。", profile_id=profile["id"]))
         except (WorkerError, OSError, ValueError, subprocess.SubprocessError):
             issues.append(issue("docker_unavailable", "无法读取 Docker worker 状态。", profile_id=profile["id"]))
+    running = [worker for worker in workers if worker.get("running") and worker.get("container")]
+    if running:
+        try:
+            result = service_runner([config.get("docker", "docker"), "stats", "--no-stream", "--format", "{{json .}}",
+                                     *[worker["container"] for worker in running]],
+                                    timeout=15, capture_output=True, text=True,
+                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            stats = {row["Name"]: row for row in (json.loads(line) for line in result.stdout.splitlines())} if result.returncode == 0 else {}
+            for worker in running:
+                row = stats.get(worker["container"], {})
+                worker["resources"] = {key: row.get(source) for key, source in {
+                    "cpu_percent": "CPUPerc", "memory_usage": "MemUsage", "memory_percent": "MemPerc",
+                    "process_count": "PIDs", "network_io": "NetIO", "block_io": "BlockIO"}.items()}
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+            # Optional metrics failure must not turn a running worker into an offline one.
+            pass
     for service in health.get("systemd_services", []):
         try:
             result = service_runner(["systemctl", "is-active", "--quiet", service], timeout=15, capture_output=True,

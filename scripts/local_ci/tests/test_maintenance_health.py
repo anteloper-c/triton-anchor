@@ -39,6 +39,19 @@ class HealthAndNotification(unittest.TestCase):
         self.assertEqual(snapshot["issues"], [])
         self.assertNotIn("notification_config", snapshot)
 
+    def test_resources_are_sampled_together_and_missing_metrics_are_not_health_failures(self):
+        self.manager.inspect.return_value = {"running": True, "container": "worker-3"}
+        runner = Mock(return_value=Mock(returncode=0, stdout='{"Name":"worker-3","CPUPerc":"125%","MemUsage":"1GiB / 8GiB","PIDs":"7"}\n'))
+        snapshot = collect(self.config, self.manager, now=1000, service_runner=runner)
+        self.assertEqual(snapshot['workers'][0]['resources']['cpu_percent'], '125%')
+        self.assertEqual(runner.call_count, 1)
+        self.assertIn('--no-stream', runner.call_args.args[0])
+        self.manager.inspect.return_value = {"running": True, "container": "worker-3"}
+        runner.side_effect = OSError('metrics unavailable')
+        snapshot = collect(self.config, self.manager, now=1000, service_runner=runner)
+        self.assertEqual(snapshot['state'], 'healthy')
+        self.assertNotIn('resources', snapshot['workers'][0])
+
     def test_independent_watchdog_detects_whole_host_silence(self):
         snapshot = collect(self.config, self.manager, now=1000)
         self.assertEqual(evaluate(snapshot, "test-host", now=1100), [])

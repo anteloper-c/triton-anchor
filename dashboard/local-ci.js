@@ -18,30 +18,34 @@ function title(run) { return run.pr_number?'PR #'+run.pr_number+' · '+run.targe
 function reason(value) { return friendlyReasons[value]||txt(value)||'没有记录原因'; }
 function publicText(value) { let text=txt(value);for(const [id,label] of Object.entries(names))text=text.replaceAll(id+':',label+'：');for(const [message,label] of Object.entries(friendlyReasons))text=text.replaceAll(message,label);return text.replaceAll('Codex cancelled','AI 验证已取消').replaceAll('base..merge','基准提交与合并验证提交之间').replace(/\bhead\(([^)]+)\)/g,'PR 提交 $1').replace(/\bmerge\(([^)]+)\)/g,'合并验证提交 $1').replaceAll('changed_paths','影响文件列表').replaceAll('Frontend','前端').replaceAll('Backend','后端').replaceAll(' smoke','基本功能验证').replaceAll(' wheel',' wheel 包'); }
 
+function elapsed(value) { const ms=typeof value==='number'?value*1000:Date.parse(value);return Number.isFinite(ms)?(Date.now()-ms<60000?Math.max(0,Math.floor((Date.now()-ms)/1000))+' 秒':Math.max(0,Math.floor((Date.now()-ms)/60000))+' 分钟'):'未采集'; }
+function facts(parent,rows) {const list=el('dl','ci-facts');for(const [name,value] of rows){list.append(el('dt','',name),el('dd','',value??'未采集'));}parent.append(list);}
 function renderWorkers() {
-  const root=$('workers'); root.replaceChildren();
-  if(!arr(model.data.workers).length) { empty(root,'尚未收到执行服务状态。任务结果仍以被测提交对应的检查记录为准。'); return; }
+  const root=$('workers');root.replaceChildren();
+  if(!arr(model.data.workers).length){empty(root,'尚未收到执行服务状态。任务结果以对应提交的检查记录为准。');return;}
+  const phases={idle:'空闲，等待任务',preparing:'准备版本环境',running:'执行验证与审查',publishing:'发布结果',publish_pending:'结果发布待重试',completed:'最近任务已结束',cancelled:'任务已取消',failed:'任务失败',error:'服务异常'};
   for(const [index,worker] of model.data.workers.entries()) {
-    const item=el('article','ci-worker'); const head=el('div','ci-worker-head');
+    const item=el('article','ci-worker');const head=el('div','ci-worker-head');
     const heartbeat=typeof worker.heartbeat_at==='number'?worker.heartbeat_at*1000:Date.parse(worker.heartbeat_at);
     const state=!Number.isFinite(heartbeat)?'unknown':Date.now()-heartbeat>900000?'snapshot_stale':worker.state;
-    const stateLabel={healthy:'服务可用',degraded:'服务异常',offline:'服务离线',snapshot_stale:'状态已过期',unknown:'状态未知'}[state]||labels[state]||'状态未知';
-    const stateBadge=badge(state);stateBadge.textContent=stateLabel;
-    head.append(el('h3','',model.data.workers.length>1?'Local CI 执行服务 '+(index+1):'Local CI 执行服务'),stateBadge); item.append(head);
+    const stateBadge=badge(state);stateBadge.textContent={healthy:'服务可用',degraded:'服务异常',offline:'服务离线',snapshot_stale:'状态已过期',unknown:'状态未知'}[state]||'状态未知';
+    head.append(el('h3','',model.data.workers.length>1?'Local CI 执行服务 '+(index+1):'Local CI 执行服务'),stateBadge);item.append(head);
     item.append(el('p','ci-muted','状态更新时间：'+date(worker.heartbeat_at)));
-    if(state==='snapshot_stale')item.append(el('p','ci-muted','快照已超过 15 分钟，请以运维 Issue 为准。'));
-    const profiles=arr(worker.workers);
-    if(!profiles.length)item.append(el('p','ci-muted','尚无版本环境状态。'));
-    for(const profile of profiles) {
-      const profileName=(profile.profile_id||'版本环境').replace(/^triton-/i,'Triton ');
-      const profileState=profile.draining?'等待维护':profile.lease?'正在执行任务':profile.running?'已就绪，当前空闲':'当前不可用';
-      item.append(el('p','ci-muted',profileName+' · '+profileState));
-    }
-    if(arr(worker.issues).length) { const list=el('ul'); for(const issue of worker.issues)list.append(el('li','',issueMessages[issue.code]||'执行服务报告异常，请查看运维 Issue。')); item.append(list); }
-    const activeId=worker.task?.task_id;
-    const task=arr(model.data.runs).find(run=>run.task_id===activeId);
-    const taskLink=el('a','','查看任务与证据');taskLink.href=task?.pr_number?'local-ci.html?pr='+task.pr_number:'local-ci.html';item.append(taskLink);
-    const disks=arr(worker.disks);for(const disk of disks){if(Number.isFinite(disk.free_bytes)&&Number.isFinite(disk.total_bytes))item.append(el('p','ci-muted','工作磁盘可用 '+(disk.free_bytes/1073741824).toFixed(1)+' / '+(disk.total_bytes/1073741824).toFixed(1)+' GiB'));}
+    if(state==='snapshot_stale')item.append(el('p','ci-notice','快照已超过 15 分钟；以下均为当时状态，请查看运维 Issue 或最新发布数据。'));
+    const overview=el('div','ci-worker-overview');const service=section(overview,'任务接收服务');
+    facts(service,[['接收状态',phases[worker.poller?.state]||'状态未知'],['最后心跳',date(worker.poller?.heartbeat_at)],['心跳距今',elapsed(worker.poller?.heartbeat_at)]]);
+    const task=worker.task||{};const active=task.task_id&&!['completed','cancelled','failed','idle'].includes(task.state);
+    const current=section(overview,active?'当前任务':'最近任务');const recorded=arr(model.data.runs).find(run=>run.task_id===task.task_id);const identity=task.pr_number?task:recorded;
+    facts(current,[['任务',identity?(identity.pr_number?'PR #'+identity.pr_number+' · ':'')+identity.target_branch:task.task_id?'任务已接收，详细身份尚未同步':'暂无任务'],['阶段',phases[task.state]||'未采集'],['开始时间',date(task.started_at)],['最后进度',date(task.heartbeat_at)],...(active?[['已运行',elapsed(task.started_at)]]:[])]);
+    const taskLink=el('a','','查看对应任务与证据');taskLink.href=identity?.pr_number?'local-ci.html?pr='+identity.pr_number:'local-ci.html';current.append(taskLink);item.append(overview);
+    const profiles=arr(worker.workers);const environments=section(item,'版本环境与资源');const grid=el('div','ci-environments');environments.append(el('p','ci-muted','资源为采样时刻的数据；网络与磁盘 I/O 为容器累计值。容器可能共享主机资源，可用内存不能直接相加。'),grid);
+    if(!profiles.length)empty(grid,'尚无版本环境状态。');
+    for(const profile of profiles){const card=el('section','ci-environment');card.append(el('h4','',(profile.profile_id||'版本环境').replace(/^triton-/i,'Triton ')));
+      const resources=profile.resources||{};const cpu=parseFloat(resources.cpu_percent);const capacity=Number(profile.cpu_limit);const usage=Number.isFinite(cpu)?(capacity>0?(cpu/capacity).toFixed(1)+'%（'+(cpu/100).toFixed(2)+' / '+capacity+' 核）':(cpu/100).toFixed(2)+' 核（未设置容器上限）'):'未采集';
+      facts(card,[['状态',profile.draining?'等待维护':profile.lease?'正在执行任务':profile.running?'就绪，当前空闲':'不可用'],['CPU 使用',usage],['内存使用 / 可用',resources.memory_usage],['内存使用率',resources.memory_percent],['进程数量',resources.process_count],['网络收 / 发',resources.network_io],['磁盘读 / 写',resources.block_io],['容器启动',date(profile.started_at)],['重启次数',profile.restart_count],['最近环境重建',profile.rebuilt_on||'未记录'],['维护状态',profile.last_error?'维护失败，需检查日志':profile.draining?'等待已有任务结束':'未报告异常'],['内存不足终止',typeof profile.oom_killed==='boolean'?(profile.oom_killed?'有记录':'无记录'):'未采集']]);grid.append(card);}
+    const storage=section(item,'工作磁盘');if(!arr(worker.disks).length)empty(storage,'磁盘数据未采集。');
+    for(const [index,disk] of arr(worker.disks).entries()){if(Number.isFinite(disk.free_bytes)&&Number.isFinite(disk.total_bytes)&&disk.total_bytes>0)facts(storage,[['磁盘 '+(index+1)+' 可用 / 总量',(disk.free_bytes/1073741824).toFixed(1)+' / '+(disk.total_bytes/1073741824).toFixed(1)+' GiB'],['已使用',((1-disk.free_bytes/disk.total_bytes)*100).toFixed(1)+'%']]);}
+    if(arr(worker.issues).length){const faults=section(item,'需要关注');const list=el('ul');for(const issue of worker.issues)list.append(el('li','',issueMessages[issue.code]||'执行服务报告异常，请查看运维 Issue。'));faults.append(list);}
     root.append(item);
   }
 }

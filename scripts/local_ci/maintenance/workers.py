@@ -327,6 +327,11 @@ class WorkerManager:
         if info:
             self._owned(profile, info)
             state["oom_killed"] = bool(info.get("State", {}).get("OOMKilled"))
+            state["started_at"] = info.get("State", {}).get("StartedAt")
+            state["restart_count"] = info.get("RestartCount")
+            limits = info.get("HostConfig", {})
+            state["cpu_limit"] = (limits.get("NanoCpus") or 0) / 1_000_000_000 or None
+            state["memory_limit_bytes"] = limits.get("Memory") or None
         return state
 
     def _rollback(self, profile, state):
