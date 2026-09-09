@@ -8,7 +8,7 @@ It does not contain LLVM, PPL, FlagGems or preinstalled Triton/backend wheels.
 Populate an isolated build directory with this Dockerfile, the executable named
 `codex`, and `wheels/*.whl`. Download the pinned requirements plus CPU Torch
 2.8.0 from `https://download.pytorch.org/whl/cpu`, then add the supplied
-`torch_tpu-0.18.0+torch2.8-cp312-cp312-linux_x86_64.whl`. Resolve duplicates before
+`torch_tpu-0.17.0+torch2.8-cp312-cp312-linux_x86_64.whl`. Resolve duplicates before
 creating `wheels/SHA256SUMS`. BuildKit reads both wheel files and the executable
 through temporary build mounts; installation packages are not image layers.
 

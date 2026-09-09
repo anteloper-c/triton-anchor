@@ -258,15 +258,23 @@ def next_full_soft_deadline(
 
 
 def build_pytest_command(
-    selected: SelectedOperator, python_bin: str, pytest_args: str
+    selected: SelectedOperator, python_bin: str, pytest_args: str, flaggems_dir: Path
 ) -> list[str]:
+    root = flaggems_dir.resolve()
+    test_files = []
+    for entry in selected.test_files or ("tests",):
+        filename, separator, node = entry.partition("::")
+        path = (root / filename).resolve()
+        if not path.is_relative_to(root) or not path.exists():
+            raise ValueError("FlagGems test path must exist inside the source checkout")
+        test_files.append(str(path) + (separator + node if separator else ""))
     return [
         python_bin,
         "-u",
         "-m",
         "pytest",
         "-s",
-        *selected.test_files,
+        *test_files,
         "-m",
         selected.marker,
         *shlex.split(pytest_args),
@@ -285,7 +293,11 @@ def run_operator(
     started_monotonic = time.monotonic()
     log_name = f"{index:03d}-{safe_file_part(selected.op)}.log"
     log_path = log_dir / log_name
-    command = build_pytest_command(selected, args.python_bin, args.pytest_args)
+    # Upstream conftest writes result.json in cwd; the source may be a read-only mount.
+    work_dir = (log_dir / f"{index:03d}-{safe_file_part(selected.op)}-work").resolve()
+    work_dir.mkdir(parents=True, exist_ok=True)
+    command = build_pytest_command(selected, args.python_bin, args.pytest_args, flaggems_dir)
+    command += ["-o", "cache_dir=" + str(work_dir / ".pytest_cache")]
     soft_deadline = float(args.total_timeout_seconds)
     hard_deadline = float(args.full_hard_timeout_seconds)
     progress_checkpoint = 0
@@ -300,6 +312,8 @@ def run_operator(
     environment["PYTHONUNBUFFERED"] = "1"
     environment["FLAGGEMS_ROOT"] = str(flaggems_dir)
     environment["TRITON_DUMP_DIR"] = str(dump_dir)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["FLAGGEMS_CACHE_DIR"] = str(work_dir / ".flaggems")
     timeout_reason = ""
 
     print(
@@ -326,7 +340,7 @@ def run_operator(
         stream.flush()
         process = subprocess.Popen(
             command,
-            cwd=str(flaggems_dir),
+            cwd=str(work_dir),
             env=environment,
             stdout=stream,
             stderr=subprocess.STDOUT,

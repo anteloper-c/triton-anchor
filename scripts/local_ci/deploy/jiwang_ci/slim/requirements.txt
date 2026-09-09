@@ -8,3 +8,4 @@ PyYAML==6.0.3
 scikit-build-core==0.12.2
 numpy==2.5.0
 scipy==1.18.1
+transformers==5.12.1
