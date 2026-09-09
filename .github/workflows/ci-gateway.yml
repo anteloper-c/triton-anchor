@@ -131,6 +131,8 @@ on:
 permissions: {}
 
 env:
+  # Read from this workflow at the frozen worker commit, never from PR input.
+  WORKER_CONTRACT: '{"kind":"triton-anchor-ci-gateway","role":"worker","tested_revision":"merge-result","capabilities":["route","security-scan","codeql","dispatch","receive","pages","cancel","cross-branch-pr","cross-branch-push","merge-result","pr-information","basic-ci","api-compatibility","ai-orchestration","task-result"]}'
   GATEWAY_KIND: "triton-anchor-ci-gateway"
   FALLBACK_WORKER_BRANCH: ${{ vars.LOCAL_CI_FALLBACK_WORKER_BRANCH || 'ci_repo' }}
   FALLBACK_PR_ENABLED: ${{ vars.LOCAL_CI_FALLBACK_PR_ENABLED || 'true' }}
@@ -230,14 +232,14 @@ jobs:
                 const response = await github.rest.repos.getContent({
                   owner,
                   repo,
-                  path: '.github/ci-gateway-manifest.json',
+                  path: '.github/workflows/ci-gateway.yml',
                   ref: revision,
                 });
                 if (Array.isArray(response.data) || response.data.type !== 'file') {
                   return null;
                 }
                 const manifest = JSON.parse(
-                  Buffer.from(response.data.content, 'base64').toString('utf8')
+                  (Buffer.from(response.data.content, 'base64').toString('utf8').match(/^  WORKER_CONTRACT: '([^'\r\n]+)'$/m)?.[1] || '{}')
                 );
                 const compatible =
                   manifest.kind === process.env.GATEWAY_KIND &&
@@ -252,7 +254,7 @@ jobs:
                 return { ref, revision };
               } catch (error) {
                 if (error.status === 404 || error instanceof SyntaxError) {
-                  core.notice(`Branch ${ref} has no readable worker manifest.`);
+                  core.notice(`Branch ${ref} has no readable worker capability declaration.`);
                   return null;
                 }
                 throw error;
@@ -559,7 +561,7 @@ jobs:
       pull-requests: read
       statuses: write
     steps:
-      - name: Validate worker manifest and dispatch exact revision
+      - name: Validate worker capabilities and dispatch exact revision
         uses: actions/github-script@v7
         env:
           PR_NUMBER: ${{ needs.prepare-route.outputs.pr_number }}
@@ -666,19 +668,20 @@ jobs:
                 }
               };
 
-              const manifestText = await readFile('.github/ci-gateway-manifest.json');
+              const workerWorkflow = await readFile('.github/workflows/ci-gateway.yml');
+              const manifestText = workerWorkflow?.match(/^  WORKER_CONTRACT: '([^'\r\n]+)'$/m)?.[1] ?? null;
               if (manifestText === null) {
                 if (allowMissingManifest) {
                   return null;
                 }
-                throw new Error(`Worker branch ${ref} does not provide a manifest`);
+                throw new Error(`Worker branch ${ref} does not provide a worker declaration`);
               }
 
               let manifest;
               try {
                 manifest = JSON.parse(manifestText);
               } catch (error) {
-                throw new Error(`Worker manifest on ${ref} is invalid JSON: ${error.message}`);
+                throw new Error(`Worker capability declaration on ${ref} is invalid JSON: ${error.message}`);
               }
               if (allowMissingManifest && manifest.role === 'router' && manifest.kind === expectedKind) {
                 return null;
@@ -693,7 +696,7 @@ jobs:
                 manifest.tested_revision !== 'merge-result' ||
                 !Array.isArray(manifest.capabilities)
               ) {
-                throw new Error(`Worker branch ${ref} has an incompatible manifest`);
+                throw new Error(`Worker branch ${ref} has an incompatible worker declaration`);
               }
 
               const requiredCapabilities = [...baseCapabilities, ...extraCapabilities];
@@ -766,7 +769,7 @@ jobs:
                 }
                 worker = await inspectWorker(fallbackRef, false, ['cross-branch-pr']);
                 core.notice(
-                  `Target branch ${pull.base.ref} has no manifest; using fallback worker ${worker.ref}.`
+                  `Target branch ${pull.base.ref} has no worker declaration; using fallback worker ${worker.ref}.`
                 );
               }
 
@@ -957,18 +960,19 @@ jobs:
                 throw new Error(`Fallback worker ${fallbackRef} returned an invalid revision`);
               }
 
-              const manifestText = await readWorkerFile(
-                '.github/ci-gateway-manifest.json',
+              const workerWorkflow = await readWorkerFile(
+                '.github/workflows/ci-gateway.yml',
                 workerRevision
               );
+              const manifestText = workerWorkflow?.match(/^  WORKER_CONTRACT: '([^'\r\n]+)'$/m)?.[1] ?? null;
               if (manifestText === null) {
-                throw new Error(`Fallback worker ${fallbackRef} does not provide a manifest`);
+                throw new Error(`Fallback worker ${fallbackRef} does not provide a worker declaration`);
               }
               let manifest;
               try {
                 manifest = JSON.parse(manifestText);
               } catch (error) {
-                throw new Error(`Fallback worker manifest is invalid JSON: ${error.message}`);
+                throw new Error(`Fallback worker capability declaration is invalid JSON: ${error.message}`);
               }
               if (
                 manifest.kind !== process.env.GATEWAY_KIND ||
@@ -1227,17 +1231,17 @@ jobs:
               const manifestResponse = await github.rest.repos.getContent({
                 owner,
                 repo,
-                path: '.github/ci-gateway-manifest.json',
+                path: '.github/workflows/ci-gateway.yml',
                 ref: process.env.WORKER_REVISION_SHA,
               });
               if (
                 Array.isArray(manifestResponse.data) ||
                 manifestResponse.data.type !== 'file'
               ) {
-                throw new Error('Worker manifest is not a regular file');
+                throw new Error('Worker capability declaration is not a regular file');
               }
               const manifest = JSON.parse(
-                Buffer.from(manifestResponse.data.content, 'base64').toString('utf8')
+                (Buffer.from(manifestResponse.data.content, 'base64').toString('utf8').match(/^  WORKER_CONTRACT: '([^'\r\n]+)'$/m)?.[1] || '{}')
               );
               const requiredCapabilities = [
                 'pr-information',
@@ -1263,7 +1267,7 @@ jobs:
                   (capability) => !manifest.capabilities?.includes(capability)
                 )
               ) {
-                throw new Error('The running worker manifest is incompatible');
+                throw new Error('The running worker capability declaration is incompatible');
               }
 
               const meaningful = (value) => String(value || '').replace(/<!--[\s\S]*?-->/g, '').trim();
@@ -1681,17 +1685,17 @@ jobs:
               const manifestResponse = await github.rest.repos.getContent({
                 owner,
                 repo,
-                path: '.github/ci-gateway-manifest.json',
+                path: '.github/workflows/ci-gateway.yml',
                 ref: process.env.WORKER_REVISION_SHA,
               });
               if (
                 Array.isArray(manifestResponse.data) ||
                 manifestResponse.data.type !== 'file'
               ) {
-                throw new Error('Fallback worker manifest is not a regular file');
+                throw new Error('Fallback worker capability declaration is not a regular file');
               }
               const manifest = JSON.parse(
-                Buffer.from(manifestResponse.data.content, 'base64').toString('utf8')
+                (Buffer.from(manifestResponse.data.content, 'base64').toString('utf8').match(/^  WORKER_CONTRACT: '([^'\r\n]+)'$/m)?.[1] || '{}')
               );
               const requiredCapabilities = ['cross-branch-push', 'dispatch', 'receive'];
               if (
@@ -1701,7 +1705,7 @@ jobs:
                   (capability) => !manifest.capabilities?.includes(capability)
                 )
               ) {
-                throw new Error('The fallback worker manifest cannot handle cross-branch push');
+                throw new Error('The fallback worker capability declaration cannot handle cross-branch push');
               }
 
               const cleanTitle = String(

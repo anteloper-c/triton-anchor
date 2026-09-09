@@ -33,7 +33,9 @@ class GatewayContractTests(unittest.TestCase):
         cls.prechecks = (WORKFLOWS / 'local-ci-prechecks.yml').read_text(encoding='utf-8')
 
     def test_interface_carries_immutable_identity(self):
-        manifest = json.loads((ROOT / '.github/ci-gateway-manifest.json').read_text())
+        declarations = re.findall(r"^  WORKER_CONTRACT: '([^'\r\n]+)'$", self.gateway, re.M)
+        self.assertEqual(len(declarations), 1)
+        manifest = json.loads(declarations[0])
         self.assertEqual(manifest['kind'], 'triton-anchor-ci-gateway')
         self.assertIn('task-result', manifest['capabilities'])
         self.assertIn('GATEWAY_KIND: "triton-anchor-ci-gateway"', self.gateway)
