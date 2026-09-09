@@ -1,0 +1,19 @@
+name: Local CI watchdog router
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  forward:
+    if: ${{ github.repository == 'anteloper-c/triton-anchor' && (github.event_name == 'workflow_dispatch' || vars.LOCAL_CI_WATCHDOG_ENABLED == 'true') }}
+    permissions:
+      contents: read
+      issues: write
+    uses: anteloper-c/triton-anchor/.github/workflows/local-ci-watchdog.yml@ci_repo
+    secrets:
+      LOCAL_CI_HEARTBEAT_READ_TOKEN: ${{ secrets.LOCAL_CI_HEARTBEAT_READ_TOKEN }}

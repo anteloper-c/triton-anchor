@@ -63,7 +63,7 @@ jobs:
 
             const validResult =
               result &&
-              result.schema_version === 1 &&
+              result.schema === 'triton-anchor-public-api-compatibility' &&
               ['breaking', 'compatible'].includes(result.status) &&
               Array.isArray(result.changes) &&
               result.event_name === run.event &&
