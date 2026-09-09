@@ -3,6 +3,9 @@ run-name: "${{ inputs.run_title || format('Push {0} | dispatch', inputs.source_b
 
 on:
   push:
+    branches:
+      - main
+      - ci_repo
   workflow_dispatch:
     inputs:
       source_branch:
