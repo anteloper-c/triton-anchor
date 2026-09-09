@@ -381,6 +381,11 @@ def render_comment(result: dict, target_url: str, run_url: str = '') -> str:
                'error': '验证尚未完成，暂不能确认可合入。', 'cancelled': '验证已中断，暂不能确认可合入。'}
     lines = ['<!-- local-ci-result -->', '### CI 审查反馈', '',
              '**结论：' + verdict.get(result.get('conclusion'), '尚无完整结论。') + '**']
+    head_sha = result.get('head_sha', '')
+    tested_sha = result.get('tested_sha', '')
+    if SHA.fullmatch(head_sha) and SHA.fullmatch(tested_sha):
+        lines += ['', f'被测 PR 提交：`{head_sha[:12]}`；与目标分支合并后的验证提交：`{tested_sha[:12]}`。',
+                  '此评论随 PR 的最新提交更新；历史执行记录保留在 GitHub Actions 和结果页面中。']
     summary = comment_text(review.get('summary'))
     if summary:
         lines += ['', '**变更意图与审查结论**', '', summary]
@@ -441,7 +446,7 @@ def render_comment(result: dict, target_url: str, run_url: str = '') -> str:
     else:
         lines.append('- 尚未取得完整验证结论，需要补齐检查后再判断。')
     lines += ['- ' + value for value in dict.fromkeys(limitations)][:10]
-    links = [f'[完整执行报告（需要访问权限）]({target_url})']
+    links = [f'[完整执行报告]({target_url})']
     if run_url:
         links.insert(0, f'[查看 GitHub 检查记录]({run_url})')
     lines += ['', ' · '.join(links), '']

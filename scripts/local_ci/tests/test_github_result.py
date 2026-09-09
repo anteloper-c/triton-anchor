@@ -282,7 +282,8 @@ class ResultGateTests(unittest.TestCase):
 class ReceiverHTTPTests(unittest.TestCase):
     """Real HTTP requests against local fixtures; no live GitHub or Gitee writes."""
 
-    def run_receiver(self, tamper=False, missing_result=False, legacy=False, invalid_group=False, network_failure=None):
+    def run_receiver(self, tamper=False, missing_result=False, legacy=False, invalid_group=False, network_failure=None,
+                     existing_comment=False):
         task, expected, result = result_fixture()
         data = json.dumps(result).encode()
         digest = hashlib.sha256(data).hexdigest()
@@ -326,7 +327,9 @@ class ReceiverHTTPTests(unittest.TestCase):
                         content = b"__version__ = '3.0.0'\n" if name == "triton/python/triton/__init__.py" else relay[name]
                         value = {"encoding": "base64", "content": base64.b64encode(content).decode()}
                 elif path.endswith("/comments"):
-                    value = []
+                    value = ([{"id": 91, "user": {"type": "Bot"},
+                               "body": "<!-- local-ci-result -->\nold result"}]
+                             if existing_comment else [])
                 else:
                     self.send_error(404)
                     return
@@ -342,6 +345,14 @@ class ReceiverHTTPTests(unittest.TestCase):
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(b'{"id": 1}')
+
+            def do_PATCH(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                writes.append((self.path, body))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"id": 91}')
 
         with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -373,8 +384,14 @@ class ReceiverHTTPTests(unittest.TestCase):
         self.assertEqual(len([item for item in writes if "/comments" in item[0]]), 1)
         comment = next(body['body'] for path, body in writes if '/comments' in path)
         self.assertIn('https://github.com/anteloper-c/triton-anchor/actions/runs/12345', comment)
-        self.assertIn('需要访问权限', comment)
+        self.assertIn('[完整执行报告]', comment)
+        self.assertNotIn('需要访问权限', comment)
         self.assertNotIn('| --- |', comment)
+
+    def test_existing_bot_result_comment_is_updated_instead_of_duplicated(self):
+        writes = self.run_receiver(existing_comment=True)
+        comment_paths = [path for path, _ in writes if '/comments/' in path or path.endswith('/comments')]
+        self.assertEqual(comment_paths, ['/repos/anteloper-c/triton-anchor/issues/comments/91'])
 
     def test_bad_published_bytes_produce_no_remote_writes(self):
         self.assertEqual(self.run_receiver(tamper=True), [])
