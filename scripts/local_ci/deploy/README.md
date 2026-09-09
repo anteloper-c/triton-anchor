@@ -4,11 +4,13 @@
 
 ## 运行边界
 
-宿主机普通 CI 账号运行 Harness、Rootless Docker 和用户级 systemd 服务；自动任务不使用 sudo。每次任务的容器绑定 task_id/run_id 和已验证镜像摘要，Codex 与候选代码在同一任务容器的不同非 root UID 下运行。默认 identities 为 candidate=11001、base=11002、diagnostic=11003、codex=11004、read_gid=11000、codex_gid=11004；四个 UID 不得重复，Codex 私有组不能与只读共享组相同。它们是容器内身份，不要求新建宿主机 Codex 账号。只有 Harness 可通过 Docker 管理接口执行容器 UID 0 的准备/清理操作。
+宿主机普通 CI 账号运行 Harness、Rootless Docker 和用户级 systemd 服务。该账号可有人工维护用的 sudo/wheel/admin 组权限；自动任务不使用 sudo，安装器为所有 CI 服务设置 NoNewPrivileges=yes，禁止服务进程通过 setuid 提权。Rootless Docker 使用单独的用户级 daemon 服务，不把 CI 账号加入系统 docker 组。每次任务的容器绑定 task_id/run_id 和已验证镜像摘要，Codex 与候选代码在同一任务容器的不同非 root UID 下运行。默认 identities 为 candidate=11001、base=11002、diagnostic=11003、codex=11004、read_gid=11000、codex_gid=11004；四个 UID 不得重复，Codex 私有组不能与只读共享组相同。它们是容器内身份，不要求新建宿主机 Codex 账号。只有 Harness 可通过 Docker 管理接口执行容器 UID 0 的准备/清理操作。
 
 任务容器不挂载 Docker socket、完整宿主机 state、Gitee/GitHub 凭据或整个 home。公司 Codex config/auth 只进入该任务的 Codex 私有目录，候选/base/diagnostic 身份不能读取。通用诊断 MCP 的能力由可信宿主机 Harness 验证，只作用于当前任务；不是宿主机任意命令或 Docker 参数透传接口。
 
 单向交付保持不变：Codex 封存结果后结束，Harness 上传不可变 Gitee 结果成功即本地 complete；没有 receipt。Docker 故障不应阻止已有 outbox 重试上传或独立健康发布。GitHub 保持 status → comment → Pages，发布失败由 Actions 和后续接收重试处理，不触发 Codex 重跑。
+
+供服务器部署窗口使用的逐步交接材料见 [jiwang_ci/HANDOFF.md](jiwang_ci/HANDOFF.md)；该目录的配置和凭据模板有意留空实际服务器信息。
 
 ## 一次性主机准备
 

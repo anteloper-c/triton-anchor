@@ -79,3 +79,9 @@
 | 验证 | 真实本地 Git/SQLite/子进程/四 UID 文件权限测试，加外部边界模拟。测试数量、各套日志和源码摘要统一见 [本轮验收](ci_task_container_verification/verification.md)；要求映射见 [覆盖说明](ci_task_container_verification/coverage.md)。 |
 
 所有变更与报告在同一 CI_dev 本地提交中保存，用 `git log -1 -- docs/ci_task_container_verification/coverage.md` 定位。本轮不推送、部署服务器或发邮件；真实 Docker、公司模型、LLVM/厂商后端、仿真及线上发布仍须部署验收。
+
+## 2026-09-09：jiwang_ci 服务器部署交接与人工 sudo 修正
+
+用户确认 CI 用户名 jiwang_ci，其余服务器信息留空，由后续有服务器权限的窗口部署。新增 deploy/jiwang_ci/HANDOFF.md、空值配置和凭据变量模板，说明账户、Rootless、Gitee控制代码来源、镜像配方、首次PR试跑、服务、迁移与真实验收。
+
+核对发现 preflight 仍拒绝 sudo/wheel/admin 组，与用户已确认的人工维护权限不符：现允许这些组，仍拒绝 root/rootful Docker/lxd/libvirt 组；所有生成及示例 CI 服务增加 NoNewPrivileges=yes，自动任务不使用 sudo。部署回归50项通过，含组权限和所有服务限制断言；Ruff及差异检查随本提交验证。未推送、登录服务器、部署、调用模型或发信。此前581项报告对应任务容器交付源码，本补充不冒充已完成服务器验收。

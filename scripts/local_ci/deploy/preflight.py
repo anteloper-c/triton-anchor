@@ -140,8 +140,8 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
         try:
             account = pwd.getpwuid(os.getuid())
             groups = {group.gr_name for group in grp.getgrall() if account.pw_name in group.gr_mem or group.gr_gid == account.pw_gid}
-            check("ci_account_groups", not groups.intersection({"root", "docker", "sudo", "wheel", "admin", "lxd", "libvirt"}),
-                  "The CI account must not belong to rootful Docker or host administration groups")
+            check("ci_account_groups", not groups.intersection({"root", "docker", "lxd", "libvirt"}),
+                  "Manual sudo membership is allowed; root/rootful Docker/lxd/libvirt groups are not allowed for the CI runtime")
         except KeyError:
             check("ci_account_groups", False, "The ordinary CI account must be provisioned")
         for executable in (config.get("python_bin", "python3"), config.get("docker_bin", "docker"), "git", "systemctl"):

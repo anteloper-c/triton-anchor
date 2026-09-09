@@ -45,6 +45,9 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotIn("Requires=docker.service", worker)
         self.assertNotIn("BindsTo=", worker)
         self.assertNotIn("codex exec", worker)
+        for name, text in units.items():
+            if name.endswith(".service"):
+                self.assertIn("NoNewPrivileges=yes", text)
         self.assertIn("OnCalendar=*-*-* 02:00:00 Asia/Shanghai", units["triton-anchor-local-ci-environment-fixture.timer"])
         self.assertNotIn("triton-anchor-local-ci.service", units["triton-anchor-local-ci-health.service"])
 
@@ -72,6 +75,20 @@ class DeploymentTests(unittest.TestCase):
     def test_unit_path_injection_rejected(self):
         with self.assertRaises(ValueError):
             installer.render_units(self.config, Path("/tmp/config\nExecStart=bad"), self.root / "env")
+
+    def test_ci_user_may_have_manual_sudo_but_not_rootful_runtime_groups(self):
+        config = json.loads((DEPLOY / "config.example.json").read_text())
+        account = SimpleNamespace(pw_name="ci_trial", pw_gid=1001)
+        for name, expected in (("sudo", "pass"), ("wheel", "pass"), ("admin", "pass"),
+                               ("docker", "fail"), ("root", "fail"), ("lxd", "fail"), ("libvirt", "fail")):
+            with self.subTest(group=name), patch.object(preflight.pwd, "getpwuid", return_value=account), \
+                 patch.object(preflight.grp, "getgrall", return_value=[SimpleNamespace(gr_name=name, gr_gid=999, gr_mem=["ci_trial"])]), \
+                 patch.object(preflight.os, "geteuid", return_value=1001), \
+                 patch.object(preflight.shutil, "which", return_value=None), \
+                 patch.object(preflight, "runtime_status", side_effect=ValueError("No real Docker during test")):
+                report = preflight.check_configuration(config, runtime=True, require_notifications=False)
+            status = next(row['status'] for row in report['checks'] if row['check'] == 'ci_account_groups')
+            self.assertEqual(expected, status)
 
     def test_sample_fails_missing_production_values(self):
         config = json.loads((DEPLOY / "config.example.json").read_text())

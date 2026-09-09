@@ -9,6 +9,7 @@ Type=oneshot
 EnvironmentFile="/home/SET_ACTUAL_CI_USER/.config/triton-anchor-local-ci/credentials.env"
 WorkingDirectory="/opt/local-ci/control/triton-anchor"
 UMask=0077
+NoNewPrivileges=yes
 Environment="DOCKER_HOST=unix:///run/user/SET_ACTUAL_CI_UID/docker.sock"
 UnsetEnvironment=DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH
 ExecStart="/usr/bin/python3" "/opt/local-ci/control/triton-anchor/scripts/local_ci/deploy/rotate.py" --config "/home/SET_ACTUAL_CI_USER/.config/triton-anchor-local-ci/config.json" --profile "triton-3.3"
