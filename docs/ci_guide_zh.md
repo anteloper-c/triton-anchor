@@ -4,7 +4,7 @@
 
 本 CI 为 triton-anchor 的代码合入提供可追溯的验证结果与审查反馈。贡献者可以了解改动实际验证了什么、失败在哪里；审核者可以依据被测提交、检查证据和未完成项判断是否合入；维护者可以查看执行服务与版本环境状态。
 
-本文说明产品实现、设计原则、使用方式和能力边界。部署与配置见 [部署说明](../scripts/local_ci/deploy/README.md)，工具参数见 [工具说明](../scripts/local_ci/tools/README.md)，AI 编排见 [ai_ci_program.md](../scripts/local_ci/ai_ci_program.md)。操作记录与验收过程保存在仓库之外。
+本文说明产品实现、设计原则、使用方式和能力边界。部署与配置见 [部署说明](../scripts/local_ci/control/deploy/README.md)，工具参数见 [工具说明](../scripts/local_ci/tools/README.md)，AI 编排见 [ai_ci_program.md](../scripts/local_ci/ai_ci_program.md)。操作记录与验收过程保存在仓库之外。
 
 ## 整体流程
 
@@ -77,7 +77,7 @@ Dashboard 分为四个模块：
 
 正式部署目标为 Linux、Docker 和 systemd。每个 Triton 版本使用固定常驻容器，任务之间复用；每日维护在窗口内等待任务结束，再按受信配方重建并替换容器。候选代码、AI 会话、控制程序和远端凭据分别隔离，任务结束清理其进程与临时环境，保留验证证据。
 
-`main` 的 workflows 仅保留 `api-breaking-notify.yml`、`ci-gateway.yml`、`ci.yml` 和 `upstream_watch.yml`。完整 CI、嵌入 gateway 的能力声明、PR 模板和 watchdog 实现集中在 `ci_repo`；main 通过现有 gateway 的定时 job 转发健康检查。Local CI 脚本控制面集中在 `scripts/local_ci` 与 `scripts/dashboard`；`integration` 目录承载任务投递、结果接收与门禁配置入口。
+`main` 的 workflows 仅保留 `api-breaking-notify.yml`、`ci-gateway.yml`、`ci.yml` 和 `upstream_watch.yml`。完整 CI、嵌入 gateway 的能力声明、PR 模板和 watchdog 实现集中在 `ci_repo`；main 通过现有 gateway 的定时 job 转发健康检查。Local CI 脚本控制面集中在 `scripts/local_ci` 与 `scripts/dashboard`；`control/integration` 目录承载任务投递、结果接收与门禁配置入口。
 
 任务轮询为 30 秒，运行任务有效性检查为 10 秒，健康采集和发布为 60 秒。独立 watchdog 每 30 分钟检查一次，GitHub 调度可能延迟；故障类别变化或恢复才通知。通知采用 GitHub 运维 Issue 原生订阅，无需单独发件邮箱，邮件投递由订阅者的 GitHub 设置决定。
 

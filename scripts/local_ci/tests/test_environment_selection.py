@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from runtime.common import git  # noqa: E402
-from runtime.environment import EnvironmentSelectionError, resolve_profile  # noqa: E402
+from control.runtime.common import git  # noqa: E402
+from control.runtime.environment import EnvironmentSelectionError, resolve_profile  # noqa: E402
 
 
 class EnvironmentSelectionTests(unittest.TestCase):

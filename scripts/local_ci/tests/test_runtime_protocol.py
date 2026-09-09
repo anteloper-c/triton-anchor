@@ -12,11 +12,11 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from runtime.common import digest, git, read_json, write_json  # noqa: E402
-from runtime.policy import BACKEND_TOOLS, minimum_checks, validate_task  # noqa: E402
-from runtime.relay import Relay  # noqa: E402
-from runtime.report import build_result, build_source_index  # noqa: E402
-from runtime.result_paths import legacy_run_relative, run_relative  # noqa: E402
+from control.runtime.common import digest, git, read_json, write_json  # noqa: E402
+from control.runtime.policy import BACKEND_TOOLS, minimum_checks, validate_task  # noqa: E402
+from control.runtime.relay import Relay  # noqa: E402
+from control.runtime.report import build_result, build_source_index  # noqa: E402
+from control.runtime.result_paths import legacy_run_relative, run_relative  # noqa: E402
 
 
 def admitted_task():

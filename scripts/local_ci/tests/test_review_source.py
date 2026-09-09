@@ -9,9 +9,9 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime.relay import Relay
-from runtime.common import digest
-from runtime.report import build_source_index, validate_architecture_evidence, validate_source_index
+from control.runtime.relay import Relay
+from control.runtime.common import digest
+from control.runtime.report import build_source_index, validate_architecture_evidence, validate_source_index
 
 
 class FrozenSourceReviewTests(unittest.TestCase):

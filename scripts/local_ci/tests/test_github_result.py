@@ -14,7 +14,7 @@ from unittest.mock import patch
 from urllib.parse import unquote, urlparse
 
 
-GITHUB = Path(__file__).resolve().parents[1] / "integration"
+GITHUB = Path(__file__).resolve().parents[1] / "control" / "integration"
 
 
 def module(name):
@@ -26,7 +26,7 @@ def module(name):
 
 receiver = module("receive_result")
 builder = module("build_task_metadata")
-from runtime.result_paths import run_relative
+from control.runtime.result_paths import run_relative
 
 
 def admitted_task(external=False):
@@ -46,7 +46,7 @@ def result_fixture(external=False):
     values, pull = admitted_task(external)
     task = builder.build_metadata(values, pull)
     expected = {field: task[field] for field in receiver.IDENTITY}
-    control_files = {"scripts/local_ci/runtime/engine.py": "e" * 64}
+    control_files = {"scripts/local_ci/control/runtime/engine.py": "e" * 64}
     control = dict(verified=True, mode="git", actual_sha=task["worker_revision_sha"], files=control_files,
                    tree_sha256=hashlib.sha256(json.dumps(control_files, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
     container_files = {path[len('scripts/local_ci/'):]: value for path, value in control_files.items()}

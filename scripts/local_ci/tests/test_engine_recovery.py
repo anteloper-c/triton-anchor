@@ -12,10 +12,10 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from runtime.common import digest, git, read_json, write_json  # noqa: E402
-from runtime.poller import Poller  # noqa: E402
-from runtime.engine import Engine  # noqa: E402
-from runtime.result_paths import run_relative  # noqa: E402
+from control.runtime.common import digest, git, read_json, write_json  # noqa: E402
+from control.runtime.poller import Poller  # noqa: E402
+from control.runtime.engine import Engine  # noqa: E402
+from control.runtime.result_paths import run_relative  # noqa: E402
 
 
 class PublicationRecoveryTests(unittest.TestCase):
@@ -188,7 +188,7 @@ class PreparationRecoveryTests(unittest.TestCase):
     def test_long_preparation_has_internal_deadline_and_fresh_heartbeat(self):
         process = self.process()
         process.communicate.side_effect = [subprocess.TimeoutExpired('fixture', 20), ('prepared', '')]
-        with mock.patch('runtime.engine.subprocess.Popen', return_value=process) as spawn, \
+        with mock.patch('control.runtime.engine.subprocess.Popen', return_value=process) as spawn, \
              mock.patch.object(self.engine, 'stop_preparation') as stop:
             self.assertEqual(self.engine.docker_run(self.profile, 'cp', '-a', '/opt/ci-venv', '/workspace/venv'), 'prepared')
         spec = json.loads(base64.urlsafe_b64decode(spawn.call_args.args[0][-1]))
@@ -205,8 +205,8 @@ class PreparationRecoveryTests(unittest.TestCase):
         process.poll.return_value = None
         process.communicate.side_effect = [subprocess.TimeoutExpired('fixture', 20), ('', '')]
         self.engine.config['preparation_timeout'] = 5
-        with mock.patch('runtime.engine.subprocess.Popen', return_value=process), \
-             mock.patch('runtime.engine.time.monotonic', side_effect=[0, 0, 35]), \
+        with mock.patch('control.runtime.engine.subprocess.Popen', return_value=process), \
+             mock.patch('control.runtime.engine.time.monotonic', side_effect=[0, 0, 35]), \
              mock.patch.object(self.engine, 'stop_preparation') as stop:
             with self.assertRaises(subprocess.TimeoutExpired):
                 self.engine.docker_run(self.profile, 'cp', '-a', '/seed', '/target')
@@ -217,7 +217,7 @@ class PreparationRecoveryTests(unittest.TestCase):
 
     def test_unconfirmed_stop_preserves_spec_for_recovery(self):
         process = self.process(returncode=1)
-        with mock.patch('runtime.engine.subprocess.Popen', return_value=process), \
+        with mock.patch('control.runtime.engine.subprocess.Popen', return_value=process), \
              mock.patch.object(self.engine, 'stop_preparation', side_effect=RuntimeError('unreachable')):
             with self.assertRaisesRegex(RuntimeError, 'lease retained'):
                 self.engine.docker_run(self.profile, 'cp', '-a', '/seed', '/target')
@@ -283,8 +283,8 @@ class PreparationRecoveryTests(unittest.TestCase):
             self.engine.preparation_cleanup_failed = True
             raise RuntimeError('root process cleanup unconfirmed')
         with mock.patch.object(self.engine, 'docker_run', side_effect=failed_preparation) as execute, \
-             mock.patch('runtime.control.verify_control', return_value={'tree_sha256': 'fixture', 'verified': False}), \
-             mock.patch('runtime.control.verify_container_control', return_value={'verified': False}):
+             mock.patch('control.runtime.control.verify_control', return_value={'tree_sha256': 'fixture', 'verified': False}), \
+             mock.patch('control.runtime.control.verify_container_control', return_value={'verified': False}):
             output, result = self.engine.run(self.task(), self.profile)
         self.engine.manager.acquire.assert_called_once()
         self.engine.manager.release.assert_not_called()
@@ -311,8 +311,8 @@ class PreparationRecoveryTests(unittest.TestCase):
             source.write_text('changed\nsecond\nthird\n')
             raise RuntimeError('stop fixture before task execution')
         with mock.patch.object(self.engine, 'docker_run', side_effect=first_task_command), \
-             mock.patch('runtime.control.verify_control', return_value={'tree_sha256': 'fixture', 'verified': False}), \
-             mock.patch('runtime.control.verify_container_control', return_value={'verified': False}):
+             mock.patch('control.runtime.control.verify_control', return_value={'tree_sha256': 'fixture', 'verified': False}), \
+             mock.patch('control.runtime.control.verify_container_control', return_value={'verified': False}):
             output, result = self.engine.run(self.task(), self.profile)
         self.assertEqual(read_json(output / 'source-index.json'), observed[0])
         self.assertFalse(result['source_unchanged'])
@@ -336,9 +336,9 @@ class PreparationRecoveryTests(unittest.TestCase):
                     write_json(index, {'manifest_sha256': '0' * 64, 'files': {'README.md': 1}})
                 before = index.read_bytes() if index.exists() else None
                 with mock.patch.object(self.engine, 'docker_run', return_value='') as execute, \
-                     mock.patch('runtime.engine.build_source_index', side_effect=AssertionError('Must not rebuild a resume index')), \
-                     mock.patch('runtime.control.verify_control', return_value={'tree_sha256': 'fixture', 'verified': False}), \
-                     mock.patch('runtime.control.verify_container_control', return_value={'verified': False}):
+                     mock.patch('control.runtime.engine.build_source_index', side_effect=AssertionError('Must not rebuild a resume index')), \
+                     mock.patch('control.runtime.control.verify_control', return_value={'tree_sha256': 'fixture', 'verified': False}), \
+                     mock.patch('control.runtime.control.verify_container_control', return_value={'verified': False}):
                     _, result = self.engine.run(task, self.profile, resume_record=record)
                 self.assertEqual(result['conclusion'], 'error')
                 self.engine.relay.checkout.assert_not_called()

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime.broker import Broker
+from control.runtime.broker import Broker
 
 
 class BrokerStatusTests(unittest.TestCase):
@@ -29,7 +29,7 @@ class BrokerStatusTests(unittest.TestCase):
                 return {'returncode': 0, 'termination': None, 'elapsed_seconds': 1,
                         'log_sha256': 'test-digest'}
 
-            with mock.patch('runtime.broker.execute', side_effect=execute_command):
+            with mock.patch('control.runtime.broker.execute', side_effect=execute_command):
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
                     call = pool.submit(broker.invoke, 'custom_test', {'path': 'probe.py'})
                     try:

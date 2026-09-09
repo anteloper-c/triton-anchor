@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools.basic_tools import actions, runner  # noqa: E402
-from runtime.policy import minimum_checks  # noqa: E402
+from control.runtime.policy import minimum_checks  # noqa: E402
 
 FG_ROOT = ROOT / "tools" / "basic_tools" / "flaggems"
 sys.path.insert(0, str(FG_ROOT))
@@ -86,7 +86,7 @@ class ToolPlanningTests(unittest.TestCase):
 
     def test_selected_suite_nodes_stay_within_trusted_test_roots(self):
         ctx = context()
-        ctx["python_bin"] = "/opt/anchor-ci/runtime/task_python"
+        ctx["python_bin"] = "/opt/anchor-ci/control/runtime/task_python"
         selected = "tests/test_math.py::test_add"
         spec = runner.plan("backend_tests", ctx, {"paths": [selected], "keyword": "add and not slow"})
         command = spec["commands"][-2]
@@ -160,7 +160,7 @@ class ToolPlanningTests(unittest.TestCase):
 
     def test_trusted_actions_skip_task_startup_and_pass_candidate_wrapper_explicitly(self):
         ctx = context()
-        ctx.update(python_bin="/opt/anchor-ci/runtime/task_python", task_venv="/workspace/tasks/test/run/venv")
+        ctx.update(python_bin="/opt/anchor-ci/control/runtime/task_python", task_venv="/workspace/tasks/test/run/venv")
         spec = runner.plan("frontend_build", ctx)
         helper = spec["commands"][0]
         self.assertEqual(helper["argv"][:3], ["/usr/bin/python3", "-I", "-S"])

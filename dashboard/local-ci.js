@@ -75,6 +75,14 @@ function evidenceList(parent, entries) {
   parent.append(list);
 }
 
+function blockingSummary(run) {
+  const checks=arr(run.checks).filter(check=>['error','skipped','not_applicable'].includes(check.status));
+  const original=arr(run.blocking_reasons);
+  const reasons=[...new Set(original.filter(value=>!checks.some(check=>String(value).startsWith(check.id+': '))))];
+  if(original.length&&!reasons.length)reasons.push('验证未完成，执行错误和未执行项目详见下方检查结果。');
+  return reasons;
+}
+
 function renderDetail(run) {
   const root=$('taskDetail'); root.replaceChildren();
   if(!run) { empty(root,'选择一个任务以查看检查范围、审查结论和执行证据。尚无数据时不会显示通过状态。'); return; }
@@ -83,7 +91,8 @@ function renderDetail(run) {
   const links=el('div','ci-links'); for(const [label,url] of [['查看完整结果',run.result_url],['查看执行产物',run.artifacts_url]]) { const a=link(label,url); if(a)links.append(a); }root.append(links);
   const metrics=el('div','ci-metrics'); const checks=arr(run.checks); const values=[[checks.filter(c=>c.required).length,'最低必检项'],[checks.filter(c=>c.status==='passed').length,'已通过检查'],[checks.filter(c=>['skipped','not_applicable'].includes(c.status)).length,'未执行 / 不适用'],[arr(run.evidence).length,'命令执行记录']];
   for(const [value,label] of values){const box=el('div','ci-metric');box.append(el('strong','',value),el('span','',label));metrics.append(box);}root.append(metrics);
-  if(arr(run.blocking_reasons).length){const box=el('div','ci-blockers');box.append(el('h3','','阻塞原因'));const list=el('ul');for(const reason of run.blocking_reasons)list.append(el('li','',publicText(reason)));box.append(list);root.append(box);}
+  const blockers=blockingSummary(run);
+  if(blockers.length){const box=el('div','ci-blockers');box.append(el('h3','','阻塞原因'));const list=el('ul');for(const reason of blockers)list.append(el('li','',publicText(reason)));box.append(list);root.append(box);}
   if(run.source_unchanged===false)root.append(el('p','ci-notice','被测源码在执行中发生变化，当前结果不能作为对应提交的通过证据。'));
   const scope=section(root,'检查选择与执行结果');
   const policy=run.policy||{};scope.append(el('p','ci-muted',policy.docs_only?'文档变更：依规则免构建；架构审查仍需提供证据。':policy.manual_full?'维护者手动触发全量测试。':'按改动影响选择检查，并满足主机控制面规定的最低要求。'));

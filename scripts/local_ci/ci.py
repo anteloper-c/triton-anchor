@@ -11,7 +11,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('command', choices=['poll'])
     args, rest = parser.parse_known_args()
-    from runtime.poller import main as poll
+    from control.runtime.poller import main as poll
     return poll(rest)
 
 

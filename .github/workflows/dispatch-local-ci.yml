@@ -240,7 +240,7 @@ jobs:
           fi
           git checkout --detach "${TESTED_SHA}"
           git fetch --no-tags origin "${WORKER_REVISION_SHA}"
-          git show "${WORKER_REVISION_SHA}:scripts/local_ci/integration/build_task_metadata.py" > "${RUNNER_TEMP}/build-task-metadata.py"
+          git show "${WORKER_REVISION_SHA}:scripts/local_ci/control/integration/build_task_metadata.py" > "${RUNNER_TEMP}/build-task-metadata.py"
 
       - name: Push task and metadata refs to Gitee
         id: manifest

@@ -10,12 +10,12 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime.control import verify_container_control
+from control.runtime.control import verify_container_control
 
 
 class ContainerControlTests(unittest.TestCase):
     def setUp(self):
-        self.files = {'runtime/engine.py': 'a' * 64, 'tools/run_tool.py': 'b' * 64}
+        self.files = {'control/runtime/engine.py': 'a' * 64, 'tools/run_tool.py': 'b' * 64}
         self.identity = {'verified': False, 'files': {'scripts/local_ci/' + name: digest for name, digest in self.files.items()}}
         self.profile = {'container': {'name': 'fixed-worker'}}
         self.inspect = {'Id': 'c' * 64, 'State': {'Running': True},
@@ -52,7 +52,7 @@ class ContainerControlTests(unittest.TestCase):
             self.verify()
 
     def test_old_extra_or_missing_control_bytes_are_rejected(self):
-        for files in ({'runtime/engine.py': 'd' * 64}, dict(self.files, extra='e' * 64), {}):
+        for files in ({'control/runtime/engine.py': 'd' * 64}, dict(self.files, extra='e' * 64), {}):
             self.observed = {'files': files, 'mount_read_only': True}
             with self.subTest(files=files), self.assertRaises(ValueError):
                 self.verify()

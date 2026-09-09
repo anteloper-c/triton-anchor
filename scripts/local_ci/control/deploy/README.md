@@ -1,6 +1,6 @@
 # Local CI 部署
 
-本页说明服务安装；完整链路、工具选择和故障恢复见 [CI 指南](../../../docs/ci_guide_zh.md)，配置字段见 [config.example.json](../config.example.json)。模板存在不代表服务、真实后端或远端通知已经部署。
+本页说明服务安装；完整链路、工具选择和故障恢复见 [CI 指南](../../../../docs/ci_guide_zh.md)，配置字段见 [config.example.json](../../config.example.json)。模板存在不代表服务、真实后端或远端通知已经部署。
 
 ## 准备主机
 
@@ -51,7 +51,7 @@ sudo chmod 0600 /etc/anchor-ci/config.json /etc/anchor-ci/service.env
 
 health 和 maintenance 的 systemd 模板通过 `UnsetEnvironment=DEEPSEEK_API_KEY` 排除模型密钥，仅 Poller 接收；若更改 `provider.env_key`，同步调整这两个模板中的变量名。
 
-[模型目录](../etc/deepseek-models.json) 按 [DeepSeek 官方 Codex 接入文档](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/) 声明上下文与工具能力，通过受信控制目录只读挂载。目录中的简短角色说明不替代 `ai_ci_program.md`。需要其他已验证的 Responses 服务时，由维护者修改 `provider` 和对应模型目录；不配置 `provider` 时仍支持 Codex 自身的认证方式及可选 `auth_file`。不要复制桌面插件、记忆或用户配置。生产控制目录必须与任务冻结的 `worker_revision_sha` 一致，更新控制目录前先排空任务。
+[模型目录](../../deepseek-models.json) 按 [DeepSeek 官方 Codex 接入文档](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/) 声明上下文与工具能力，通过受信控制目录只读挂载。目录中的简短角色说明不替代 `ai_ci_program.md`。需要其他已验证的 Responses 服务时，由维护者修改 `provider` 和对应模型目录；不配置 `provider` 时仍支持 Codex 自身的认证方式及可选 `auth_file`。不要复制桌面插件、记忆或用户配置。生产控制目录必须与任务冻结的 `worker_revision_sha` 一致，更新控制目录前先排空任务。
 
 ## 启动服务
 
@@ -60,9 +60,9 @@ health 和 maintenance 的 systemd 模板通过 `UnsetEnvironment=DEEPSEEK_API_K
 ```sh
 sudo python3 -m scripts.local_ci.maintenance --config /etc/anchor-ci/config.json ensure
 sudo python3 -m scripts.local_ci.maintenance.health --config /etc/anchor-ci/config.json --dry-run
-sudo install -m 0644 scripts/local_ci/deploy/anchor-ci-poller.service /etc/systemd/system/
-sudo install -m 0644 scripts/local_ci/deploy/anchor-ci-health.service scripts/local_ci/deploy/anchor-ci-health.timer /etc/systemd/system/
-sudo install -m 0644 scripts/local_ci/deploy/anchor-ci-maintenance.service scripts/local_ci/deploy/anchor-ci-maintenance.timer /etc/systemd/system/
+sudo install -m 0644 scripts/local_ci/control/deploy/anchor-ci-poller.service /etc/systemd/system/
+sudo install -m 0644 scripts/local_ci/control/deploy/anchor-ci-health.service scripts/local_ci/control/deploy/anchor-ci-health.timer /etc/systemd/system/
+sudo install -m 0644 scripts/local_ci/control/deploy/anchor-ci-maintenance.service scripts/local_ci/control/deploy/anchor-ci-maintenance.timer /etc/systemd/system/
 sudo systemd-analyze verify --man=no /etc/systemd/system/anchor-ci-poller.service /etc/systemd/system/anchor-ci-health.service /etc/systemd/system/anchor-ci-health.timer /etc/systemd/system/anchor-ci-maintenance.service /etc/systemd/system/anchor-ci-maintenance.timer
 sudo systemctl daemon-reload
 sudo systemctl enable --now anchor-ci-poller.service anchor-ci-health.timer anchor-ci-maintenance.timer

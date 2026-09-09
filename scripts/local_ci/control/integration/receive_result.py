@@ -16,9 +16,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime.policy import TOOLS, minimum_checks
-from runtime.result_paths import validate_result_path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from control.runtime.policy import TOOLS, minimum_checks
+from control.runtime.result_paths import validate_result_path
 
 
 SCHEMA = "triton-anchor-local-ci-result"

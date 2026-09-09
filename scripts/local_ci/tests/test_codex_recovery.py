@@ -10,10 +10,10 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime.broker import Broker
-from runtime.codex_events import read_events
-from runtime.common import digest, execute as execute_process, read_json
-from runtime.engine import Engine
+from control.runtime.broker import Broker
+from control.runtime.codex_events import read_events
+from control.runtime.common import digest, execute as execute_process, read_json
+from control.runtime.engine import Engine
 
 
 SESSION = '01a08034-d35e-7651-8a4d-d0a9bc8e6bc1'
@@ -42,7 +42,7 @@ class RecoveryTests(unittest.TestCase):
         self.wait = mock.patch.object(self.cancelled, 'wait', side_effect=self.advance)
         self.waiter = self.wait.start()
         self.addCleanup(self.wait.stop)
-        self.monotonic = mock.patch('runtime.engine.time.monotonic', side_effect=lambda: self.clock)
+        self.monotonic = mock.patch('control.runtime.engine.time.monotonic', side_effect=lambda: self.clock)
         self.monotonic.start()
         self.addCleanup(self.monotonic.stop)
 
@@ -60,7 +60,7 @@ class RecoveryTests(unittest.TestCase):
             result['termination'] = termination
             return result
         validate = mock.Mock()
-        with mock.patch('runtime.engine.execute', side_effect=invoke):
+        with mock.patch('control.runtime.engine.execute', side_effect=invoke):
             result = self.engine.execute_codex(self.spec, ['launcher'], {}, self.root, self.cancelled, validate)
         return result, commands, timeouts, validate
 
@@ -132,7 +132,7 @@ class RecoveryTests(unittest.TestCase):
     def test_task_or_control_revalidation_prevents_another_launch(self):
         def reject():
             raise ValueError('trusted control changed')
-        with mock.patch('runtime.engine.execute', side_effect=lambda argv, log, **kw: events(log, [CAPACITY])) as invoke:
+        with mock.patch('control.runtime.engine.execute', side_effect=lambda argv, log, **kw: events(log, [CAPACITY])) as invoke:
             _, failure = self.engine.execute_codex(self.spec, [], {}, self.root, self.cancelled, reject)
         self.assertEqual(invoke.call_count, 1)
         self.assertIn('trusted control changed', failure)
@@ -228,11 +228,11 @@ class ActiveBuildRecoveryTests(unittest.TestCase):
             def fast_backoff(event, timeout=None):
                 return event.is_set() if timeout == 30 else real_wait(event, timeout)
             try:
-                with mock.patch('runtime.engine.Broker', side_effect=broker_factory), \
-                     mock.patch('runtime.engine.execute', side_effect=cli), \
-                     mock.patch('runtime.broker.execute', side_effect=local_build), \
-                     mock.patch('runtime.control.verify_control', return_value={'tree_sha256': 'fixture', 'verified': False}), \
-                     mock.patch('runtime.control.verify_container_control', return_value={'verified': False}), \
+                with mock.patch('control.runtime.engine.Broker', side_effect=broker_factory), \
+                     mock.patch('control.runtime.engine.execute', side_effect=cli), \
+                     mock.patch('control.runtime.broker.execute', side_effect=local_build), \
+                     mock.patch('control.runtime.control.verify_control', return_value={'tree_sha256': 'fixture', 'verified': False}), \
+                     mock.patch('control.runtime.control.verify_container_control', return_value={'verified': False}), \
                      mock.patch.object(engine, 'docker_run', return_value=''), \
                      mock.patch.object(engine, 'prepare_agent_home', return_value='/home/agent/.codex'), \
                      mock.patch.object(threading.Event, 'wait', new=fast_backoff):
