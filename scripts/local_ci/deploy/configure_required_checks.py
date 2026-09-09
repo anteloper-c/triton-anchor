@@ -10,10 +10,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
+import sys
 import urllib.error
 import urllib.parse
 
-from receive_result import API
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from runtime.receive_result import API
 
 
 MANAGED_NAME = "Local CI mandatory checks"

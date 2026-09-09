@@ -16,9 +16,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from control.runtime.policy import TOOLS, minimum_checks
-from control.runtime.result_paths import validate_result_path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from runtime.policy import TOOLS, minimum_checks
+from runtime.result_paths import validate_result_path
 
 
 SCHEMA = "triton-anchor-local-ci-result"
@@ -327,7 +327,7 @@ def comment_text(value) -> str:
         'required check was not completed': '必需检查尚未完成',
         'missing required check': '必需检查尚未执行，合入前需要补齐验证',
         'missing valid host command receipts': '缺少可核对的执行记录',
-        'tested tracked source changed during execution': '验证期间源码发生变化，需要重新验证',
+        'tested tracked source changed during execution': '源码一致性校验未通过，需要重新验证',
         'Codex did not submit a complete review': '审查未完成，需要重新运行',
         'no valid architecture review': '架构审查尚未完成',
         'PR intent and attributes were not reviewed': 'PR 说明与改动尚未完成核对',

@@ -93,8 +93,8 @@ class GatewayContractTests(unittest.TestCase):
         self.assertNotIn('approve-external-fork', dependencies(job(self.gateway, 'route-pull-request')))
 
     def test_metadata_and_code_are_published_atomically_by_trusted_builder(self):
-        self.assertIn('scripts/local_ci/control/integration/build_task_metadata.py', self.dispatch)
-        self.assertIn('${WORKER_REVISION_SHA}:scripts/local_ci/control/integration/build_task_metadata.py', self.dispatch)
+        self.assertIn('scripts/local_ci/runtime/build_task_metadata.py', self.dispatch)
+        self.assertIn('${WORKER_REVISION_SHA}:scripts/local_ci/runtime/build_task_metadata.py', self.dispatch)
         self.assertIn('git push --atomic --force gitee-ci', self.dispatch)
         self.assertNotIn('execution_mode=codex_only', self.dispatch)
         self.assertIn('PREFLIGHT_PASSED: ${{ inputs.preflight_passed }}', self.dispatch)
@@ -109,7 +109,7 @@ class GatewayContractTests(unittest.TestCase):
         self.assertIn("flaggems_mode: ${{ inputs.flaggems_mode || 'sample' }}", job(self.gateway, 'dispatch-push'))
 
     def test_receiver_uses_task_path_and_forwards_task_identity(self):
-        self.assertIn('scripts/local_ci/control/integration/receive_result.py', self.receive)
+        self.assertIn('scripts/local_ci/runtime/receive_result.py', self.receive)
         self.assertNotIn('scripts/local_ci/results/', self.receive)
         self.assertIn('--task-id "${TASK_ID}"', self.receive)
         self.assertIn('--worker-revision-sha "${WORKER_REVISION_SHA}"', self.receive)

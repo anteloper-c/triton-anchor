@@ -1,23 +1,35 @@
-"""Behavioral gate and real local Git transport tests; no external service calls."""
+"""Essential behavior checks for related CI responsibilities."""
 from __future__ import annotations
 
 import copy
+
 import json
+
 import subprocess
+
 import sys
+
 import tempfile
+
 import unittest
+
 from pathlib import Path
+
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-from control.runtime.common import digest, git, read_json, write_json  # noqa: E402
-from control.runtime.policy import BACKEND_TOOLS, minimum_checks, validate_task  # noqa: E402
-from control.runtime.relay import Relay  # noqa: E402
-from control.runtime.report import build_result, build_source_index  # noqa: E402
-from control.runtime.result_paths import legacy_run_relative, run_relative  # noqa: E402
 
+sys.path.insert(0, str(ROOT))
+
+from runtime.common import digest, git, read_json, write_json  # noqa: E402
+
+from runtime.policy import BACKEND_TOOLS, minimum_checks, validate_task  # noqa: E402
+
+from runtime.relay import Relay  # noqa: E402
+
+from runtime.report import build_result, build_source_index  # noqa: E402
+
+from runtime.result_paths import legacy_run_relative, run_relative  # noqa: E402
 
 def admitted_task():
     task = {"schema": "triton-anchor-local-ci-task-metadata", "repository": "anteloper-c/triton-anchor",
@@ -30,7 +42,6 @@ def admitted_task():
     task["approval"] = {"required": True, "status": "approved",
                         **{key: task[key] for key in ("head_sha", "base_sha", "tested_sha", "worker_revision_sha")}}
     return task
-
 
 class PolicyAndReportTests(unittest.TestCase):
     def setUp(self):
@@ -150,7 +161,6 @@ class PolicyAndReportTests(unittest.TestCase):
         self.task["approval"]["base_sha"] = "e" * 40
         with self.assertRaisesRegex(ValueError, "stale"):
             validate_task(self.task)
-
 
 class RealGitRelayTests(unittest.TestCase):
     def setUp(self):
@@ -289,6 +299,51 @@ class RealGitRelayTests(unittest.TestCase):
         published = json.loads(git(self.remote, "show", f"local-ci-results:{relative}/result.json"))
         self.assertEqual(published, result)
 
+import concurrent.futures
 
-if __name__ == "__main__":
-    unittest.main()
+import threading
+
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from runtime.broker import Broker
+
+class BrokerStatusTests(unittest.TestCase):
+    def test_status_does_not_wait_for_a_running_command_or_claim_it_passed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entered, finish, cancelled = threading.Event(), threading.Event(), threading.Event()
+            broker = Broker({'container': {'name': 'unused-test-worker'}},
+                {'task_id': 'status-test', 'source_dir': str(root), 'artifact_dir': str(root)},
+                {'required': [], 'not_applicable': []}, root, cancelled.is_set)
+
+            def execute_command(argv, log, **kwargs):
+                Path(log).parent.mkdir(parents=True, exist_ok=True)
+                Path(log).write_text('completed test command\n')
+                entered.set()
+                if not finish.wait(5):
+                    raise TimeoutError('test did not release the command')
+                return {'returncode': 0, 'termination': None, 'elapsed_seconds': 1,
+                        'log_sha256': 'test-digest'}
+
+            with mock.patch('runtime.broker.execute', side_effect=execute_command):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    call = pool.submit(broker.invoke, 'custom_test', {'path': 'probe.py'})
+                    try:
+                        self.assertTrue(entered.wait(2))
+                        status = pool.submit(broker.invoke, 'status', {}).result(timeout=1)
+                        self.assertEqual(status['status'], 'running')
+                        self.assertEqual(status['active_command']['tool'], 'custom_test')
+                        self.assertNotIn('checks', status)
+                        self.assertNotIn('receipts', status)
+                        cancelled.set()
+                        self.assertTrue(pool.submit(broker.invoke, 'status', {}).result(timeout=1)['cancelled'])
+                    finally:
+                        finish.set()
+                    self.assertEqual(call.result(timeout=2)['status'], 'passed')
+            status = broker.invoke('status', {})
+            self.assertEqual(status['status'], 'ready')
+            self.assertEqual(len(status['receipts']), 1)
+            self.assertEqual(status['checks']['custom_test']['status'], 'passed')
+            self.assertIsNone(broker.active_command)

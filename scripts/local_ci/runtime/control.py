@@ -16,7 +16,7 @@ CACHES = {"__pycache__", ".pytest_cache"}
 
 
 def _implementation_root() -> Path:
-    return Path(__file__).resolve().parents[4]
+    return Path(__file__).resolve().parents[3]
 
 
 def _ignored(path: Path) -> bool:

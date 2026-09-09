@@ -12,7 +12,7 @@ import sys
 from urllib.parse import quote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'local_ci'))
-from control.runtime.result_paths import iter_run_files, validate_result_path
+from runtime.result_paths import iter_run_files, validate_result_path
 
 SCHEMA = 'triton-anchor-dashboard-local-ci'
 RESULT_SCHEMA = 'triton-anchor-local-ci-result'

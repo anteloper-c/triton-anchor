@@ -13,7 +13,7 @@ import runpy
 import sys
 import sysconfig
 
-WRAPPER = '/opt/anchor-ci/control/runtime/task_python'
+WRAPPER = '/opt/anchor-ci/runtime/task_python'
 venv = Path(os.environ.get('LOCAL_CI_TASK_VENV', ''))
 if not venv.is_absolute() or venv.name != 'venv' or not venv.resolve().is_relative_to(Path('/workspace/tasks')):
     raise SystemExit('LOCAL_CI_TASK_VENV must identify the current task venv')

@@ -93,7 +93,6 @@ function renderDetail(run) {
   for(const [value,label] of values){const box=el('div','ci-metric');box.append(el('strong','',value),el('span','',label));metrics.append(box);}root.append(metrics);
   const blockers=blockingSummary(run);
   if(blockers.length){const box=el('div','ci-blockers');box.append(el('h3','','阻塞原因'));const list=el('ul');for(const reason of blockers)list.append(el('li','',publicText(reason)));box.append(list);root.append(box);}
-  if(run.source_unchanged===false)root.append(el('p','ci-notice','被测源码在执行中发生变化，当前结果不能作为对应提交的通过证据。'));
   const scope=section(root,'检查选择与执行结果');
   const policy=run.policy||{};scope.append(el('p','ci-muted',policy.docs_only?'文档变更：依规则免构建；架构审查仍需提供证据。':policy.manual_full?'维护者手动触发全量测试。':'按改动影响选择检查，并满足主机控制面规定的最低要求。'));
   const wrap=el('div','ci-table-shell'),table=el('table','ci-table'),thead=el('thead'),header=el('tr'); for(const s of ['检查','要求','结果','选择 / 未执行原因'])header.append(el('th','',s));thead.append(header);table.append(thead);const tbody=el('tbody');

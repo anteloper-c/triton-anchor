@@ -17,7 +17,7 @@ import unittest
 import uuid
 
 
-WRAPPER = Path('/opt/anchor-ci/control/runtime/task_python')
+WRAPPER = Path('/opt/anchor-ci/runtime/task_python')
 SEED = Path('/opt/ci-venv')
 SYSTEM_PYTHON = '/usr/bin/python3'
 
@@ -126,7 +126,7 @@ class TaskPythonIntegrationTests(unittest.TestCase):
 
     def test_control_plane_plan_imports_frozen_source_without_startup_hooks(self):
         sys.path.insert(0, str(WRAPPER.parents[1]))
-        from control.runtime.control_plane import plan
+        from runtime.control_plane import plan
         source = self.directory / 'control-source'
         for name in ('scripts/local_ci/tests', 'scripts/ci/tests', 'scripts/dashboard'):
             (source / name).mkdir(parents=True, exist_ok=True)

@@ -9,7 +9,7 @@ Codex 在每个 Triton 版本的固定常驻容器内理解 PR、选择工具、
 | [ai_ci_program.md](ai_ci_program.md) | Codex 的任务编排与审查要求 |
 | [config.example.json](config.example.json) | 主机受信配置示例，部署前替换实际值 |
 | [tools/README.md](tools/README.md) | 13 个基础工具、参数、依赖和适用能力 |
-| [control/deploy/README.md](control/deploy/README.md) | 常驻镜像、systemd 服务、健康发布及独立监控 |
+| [deploy/README.md](deploy/README.md) | 常驻镜像、systemd 服务、健康发布及独立监控 |
 
 ```text
 scripts/local_ci/
@@ -17,11 +17,9 @@ scripts/local_ci/
 ├── ai_ci_program.md         # Codex 编排
 ├── config.example.json      # 主机配置
 ├── deepseek-models.json     # 临时 DeepSeek 模型目录
-├── control/                 # 控制面实现
-│   ├── runtime/             # 任务执行、证据与恢复
-│   ├── integration/         # 投递、结果校验及回写
-│   ├── schemas/             # 结果和审查结构
-│   └── deploy/              # 配方和服务模板
+├── runtime/                 # 任务投递、执行、证据与结果回写
+├── schemas/                 # 结果和审查结构
+├── deploy/                  # 配方、服务模板与 GitHub 门禁配置
 ├── tools/
 │   ├── basic_tools/         # 真实可调用的基础检查
 │   ├── ai_review_tools/     # 架构与专项审查
