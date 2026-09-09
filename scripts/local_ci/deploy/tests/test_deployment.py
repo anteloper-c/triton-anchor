@@ -40,6 +40,8 @@ class DeploymentTests(unittest.TestCase):
         worker = units["triton-anchor-local-ci.service"]
         self.assertIn("agent_ci/worker.py", worker)
         self.assertIn("credentials.env", worker)
+        self.assertIn("EnvironmentFile=/", worker)
+        self.assertIn("WorkingDirectory=/", worker)
         self.assertIn("WantedBy=default.target", worker)
         self.assertNotIn("multi-user.target", worker)
         self.assertNotIn("Requires=docker.service", worker)

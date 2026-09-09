@@ -34,7 +34,8 @@ def render_units(config: dict, config_path: Path, credentials_path: Path) -> dic
     docker_service = runtime.get("service", "docker.service")
     if not isinstance(docker_service, str) or not __import__("re").fullmatch(r"[A-Za-z0-9_.@-]+\.service", docker_service):
         raise ValueError("Configure the actual Rootless Docker user service")
-    common = (f"EnvironmentFile={quoted(str(credentials_path))}\nWorkingDirectory={quoted(config['control_root'])}\nUMask=0077\nNoNewPrivileges=yes\n"
+    # These settings take path tokens, not ExecStart-style quoted arguments.
+    common = (f"EnvironmentFile={str(credentials_path)}\nWorkingDirectory={str(config['control_root'])}\nUMask=0077\nNoNewPrivileges=yes\n"
               f"Environment={quoted('DOCKER_HOST=' + runtime.get('endpoint', ''))}\nUnsetEnvironment=DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH\n")
     worker = f"{python} {quoted(str(root / 'agent_ci/worker.py'))} --config {quoted(str(config_path))}"
     health = f"{python} {quoted(str(root / 'deploy/health.py'))} --config {quoted(str(config_path))} --publish"
