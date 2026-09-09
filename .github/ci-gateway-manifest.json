@@ -1,5 +1,0 @@
-{
-  "kind": "triton-anchor-ci-gateway",
-  "role": "router",
-  "capabilities": ["route"]
-}
