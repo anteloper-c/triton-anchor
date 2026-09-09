@@ -13,6 +13,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--profile", required=True)
+    parser.add_argument("--reuse", action="store_true",
+                        help="Validate current control against matching dependencies without forcing a rebuild")
     args = parser.parse_args()
     try:
         config = json.loads(Path(args.config).read_text())
@@ -20,8 +22,10 @@ def main():
         if len(branches) != 1:
             raise ValueError("Profile name must identify one configured target branch")
         manager = EnvironmentManager(config, config["state_dir"])
-        result = manager.rotate(branches[0])
-        result["collection"] = manager.collect_retired()
+        result = (manager.ensure_image(branches[0], config["profiles"][branches[0]]["llvm_hash"])
+                  if args.reuse else manager.rotate(branches[0]))
+        if not args.reuse:
+            result["collection"] = manager.collect_retired()
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except Exception as exc:

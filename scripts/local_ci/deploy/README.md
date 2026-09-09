@@ -60,7 +60,11 @@ python3 scripts/local_ci/deploy/rotate.py --config CONFIG --profile PROFILE
 
 每日 timer 仍使用相同 profile 入口，职责已变为可信镜像更新。验证成功才晋升新镜像，已运行任务固定原摘要；缓存与镜像只按 ownership、引用关系及保留策略回收，不做全局 prune。
 
-可信控制代码构建进镜像并绑定 control_revision，不将宿主 control_root 挂载到任务容器；镜像与任务须匹配控制版本。镜像管理器保留上一有效发布，必要时可用 `python3 scripts/local_ci/environments/manager.py --config CONFIG rollback --target-branch BRANCH --release-id RELEASE_ID` 选择已验证镜像；该镜像必须仍匹配当前 profile、LLVM 和控制配方。回退不替换已有 attempt，切换后重新运行资源 probe。
+控制代码不再随依赖镜像发布。管理器从干净的 control_root Git 提交提取运行所需的 scripts、api_contract、envsetup.sh，缓存在 state_dir/environments/control-revisions/<SHA>，只读挂载到 /opt/local-ci/control；验证、任务和证据恢复容器均使用固定快照。不挂载整个宿主 checkout、.git 或私有部署配置。新任务匹配 worker_revision_sha，已有任务保留原快照，不受宿主更新影响；快照仍被任务引用时不要手工删除。
+
+日常更新控制代码后，使用 `python3 scripts/local_ci/deploy/rotate.py --config CONFIG --profile PROFILE --reuse` 复用依赖镜像并执行新版控制代码自检，不强制构建也不触发清理。路由、资源、凭据等宿主配置变更不重建镜像；基础镜像、依赖配方、prepare_commands 或构建引导程序变化仍需构建。验证命令改变仅重新验证。旧版已验证镜像在完整依赖配方一致时可以复用，其内置旧控制代码被只读快照覆盖；新构建不再 COPY 控制代码，临时构建配方也会移除。
+
+镜像管理器保留上一有效发布，必要时可用 `python3 scripts/local_ci/environments/manager.py --config CONFIG rollback --target-branch BRANCH --release-id RELEASE_ID` 选择依赖配方匹配的已验证镜像，并用当前控制代码验证。回退不替换已有 attempt，切换后重新运行资源 probe。
 
 所有 profile 的受信镜像就绪后，显式运行实际资源验证：
 
@@ -89,7 +93,7 @@ unit 回退使用 `install.py --rollback BACKUP` 审阅，再加 --apply，仍�
 
 ## 更新已有任务容器部署
 
-本次原生命令调整同时修改 Skill、宿主驱动和镜像内管理器。先停止接单并安排旧任务/会话收尾或取消，保留 outbox 和备份；从 Gitee 取得交付方提供的干净控制 SHA，重新 rotate 各 profile，再做资源 probe、正式预检和 unit 渲染。旧会话的 Skill 摘要不匹配时不得强行恢复。镜像 control_revision、运行的控制 checkout 和任务 worker_revision_sha 必须匹配，不能只改启动参数或只更新宿主代码。具体顺序见 [已有部署更新步骤](jiwang_ci/HANDOFF.md#已有部署如何更新到本版)。
+先停止接单并安排旧任务/会话收尾，保留 outbox 和备份；从 Gitee 取得干净控制 SHA，使用 rotate.py --reuse 验证现有依赖，再做资源 probe 和正式预检，最后重启 Worker。仅 unit 定义变化时重新渲染 unit。宿主 Python 进程不会自动热更新，因此不要在 Worker 运行中原地覆盖其代码。任务 worker_revision_sha 必须匹配当前控制 checkout；镜像的 control_revision 仅记录历史构建来源，不要求同步重建。旧会话的 Skill 摘要不匹配时不得强行恢复。具体顺序见 [已有部署更新步骤](jiwang_ci/HANDOFF.md#已有部署如何更新到本版)。
 
 ## 从常驻环境迁移
 

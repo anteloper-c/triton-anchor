@@ -886,67 +886,6 @@ def read_file(params):
         return {"base64": base64.b64encode(stream.read()).decode()}
 
 
-def prepare_image():
-    recipe = json.loads(Path("/opt/local-ci/image-recipe.json").read_text())
-    environment = {
-        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        **recipe["env"],
-    }
-    llvm = recipe["llvm"]
-    if llvm["mode"] == "source":
-        source = "/opt/local-ci/runtime/deps/llvm-source/llvm"
-        build = "/opt/local-ci/runtime/deps/llvm-build"
-        arguments = llvm.get(
-            "cmake_args",
-            [
-                "-G",
-                "Ninja",
-                "-DCMAKE_BUILD_TYPE=Release",
-                "-DLLVM_ENABLE_PROJECTS=mlir;clang;lld",
-                "-DLLVM_TARGETS_TO_BUILD=host;NVPTX;AMDGPU",
-            ],
-        )
-        subprocess.run(
-            [
-                "cmake",
-                "-S",
-                source,
-                "-B",
-                build,
-                *arguments,
-                "-DCMAKE_INSTALL_PREFIX=" + environment["LLVM_BUILD_DIR"],
-            ],
-            check=True,
-            env=environment,
-        )
-        subprocess.run(
-            [
-                "cmake",
-                "--build",
-                build,
-                "--target",
-                "install",
-                "--parallel",
-                str(recipe.get("build_jobs", 8)),
-            ],
-            check=True,
-            env=environment,
-        )
-        shutil.rmtree(build)
-        shutil.rmtree("/opt/local-ci/runtime/deps/llvm-source")
-    for command in recipe.get("prepare_commands", []):
-        subprocess.run(
-            command, check=True, env=environment, cwd="/opt/local-ci/runtime"
-        )
-    # Docker COPY preserves host umask; every non-root role must be able to
-    # read trusted image dependencies, without gaining write permission.
-    for root in (Path("/opt/local-ci/runtime"), Path("/opt/local-ci/control")):
-        for path in [root, *walk(root)]:
-            mode = path.stat().st_mode
-            own(path, 0, 0, 0o755 if path.is_dir() or mode & 0o111 else 0o644)
-    return {"prepared": True}
-
-
 def task_usage():
     return {
         "bytes": sum(
@@ -972,9 +911,7 @@ def main():
     if os.geteuid() != 0:
         raise ValueError("Management helper requires container namespace UID 0")
     params = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
-    if operation == "prepare-image":
-        result = prepare_image()
-    elif operation in {"init", "deploy-session"}:
+    if operation in {"init", "deploy-session"}:
         payload = json.load(sys.stdin)
         result = init_task(payload) if operation == "init" else deploy_session(payload)
     elif operation == "import-checkout":

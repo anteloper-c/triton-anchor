@@ -345,7 +345,7 @@ systemctl --user list-timers --all 'triton-anchor-local-ci*'
 | `runtime_probe` 缺失或过期 | 资源/配置/控制提交和活动镜像是否变化 | 镜像需要更新时先 rotate，再执行 --probe-runtime 与正式预检。 |
 | 安装失败：凭据权限或 Gitee/health 缺失 | 文件归属/600 权限、当前进程是否已加载 EnvironmentFile | 第 4 步补齐，再做正式预检和安装；SMTP 全空不算失败。 |
 | unit 已安装但没有任务日志 | `ActiveState`，本轮是否仍处于未启用状态 | 本轮 inactive 属于预期，不为制造日志而启动 Worker。 |
-| 更新后仍显示 read-only 或原生命令不可用 | 宿主控制 SHA、镜像 control_revision、实际 Codex CLI 能力 | 按下方更新步骤准备匹配版本；不只改 unit 或公司配置来源。 |
+| 更新后仍显示 read-only 或原生命令不可用 | 宿主控制 SHA、任务 control_snapshot、实际 Codex CLI 能力 | 按下方步骤更新控制代码并 --reuse 验证；不只改 unit 或公司配置来源。 |
 | 原生 Python/JIT 缺库，但正式工具能运行 | 原生 venv 是否已安装候选 wheel，是否加载 environment_setup，库路径是否指向探索 backend | 在任务副本中初始化和排障；不用实验结果替代正式检查，也不修改正式目录权限。 |
 | 原生证据导出失败，任务数据未回收 | 私有 native 记录的 export.json、环境事件和工作区健康状态 | 修复空间/权限/容器可达性后让恢复逻辑补导出；不先删除数据卷。 |
 
@@ -379,12 +379,12 @@ ls -lt "$CI_STATE/environments/image-logs"
 
 ## 已有部署如何更新到本版
 
-仅在后续明确安排升级时执行；当前部署窗口仍只安装、不接单。升级需要更新可信控制代码和匹配的 CI 镜像，不能只改 Codex 参数或复用旧运行容器。
+仅在后续明确安排升级时执行；当前部署窗口仍只安装、不接单。控制代码和宿主部署配置独立于依赖镜像更新，不再每改一次控制代码就重建镜像。
 
 1. 先安排旧任务收尾，停止接单，备份控制版本、私有配置、state/outbox 和必要任务数据。Skill 摘要已变，旧会话不能用新版规则强行 resume；未完成任务在其匹配版本收尾，或明确取消后重新投递。
 2. 从交付方的 Gitee ref 取得干净、完整 SHA 的控制 checkout。保留公司 provider/model/auth；核对配置字段，不覆盖已有私有文件。GitHub 投递的 worker_revision_sha 也须匹配，由交付方负责协调，服务器窗口不访问 GitHub。
-3. 按第 5 步为各 profile 重新 rotate，生成包含新版 Harness/MCP/容器管理代码的镜像，再运行资源 probe 和正式预检。仅更新宿主文件不会更新镜像内控制代码。
-4. 按第 6 步重新渲染并审阅用户 unit，记录备份和新版本；本轮仍保持未启用。回退时恢复匹配的代码、配置、状态和镜像，不能仅恢复旧 unit 或某个沙箱参数。
+3. 使用 `"$CI_PYTHON" "$CI_CONTROL/scripts/local_ci/deploy/rotate.py" --config "$CI_CONFIG" --profile triton-3.0 --reuse` 复用依赖并验证新版控制代码，再运行资源 probe 和正式预检。控制代码快照自动放在 state_dir/environments/control-revisions/<SHA>，只读挂载到 /opt/local-ci/control；已有任务保留旧快照。路由、资源、凭据等宿主配置不进镜像。基础镜像、依赖配方、prepare_commands 或构建引导改变时仍会构建；不带 --reuse 的 rotate 继续表示主动轮换。
+4. 仅 unit 定义变化时按第 6 步重新渲染并审阅，记录备份和新版本；本轮仍保持未启用。后续接单窗口需重启 Worker 才会加载新版 Python 代码和配置，不能在运行中覆盖其控制 checkout。回退时恢复匹配的代码、配置和必要状态，依赖配方没变可复用镜像，不删除仍被任务引用的控制快照。
 
 ## 部署窗口的最终交付
 

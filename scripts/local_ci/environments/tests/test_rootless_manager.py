@@ -231,12 +231,134 @@ class RootlessManagerTest(unittest.TestCase):
             self.config, self.root / "state", runner=self.fake
         )
         self.task = {
+            "worker_revision_sha": subprocess.check_output(
+                ["git", "-C", str(control), "rev-parse", "HEAD"]).decode().strip(),
             "task_id": "d" * 64,
             "target_branch": "release/3.1",
             "llvm_hash": self.sha,
             "tested_sha": "e" * 40,
             "base_sha": "f" * 40,
         }
+
+    def commit_control_update(self):
+        root = Path(self.config["control_root"])
+        (root / "scripts/local_ci/trusted.py").write_text("# next trusted revision\n")
+        for args in (("add", "."), ("-c", "user.name=Fixture", "-c",
+                     "user.email=fixture@example.invalid", "commit", "-qm", "update")):
+            subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+        return subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"]).decode().strip()
+
+    def test_control_updates_revalidate_without_rebuilding_and_pin_old_attempt(self):
+        first = self.acquire()
+        old_source = Path(first["control_snapshot"]["source"])
+        revision = self.commit_control_update()
+        second = self.acquire({**self.task, "task_id": "2" * 64, "worker_revision_sha": revision})
+        self.assertEqual(first["image_id"], second["image_id"])
+        self.assertNotEqual(first["control_snapshot"], second["control_snapshot"])
+        self.assertEqual(second["control_revision"], revision)
+        self.assertEqual((old_source / "scripts/local_ci/trusted.py").read_text(), "# trusted fixture\n")
+        self.assertEqual(sum(c[3] == "build" for c in self.fake.commands), 1)
+        self.assertEqual(sum("local-ci.kind=image-validation" in c for c in self.fake.commands), 2)
+        self.assertEqual(self.manager.recover_task(first)["status"], "same_attempt")
+
+    def test_control_and_validation_do_not_enter_dependency_context(self):
+        context = self.root / "context"
+        context.mkdir()
+        self.manager._build_context(self.manager._profile("release/3.1", self.sha), context)
+        self.assertFalse((context / "control").exists())
+        self.assertTrue((context / "image_prepare.py").is_file())
+        recipe = json.loads((context / "image-recipe.json").read_text())
+        self.assertNotIn("control_revision", recipe)
+        self.assertNotIn("validation_commands", recipe)
+
+    def test_config_routing_and_validation_changes_do_not_rebuild_dependencies(self):
+        first = self.manager.ensure_image("release/3.1", self.sha)
+        self.config["branch_profiles"] = {"CI_dev": "release/3.1"}
+        self.config["resources"]["cpus"] = 4
+        profile = self.config["profiles"]["release/3.1"]
+        profile["daily_calendar"] = "*-*-* 06:00:00"
+        profile["validation_commands"]["environment"] = ["new-environment-validation"]
+        second = self.manager.ensure_image("release/3.1", self.sha)
+        self.assertEqual(first["image_id"], second["image_id"])
+        self.assertTrue(any("new-environment-validation" in c for c in self.fake.commands))
+        profile["image"] = "sha256:" + "c" * 64
+        third = self.manager.ensure_image("release/3.1", self.sha)
+        self.assertNotEqual(second["image_id"], third["image_id"])
+
+    def test_control_mounts_are_readonly_and_bound_to_registry(self):
+        handle = self.acquire()
+        creates = [c for c in self.fake.commands if c[3] == "create"]
+        self.assertTrue(all(runtime.control_mount_arguments(handle["control_snapshot"])[1] in c for c in creates))
+        with self.assertRaisesRegex(EnvironmentError, "trusted registry"):
+            self.manager._verify({**handle, "control_snapshot": {**handle["control_snapshot"], "source": "/tmp/wrong"}})
+        mount = next(m for m in self.fake.containers[handle["container_id"]]["Mounts"]
+                     if m["Destination"] == runtime.CONTROL_TARGET)
+        mount["RW"] = True
+        with self.assertRaisesRegex(EnvironmentError, "Control snapshot mount"):
+            self.manager.recover_task(handle)
+
+    def test_changed_snapshot_is_rejected(self):
+        handle = self.acquire()
+        (Path(handle["control_snapshot"]["source"]) / "scripts/local_ci/trusted.py").write_text("changed")
+        with self.assertRaisesRegex(EnvironmentError, "snapshot"):
+            self.manager.recover_task(handle)
+        with self.assertRaisesRegex(EnvironmentError, "snapshot"):
+            self.manager._control_snapshot(handle["control_revision"])
+
+    def test_task_control_revision_mismatch_fails_before_build(self):
+        with self.assertRaisesRegex(EnvironmentError, "worker_revision_sha"):
+            self.acquire({**self.task, "worker_revision_sha": "0" * 40})
+        self.assertFalse(self.fake.images)
+
+    def test_snapshot_excludes_untracked_files_and_rejects_escaping_links(self):
+        root = Path(self.config["control_root"])
+        (root / "secrets").mkdir()
+        (root / "secrets/auth.json").write_text("private fixture")
+        snapshot = self.manager._control_snapshot(self.task["worker_revision_sha"])
+        self.assertFalse((Path(snapshot["source"]) / "secrets").exists())
+        self.assertFalse((Path(snapshot["source"]) / ".git").exists())
+        (root / "scripts/local_ci/escape").symlink_to("/etc/passwd")
+        revision = self.commit_control_update()
+        with self.assertRaisesRegex(EnvironmentError, "absolute target"):
+            self.manager._control_snapshot(revision)
+
+    def test_legacy_image_is_adopted_only_after_mounted_control_validation(self):
+        first = self.manager.ensure_image("release/3.1", self.sha)
+        state = self.manager._load()
+        row = state["images"][first["release_id"]]
+        row["recipe_digest"] = runtime.fingerprint([
+            self.manager._profile("release/3.1", self.sha), self.manager.uids, self.manager.gids])
+        row.pop("control_delivery")
+        row.pop("validation_digest")
+        self.manager._save(state)
+        revision = self.commit_control_update()
+        second = self.manager.ensure_image("release/3.1", self.sha)
+        self.assertEqual(first["image_id"], second["image_id"])
+        self.assertEqual(second["validation"]["control_revision"], revision)
+        self.assertEqual(second["control_delivery"], "snapshot-mount-legacy-image")
+        self.assertEqual(self.manager.ensure_image("release/3.1", self.sha)["image_id"], first["image_id"])
+        self.assertEqual(sum(c[3] == "build" for c in self.fake.commands), 1)
+
+    def test_failed_new_control_validation_does_not_rebuild_or_record_pass(self):
+        first = self.manager.ensure_image("release/3.1", self.sha)
+        self.commit_control_update()
+        self.fake.fail_check = "validate-frontend_smoke"
+        with self.assertRaises(EnvironmentError):
+            self.manager.ensure_image("release/3.1", self.sha)
+        row = self.manager._load()["images"][first["release_id"]]
+        self.assertEqual(row["validation_digest"], first["validation_digest"])
+        self.assertEqual(sum(c[3] == "build" for c in self.fake.commands), 1)
+
+    def test_revalidation_cleanup_failure_blocks_new_work(self):
+        first = self.manager.ensure_image("release/3.1", self.sha)
+        self.commit_control_update()
+        self.fake.fail_stop = True
+        with self.assertRaises(EnvironmentError):
+            self.manager.ensure_image("release/3.1", self.sha)
+        row = self.manager._load()["images"][first["release_id"]]
+        self.assertFalse(row["validation_cleanup_confirmed"])
+        with self.assertRaisesRegex(EnvironmentError, "stop is unconfirmed"):
+            self.manager.ensure_image("release/3.1", self.sha)
 
     def test_offline_foundation_tag_must_match_pinned_digest(self):
         profile = self.config["profiles"]["release/3.1"]
@@ -358,7 +480,8 @@ class RootlessManagerTest(unittest.TestCase):
         del self.fake.containers[handle["container_id"]]
         self.assertEqual(self.manager.task_usage(handle), 99)
         recovery = self.fake.containers[self.manager.generations()[handle["attempt_id"]]["recovery_container_id"]]
-        self.assertEqual({m["Destination"] for m in recovery["Mounts"]}, {"/task", "/codex"})
+        self.assertEqual({m["Destination"] for m in recovery["Mounts"]},
+                         {"/task", "/codex", runtime.CONTROL_TARGET})
 
     def test_dependency_configuration_rejects_unsafe_or_mutable_mounts(self):
         profile, source = self.mounted_llvm()
@@ -475,7 +598,8 @@ class RootlessManagerTest(unittest.TestCase):
         recovered = self.fake.containers[row["recovery_container_id"]]
         self.assertFalse(recovered["State"]["Running"])
         self.assertEqual(
-            {m["Destination"] for m in recovered["Mounts"]}, {"/task", "/codex"}
+            {m["Destination"] for m in recovered["Mounts"]},
+            {"/task", "/codex", runtime.CONTROL_TARGET}
         )
         self.assertFalse(recovered["Mounts"][0]["RW"])
         self.assertEqual(

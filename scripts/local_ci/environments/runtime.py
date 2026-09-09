@@ -41,6 +41,10 @@ from .dependency_mounts import (
     validate_mounted_llvm,
     verify_mounts,
 )
+from .control_mount import (
+    CONTROL_TARGET, snapshot_control, verify_snapshot,
+    mount_arguments as control_mount_arguments, verify_mount as verify_control_mount,
+)
 
 SCHEMA = "triton-anchor-local-ci-environments/v2"
 HELPER = "/opt/local-ci/control/scripts/local_ci/environments/container_fs.py"
@@ -377,6 +381,12 @@ class EnvironmentManager:
         )
         if not NAME_RE.fullmatch(profile["name"]):
             raise EnvironmentError("Unsafe profile name")
+        profile["control_revision"] = self._control_revision()
+        return profile
+
+    def _control_revision(self):
+        if self.config.get("container_control_root", CONTROL_TARGET) != CONTROL_TARGET:
+            raise EnvironmentError("Container control root must be " + CONTROL_TARGET)
         root = self.config["control_root"]
         sha = self._run(["git", "-C", root, "rev-parse", "HEAD"]).decode().strip()
         dirty = self._run(
@@ -390,18 +400,31 @@ class EnvironmentManager:
                 "--porcelain",
                 "--untracked-files=normal",
                 "--",
-                "scripts/local_ci",
-                "scripts/ci",
+                "scripts",
+                "envsetup.sh",
                 "api_contract",
                 ".github",
             ]
         )
         if not SHA_RE.fullmatch(sha) or dirty:
             raise EnvironmentError(
-                "Image recipes must use the clean committed control revision"
+                "Runtime must use the clean committed control revision"
             )
-        profile["control_revision"] = sha
-        return profile
+        return sha
+
+    def _control_snapshot(self, revision):
+        return snapshot_control(self.config["control_root"], revision,
+                                self.directory / "control-revisions", self._run)
+
+    def _recipe_digest(self, profile):
+        dependency_recipe = {k: v for k, v in profile.items()
+                             if k not in {"control_revision", "validation_commands", "daily_calendar"}}
+        builder = [file_digest(Path(__file__).with_name(name))
+                   for name in ("Dockerfile", "image_prepare.py")]
+        return fingerprint([dependency_recipe, self.uids, self.gids, builder])
+
+    def _validation_digest(self, profile):
+        return fingerprint([profile["control_revision"], profile.get("validation_commands", {})])
 
     def _download(self, source, digest):
         safe_source(source, "Dependency")
@@ -510,18 +533,7 @@ class EnvironmentManager:
             if not NAME_RE.fullmatch(name) or name == "deps":
                 raise EnvironmentError("Unsafe repository directory")
             self._checkout(entry["repository"], entry["commit"], payload / name)
-        control = Path(self.config["control_root"])
-        shutil.copytree(
-            control / "scripts",
-            root / "control/scripts",
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-        )
-        for name in ("envsetup.sh", "api_contract"):
-            source = control / name
-            if source.is_dir():
-                shutil.copytree(source, root / "control" / name)
-            elif source.is_file():
-                shutil.copyfile(source, root / "control" / name)
+        shutil.copyfile(Path(__file__).with_name("image_prepare.py"), root / "image_prepare.py")
         shutil.copyfile(Path(__file__).with_name("Dockerfile"), root / "Dockerfile")
         env, old = {}, profile.get("workspace_container", "/workspace")
         for key, value in profile.get("env", {}).items():
@@ -542,7 +554,11 @@ class EnvironmentManager:
             LOCAL_CI_LLVM_HASH=sha,
             RUN_BACKEND_STAGES="true" if profile.get("backend_enabled") else "false",
         )
-        atomic_json(root / "image-recipe.json", {**profile, "env": env})
+        atomic_json(root / "image-recipe.json", {
+            "llvm": profile["llvm"], "env": env,
+            "build_jobs": profile.get("build_jobs", 8),
+            "prepare_commands": profile.get("prepare_commands", []),
+        })
         return env
 
     def _stop_owned(self, ident, attempt=None, kind="task"):
@@ -582,6 +598,7 @@ class EnvironmentManager:
             raise EnvironmentError(
                 "Image release needs actual frontend/backend validation commands"
             )
+        control = self._control_snapshot(profile["control_revision"])
         container = (
             self._docker(
                 "create",
@@ -594,6 +611,7 @@ class EnvironmentManager:
                 "--label",
                 "local-ci.kind=image-validation",
                 *self._limits(),
+                *control_mount_arguments(control),
                 *mount_arguments(dependency_mounts(self.config, profile, verify_content=True)),
                 ident,
             )
@@ -602,6 +620,7 @@ class EnvironmentManager:
         )
         self._validation_container = container
         try:
+            verify_control_mount(self._inspect(container), control)
             verify_mounts(self._inspect(container), profile.get("mounts", []))
             self._docker("start", container)
             prefix = ["exec"]
@@ -651,7 +670,9 @@ class EnvironmentManager:
             for check in [*order, *sorted(set(commands) - set(order))]:
                 self._docker(*prefix, *commands[check])
             dependency_mounts(self.config, profile, verify_content=True)
+            verify_snapshot(control)
             return dict(
+                control_revision=profile["control_revision"],
                 checks=sorted(commands),
                 imports="verified",
                 ppl=bool(profile.get("backend_enabled")),
@@ -672,13 +693,35 @@ class EnvironmentManager:
             raise EnvironmentError("Local foundation tag does not match the pinned image digest")
         return local
 
+    def _revalidate_image(self, row, profile, state):
+        if row.get("validation_digest") == self._validation_digest(profile):
+            return
+        logs = self.directory / "image-logs"
+        logs.mkdir(exist_ok=True)
+        self._image_log = logs / ("revalidate-" + uuid.uuid4().hex + ".log")
+        self._image_log.touch(mode=0o600)
+        row["validation_log_path"] = str(self._image_log)
+        self._save(state)
+        try:
+            proof = self._validate_image(row["image_id"], profile, row["env"])
+            row.update(validation=proof, validated_at=utc_now(),
+                       validation_digest=self._validation_digest(profile))
+        except BaseException:
+            if getattr(self, "_validation_container", None):
+                row.update(validation_container_id=self._validation_container,
+                           validation_cleanup_confirmed=False)
+            self._save(state, "image_revalidation_failed", release_id=row["release_id"])
+            raise
+        finally:
+            self._image_log = None
+
     def ensure_image(self, target_branch, llvm_hash, *, force=False):
         with self._lock(True), self._lock():
             daemon = self._daemon()
             state = self._load()
             self._safe(state)
             profile = self._profile(target_branch, llvm_hash)
-            digest = fingerprint([profile, self.uids, self.gids])
+            digest = self._recipe_digest(profile)
             active_id = state["active_images"].get(target_branch)
             candidates = sorted(
                 state["images"].values(),
@@ -690,14 +733,30 @@ class EnvironmentManager:
                 reverse=True,
             )
             for row in candidates:
+                # Adopt a verified legacy image only when its complete old recipe
+                # differs by control SHA alone. Keep its original build provenance.
+                legacy_match = (
+                    not row.get("control_delivery")
+                    and row["recipe_digest"] == fingerprint([
+                        {**profile, "control_revision": row.get("control_revision")},
+                        self.uids, self.gids,
+                    ])
+                )
                 if (
                     not force
-                    and row["recipe_digest"] == digest
+                    and (row["recipe_digest"] == digest
+                         or row.get("compatibility_recipe_digest") == digest or legacy_match)
                     and row["validated"]
                     and row.get("daemon_id") == daemon
                     and row["state"] != "quarantined"
                 ):
                     self._inspect(row["image_id"], True)
+                    self._revalidate_image(row, profile, state)
+                    if legacy_match:
+                        row.update(compatibility_recipe_digest=digest,
+                                   control_delivery="snapshot-mount-legacy-image")
+                    self._save(state, "image_reused", release_id=row["release_id"],
+                               control_revision=profile["control_revision"])
                     return copy.deepcopy(row)
             release = digest[:24] + "-" + uuid.uuid4().hex[:8]
             row = dict(
@@ -713,6 +772,7 @@ class EnvironmentManager:
                 backend_enabled=bool(profile.get("backend_enabled")),
                 daemon_id=daemon,
                 control_revision=profile["control_revision"],
+                control_delivery="snapshot-mount",
                 dependency_mounts=copy.deepcopy(profile.get("mounts", [])),
             )
             state["images"][release] = row
@@ -756,6 +816,7 @@ class EnvironmentManager:
                         validated=True,
                         validated_at=utc_now(),
                         validation=proof,
+                        validation_digest=self._validation_digest(profile),
                         environment_fingerprint=fingerprint([digest, image_id]),
                     )
                     if llvm_hash == self.config["profiles"][target_branch]["llvm_hash"]:
@@ -835,11 +896,12 @@ class EnvironmentManager:
                 or not row.get("validated")
                 or row.get("state") != "ready"
                 or row.get("daemon_id") != daemon
-                or row.get("recipe_digest")
-                != fingerprint([profile, self.uids, self.gids])
+                or self._recipe_digest(profile) not in {
+                    row.get("recipe_digest"), row.get("compatibility_recipe_digest")
+                }
             ):
                 raise EnvironmentError(
-                    "Rollback requires a validated image with the current profile, LLVM and control recipe"
+                    "Rollback requires a validated image with the current dependency recipe"
                 )
             info = self._inspect(row["image_id"], True)
             if (
@@ -847,6 +909,7 @@ class EnvironmentManager:
                 != self.owner
             ):
                 raise EnvironmentError("Rollback image ownership differs")
+            self._revalidate_image(row, profile, state)
             previous = state["active_images"].get(target_branch)
             if previous and previous != release_id:
                 state.setdefault("previous_images", {})[target_branch] = previous
@@ -867,10 +930,14 @@ class EnvironmentManager:
         # Resolve only the environment; the frozen task identity is unchanged.
         mappings = validate_branch_profiles(self.config)
         profile_branch = mappings.get(task["target_branch"], task["target_branch"])
+        revision = self._control_revision()
+        if task.get("worker_revision_sha") != revision:
+            raise EnvironmentError("Task worker_revision_sha differs from installed control revision")
         image = self.ensure_image(profile_branch, task["llvm_hash"])
         with self._lock(True), self._lock():
             state = self._load()
             self._safe(state)
+            control = self._control_snapshot(revision)
             ident, name = uuid.uuid4().hex, "local-ci-task-" + uuid.uuid4().hex
             host = self.state_dir / "task-staging" / task_id / ident
             host.mkdir(parents=True)
@@ -898,6 +965,8 @@ class EnvironmentManager:
                 )
             }
             handle.update(
+                control_revision=revision,
+                control_snapshot=control,
                 dependency_mounts=copy.deepcopy(image.get("dependency_mounts", [])),
                 target_branch=task["target_branch"],
                 profile_branch=profile_branch,
@@ -978,6 +1047,7 @@ class EnvironmentManager:
                 handle["container_id"] = (
                     self._docker(
                         *args,
+                        *control_mount_arguments(control),
                         *mount_arguments(dependency_mounts(
                             self.config,
                             {"mounts": handle["dependency_mounts"],
@@ -1055,7 +1125,9 @@ class EnvironmentManager:
         if (
             not row
             or any(
-                row.get(k) != handle.get(k) for k in ("task_id", "run_id", "image_id")
+                row.get(k) != handle.get(k) for k in (
+                    "task_id", "run_id", "image_id", "control_revision", "control_snapshot"
+                )
             )
             or row
             and handle.get("container_id") is not None
@@ -1074,6 +1146,8 @@ class EnvironmentManager:
         ):
             raise EnvironmentError("Task container creation did not complete")
         info = self._inspect(handle["container_id"])
+        if handle.get("control_snapshot"):
+            verify_control_mount(info, handle["control_snapshot"])
         labels = info.get("Config", {}).get("Labels", {})
         if (
             info.get("Id") != handle["container_id"]
@@ -1106,6 +1180,8 @@ class EnvironmentManager:
 
     def recover_task(self, handle):
         handle = self._record(handle)
+        if handle.get("control_snapshot"):
+            verify_snapshot(handle["control_snapshot"])
         if handle.get("state") in {"removed", "lost", "creating"} or not handle.get(
             "container_id"
         ):
@@ -1248,7 +1324,10 @@ class EnvironmentManager:
                         + ",target=/codex",
                     ]
                 ident = (
-                    self._docker(*args, row["image_id"], cancellable=False)
+                    self._docker(*args,
+                                 *(control_mount_arguments(row["control_snapshot"])
+                                   if row.get("control_snapshot") else []),
+                                 row["image_id"], cancellable=False)
                     .decode()
                     .strip()
                 )
@@ -1272,7 +1351,11 @@ class EnvironmentManager:
             expected = [("/task", "task", False)] + (
                 [("/codex", "codex", True)] if has_codex else []
             )
-            if set(mounts) != {item[0] for item in expected} or any(
+            control_targets = {CONTROL_TARGET} if row.get("control_snapshot") else set()
+            if row.get("control_snapshot"):
+                verify_snapshot(row["control_snapshot"])
+                verify_control_mount(info, row["control_snapshot"])
+            if set(mounts) != {item[0] for item in expected} | control_targets or any(
                 mounts[target].get("Name") != row["volumes"][key]
                 or mounts[target].get("RW") is not writable
                 for target, key, writable in expected
