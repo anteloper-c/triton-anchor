@@ -97,6 +97,10 @@ def test_canary_reads_effective_limits_and_binds_private_proof(tmp_path):
         changed["resources"]["memory_bytes"] *= 2
         with pytest.raises(ValueError, match="configuration changed"):
             probe.verify_probe(changed, info)
+        changed = copy.deepcopy(settings)
+        changed["branch_profiles"] = {"CI_dev": "triton_v3.0"}
+        with pytest.raises(ValueError, match="configuration changed"):
+            probe.verify_probe(changed, info)
         with pytest.raises(ValueError, match="configuration changed"):
             probe.verify_probe(settings, {**info, "daemon_id": "replacement"})
     assert [args[0] for args in docker.commands] == ["create", "start", "inspect", "rm"]

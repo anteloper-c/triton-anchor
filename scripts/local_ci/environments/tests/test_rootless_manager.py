@@ -270,7 +270,7 @@ class RootlessManagerTest(unittest.TestCase):
         self.assertEqual(sum(c[3] == "build" for c in self.fake.commands), 1)
         self.assertEqual(self.acquire(task)["attempt_id"], handle["attempt_id"])
         self.manager.destroy_task(handle, keep_data=False)
-        self.assertTrue(self.manager.generations()[handle["attempt_id"]]["state"] == "removed")
+        self.assertEqual(self.manager.generations()[handle["attempt_id"]]["state"], "removed")
 
     def test_branch_alias_preserves_exact_mounted_llvm_requirement(self):
         self.mounted_llvm()

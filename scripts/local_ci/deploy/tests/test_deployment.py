@@ -313,6 +313,20 @@ class DeploymentTests(unittest.TestCase):
             config[name] = 1
             self.assertEqual("pass", self.configured_checks(config)[name])
 
+    def test_branch_profile_mapping_is_checked_before_deployment(self):
+        config = json.loads((DEPLOY / "config.example.json").read_text())
+        self.assertEqual(config["branch_profiles"], {"CI_dev": "triton_v3.0"})
+        self.assertEqual("pass", self.configured_checks(config)["branch_profiles"])
+        for value in (None, [], {"CI_dev": "missing"}, {"CI_dev": []},
+                      {"CI_dev_forPR": "triton_v3.0"},
+                      {"CI_dev": "alias", "alias": "triton_v3.0"},
+                      {"triton_v3.0": "triton_v3.3"}):
+            with self.subTest(value=value):
+                config["branch_profiles"] = value
+                self.assertEqual("fail", self.configured_checks(config)["branch_profiles"])
+        del config["branch_profiles"]
+        self.assertEqual("pass", self.configured_checks(config)["branch_profiles"])
+
     def test_execution_identity_rejects_legacy_shared_user_and_duplicate_roles(self):
         config = json.loads((DEPLOY / "config.example.json").read_text())
         config["runtime"].update(endpoint="unix:///run/user/1001/docker.sock", context="fixture-rootless")
