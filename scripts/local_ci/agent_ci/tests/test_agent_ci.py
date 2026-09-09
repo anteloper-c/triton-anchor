@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -81,12 +82,48 @@ class FakeManager:
 
     def acquire(self, task_id, target_branch, llvm_hash):
         self.acquired.append(task_id)
-        generation = {"profile": "simulated-3.0" if self.backend else "simulated-frontend", "generation": "simulation-1",
-                "workspace_host": str(self.root / "workspace"), "workspace_container": "/workspace",
-                "container": "persistent-simulation", "environment_fingerprint": "f" * 64, "backend_enabled": self.backend, "env": {}}
+        ident = uuid.uuid4().hex
+        generation = {"profile": "simulated-3.0" if self.backend else "simulated-frontend", "generation": ident,
+                "attempt_id": ident, "task_id": task_id, "run_id": "simulation-run", "image_release_id": "image-1",
+                "container_id": "container-" + ident, "workspace_host": str(self.root / "state/task-staging" / task_id / ident),
+                "workspace_container": "/task", "container": "task-" + ident,
+                "environment_fingerprint": "f" * 64, "backend_enabled": self.backend, "env": {}}
         self.registry[generation["generation"]] = generation
         self._leases[task_id] = {"generation": generation["generation"]}
         return generation
+
+    def acquire_task(self, task, run_id, *, rpc_directory):
+        for handle in self.registry.values():
+            if handle["task_id"] == task["task_id"] and handle["run_id"] == run_id and not handle.get("removed"):
+                return handle
+        handle = self.acquire(task["task_id"], task["target_branch"], task["llvm_hash"])
+        handle.update(run_id=run_id, rpc_host_dir=str(rpc_directory), rpc_container_dir="/run/local-ci-rpc")
+        return handle
+
+    def recover_task(self, handle):
+        return {"status": "rebuild_required" if handle.get("removed") else "same_attempt"}
+
+    def purge_credentials(self, handle):
+        handle["credentials_purged"] = True
+
+    def stop_task(self, handle):
+        if self.validation_failure:
+            raise RuntimeError(self.validation_failure)
+        return {"verified": True}
+
+    def destroy_task(self, handle, *, keep_data=True):
+        self.registry[handle["attempt_id"]]["removed"] = not keep_data
+        self.release(handle["task_id"])
+        return {"verified": True}
+
+    def export_execution(self, handle, execution_id, destination):
+        return {"exported": True}
+
+    def task_usage(self, handle):
+        return 0
+
+    def collect_retired(self):
+        return {"removed": [], "protected": []}
 
     def leases(self):
         return dict(self._leases)
@@ -120,9 +157,9 @@ class FakeExecutor:
     calls = []
     failures = {}
 
-    def __init__(self, config, state_dir, generation, task, relay):
+    def __init__(self, config, state_dir, generation, task, relay, *, manager=None):
         self.config, self.generation, self.task, self.relay = config, generation, task, relay
-        self.root = Path(generation["workspace_host"]) / "tasks" / task["task_id"]
+        self.root = Path(generation["workspace_host"])
 
     def prepare(self, variant="candidate"):
         path = self.root / variant
@@ -136,13 +173,21 @@ class FakeExecutor:
     def stop_task(self):
         return {"verified": True, "remaining": []}
 
+    def stop_codex(self):
+        return {"verified": True, "remaining": []}
+
+    def diagnostic_context(self):
+        return {variant: {"runtime_origin": "seed", "python_available": True, "python_bin": sys.executable}
+                for variant in ("candidate", "base")}
+
     def run(self, tool_id, execution_id, variant, parameters, cancelled, custom=None):
         self.calls.append((tool_id, variant, parameters))
         artifact = self.root / "artifacts" / execution_id
         artifact.mkdir(parents=True)
         status, code, reason = "pass", 0, "simulated external tool"
         record = {"execution_id": execution_id, "tool_id": tool_id, "variant": variant,
-                  "environment_fingerprint": self.generation["environment_fingerprint"], "artifact_dir": str(artifact)}
+                  "environment_fingerprint": self.generation["environment_fingerprint"], "artifact_dir": str(artifact),
+                  "tested_sha": self.task["tested_sha" if variant == "candidate" else "base_sha"]}
         if custom:
             source = artifact / custom["name"]
             source.write_text(custom["content"])
@@ -276,7 +321,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(result["status"], "infra_error")
         self.assertIn("installed revision differs", result["unfinished"])
 
-    def test_api_failure_is_bounded_and_explicit_resume_reuses_success(self):
+    def test_api_retries_reuse_attempt_but_explicit_rerun_rebuilds_environment(self):
         worker = self.worker()
         self.config["codex_attempts"] = 3
         attempts = []
@@ -297,7 +342,7 @@ class AgentTests(unittest.TestCase):
         worker.journal.resume(ident)
         worker.scan()
         self.assertNotEqual(before, worker.journal.task(ident)["run_id"])
-        self.assertEqual(len([c for c in FakeExecutor.calls if c[0] == "environment"]), 1)
+        self.assertEqual(len([c for c in FakeExecutor.calls if c[0] == "environment"]), 2)
         self.assertEqual(worker.journal.task(ident)["phase"], "complete")
         self.assertEqual(worker.journal.result_status(worker.journal.outbox(ident)), "pass")
 
@@ -527,7 +572,7 @@ class AgentTests(unittest.TestCase):
         script = "import pathlib\nexec(pathlib.Path('behavior.py').read_text())\nassert VALUE == 0\n"
         ids = []
         for variant in ("candidate", "candidate", "base"):
-            result = supervisor.run_custom("reproduce.py", script, "python", "Determine candidate causality", variant, source_only=True)
+            result = supervisor.run_custom("reproduce.py", script, "python", "Determine candidate causality", variant, source_only=True, mode="reproduction")
             supervisor.poll_check(result["execution_id"], 30)
             ids.append(result["execution_id"])
         finding = {"severity": "high", "summary": "Candidate changes expected value", "path": "behavior.py", "line": 1, "execution_ids": ids}

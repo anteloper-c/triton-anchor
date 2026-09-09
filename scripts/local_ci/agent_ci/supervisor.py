@@ -51,8 +51,8 @@ class Supervisor:
             return False
         if record.get("reuse_invalidated") or record.get("workspace_generation", self.executor.generation["generation"]) != self.executor.generation["generation"]:
             return False
-        if tool_id in (*TOOLS, "contract_tests") and (record.get("execution_kind") == "custom" or
-                any(key in record for key in ("script_digest", "script_name", "source_only"))):
+        if tool_id in (*TOOLS, "contract_tests") and (record.get("execution_kind") != "builtin" or
+                any(key in record for key in ("script_digest", "script_name", "script_language", "source_only", "custom_mode", "experiment_id"))):
             return False
         for dependency in DEPENDENCIES.get(tool_id, ["environment"]):
             latest = self.journal.latest(self.task["task_id"], dependency, variant)
@@ -61,10 +61,18 @@ class Supervisor:
         return True
 
     def context(self) -> dict:
+        diagnostics = self.executor.diagnostic_context()
+        for variant in ("candidate", "base"):
+            runtime = "backend_smoke_jit" if self.executor.generation["backend_enabled"] else "frontend_smoke"
+            diagnostics.setdefault(variant, {}).update(
+                strict_reproduction_ready=self.fresh(runtime, variant),
+                strict_reproduction_requires=runtime,
+                source_reproduction_ready=self.fresh("environment", variant),
+                diagnostic_requires=[], experiment_requires=[])
         return {"task": self.task, "policy": self.policy, "changes": self.changes,
                 "checks": [self.public_record(r) for r in self.journal.executions(self.task["task_id"])],
                 "reviews": self.journal.reviews(self.task["task_id"]), "architecture_rules": ARCHITECTURE_RULES,
-                "cancelled": self.cancelled.is_set(), "closed": self.closed}
+                "diagnostics": diagnostics, "cancelled": self.cancelled.is_set(), "closed": self.closed}
 
     @staticmethod
     def public_record(record: dict) -> dict:
@@ -78,6 +86,15 @@ class Supervisor:
             arguments["parameters"] = parameters
         validate_arguments("start_check", arguments)
         return self._start_check(tool_id, reason, parameters=parameters, variant=variant, force=force)
+
+    def dependencies(self, tool_id: str, custom: dict | None = None) -> list[str]:
+        if custom is None:
+            return DEPENDENCIES.get(tool_id, ["environment"])
+        if custom["mode"] != "reproduction":
+            return []
+        if custom.get("source_only"):
+            return ["environment"]
+        return ["backend_smoke_jit" if self.executor.generation["backend_enabled"] else "frontend_smoke"]
 
     def _start_check(self, tool_id: str, reason: str, *, parameters: dict | None = None,
                      variant: str = "candidate", force: bool = False, custom: dict | None = None) -> dict:
@@ -102,7 +119,7 @@ class Supervisor:
             previous = self.journal.latest(self.task["task_id"], tool_id, variant)
             if previous and (previous["status"] in {"running", "queued"} or self.fresh(tool_id, variant)) and not force and custom is None:
                 return self.public_record(previous)
-            dependencies = DEPENDENCIES.get(tool_id, ["environment"])
+            dependencies = self.dependencies(tool_id, custom)
             for required in dependencies:
                 result = self.journal.latest(self.task["task_id"], required, variant)
                 if not result or not self.fresh(required, variant):
@@ -111,14 +128,16 @@ class Supervisor:
             record = {"execution_id": ident, "status": "queued", "reason": reason,
                       "parameters": parameters, "execution_kind": "custom" if custom is not None else "builtin",
                       "required": tool_id in self.policy["required_checks"] and variant == "candidate"}
+            if custom:
+                record["custom_mode"] = custom["mode"]
+                if custom.get("experiment_id"):
+                    record["experiment_id"] = custom["experiment_id"]
             self.journal.execution(self.task["task_id"], tool_id, variant, record)
             self.futures[ident] = self.pool.submit(self._run, tool_id, ident, variant, parameters or {}, reason, custom)
             return {**record, "tool_id": tool_id, "variant": variant}
 
     def _run(self, tool_id: str, ident: str, variant: str, parameters: dict, reason: str, custom: dict | None):
-        dependency_names = DEPENDENCIES.get(tool_id, ["environment"])
-        if custom and not custom.get("source_only"):
-            dependency_names = ["backend_smoke_jit" if self.executor.generation["backend_enabled"] else "frontend_smoke"]
+        dependency_names = self.dependencies(tool_id, custom)
         dependencies = {key: self.journal.latest(self.task["task_id"], key, variant)["execution_id"] for key in dependency_names}
         self.journal.execution(self.task["task_id"], tool_id, variant, {"execution_id": ident, "status": "running", "reason": reason})
         result = self._invoke(tool_id, ident, variant, parameters, custom)
@@ -127,6 +146,8 @@ class Supervisor:
         result["execution_kind"] = "custom" if custom is not None else "builtin"
         if custom:
             result["source_only"] = custom.get("source_only", False)
+            result["custom_mode"] = custom["mode"]
+            result["script_language"] = custom["language"]
         result["required"] = tool_id in self.policy["required_checks"] and variant == "candidate"
         result["workspace_generation"] = self.executor.generation["generation"]
         self.journal.execution(self.task["task_id"], tool_id, variant, result)
@@ -141,6 +162,8 @@ class Supervisor:
             result["execution_kind"] = "custom" if custom is not None else "builtin"
             if custom:
                 result["source_only"] = custom.get("source_only", False)
+                result["custom_mode"] = custom["mode"]
+                result["script_language"] = custom["language"]
             self.journal.execution(self.task["task_id"], tool_id, variant, result)
         return result
 
@@ -193,22 +216,25 @@ class Supervisor:
                         "next_offset": offset + len(data), "content": data.decode(errors="replace")}
         raise ContractError("Unknown artifact")
 
-    def run_custom(self, name: str, content: str, language: str, reason: str, variant: str = "candidate", source_only: bool = False) -> dict:
-        validate_arguments("run_custom", {"name": name, "content": content, "language": language,
-                                          "reason": reason, "variant": variant, "source_only": source_only})
+    def run_custom(self, name: str, content: str, language: str, reason: str, variant: str = "candidate",
+                   source_only: bool = False, mode: str = "diagnostic", experiment_id: str | None = None) -> dict:
+        arguments = {"name": name, "content": content, "language": language, "reason": reason,
+                     "variant": variant, "source_only": source_only, "mode": mode}
+        if experiment_id is not None:
+            arguments["experiment_id"] = experiment_id
+        validate_arguments("run_custom", arguments)
         if language not in {"python", "bash"} or not isinstance(content, str) or not 1 <= len(content.encode()) <= 128 * 1024:
             raise ContractError("Invalid task-local script")
         if Path(name).name != name or not name.endswith(".py" if language == "python" else ".sh"):
             raise ContractError("Generated scripts require a plain filename and matching extension")
         if type(source_only) is not bool or (source_only and language != "python"):
             raise ContractError("Source-only reproduction must be Python without site packages")
-        if not source_only:
-            required = "backend_smoke_jit" if self.executor.generation["backend_enabled"] else "frontend_smoke"
-            if not self.fresh(required, variant):
-                raise ContractError(f"Runtime reproduction requires a verified {variant} installation: {required}")
         key = "custom_" + hashlib.sha256(content.encode()).hexdigest()[:16]
+        custom = {"name": name, "content": content, "language": language, "source_only": source_only, "mode": mode}
+        if experiment_id is not None:
+            custom["experiment_id"] = experiment_id
         return self._start_check(key, reason, variant=variant, force=True,
-                                 custom={"name": name, "content": content, "language": language, "source_only": source_only})
+                                 custom=custom)
 
     def submit_review(self, kind: str, status: str, summary: str, evidence: list, findings: list | None = None) -> dict:
         if self.closed or self.cancelled.is_set():
@@ -257,12 +283,20 @@ class Supervisor:
         if finding.get("severity", "").lower() not in {"high", "critical"}:
             return False
         ids = finding.get("execution_ids", [])
-        selected = [r for r in self.journal.executions(self.task["task_id"]) if r["execution_id"] in ids]
+        selected = [r for r in self.journal.executions(self.task["task_id"])
+                    if r["execution_id"] in ids and r.get("execution_kind") == "custom"
+                    and r.get("custom_mode") == "reproduction" and not r.get("experiment_id")
+                    and not r.get("reuse_invalidated")
+                    and r.get("tested_sha") == self.task.get("base_sha" if r.get("variant") == "base" else "tested_sha")
+                    and r.get("tested_sha") is not None]
         failed = [r for r in selected if r.get("variant") == "candidate" and r["status"] == "fail" and r.get("script_digest")]
         base = [r for r in selected if r.get("variant") == "base" and r["status"] == "pass" and r.get("script_digest")]
         # Two candidate failures, a passing base, identical script and environment.
         return any(sum(r["script_digest"] == b["script_digest"] and r["environment_fingerprint"] == b["environment_fingerprint"]
                        and r.get("source_only", False) == b.get("source_only", False)
+                       and r.get("script_language") == b.get("script_language")
+                       and r.get("script_name") == b.get("script_name")
+                       and r.get("parameters", {}) == b.get("parameters", {})
                        for r in failed) >= 2 for b in base)
 
     def finish(self, summary: str = "") -> dict:

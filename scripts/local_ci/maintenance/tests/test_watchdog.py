@@ -197,6 +197,22 @@ class WatchdogTests(unittest.TestCase):
         self.assertNotIn("/private", json.dumps(result))
         self.assertNotIn("secret-value", json.dumps(result))
 
+    def test_dashboard_summary_exposes_rootless_images_and_attempts_without_endpoint(self):
+        worker = {**self.worker, "runtime": {"kind": "docker-rootless", "rootless": True, "available": False,
+                  "endpoint": "unix:///run/user/1001/private.sock", "error": "secret runtime failure"},
+                  "images": [{"release_id": "release-1", "image_id": "sha256:" + "a" * 64, "state": "active", "validated": True,
+                              "source": "private-registry.invalid/image", "env": {"TOKEN": "secret"}}],
+                  "task_containers": [{"task_id": "t1", "run_id": "run-1", "attempt_id": "attempt-1", "state": "retained",
+                                       "stopped": True, "image_id": "sha256:" + "a" * 64, "workspace_host": "/private/workspace"}]}
+        public = watchdog.evaluate(worker, now=self.now)["worker_health"][0]
+        self.assertTrue(public["runtime"]["rootless"])
+        self.assertTrue(public["runtime"]["unavailable"])
+        self.assertTrue(public["images"][0]["validated"])
+        self.assertEqual("attempt-1", public["task_containers"][0]["attempt_id"])
+        self.assertTrue(public["task_containers"][0]["stopped"])
+        for forbidden in ("private", "secret", "TOKEN", "endpoint"):
+            self.assertNotIn(forbidden, json.dumps(public))
+
     def test_cli_cleanup_alerts_and_recovery_generate_one_mail_per_transition(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

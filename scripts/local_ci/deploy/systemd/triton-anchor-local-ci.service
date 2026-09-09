@@ -1,19 +1,21 @@
-# EXAMPLE ONLY: regenerate with install.py and actual server configuration.
+# EXAMPLE ONLY: regenerate as the actual CI user; never install placeholders.
 [Unit]
-Description=Triton Anchor AI-driven Local CI worker
-After=network-online.target docker.service
-Wants=network-online.target
+Description=Triton Anchor task-container Local CI worker
+After=docker.service
+Wants=docker.service
 
 [Service]
 Type=simple
-EnvironmentFile="/etc/triton-anchor-local-ci/credentials.env"
+EnvironmentFile="/home/SET_ACTUAL_CI_USER/.config/triton-anchor-local-ci/credentials.env"
 WorkingDirectory="/opt/local-ci/control/triton-anchor"
 UMask=0077
-ExecStart="/usr/bin/python3" "/opt/local-ci/control/triton-anchor/scripts/local_ci/agent_ci/worker.py" --config "/etc/triton-anchor-local-ci/config.json"
+Environment="DOCKER_HOST=unix:///run/user/SET_ACTUAL_CI_UID/docker.sock"
+UnsetEnvironment=DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+ExecStart="/usr/bin/python3" "/opt/local-ci/control/triton-anchor/scripts/local_ci/agent_ci/worker.py" --config "/home/SET_ACTUAL_CI_USER/.config/triton-anchor-local-ci/config.json"
 Restart=always
 RestartSec=15
 TimeoutStopSec=60
 KillMode=mixed
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

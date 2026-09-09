@@ -1,4 +1,4 @@
-# EXAMPLE ONLY: regenerate with install.py and actual server configuration.
+# EXAMPLE ONLY: regenerate as the actual CI user; never install placeholders.
 [Unit]
 Description=Refresh Local CI health independently of poller
 

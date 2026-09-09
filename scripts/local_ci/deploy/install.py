@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render/install systemd units, preserving config and backing up prior units.
+"""Render/install user systemd units, preserving config and backing up prior units.
 
 Default is a reviewable plan. --apply installs only after successful production
 preflight. --rollback restores the exact saved unit files. Neither mode modifies
@@ -30,16 +30,21 @@ def quoted(value: str) -> str:
 def render_units(config: dict, config_path: Path, credentials_path: Path) -> dict[str, str]:
     python = quoted(config.get("python_bin", "/usr/bin/python3"))
     root = Path(config["control_root"]) / "scripts/local_ci"
-    common = f"EnvironmentFile={quoted(str(credentials_path))}\nWorkingDirectory={quoted(config['control_root'])}\nUMask=0077\n"
+    runtime = config.get("runtime", {})
+    docker_service = runtime.get("service", "docker.service")
+    if not isinstance(docker_service, str) or not __import__("re").fullmatch(r"[A-Za-z0-9_.@-]+\.service", docker_service):
+        raise ValueError("Configure the actual Rootless Docker user service")
+    common = (f"EnvironmentFile={quoted(str(credentials_path))}\nWorkingDirectory={quoted(config['control_root'])}\nUMask=0077\n"
+              f"Environment={quoted('DOCKER_HOST=' + runtime.get('endpoint', ''))}\nUnsetEnvironment=DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH\n")
     worker = f"{python} {quoted(str(root / 'agent_ci/worker.py'))} --config {quoted(str(config_path))}"
     health = f"{python} {quoted(str(root / 'deploy/health.py'))} --config {quoted(str(config_path))} --publish"
     retention = f"{python} {quoted(str(root / 'maintenance/retain_results.py'))} --config {quoted(str(config_path))} --apply"
     units = {
-        "triton-anchor-local-ci.service": "[Unit]\nDescription=Triton Anchor AI-driven Local CI worker\nAfter=network-online.target docker.service\nWants=network-online.target\n\n[Service]\nType=simple\n" + common + f"ExecStart={worker}\nRestart=always\nRestartSec=15\nTimeoutStopSec=60\nKillMode=mixed\n\n[Install]\nWantedBy=multi-user.target\n",
-        "triton-anchor-local-ci-health.service": "[Unit]\nDescription=Publish independent Local CI worker health\nAfter=network-online.target\n\n[Service]\nType=oneshot\n" + common + f"ExecStart={health}\nTimeoutStartSec=10min\n",
+        "triton-anchor-local-ci.service": f"[Unit]\nDescription=Triton Anchor task-container Local CI worker\nAfter={docker_service}\nWants={docker_service}\n\n[Service]\nType=simple\n" + common + f"ExecStart={worker}\nRestart=always\nRestartSec=15\nTimeoutStopSec=60\nKillMode=mixed\n\n[Install]\nWantedBy=default.target\n",
+        "triton-anchor-local-ci-health.service": "[Unit]\nDescription=Publish independent Local CI worker health\n\n[Service]\nType=oneshot\n" + common + f"ExecStart={health}\nTimeoutStartSec=10min\n",
         "triton-anchor-local-ci-health.timer": "[Unit]\nDescription=Refresh Local CI health independently of poller\n\n[Timer]\nOnBootSec=1min\nOnUnitActiveSec=5min\nRandomizedDelaySec=15\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n",
     }
-    units["triton-anchor-local-ci-retention.service"] = "[Unit]\nDescription=Expire Local CI result evidence by upload age\nAfter=network-online.target\n\n[Service]\nType=oneshot\n" + common + f"ExecStart={retention}\nTimeoutStartSec=1h\n"
+    units["triton-anchor-local-ci-retention.service"] = "[Unit]\nDescription=Expire Local CI result evidence by upload age\n\n[Service]\nType=oneshot\n" + common + f"ExecStart={retention}\nTimeoutStartSec=1h\n"
     units["triton-anchor-local-ci-retention.timer"] = "[Unit]\nDescription=Daily Local CI result retention\n\n[Timer]\nOnBootSec=30min\nOnUnitActiveSec=1d\nPersistent=true\nRandomizedDelaySec=5min\n\n[Install]\nWantedBy=timers.target\n"
     for branch, profile in config["profiles"].items():
         name = profile.get("name", branch.replace("/", "-"))
@@ -50,15 +55,15 @@ def render_units(config: dict, config_path: Path, credentials_path: Path) -> dic
             raise ValueError("Each profile requires an explicit daily_calendar")
         stem = f"triton-anchor-local-ci-environment-{name}"
         command = f"{python} {quoted(str(root / 'deploy/rotate.py'))} --config {quoted(str(config_path))} --profile {quoted(name)}"
-        units[stem + ".service"] = "[Unit]\nDescription=Validate and rotate persistent Local CI environment\nAfter=network-online.target docker.service\n\n[Service]\nType=oneshot\n" + common + f"ExecStart={command}\nTimeoutStartSec=24h\n"
-        units[stem + ".timer"] = f"[Unit]\nDescription=Staggered daily Local CI environment rotation\n\n[Timer]\nOnCalendar={calendar}\nPersistent=true\nRandomizedDelaySec=60\n\n[Install]\nWantedBy=timers.target\n"
+        units[stem + ".service"] = f"[Unit]\nDescription=Build and validate trusted Local CI image release\nAfter={docker_service}\nWants={docker_service}\n\n[Service]\nType=oneshot\n" + common + f"ExecStart={command}\nTimeoutStartSec=24h\n"
+        units[stem + ".timer"] = f"[Unit]\nDescription=Staggered trusted Local CI image refresh\n\n[Timer]\nOnCalendar={calendar}\nPersistent=true\nRandomizedDelaySec=60\n\n[Install]\nWantedBy=timers.target\n"
     return units
 
 
 def install_units(units: dict[str, str], destination: Path, backup: Path) -> dict:
     destination.mkdir(parents=True, exist_ok=True)
     backup.mkdir(parents=True, exist_ok=False)
-    manifest = {"schema": "triton-anchor-local-ci-service-install/v1", "destination": str(destination.resolve()), "units": {}}
+    manifest = {"schema": "triton-anchor-local-ci-service-install/v2", "scope": "user", "uid": os.getuid(), "destination": str(destination.resolve()), "units": {}}
     if any((destination / name).is_symlink() for name in units):
         raise ValueError("Refusing to replace symlinked systemd units")
     for name, content in units.items():
@@ -79,8 +84,10 @@ def install_units(units: dict[str, str], destination: Path, backup: Path) -> dic
 
 def rollback_units(backup: Path, *, apply: bool = False) -> dict:
     manifest = json.loads((backup / "manifest.json").read_text())
-    if manifest.get("schema") != "triton-anchor-local-ci-service-install/v1":
+    if manifest.get("schema") != "triton-anchor-local-ci-service-install/v2" or manifest.get("scope") != "user":
         raise ValueError("Invalid service backup manifest")
+    if manifest.get("uid") != os.getuid():
+        raise ValueError("User unit backup belongs to another account")
     destination = Path(manifest["destination"])
     for name, entry in manifest["units"].items():
         if not name.startswith("triton-anchor-local-ci") or Path(name).name != name:
@@ -102,17 +109,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config")
     parser.add_argument("--credentials-env")
-    parser.add_argument("--unit-dir", default="/etc/systemd/system")
+    parser.add_argument("--unit-dir", default=str(Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "systemd/user"))
     parser.add_argument("--backup-dir")
     parser.add_argument("--render-dir")
     parser.add_argument("--rollback")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     try:
+        if args.apply and os.geteuid() == 0:
+            raise ValueError("Install and rollback must run as the ordinary CI user, without sudo")
         if args.rollback:
-            manifest = rollback_units(Path(args.rollback), apply=args.apply)
+            manifest = rollback_units(Path(args.rollback), apply=False)
             if args.apply:
-                subprocess.run(["systemctl", "daemon-reload"], check=True)
+                user_units = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "systemd/user"
+                if Path(manifest["destination"]).resolve() != user_units.resolve():
+                    raise ValueError("Rollback is restricted to the current CI user's systemd/user directory")
+                rollback_units(Path(args.rollback), apply=True)
+                subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
             print(json.dumps({"rollback": manifest, "applied": args.apply}, indent=2))
             return 0
         if not args.config or not args.credentials_env:
@@ -126,17 +139,18 @@ def main():
             for name, content in units.items():
                 (output / name).write_text(content)
         if args.apply:
-            if os.geteuid() != 0:
-                raise ValueError("Systemd installation requires the server administrator account")
-            if not credentials.is_file() or credentials.stat().st_mode & 0o077:
+            if not credentials.is_file() or credentials.is_symlink() or credentials.stat().st_mode & 0o077 or credentials.stat().st_uid != os.getuid():
                 raise ValueError("Credentials EnvironmentFile must exist and be private (mode 600)")
+            user_units = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "systemd/user"
+            if Path(args.unit_dir).resolve() != user_units.resolve():
+                raise ValueError("Installation is restricted to the current CI user's systemd/user directory")
             ready = check_configuration(config)
             if not ready["ready"]:
                 print(json.dumps(ready, ensure_ascii=False, indent=2))
                 return 1
             backup = Path(args.backup_dir) if args.backup_dir else Path(config["state_dir"]) / "deploy-backups" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             manifest = install_units(units, Path(args.unit_dir), backup)
-            subprocess.run(["systemctl", "daemon-reload"], check=True)
+            subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
             print(json.dumps({"installed": manifest, "backup": str(backup), "services_started": False}, indent=2))
         else:
             print(json.dumps({"planned_units": units, "applied": False}, indent=2))

@@ -64,3 +64,18 @@
 | 验证 | 完整 8 套 532 项通过（相较上轮新增 60 项）；Python/shell 语法、Ruff F/E9、差异检查通过。见 [验收报告](ci_cleanup_verification/verification.md) 和 [覆盖对应](ci_cleanup_verification/coverage.md)。验收后仅补充部署 README 的回滚说明，交付摘要单独记录。 |
 
 本轮变更与报告在同一 CI_dev 本地提交中保存，可用 `git log -1 -- docs/ci_cleanup_verification/coverage.md` 定位。模拟运行真实控制、状态、文件和 Linux 子进程逻辑；未运行真实 Docker、LLVM/后端、厂商设备、公司模型、邮件或线上验收，也未推送或部署服务器。
+
+## 2026-09-09：按方案③改为 PR 独立任务容器
+
+依据：用户明确选择每 PR 一次性任务容器，并接受容器内隔离执行身份后要求执行。此决定替代此前常驻容器约束；保留唯一 Skill、十工具、单一 Codex、单向上传、公司模型配置及 GitHub 发布顺序。基线 CI_dev `189284df8827fae3aec6d2476730baae6bebf572`；main 无新增修改。
+
+| 要求 | 变更与证据 |
+| --- | --- |
+| 专用用户与任务容器 | 宿主普通 CI 用户 Harness，固定 Rootless endpoint；可信镜像只读，每 attempt 独立容器和数据/会话卷，四个非 root UID。生产管理 helper 使用固定操作，无宿主任意命令入口。 |
+| Codex 分析和诊断 | 同容器启动公司 Codex，经任务 MCP 调度；新增只读诊断、正式复现和可写实验模式，保留生成脚本及执行事实；更新 Skill references。 |
+| 可恢复且不串用 | 同 attempt 恢复、换 attempt 重验；取消按 UID/pidfd 回收。补齐创建到登记间崩溃、卷内产物取证、失去容器、归档和 GC 的路径。封存后异常不能覆盖结果；Docker 故障不阻断已封存 outbox 上传。 |
+| 镜像与运维 | 可信 LLVM/依赖来源及摘要、资源必填、用户级服务/错峰镜像 timer/健康/保留 timer；移除旧常驻设备复用配置，缺实际公司配置时预检失败。 |
+| 迁移与回退 | 离线导入实际 SQLite 终态/outbox/封存证据，源只读、目标独立、摘要及冲突校验、旧执行状态不复用；提供 user unit 安装回退和部署步骤。 |
+| 验证 | 真实本地 Git/SQLite/子进程/四 UID 文件权限测试，加外部边界模拟。测试数量、各套日志和源码摘要统一见 [本轮验收](ci_task_container_verification/verification.md)；要求映射见 [覆盖说明](ci_task_container_verification/coverage.md)。 |
+
+所有变更与报告在同一 CI_dev 本地提交中保存，用 `git log -1 -- docs/ci_task_container_verification/coverage.md` 定位。本轮不推送、部署服务器或发邮件；真实 Docker、公司模型、LLVM/厂商后端、仿真及线上发布仍须部署验收。

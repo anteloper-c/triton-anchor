@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Call a real basic tool while validating a trusted daily environment candidate."""
+"""Call a real basic tool while validating a trusted image candidate."""
 import os
 import subprocess
 import sys
@@ -14,7 +14,7 @@ def main():
         return 2
     workspace = Path(os.environ.get("WORKSPACE", "/workspace"))
     if not workspace.is_absolute() or workspace == Path("/"):
-        raise ValueError("Invalid generation workspace")
+        raise ValueError("Invalid image-validation workspace")
     env = dict(os.environ)
     env.setdefault("ANCHOR_DIR", str(workspace / "triton-anchor"))
     env["LOCAL_CI_TASK_ROOT"] = str(workspace / "environment-validation")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one configured daily candidate validation and persistent rotation."""
+"""Build and validate one trusted image release; never accepts PR build recipes."""
 import argparse
 import json
 import sys

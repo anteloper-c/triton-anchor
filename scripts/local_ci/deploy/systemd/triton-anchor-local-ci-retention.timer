@@ -1,0 +1,12 @@
+# EXAMPLE ONLY: regenerate as the actual CI user; never install placeholders.
+[Unit]
+Description=Daily Local CI result retention
+
+[Timer]
+OnBootSec=30min
+OnUnitActiveSec=1d
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

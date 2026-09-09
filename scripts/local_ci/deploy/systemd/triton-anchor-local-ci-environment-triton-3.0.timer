@@ -1,6 +1,6 @@
-# EXAMPLE ONLY: regenerate with install.py and actual server configuration.
+# EXAMPLE ONLY: regenerate as the actual CI user; never install placeholders.
 [Unit]
-Description=Staggered daily Local CI environment rotation
+Description=Staggered trusted Local CI image refresh
 
 [Timer]
 OnCalendar=*-*-* 02:00:00 Asia/Shanghai

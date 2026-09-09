@@ -111,6 +111,26 @@ def public_worker_health(worker: dict[str, Any]) -> dict[str, Any]:
                 generation["quarantine_reason"] = reason(row["quarantine_reason"])
             public["generations"].append(generation)
         summary["environments"] = public
+    runtime = worker.get("runtime", environments.get("runtime", {}) if isinstance(environments, dict) else {})
+    if isinstance(runtime, dict):
+        summary["runtime"] = {"kind": "docker-rootless" if runtime.get("kind") == "docker-rootless" else "unknown"}
+        for name in ("available", "rootless"):
+            if type(runtime.get(name)) is bool:
+                summary["runtime"][name] = runtime[name]
+        if runtime.get("error"):
+            summary["runtime"]["unavailable"] = True
+    images = worker.get("images", environments.get("images", []) if isinstance(environments, dict) else [])
+    summary["images"] = [{"release_id": identifier(row.get("release_id")), "image_id": identifier(row.get("image_id")),
+                          "state": label(row.get("state"), {"preparing", "active", "ready", "previous", "retired", "failed"}),
+                          "validated": row.get("validated") is True}
+                         for row in rows(images) if isinstance(row, dict)]
+    attempts = worker.get("task_containers", environments.get("attempts", []) if isinstance(environments, dict) else [])
+    summary["task_containers"] = [{"task_id": identifier(row.get("task_id")), "run_id": identifier(row.get("run_id")),
+                                   "attempt_id": identifier(row.get("attempt_id", row.get("generation"))),
+                                   "image_id": identifier(row.get("image_id")),
+                                   "state": label(row.get("state"), {"preparing", "active", "running", "stopped", "retained", "removed", "dirty", "quarantined", "failed", "cleanup_failed"}),
+                                   "stopped": row.get("stopped") is True}
+                                  for row in rows(attempts) if isinstance(row, dict)]
     return summary
 
 

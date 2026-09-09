@@ -1,30 +1,25 @@
-"""Real state/Git/filesystem lifecycle with container and model boundaries replaced."""
-from __future__ import annotations
-
-import hashlib
+"""Task-container reclamation, durable evidence and delivery recovery."""
 import json
+import os
+from pathlib import Path
 import sys
 import tempfile
 import time
 import unittest
-from pathlib import Path
 from unittest import mock
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[1]))
-sys.path.insert(0, str(HERE))
-from agent_ci.protocol import ContractError, canonical, current_key, metadata_digest, task_id
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_agent_ci import Fixture, FakeManager, FakeExecutor, FakeCodex
 from agent_ci.worker import Worker
-from test_agent_ci import FakeCodex, FakeExecutor, FakeManager, Fixture
 
 
 class ScratchExecutor(FakeExecutor):
     def prepare(self, variant="candidate"):
-        checkout = super().prepare(variant)
-        scratch = self.root / "venv"
+        path = super().prepare(variant)
+        scratch = self.root / variant / "venv"
         scratch.mkdir(exist_ok=True)
-        (scratch / "installed-package.bin").write_bytes(b"x" * 8192)
-        return checkout
+        (scratch / "payload").write_bytes(b"x" * 4096)
+        return path
 
 
 class WorkspaceTests(unittest.TestCase):
@@ -34,257 +29,243 @@ class WorkspaceTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.fixture = Fixture(self.root)
         self.config = {"state_dir": str(self.root / "state"), "simulation": True,
-                       "codex_attempts": 1, "retry_delay_seconds": 0, "rpc_socket_dir": str(self.root / "rpc")}
-        self.manager, self.driver = FakeManager(self.root, backend=False), FakeCodex()
+                       "codex_attempts": 1, "retry_delay_seconds": 0, "rpc_socket_dir": str(self.root / "rpc"),
+                       "minimum_free_bytes": 0}
+        self.manager, self.driver = FakeManager(self.root), FakeCodex()
         FakeExecutor.calls, FakeExecutor.failures = [], {}
         self.worker = self.make_worker()
 
     def make_worker(self, executor=ScratchExecutor):
-        return Worker(self.config, relay=self.fixture.relay, manager=self.manager,
-                      driver=self.driver, executor_factory=executor)
+        return Worker(self.config, relay=self.fixture.relay, manager=self.manager, driver=self.driver,
+                      executor_factory=executor)
 
-    def scratch(self, task=None):
-        return self.root / "workspace/tasks" / (task or self.fixture.task)["task_id"]
+    def row(self):
+        return self.worker.workspaces.rows()[-1]
 
-    def sealed(self):
-        box = self.worker.journal.outbox(self.fixture.task["task_id"])
-        return box, json.loads(Path(box["payload_path"]).read_text())
+    def scratch(self):
+        return Path(json.loads(self.row()["manifest"])["workspace_host"])
 
-    def fail(self, status="fail"):
-        FakeExecutor.failures = {"environment": [(status, "fixture_failure")]}
+    def fail(self):
+        FakeExecutor.failures = {"environment": [("fail", "fixture failure")]}
         self.worker.scan()
+        self.assertEqual("fail", self.worker.journal.result_status(self.worker.journal.outbox(self.fixture.task["task_id"])))
 
-    def test_success_reclaims_venv_before_upload_and_preserves_evidence(self):
-        self.worker.process(self.fixture.task)
-        box, result = self.sealed()
-        self.assertEqual("pass", result["status"])
-        self.assertIsNone(box["published"])
+    def test_success_removes_task_volume_and_staging_but_keeps_sealed_evidence(self):
+        self.worker.scan()
+        task_id = self.fixture.task["task_id"]
+        self.assertEqual("complete", self.worker.journal.task(task_id)["phase"])
+        self.assertEqual("removed", self.row()["phase"])
         self.assertFalse(self.scratch().exists())
-        self.assertTrue(list(Path(box["payload_path"]).parent.glob("evidence/*/execution.log")))
-        records = self.worker.journal.executions(self.fixture.task["task_id"])
-        self.assertTrue(all(r["reuse_invalidated"] for r in records))
-        self.assertTrue(all((Path(r["artifact_dir"]) / "execution.log").is_file() for r in records))
-        self.assertFalse((self.worker.state_dir / "workspace-evidence").exists())
-        self.assertEqual({}, self.manager.leases())
-        calls = self.driver.calls
-        self.worker.scan()
-        self.assertEqual(calls, self.driver.calls)
-        self.assertEqual(box["digest"], self.sealed()[0]["digest"])
+        result = Path(self.worker.journal.outbox(task_id)["payload_path"])
+        self.assertTrue(result.is_file())
+        self.assertTrue(list((result.parent / "evidence").rglob("execution.log")))
+        for record in self.worker.journal.executions(task_id):
+            self.assertTrue(Path(record["artifact_dir"]).is_dir())
 
-    def test_failed_upload_does_not_recreate_scratch_or_call_model(self):
-        self.worker.process(self.fixture.task)
-        calls = self.driver.calls
-        with mock.patch.object(self.fixture.relay, "publish_result", side_effect=OSError("offline")):
+    def test_upload_failure_never_recreates_container_or_reinvokes_model(self):
+        with mock.patch.object(self.fixture.relay, "publish_result", side_effect=OSError("relay down")):
             self.worker.scan()
-        self.assertEqual(calls, self.driver.calls)
-        self.assertFalse(self.scratch().exists())
         self.assertEqual("publishing", self.worker.journal.task(self.fixture.task["task_id"])["phase"])
+        self.assertEqual("removed", self.row()["phase"])
+        before = (len(self.manager.acquired), self.driver.calls, len(FakeExecutor.calls))
         self.worker.scan()
+        self.assertEqual(before, (len(self.manager.acquired), self.driver.calls, len(FakeExecutor.calls)))
         self.assertEqual("complete", self.worker.journal.task(self.fixture.task["task_id"])["phase"])
 
-    def test_failure_retention_expires_without_deleting_sealed_result(self):
-        self.fail()
-        self.assertTrue(self.scratch().exists())
-        box, result = self.sealed()
-        self.assertEqual("fail", result["status"])
-        health = self.worker.workspaces.collect(now=time.time() + 25 * 3600)
-        self.assertEqual("healthy", health["status"])
-        self.assertFalse(self.scratch().exists())
-        self.assertEqual(box["digest"], hashlib.sha256(Path(box["payload_path"]).read_bytes()).hexdigest())
+    def test_docker_recovery_failure_cannot_block_saved_upload(self):
+        with mock.patch.object(self.fixture.relay, "publish_result", side_effect=OSError("relay down")):
+            self.worker.scan()
+        with mock.patch.object(self.worker.workspaces, "recover", side_effect=OSError("Docker unavailable")):
+            self.worker.scan()
+        self.assertEqual("complete", self.worker.journal.task(self.fixture.task["task_id"])["phase"])
+        self.assertEqual("unavailable", json.loads((self.root / "state/health/worker.json").read_text())["runtime"])
 
-    def test_disk_budget_evicts_retained_failure_before_deadline(self):
+    def test_socket_cleanup_failure_does_not_overwrite_sealed_result(self):
+        from agent_ci.supervisor import ToolService
+        original = ToolService.__exit__
+        def broken(service, *args):
+            original(service, *args)
+            raise OSError("socket cleanup failed after finish")
+        with mock.patch.object(ToolService, '__exit__', broken):
+            self.worker.scan()
+        box = self.worker.journal.outbox(self.fixture.task['task_id'])
+        self.assertEqual('pass', self.worker.journal.result_status(box))
+        self.assertEqual('complete', self.worker.journal.task(self.fixture.task['task_id'])['phase'])
+        import hashlib
+        self.assertEqual(box['digest'], hashlib.sha256(Path(box['payload_path']).read_bytes()).hexdigest())
+
+    def test_interrupted_volume_artifact_is_exported_before_recovery_archive(self):
+        def interrupted(supervisor, service, recovery=""):
+            execution = supervisor.start_check("environment", "persist execution")
+            supervisor.poll_check(execution['execution_id'], 30)
+            self.worker.stop_event.set()
+            return {'exit_code': 1}
+        exports = []
+        def export(handle, ident, target):
+            exports.append(ident)
+            (Path(target) / 'volume-only.ir').write_text('interrupted compiler artifact')
+        with mock.patch.object(self.driver, 'run', side_effect=interrupted), mock.patch.object(self.manager, 'export_execution', side_effect=export):
+            self.worker.scan()
+        self.assertTrue(exports)
+        records = self.worker.journal.executions(self.fixture.task['task_id'])
+        self.assertTrue(any((Path(record['artifact_dir']) / 'volume-only.ir').is_file() for record in records))
+
+    def test_unexported_volume_evidence_blocks_deletion(self):
+        with mock.patch.object(self.manager, 'export_execution', side_effect=OSError('volume read failed')):
+            self.worker.scan()
+            self.assertEqual('unsafe', self.row()['phase'])
+            self.assertTrue(self.scratch().exists())
+            self.assertEqual('error', self.worker.workspaces.collect()['status'])
+        self.worker.workspaces.recover()
+        self.assertNotEqual('unsafe', self.row()['phase'])
+
+    def test_failure_retention_expires_without_deleting_upload(self):
+        self.fail()
+        self.assertEqual("retained", self.row()["phase"])
+        self.assertTrue(self.scratch().exists())
+        self.worker.workspaces.collect(now=time.time() + 25 * 3600)
+        self.assertEqual("removed", self.row()["phase"])
+        self.assertTrue(Path(self.worker.journal.outbox(self.fixture.task["task_id"])["payload_path"]).is_file())
+
+    def test_disk_budget_evicts_retained_failure_before_ttl(self):
         self.fail()
         self.worker.workspaces.budget = 1
-        health = self.worker.workspaces.collect()
-        self.assertEqual("healthy", health["status"])
-        self.assertEqual(0, health["logical_bytes"])
-        self.assertFalse(self.scratch().exists())
-        self.assertEqual("disk_budget", self.worker.workspaces.rows()[0]["reason"])
+        result = self.worker.workspaces.collect()
+        self.assertEqual("healthy", result["status"], result)
+        self.assertEqual("disk_budget", self.row()["reason"])
 
-    def test_active_workspace_is_never_evicted_for_disk_budget(self):
+    def test_active_task_is_not_evicted_to_meet_budget(self):
         task = self.fixture.task
-        self.worker.journal.register(task)
-        generation = self.manager.acquire(task["task_id"], "triton_v3.0", task["llvm_hash"])
-        self.worker.workspaces.attach(task, generation)
-        executor = ScratchExecutor(self.config, self.worker.state_dir, generation, task, self.fixture.relay)
+        row = self.worker.journal.register(task)
+        handle = self.manager.acquire_task(task, row["run_id"], rpc_directory=self.root / "rpc/task")
+        self.worker.workspaces.attach(task, handle)
+        executor = self.worker.make_executor(handle, task)
         executor.prepare()
         self.worker.workspaces.budget = 1
-        health = self.worker.workspaces.collect(now=time.time() + 100 * 3600)
-        self.assertEqual("error", health["status"])
+        result = self.worker.workspaces.collect(now=time.time() + 100 * 3600)
+        self.assertEqual("error", result["status"])
+        self.assertEqual("active", self.row()["phase"])
         self.assertTrue(self.scratch().exists())
 
-    def test_resume_after_collection_reexecutes_successful_prerequisites(self):
-        FakeExecutor.failures = {"frontend_build": [("infra_error", "network_failure")]}
+    def test_explicit_rerun_gets_new_attempt_and_reexecutes_environment(self):
+        FakeExecutor.failures = {"environment": [("infra_error", "fixture infrastructure outage")]}
         self.worker.scan()
-        old = self.worker.journal.latest(self.fixture.task["task_id"], "environment")["execution_id"]
-        self.worker.workspaces.collect(now=time.time() + 25 * 3600)
-        self.assertFalse(self.scratch().exists())
+        previous = self.row()["generation"]
         self.worker.journal.resume(self.fixture.task["task_id"])
         self.worker.scan()
-        self.assertEqual("pass", self.sealed()[1]["status"])
-        new = self.worker.journal.latest(self.fixture.task["task_id"], "environment")["execution_id"]
-        self.assertNotEqual(old, new)
+        self.assertNotEqual(previous, self.row()["generation"])
+        self.assertEqual(2, len([c for c in FakeExecutor.calls if c[0] == "environment"]))
 
-    def test_resume_before_expiry_reuses_live_installation(self):
-        FakeExecutor.failures = {"frontend_build": [("infra_error", "network_failure")]}
-        self.worker.scan()
-        old = self.worker.journal.latest(self.fixture.task["task_id"], "environment")["execution_id"]
-        self.worker.journal.resume(self.fixture.task["task_id"])
-        self.worker.scan()
-        new = self.worker.journal.latest(self.fixture.task["task_id"], "environment")["execution_id"]
-        self.assertEqual(old, new)
-        self.assertEqual("pass", self.sealed()[1]["status"])
-
-    def test_reuse_check_failure_quarantines_and_prevents_green_seal(self):
-        self.manager.validation_failure = "device has a remaining workload"
-        self.worker.scan()
-        self.assertEqual("infra_error", self.sealed()[1]["status"])
-        self.assertTrue(self.manager.quarantined)
-        self.assertIn("environment cleanup", " ".join(self.sealed()[1]["unfinished"]))
-
-    def test_unconfirmed_process_stop_blocks_new_work(self):
-        class CannotStop(ScratchExecutor):
-            def stop_task(self):
-                raise OSError("docker unavailable")
-        self.worker = self.make_worker(CannotStop)
-        with mock.patch.object(self.manager, "quarantine", return_value={"stopped": False}):
-            self.worker.process(self.fixture.task)
-            self.assertEqual("unsafe", self.worker.workspaces.rows()[0]["phase"])
-            self.assertTrue(self.manager.leases())
-            with self.assertRaisesRegex(ContractError, "maintenance blocks"):
-                self.worker.process(self.fixture.task)
-
-    def test_cleanup_failure_quarantines_without_destroying_evidence(self):
-        self.fail()
-        with mock.patch("agent_ci.workspaces.shutil.rmtree", side_effect=OSError("read-only scratch")):
-            health = self.worker.workspaces.collect(now=time.time() + 25 * 3600)
-        self.assertEqual("error", health["status"])
-        self.assertTrue(self.manager.quarantined)
-        self.assertTrue(Path(self.sealed()[0]["payload_path"]).is_file())
-        self.assertEqual("healthy", self.worker.workspaces.collect(now=time.time() + 25 * 3600)["status"])
-
-    def test_symlink_cannot_redirect_workspace_deletion(self):
-        self.fail()
-        original = self.scratch()
-        moved = original.with_name(original.name + "-preserved")
-        original.rename(moved)
-        victim = self.root / "unrelated"
-        victim.mkdir()
-        (victim / "keep").write_text("keep")
-        original.symlink_to(victim, target_is_directory=True)
-        health = self.worker.workspaces.collect(now=time.time() + 25 * 3600)
-        self.assertEqual("error", health["status"])
-        self.assertEqual("keep", (victim / "keep").read_text())
-
-    def test_recovery_reaps_original_generation_even_when_relay_is_down(self):
-        task = self.fixture.task
-        self.worker.journal.register(task)
-        generation = self.manager.acquire(task["task_id"], "triton_v3.0", task["llvm_hash"])
-        self.worker.workspaces.attach(task, generation)
-        ScratchExecutor(self.config, self.worker.state_dir, generation, task, self.fixture.relay).prepare()
-        calls = []
-        class RecoveryExecutor(ScratchExecutor):
-            def stop_task(self):
-                calls.append(self.generation["generation"])
-                return super().stop_task()
-        restarted = self.make_worker(RecoveryExecutor)
-        with mock.patch.object(self.fixture.relay, "refresh", side_effect=OSError("gitee unavailable")):
-            with self.assertRaises(OSError):
-                restarted.scan()
-        self.assertEqual(["simulation-1", "simulation-1"], calls)
-        self.assertEqual({}, self.manager.leases())
-        self.assertTrue(self.scratch().exists())
-
-    def test_superseded_pr_releases_lease_and_removes_old_scratch(self):
-        task = self.fixture.task
-        self.worker.journal.register(task)
-        generation = self.manager.acquire(task["task_id"], "triton_v3.0", task["llvm_hash"])
-        self.worker.workspaces.attach(task, generation)
-        ScratchExecutor(self.config, self.worker.state_dir, generation, task, self.fixture.relay).prepare()
-        changed = dict(task, title="new PR metadata")
-        changed["metadata_digest"] = metadata_digest(changed)
-        changed["task_id"] = task_id(changed)
-        self.fixture.relay.write("local-ci-control", {f"current/{current_key(task)}.json": canonical({"task_id": changed["task_id"]})})
-        restarted = self.make_worker()
-        restarted.scan()
-        self.assertFalse(self.scratch().exists())
-        self.assertEqual("cancelled", restarted.journal.task(task["task_id"])["phase"])
-        self.assertEqual({}, self.manager.leases())
-
-    def test_upgrade_collects_old_completed_directory_without_lease(self):
-        self.worker.scan()
-        self.scratch().mkdir(parents=True)
-        (self.scratch() / "old-venv").write_bytes(b"old dependencies")
-        with self.worker.journal.connect() as db:
-            db.execute("DELETE FROM task_workspaces")
-        restarted = self.make_worker()
-        restarted.scan()
-        self.assertFalse(self.scratch().exists())
-        self.assertEqual("removed", restarted.workspaces.rows()[0]["phase"])
-
-    def test_restart_finishes_interrupted_directory_removal(self):
-        self.fail()
-        row = self.worker.workspaces.rows()[0]
-        self.worker.workspaces.phase(row["task_id"], row["generation"], "cleaning", "interrupted_cleanup")
-        restarted = self.make_worker()
-        restarted.workspaces.recover()
-        restarted.workspaces.collect(now=time.time() + 25 * 3600)
-        self.assertFalse(self.scratch().exists())
-        self.assertTrue(Path(self.sealed()[0]["payload_path"]).is_file())
-
-    def test_evidence_is_archived_before_generation_lease_release(self):
-        release = self.manager.release
-        observed = []
-        def verify_release(task_id):
-            for record in self.worker.journal.executions(task_id):
-                self.assertFalse(Path(record["artifact_dir"]).is_relative_to(self.scratch()))
-                self.assertTrue((Path(record["artifact_dir"]) / "execution.log").is_file())
-            observed.append(task_id)
-            release(task_id)
-        with mock.patch.object(self.manager, "release", side_effect=verify_release):
-            self.fail()
-        self.assertEqual([self.fixture.task["task_id"]], observed)
-
-    def test_interrupted_record_logs_survive_recovery_and_collection(self):
-        task = self.fixture.task
-        self.worker.journal.register(task)
-        generation = self.manager.acquire(task["task_id"], "triton_v3.0", task["llvm_hash"])
-        self.worker.workspaces.attach(task, generation)
-        ScratchExecutor(self.config, self.worker.state_dir, generation, task, self.fixture.relay).prepare()
-        ident = "b" * 32
-        self.worker.journal.execution(task["task_id"], "environment", "candidate", {"execution_id": ident, "status": "running"})
-        artifact = self.scratch() / "artifacts" / ident
-        artifact.mkdir(parents=True)
-        (artifact / "execution.log").write_text("last output before power loss")
-        restarted = self.make_worker()
-        restarted.workspaces.recover()
-        restarted.workspaces.collect(now=time.time() + 25 * 3600)
-        self.assertFalse(self.scratch().exists())
-        record = restarted.journal.latest(task["task_id"], "environment")
-        self.assertEqual("infra_error", record["status"])
-        self.assertEqual("last output before power loss", (Path(record["artifact_dir"]) / "execution.log").read_text())
-
-    def test_low_disk_blocks_build_but_keeps_upload_retry(self):
-        import shutil
-        self.worker.process(self.fixture.task)
-        original = shutil.disk_usage(self.worker.state_dir)
-        exhausted = type(original)(original.total, original.total, 0)
-        calls = self.driver.calls
-        with mock.patch("agent_ci.workspaces.shutil.disk_usage", return_value=exhausted):
+    def test_worker_restart_preserves_attempt_and_valid_completed_stage(self):
+        def interrupted(supervisor, service, recovery=""):
+            execution = supervisor.start_check("environment", "Save real completed state")
+            supervisor.poll_check(execution["execution_id"], 30)
+            self.worker.stop_event.set()
+            return {"exit_code": 1}
+        with mock.patch.object(self.driver, "run", side_effect=interrupted):
             self.worker.scan()
-            self.assertEqual("error", self.worker.workspaces.collect()["status"])
-        self.assertEqual(calls, self.driver.calls)
+        previous = self.row()["generation"]
+        self.assertEqual("active", self.row()["phase"])
+        self.assertEqual("queued", self.worker.journal.task(self.fixture.task["task_id"])["phase"])
+        self.worker = self.make_worker()
+        self.worker.scan()
+        self.assertEqual(previous, self.row()["generation"])
+        self.assertEqual(1, len([c for c in FakeExecutor.calls if c[0] == "environment"]))
         self.assertEqual("complete", self.worker.journal.task(self.fixture.task["task_id"])["phase"])
 
-    def test_nested_mount_is_never_recursively_deleted(self):
-        import os
+    def test_restart_discovers_container_created_before_workspace_attach(self):
+        task = self.fixture.task
+        row = self.worker.journal.register(task)
+        handle = self.manager.acquire_task(task, row['run_id'], rpc_directory=self.root / 'rpc/task')
+        self.assertEqual([], self.worker.workspaces.rows())
+        self.worker.workspaces.recover()
+        self.assertEqual(handle['attempt_id'], self.row()['generation'])
+        self.assertEqual('active', self.row()['phase'])
+        self.worker.scan()
+        self.assertEqual('complete', self.worker.journal.task(task['task_id'])['phase'])
+        self.assertEqual(1, len(self.manager.acquired))
+
+    def test_lost_volume_records_evidence_loss_and_does_not_reuse_old_check(self):
+        task = self.fixture.task
+        row = self.worker.journal.register(task)
+        handle = self.manager.acquire_task(task, row['run_id'], rpc_directory=self.root / 'rpc/task')
+        self.worker.workspaces.attach(task, handle)
+        executor = self.worker.make_executor(handle, task)
+        executor.prepare()
+        ident = 'b' * 32
+        artifact = executor.root / 'artifacts' / ident
+        artifact.mkdir(parents=True)
+        (artifact / 'execution.log').write_text('already saved output')
+        self.worker.journal.execution(task['task_id'], 'environment', 'candidate', {'execution_id': ident, 'status': 'running'})
+        with mock.patch.object(self.manager, 'recover_task', return_value={'status': 'rebuild_required'}), mock.patch.object(self.manager, 'export_execution', return_value={'exported': False, 'evidence_loss': 'task_volume_missing'}):
+            self.worker.workspaces.recover()
+            self.assertEqual('healthy', self.worker.workspaces.collect()['status'])
+        record = self.worker.journal.executions(task['task_id'])[0]
+        self.assertEqual('infra_error', record['status'])
+        self.assertEqual('task_volume_missing', record['evidence_loss'])
+        self.assertTrue(record['reuse_invalidated'])
+        self.assertTrue((Path(record['artifact_dir']) / 'execution.log').is_file())
+        self.worker.scan()
+        self.assertEqual(2, len(self.manager.acquired))
+
+    def test_unconfirmed_stop_blocks_next_task_without_destroying_evidence(self):
+        self.manager.validation_failure = "stop could not be verified"
+        self.worker.scan()
+        self.assertEqual("unsafe", self.row()["phase"])
+        self.assertTrue(self.scratch().exists())
+        self.assertEqual("error", self.worker.workspaces.collect()["status"])
+        self.manager.validation_failure = None
+        self.worker.workspaces.recover()
+        self.assertEqual("removed", self.row()["phase"])
+
+    def test_cleanup_failure_is_retryable_and_keeps_immutable_result(self):
         self.fail()
-        target = self.scratch() / "venv"
+        with mock.patch("agent_ci.workspaces.shutil.rmtree", side_effect=OSError("temporary I/O failure")):
+            result = self.worker.workspaces.collect(now=time.time() + 25 * 3600)
+        self.assertEqual("error", result["status"])
+        self.assertEqual("cleanup_failed", self.row()["phase"])
+        self.assertTrue(Path(self.worker.journal.outbox(self.fixture.task["task_id"])["payload_path"]).exists())
+        self.assertEqual("healthy", self.worker.workspaces.collect(now=time.time() + 25 * 3600)["status"])
+
+    def test_symlink_cannot_redirect_staging_cleanup(self):
+        self.fail()
+        root = self.scratch()
+        protected = self.root / "protected"
+        root.rename(protected)
+        root.symlink_to(protected, target_is_directory=True)
+        result = self.worker.workspaces.collect(now=time.time() + 25 * 3600)
+        self.assertEqual("error", result["status"])
+        self.assertTrue(protected.is_dir())
+
+    def test_nested_mount_is_never_deleted(self):
+        self.fail()
+        nested = self.scratch() / "candidate/venv"
         original = os.path.ismount
-        with mock.patch("agent_ci.workspaces.os.path.ismount", side_effect=lambda path: Path(path) == target or original(path)):
-            health = self.worker.workspaces.collect(now=time.time() + 25 * 3600)
-        self.assertEqual("error", health["status"])
-        self.assertTrue((target / "installed-package.bin").is_file())
+        with mock.patch("agent_ci.workspaces.os.path.ismount", side_effect=lambda path: Path(path) == nested or original(path)):
+            result = self.worker.workspaces.collect(now=time.time() + 25 * 3600)
+        self.assertEqual("error", result["status"])
+        self.assertTrue(nested.is_dir())
+
+    def test_low_disk_blocks_intake_but_still_delivers_outbox(self):
+        with mock.patch.object(self.fixture.relay, "publish_result", side_effect=OSError("relay down")):
+            self.worker.scan()
+        self.worker.config["minimum_free_bytes"] = 1
+        disk = __import__("shutil").disk_usage(self.root)
+        exhausted = type(disk)(disk.total, disk.total, 0)
+        with mock.patch("agent_ci.workspaces.shutil.disk_usage", return_value=exhausted):
+            self.worker.scan()
+        self.assertEqual("complete", self.worker.journal.task(self.fixture.task["task_id"])["phase"])
+
+    def test_legacy_workspace_requires_explicit_migration(self):
+        task = self.fixture.task
+        self.worker.journal.register(task)
+        with self.worker.journal.connect() as db:
+            db.execute("INSERT INTO task_workspaces VALUES(?,?,?,?,?,?,?)", (task["task_id"], "legacy",
+                json.dumps({"workspace_host": str(self.root / "old-rootful")}), "active", time.time(), None, ""))
+        self.worker.workspaces.recover()
+        result = self.worker.workspaces.collect()
+        self.assertEqual("error", result["status"])
+        self.assertTrue(any("migration" in error for error in result["errors"]))
 
 
 if __name__ == "__main__":

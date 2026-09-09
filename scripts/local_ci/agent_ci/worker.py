@@ -42,6 +42,10 @@ class Worker:
         self.active = None
         self.workspaces = TaskWorkspaces(config, self.journal, manager, self.relay, self.executor_factory)
 
+    def make_executor(self, generation, task):
+        return self.executor_factory(self.config, self.state_dir, generation, task, self.relay,
+                                     manager=self.manager)
+
     def heartbeat(self, **extra):
         atomic_json(self.state_dir / "health/worker.json", {
             "schema": "triton-anchor-worker-health/v4", "worker_id": self.config.get("worker_id", "local-ci"),
@@ -98,11 +102,20 @@ class Worker:
         watcher.start()
         try:
             validate_control_revision(self.config, task)
-            generation = self.manager.acquire(task["task_id"], task["target_branch"], task["llvm_hash"])
+            rpc_directory = Path(self.config.get("rpc_socket_dir", "/tmp/local-ci-rpc")) / (
+                task["task_id"][:12] + "-" + row["run_id"][-8:])
+            if not rpc_directory.is_absolute() or rpc_directory.resolve() != rpc_directory:
+                raise ContractError("Task RPC directory must be absolute without symlinks")
+            rpc_directory.mkdir(parents=True, exist_ok=True)
+            rpc_directory.chmod(0o711)
+            socket_path = rpc_directory / "broker.sock"
+            if len(os.fsencode(socket_path)) >= 104:
+                raise ContractError("rpc_socket_dir is too long for a task Unix socket")
+            generation = self.manager.acquire_task(task, row["run_id"], rpc_directory=rpc_directory)
             self.workspaces.attach(task, generation)
             if prepare_cancel.is_set():
                 raise InterruptedError("Task cancelled during environment preparation")
-            executor = self.executor_factory(self.config, self.state_dir, generation, task, self.relay)
+            executor = self.make_executor(generation, task)
             # Verify the cleanup capability before any candidate code executes.
             with resource_lock(self.state_dir, prepare_cancel):
                 executor.stop_task()
@@ -118,7 +131,6 @@ class Worker:
             supervisor.recover()
             self.active = supervisor
             self.journal.phase(task["task_id"], "running")
-            socket_path = Path(self.config.get("rpc_socket_dir", "/tmp/local-ci-rpc")) / (task["task_id"][:16] + "-" + row["run_id"][-8:] + ".sock")
             with ToolService(supervisor, socket_path) as service:
                 for attempt in range(self.config.get("codex_attempts", 3)):
                     if self.stop_event.is_set() or supervisor.cancelled.is_set() or supervisor.closed:
@@ -138,6 +150,11 @@ class Worker:
                     supervisor.finish("Necessary Codex work remained incomplete after bounded recovery.")
         except Exception as exc:
             self.journal.event(task["task_id"], "preparation_failed", {"error": str(exc)})
+            if self.journal.outbox(task["task_id"]) is not None:
+                # A finish reply may be followed by socket/session cleanup errors.
+                # The sealed outbox is immutable, including on worker shutdown.
+                self.journal.event(task["task_id"], "post_seal_cleanup_error", {"error": str(exc)})
+                return
             if self.stop_event.is_set():
                 self.journal.phase(task["task_id"], "queued", {"reason": "worker_restart"})
                 return
@@ -159,7 +176,7 @@ class Worker:
             self.manager.cancel_event = None
             if generation is not None:
                 if executor is None:
-                    executor = self.executor_factory(self.config, self.state_dir, generation, task, self.relay)
+                    executor = self.make_executor(generation, task)
                 self.workspaces.finish(executor)
             self.heartbeat()
 
@@ -201,19 +218,33 @@ class Worker:
             self.journal.phase(row["task_id"], "publishing", detail)
 
     def scan(self):
-        # Local recovery/retention must still run while the relay is unavailable.
-        self.workspaces.recover()
-        self.workspaces.collect()
-        self.relay.refresh()
+        # Sealed delivery must not depend on a working container daemon, image
+        # registry, free build space, or a recoverable task volume.
         attempted = set()
         for row in self.journal.tasks():
             if row["phase"] == "publishing":
                 self.retry_delivery(row)
                 attempted.add(row["task_id"])
-            elif row["phase"] in {"queued", "preparing", "running"}:
+        try:
+            # Recover failed trusted image-validation containers independently
+            # of rotate(), whose safety gate deliberately blocks new builds.
+            self.manager.collect_retired()
+            self.workspaces.recover()
+            maintenance = self.workspaces.collect()
+        except Exception as exc:
+            self.heartbeat(runtime="unavailable", runtime_error=str(exc))
+            return
+        if maintenance["status"] != "healthy":
+            self.heartbeat(runtime="maintenance_blocked")
+            return
+        self.relay.refresh()
+        for row in self.journal.tasks():
+            if row["phase"] in {"queued", "preparing", "running"}:
                 valid, reason = self.relay.validity(json.loads(row["manifest"]))
                 if not valid:
                     self.journal.phase(row["task_id"], "cancelled", {"reason": reason})
+                    self.workspaces.recovered = False
+        self.workspaces.recover()
         self.workspaces.collect()
         for task in self.relay.tasks():
             if self.stop_event.is_set():

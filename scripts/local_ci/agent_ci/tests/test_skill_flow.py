@@ -16,7 +16,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -28,26 +27,8 @@ from agent_ci.executor import DockerExecutor
 from agent_ci.protocol import canonical, current_key, metadata_digest, task_id
 from agent_ci.skill import load_skill
 from agent_ci.worker import Worker
-from test_agent_ci import FakeManager, Fixture, git
-from test_executor import FAKE_DOCKER
-
-
-# Keep the existing exec/UID/env/venv boundary; seed only package metadata used
-# by environment probes. No handler result or contract outcome is fabricated.
-DOCKER = FAKE_DOCKER.replace(
-    'os.execvpe(args[0],args,env)',
-    '''command=args[len(prefix):]
-if len(command)>3 and command[1]=='-c' and '.local-ci-environment.json' in command[2]:
-    code=subprocess.call(args,env=env)
-    if code: sys.exit(code)
-    python=str(pathlib.Path(command[3])/'bin/python')
-    site=pathlib.Path(subprocess.check_output([python,'-c','import sysconfig;print(sysconfig.get_path("purelib"))'],env=env).decode().strip())
-    for name in ('build','setuptools','wheel','pybind11'):
-        info=site/(name+'-0.0.dist-info');info.mkdir(exist_ok=True)
-        (info/'METADATA').write_text('Metadata-Version: 2.1\\nName: '+name+'\\nVersion: 0.0\\n')
-    sys.exit(0)
-os.execvpe(args[0],args,env)''',
-)
+from test_agent_ci import Fixture, git
+from container_fixture import FAKE_DOCKER, VolumeManager
 
 
 class MCPPeer:
@@ -61,6 +42,7 @@ class MCPPeer:
         self.requests = []
         self.manifests = []
         self.prompts = []
+        self.diagnostics = []
         self.active = 0
         self.max_active = 0
 
@@ -79,8 +61,8 @@ class MCPPeer:
             raise AssertionError(response)
         return response["result"]
 
-    def call(self, process, name, **arguments):
-        reply = self.rpc(process, "tools/call", {"name": name, "arguments": arguments})
+    def call(self, process, tool_name, **arguments):
+        reply = self.rpc(process, "tools/call", {"name": tool_name, "arguments": arguments})
         if reply.get("isError"):
             raise AssertionError(reply)
         return json.loads(reply["content"][0]["text"])
@@ -106,6 +88,14 @@ class MCPPeer:
             assert {item["name"] for item in listing["tools"]} >= {"context", "start_check", "finish"}
             context = self.call(process, "context")
             assert context["policy"]["required_checks"] == ["environment", "contract_tests"]
+            assert context["diagnostics"]["candidate"]["diagnostic_requires"] == []
+            early = self.call(process, "run_custom", name="inspect_runtime.py", language="python",
+                              content="import sys\nprint('diagnostic Python:', sys.executable)\n",
+                              reason="Inspect this task before environment or build checks pass")
+            diagnostic = self.call(process, "poll_check", execution_id=early["execution_id"], wait_seconds=30)
+            assert diagnostic["status"] == "pass", diagnostic
+            assert diagnostic["custom_mode"] == "diagnostic" and not diagnostic["required"], diagnostic
+            self.diagnostics.append(diagnostic)
             for tool in context["policy"]["required_checks"]:
                 started = self.call(process, "start_check", tool_id=tool,
                                     reason="Follow the Skill and the actual mandatory impact policy")
@@ -183,7 +173,7 @@ class SkillFlowTests(unittest.TestCase):
         self.root.chmod(0o755)
         self.fixture = Fixture(self.root)
         self.fake_docker = self.root / "docker-fixture"
-        self.fake_docker.write_text(DOCKER)
+        self.fake_docker.write_text(FAKE_DOCKER)
         self.fake_docker.chmod(0o755)
         self.control = self.root / "control"
         tools = self.control / "scripts/local_ci/tools"
@@ -229,23 +219,20 @@ class SkillFlowTests(unittest.TestCase):
             f"current/{current_key(task)}.json": canonical({"task_id": task["task_id"]}),
         })
         fixture.relay.refresh()
-        uid = 100000 + int(uuid.uuid4().hex[:8], 16) % 1000000
-        gid = uid
         root, probes, llvm = self.root, self.probes, self.llvm
 
-        class Manager(FakeManager):
+        class Manager(VolumeManager):
             def acquire(self, *args):
                 generation = super().acquire(*args)
-                generation.update(workspace_container=str(root / "workspace"), execution_user=f"{uid}:{gid}",
-                                  execution_uid=uid, execution_gid=gid)
                 generation["env"] = {"SEED_PYTHON": sys.executable, "LLVM_BUILD_DIR": str(llvm),
                                      "PATH": str(probes) + ":" + os.defpath, "PACKAGE_TOOL": "uv", "LOCAL_CI_MIN_FREE_BYTES": "0"}
                 return generation
 
         self.peer = MCPPeer(interrupt_once=interrupt_once, reject_pr=reject_pr)
-        self.manager = Manager(root, backend=False)
+        self.manager = Manager(root, backend=False, docker_bin=self.fake_docker, seed_metadata=True)
         config = {"state_dir": str(root / "state"), "simulation": True, "codex_attempts": 2 if interrupt_once else 1,
                   "retry_delay_seconds": 0, "rpc_socket_dir": str(root / "rpc"), "docker_bin": str(self.fake_docker),
+                  "runtime": {"kind": "docker-rootless", "endpoint": "unix:///run/user/1000/docker.sock"},
                   "container_control_root": str(self.control)}
         return Worker(config, relay=fixture.relay, manager=self.manager, driver=self.peer, executor_factory=DockerExecutor)
 
@@ -318,6 +305,8 @@ class SkillFlowTests(unittest.TestCase):
         self.assertEqual(self.peer.manifests[0]["digest"], self.peer.manifests[1]["digest"])
         self.assertEqual(load_skill().prompt, self.peer.prompts[0])
         self.assertEqual("SKILL.md", self.peer.manifests[0]["entrypoint"])
+        self.assertEqual(2, len(self.peer.diagnostics))
+        self.assertTrue(all(record["dependency_executions"] == {} for record in self.peer.diagnostics))
         checks = {row["tool_id"]: row for row in result["checks"]}
         contract = checks["contract_tests"]
         self.assertEqual("pass", contract["status"])

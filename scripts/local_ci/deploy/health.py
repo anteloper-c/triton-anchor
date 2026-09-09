@@ -18,6 +18,7 @@ LOCAL_ROOT = Path(__file__).resolve().parents[1]
 if str(LOCAL_ROOT) not in sys.path:
     sys.path.insert(0, str(LOCAL_ROOT))
 from environments.manager import EnvironmentManager, atomic_json, safe_source
+from deploy.runtime_probe import runtime_status
 
 
 def iso(value: float | None = None) -> str:
@@ -66,8 +67,6 @@ def collect(config: dict, *, now: float | None = None, manager=None) -> dict:
                 value = worker[key]
                 active[key] = iso(value) if key.endswith("_at") and isinstance(value, (int, float)) else value
     roots = {str(state)}
-    for profile in config.get("profiles", {}).values():
-        roots.update(str(profile[key]) for key in ("workspace_root", "existing_workspace_host") if profile.get(key))
     storage = []
     for root in sorted(roots):
         entry = {"label": "state" if root == str(state) else "environment", "available": Path(root).exists()}
@@ -79,7 +78,18 @@ def collect(config: dict, *, now: float | None = None, manager=None) -> dict:
     try:
         environments = (manager or EnvironmentManager(config, state)).health()
     except Exception as exc:
-        environments = {"active": {}, "generations": [], "error": type(exc).__name__}
+        environments = {"active_images": {}, "images": [], "attempts": [], "error": type(exc).__name__}
+    runtime = dict(environments.get("runtime", {}))
+    if config.get("runtime", {}).get("kind") == "docker-rootless":
+        try:
+            runtime_status(config)
+            runtime.update(kind="docker-rootless", available=True, rootless=True)
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            runtime.update(kind="docker-rootless", available=False, error=type(exc).__name__)
+    if runtime:
+        environments = {**environments, "runtime": runtime}
+        if runtime.get("available") is False:
+            environments.setdefault("error", "RootlessRuntimeUnavailable")
     try:
         workspaces = json.loads((state / "workspace-health.json").read_text())
         if not isinstance(workspaces, dict):
@@ -94,7 +104,7 @@ def collect(config: dict, *, now: float | None = None, manager=None) -> dict:
             raise ValueError("monitor_services contains an invalid systemd unit name")
         row = {"name": name, "available": False}
         try:
-            result = subprocess.run(["systemctl", "show", name, "--property=LoadState,ActiveState,SubState,Result"], text=True, capture_output=True, timeout=5)
+            result = subprocess.run(["systemctl", "--user", "show", name, "--property=LoadState,ActiveState,SubState,Result"], text=True, capture_output=True, timeout=5)
             fields = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
             row.update(available=result.returncode == 0 and fields.get("LoadState") == "loaded",
                        active_state=fields.get("ActiveState", "unknown"), sub_state=fields.get("SubState", "unknown"),
@@ -107,7 +117,9 @@ def collect(config: dict, *, now: float | None = None, manager=None) -> dict:
                 "poller": {"alive": alive, "heartbeat_at": iso(heartbeat) if heartbeat else None, "heartbeat_stale": stale,
                            "last_poll_status": "error" if worker.get("control_channel") == "unreachable" else "success"},
                 "active_task": active, "tasks": tasks, "uploads": uploads, "environments": environments,
-                "workspaces": workspaces, "storage": storage, "services": services}
+                "workspaces": workspaces, "storage": storage, "services": services, "service_scope": "user",
+                "runtime": runtime, "images": environments.get("images", []),
+                "task_containers": environments.get("attempts", [])}
     return snapshot
 
 

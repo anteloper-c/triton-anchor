@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SUITES = {
     "worker-mcp-recovery": ["scripts/local_ci/agent_ci/tests"],
     "real-tool-interfaces": ["scripts/local_ci/tools/tests"],
-    "persistent-environments": ["scripts/local_ci/environments/tests"],
+    "images-task-containers": ["scripts/local_ci/environments/tests"],
     "deployment-monitoring": ["scripts/local_ci/deploy/tests", "scripts/local_ci/maintenance/tests"],
     "github-gateway": ["scripts/ci/tests"],
     "retained-local-contracts": ["scripts/local_ci/tests", "scripts/local_ci/results/tests", "scripts/local_ci/codex_ai/tests"],
@@ -32,7 +32,7 @@ def main(argv=None):
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     report = {"schema": "triton-anchor-ci-v4-verification/v1", "started_at": datetime.now(timezone.utc).isoformat(),
-              "mode": "offline-simulation", "real_model_calls": False, "real_backend_builds": False,
+              "mode": "offline-simulation", "real_model_calls": False, "real_backend_builds": False, "real_docker_daemon": False,
               "remote_writes": False, "actual_emails": False, "suites": []}
     environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "GIT_TERMINAL_PROMPT": "0"}
     environment["PYTHONPATH"] = str(ROOT / "python") + os.pathsep + environment.get("PYTHONPATH", "")
@@ -71,7 +71,7 @@ def main(argv=None):
     report["source_digest"] = hashlib.sha256(b"".join(
         str(p.relative_to(ROOT)).encode() + b"\0" + p.read_bytes()
         for directory in (ROOT / "scripts/local_ci", ROOT / "scripts/ci", ROOT / ".github")
-        for p in sorted(directory.rglob("*")) if p.is_file() and p.suffix in {".py", ".sh", ".json", ".yml", ".md"}
+        for p in sorted(directory.rglob("*")) if p.is_file() and (p.suffix in {".py", ".sh", ".json", ".yml", ".yaml", ".md", ".service", ".timer", ".toml"} or p.name == "Dockerfile")
     )).hexdigest()
     router = ROOT.parent / "triton-anchor-main/.github/workflows/ci-gateway.yml"
     report["main_router_digest"] = hashlib.sha256(router.read_bytes()).hexdigest() if router.is_file() else None
@@ -79,7 +79,7 @@ def main(argv=None):
     lines = ["# Local CI v4 本机模拟验收", "", f"结果：{'通过' if report['success'] else '未通过'}；通过测试 {report['passed']} 项。", "",
              "| 测试集 | 结果 | 通过数 | 日志 |", "| --- | --- | ---: | --- |"]
     lines += [f"| {row['name']} | {row['status']} | {row.get('passed', 0)} | {row.get('log', '')} |" for row in report["suites"]]
-    lines += ["", "验证真实控制逻辑与工具接口，外部边界使用 fixtures。未验证真实模型、LLVM/后端构建、硬件、实际邮件或线上 GitHub/Gitee 回写。", "", f"Source digest: {report['source_digest']}"]
+    lines += ["", "验证真实控制逻辑与工具接口，外部边界使用 fixtures。未使用真实 Docker daemon 或容器命名空间；未验证真实模型、LLVM/后端构建、硬件、实际邮件或线上 GitHub/Gitee 回写。", "", f"Source digest: {report['source_digest']}"]
     (output / "verification.md").write_text("\n".join(lines) + "\n")
     return 0 if report["success"] else 1
 

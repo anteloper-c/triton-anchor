@@ -6,8 +6,10 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
+import tarfile
 import threading
 import time
 from pathlib import Path
@@ -20,8 +22,8 @@ ALLOWED_PARAMETERS = {"max_jobs", "timeout_seconds", "operators", "kernels"}
 PERFORMANCE_TOOLS = {"compile_time", "pass_profile", "ir_serialization"}
 SECRET_NAMES = ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "CODEX", "CREDENTIAL", "GIT_ASKPASS", "SSH_AUTH_SOCK")
 
-# CI owns one dedicated non-root UID in each persistent container. The worker
-# holds the shared resource lock whenever it launches or cleans that UID.
+# Each task has separate Codex, candidate, base and diagnostic UIDs. The worker
+# holds the shared resource lock whenever it launches or cleans an execution UID.
 # Markers remain useful evidence, but process ownership is the cleanup boundary.
 STOP_PROGRAM = r'''
 import json,os,signal,sys,time
@@ -124,6 +126,17 @@ except BaseException:
     raise
 '''
 
+CODEX_LAUNCH_PROGRAM = r'''
+import ctypes,json,os,sys
+libc=ctypes.CDLL(None,use_errno=True)
+if libc.prctl(38,1,0,0,0)!=0: raise OSError(ctypes.get_errno(),'no_new_privs')
+with open('/codex/environment.json') as stream: environment=json.load(stream)
+if not isinstance(environment,dict) or any(not isinstance(k,str) or not isinstance(v,str) for k,v in environment.items()):
+    raise RuntimeError('Invalid private Codex environment')
+os.chdir('/codex/workspace')
+os.execvpe(sys.argv[1],sys.argv[1:],environment)
+'''
+
 
 @contextlib.contextmanager
 def resource_lock(state_dir: Path, cancelled: threading.Event):
@@ -147,15 +160,41 @@ class ProcessCleanupError(RuntimeError):
     """Infrastructure failure: process cleanup was not proven complete."""
 
 
+CUSTOM_ENV_PROGRAM = r"""
+import json,os,pathlib,subprocess,sys
+original=dict(os.environ); current=dict(original)
+protected={"HOME","TMPDIR","TRITON_CACHE_DIR","TRITON_DUMP_DIR","XDG_CACHE_HOME","ANCHOR_DIR","BACKEND_PATH","PYTHON_BIN","PYTHON_VENV_ACTIVATE","MAX_JOBS","CMAKE_BUILD_PARALLEL_LEVEL","NINJAFLAGS","BASELINE_JSON"}
+protected.update(k for k in original if k.startswith("LOCAL_CI_"))
+for index,command in enumerate(json.loads(original["LOCAL_CI_CUSTOM_ENVSETUP"])):
+    log=pathlib.Path(original["LOCAL_CI_ARTIFACT_DIR"])/("setup-%02d.log" % index)
+    with log.open("wb") as stream:
+        result=subprocess.run(["bash","--noprofile","--norc","-c",'set -e; source "$1" "${@:2}" >&2; env -0',"setup",*command],env=current,stdout=subprocess.PIPE,stderr=stream,timeout=60)
+    if result.returncode:
+        print("Environment setup failed; see "+log.name,file=sys.stderr);sys.exit(78)
+    current=dict(item.decode().split("=",1) for item in result.stdout.split(b"\0") if item)
+    current.update({k:original[k] for k in protected if k in original})
+current["PATH"]=str(pathlib.Path(original["PYTHON_BIN"]).parent)+":"+current.get("PATH","/usr/local/bin:/usr/bin:/bin")
+current["VIRTUAL_ENV"]=str(pathlib.Path(original["PYTHON_BIN"]).parent.parent)
+anchor=pathlib.Path(original["ANCHOR_DIR"])
+current["PYTHONPATH"]=":".join(p for p in current.get("PYTHONPATH","").split(":") if p and pathlib.Path(p).is_absolute() and not pathlib.Path(p).resolve().is_relative_to(anchor))
+os.execvpe(sys.argv[1],sys.argv[1:],current)
+"""
+
+
 class DockerExecutor:
     def __init__(self, config: dict, state_dir: Path, generation: dict, task: dict,
-                 relay, *, command_runner=None):
+                 relay, *, command_runner=None, manager=None):
         self.config, self.state_dir, self.generation, self.task = config, Path(state_dir), generation, task
         self.relay = relay
         if not re.fullmatch(r"[a-f0-9]{64}", task["task_id"]):
             raise ContractError("Invalid task identity")
-        self.host_root = Path(generation["workspace_host"]) / "tasks" / task["task_id"]
-        self.container_root = Path(generation["workspace_container"]) / "tasks" / task["task_id"]
+        if generation.get("task_id") != task["task_id"]:
+            raise ContractError("Container handle belongs to another task")
+        attempt = generation.get("attempt_id", "")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}", attempt):
+            raise ContractError("Executor requires a registered task container attempt")
+        self.host_root = self.state_dir / "task-staging" / task["task_id"] / attempt
+        self.container_root = Path("/task")
         self.host_root.mkdir(parents=True, exist_ok=True)
         for path in (self.host_root.parent, self.host_root):
             if path.is_symlink():
@@ -163,41 +202,25 @@ class DockerExecutor:
             path.chmod(0o711)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.runner = command_runner or subprocess.run
+        if manager is None:
+            from environments.manager import EnvironmentManager
+            manager = EnvironmentManager(config, state_dir)
+        self.manager = manager
         self.processes: dict[str, subprocess.Popen] = {}
+        self.process_roles: dict[str, str] = {}
         self.guard = threading.Lock()
         self.prepare_guard = threading.RLock()
         self.cleanup_guard = threading.RLock()
-        self.execution_user = str(generation.get("execution_user") or config.get("container_execution_user") or "")
-        if not self.execution_user or self.execution_user.split(":")[0] in {"0", "root"}:
-            raise ContractError("A dedicated non-root container execution_user is required")
-        self.uid = generation.get("execution_uid")
-        self.gid = generation.get("execution_gid")
-        if self.uid is None and self.execution_user.split(":")[0].isdigit():
-            self.uid = int(self.execution_user.split(":")[0])
-            self.gid = int(self.execution_user.split(":")[1]) if ":" in self.execution_user else None
-        if type(self.uid) is not int or type(self.gid) is not int or self.uid <= 0 or self.gid < 0:
-            raise ContractError("Generation must include resolved execution_uid and execution_gid")
+        roles = {"candidate", "base", "diagnostic", "codex"}
+        self.uids, self.gids = generation.get("uids", {}), generation.get("gids", {})
+        if (set(self.uids) != roles or set(self.gids) != roles or len(set(self.uids.values())) != 4
+                or any(type(n) is not int or n <= 0 for n in [*self.uids.values(), *self.gids.values()])
+                or self.gids["codex"] in {self.gids[k] for k in roles - {"codex"}}):
+            raise ContractError("Task requires four distinct non-root identities and a private Codex group")
+        self.uid, self.gid = self.uids["candidate"], self.gids["candidate"]
+        self.execution_user = f"{self.uid}:{self.gid}"
         self.baseline_root = self.state_dir / "baselines" / task["task_id"]
         self.record_root = self.state_dir / "executor-records" / task["task_id"]
-
-    def writable(self, path: Path, *, recursive: bool = False) -> None:
-        if not path.resolve().is_relative_to(self.host_root.resolve()) or path.is_symlink():
-            raise ContractError("Task writable path escaped its root")
-        paths = [path, *path.rglob("*")] if recursive else [path]
-        for child in paths:
-            if child.is_symlink():
-                continue
-            if os.geteuid() == 0:
-                os.chown(child, self.uid, self.gid)
-            elif os.geteuid() != self.uid:
-                raise ContractError("Worker cannot assign task workspace ownership")
-
-    def mapped_host_path(self, container_path: str) -> Path:
-        path = Path(container_path)
-        prefix = Path(self.generation["workspace_container"])
-        if not path.is_absolute() or not path.is_relative_to(prefix) or path == prefix:
-            raise ContractError("Mutable backend checkout must be inside the mapped profile workspace")
-        return within(Path(self.generation["workspace_host"]), str(path.relative_to(prefix)))
 
     def prepare(self, variant: str = "candidate") -> Path:
         if variant not in {"candidate", "base"}:
@@ -207,14 +230,21 @@ class DockerExecutor:
             directory.mkdir(exist_ok=True)
             checkout = directory / "checkout"
             self.relay.checkout(self.task["tested_sha" if variant == "candidate" else "base_sha"], checkout)
-            self.writable(directory)
-            self.writable(checkout, recursive=True)
-            if self.generation.get("backend_enabled"):
-                backend = directory / "backend"
-                source = self.mapped_host_path(self.generation.get("env", {}).get("BACKEND_PATH", ""))
-                if not backend.exists():
-                    subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "clone", "--quiet", "--no-hardlinks", "--", str(source), str(backend)], check=True, capture_output=True)
-                self.writable(backend, recursive=True)
+            marker = directory / "imported.json"
+            if not marker.exists():
+                archive = directory / "checkout.tar"
+                # The host copy is trusted frozen input, never a writable mount.
+                with tarfile.open(archive, "w") as stream:
+                    for child in sorted(checkout.iterdir()):
+                        stream.add(child, arcname=child.name, recursive=True)
+                value = hashlib.sha256()
+                with archive.open("rb") as data:
+                    for block in iter(lambda: data.read(1024 * 1024), b""):
+                        value.update(block)
+                digest = value.hexdigest()
+                self.manager.import_checkout(self.generation, variant, archive, digest)
+                atomic_json(marker, {"attempt_id": self.generation["attempt_id"], "sha256": digest})
+                archive.unlink()
             return checkout
 
     def environment(self, execution_id: str, variant: str, parameters: dict) -> dict[str, str]:
@@ -229,7 +259,7 @@ class DockerExecutor:
         variant_root = self.container_root / variant
         artifact = self.container_root / "artifacts" / execution_id
         trusted.update({
-            "WORKSPACE": self.generation["workspace_container"],
+            "WORKSPACE": str(self.container_root),
             "ANCHOR_DIR": str(variant_root / "checkout"),
             "LOCAL_CI_TASK_ROOT": str(variant_root),
             "LOCAL_CI_ARTIFACT_DIR": str(artifact),
@@ -249,6 +279,9 @@ class DockerExecutor:
             "PYTHON_BIN": str(variant_root / "venv/bin/python"),
             "PATH": str(variant_root / "venv/bin") + ":" + trusted.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
             "HOME": str(variant_root / "home"), "LANG": "C.UTF-8",
+            "TMPDIR": str(variant_root / "tmp"),
+            "TRITON_CACHE_DIR": str(variant_root / "cache/triton"),
+            "XDG_CACHE_HOME": str(variant_root / "cache"),
             "RUN_BACKEND_STAGES": "true" if self.generation["backend_enabled"] else "false",
         })
         if self.generation.get("backend_enabled"):
@@ -265,9 +298,16 @@ class DockerExecutor:
                 trusted.update({name: ",".join(values) for name in names})
         return trusted
 
-    def docker_prefix(self, env: dict | None = None, *, management: bool = False) -> list[str]:
-        args = [self.config.get("docker_bin", "docker"), "exec"]
-        args += ["--user", "0:0" if management else self.execution_user]
+    def docker_command(self, *arguments: str) -> list[str]:
+        from environments.manager import docker_command
+        return docker_command(self.config, *arguments)
+
+    def docker_prefix(self, env: dict | None = None, *, management: bool = False,
+                      role: str = "candidate") -> list[str]:
+        if role not in self.uids:
+            raise ContractError("Unknown execution role")
+        args = self.docker_command("exec")
+        args += ["--user", "0:0" if management else f"{self.uids[role]}:{self.gids[role]}"]
         # Docker image ENV is not a trust boundary: clear it before the child starts.
         clean = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", **(env or {})}
         values = []
@@ -275,12 +315,41 @@ class DockerExecutor:
             if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
                 raise ContractError("Invalid trusted environment variable")
             values.append(f"{key}={value}")
-        prefix = args + [self.generation["container"], "env", "-i", *values]
+        prefix = args + [self.generation["container_id"], "env", "-i", *values]
         if not management:
             prefix += [self.config.get("container_python", "python3"), "-I", "-S", "-c", LAUNCH_PROGRAM]
         return prefix
 
-    def cleanup_processes(self, task_id: str | None = None) -> dict:
+    def prepare_codex_session(self, *, files: dict, environment: dict, rpc_socket: Path) -> dict:
+        expected = Path(self.generation["rpc_host_dir"])
+        if Path(rpc_socket).parent.resolve() != expected.resolve():
+            raise ContractError("Codex socket does not belong to this attempt")
+        if set(files) - {"config.toml", "auth.json", "TASK_SKILL.md"}:
+            raise ContractError("Unknown Codex session file")
+        if files or environment:
+            self.manager.deploy_session(self.generation, files, environment)
+        root = self.config.get("container_control_root", "/opt/local-ci/control")
+        return {"home": "/codex/home", "workspace": "/codex/workspace",
+                "python_bin": self.config.get("container_python", "/usr/bin/python3"),
+                "mcp_script": root + "/scripts/local_ci/agent_ci/mcp_server.py",
+                "rpc_socket": self.generation.get("rpc_container_dir", "/run/local-ci-rpc") + "/" + Path(rpc_socket).name}
+
+    def codex_command(self, arguments: list[str]) -> list[str]:
+        binary = self.config.get("codex_bin", "")
+        if not isinstance(binary, str) or not Path(binary).is_absolute():
+            raise ContractError("codex_bin must be an absolute path inside the trusted image")
+        return self.docker_command("exec", "--interactive", "--user",
+            f"{self.uids['codex']}:{self.gids['codex']}", self.generation["container_id"],
+            self.config.get("container_python", "/usr/bin/python3"), "-I", "-S", "-c",
+            CODEX_LAUNCH_PROGRAM, binary, *arguments)
+
+    def stop_codex(self) -> dict:
+        return self.cleanup_processes(role="codex")
+
+    def diagnostic_context(self) -> dict:
+        return self.manager.runtime_info(self.generation)
+
+    def cleanup_processes(self, task_id: str | None = None, *, role: str = "candidate") -> dict:
         """Verify no live CI-UID processes remain; caller holds resource.lock.
 
         The UID is exclusive to serial CI work. PID 1 and root management
@@ -288,22 +357,25 @@ class DockerExecutor:
         """
         if task_id is not None and task_id != self.task["task_id"]:
             raise ContractError("Process cleanup is restricted to this task")
+        if role not in self.uids:
+            raise ContractError("Invalid process role")
+        uid = self.uids[role]
         timeout = self.config.get("cleanup_timeout_seconds", 60)
         if type(timeout) is not int or timeout <= 0:
             raise ProcessCleanupError("cleanup_timeout_seconds must be a positive integer")
         with self.cleanup_guard:
             try:
                 completed = self.runner(self.docker_prefix(management=True) + [
-                    self.config.get("container_python", "python3"), "-I", "-S", "-c", STOP_PROGRAM, str(self.uid)],
+                    self.config.get("container_python", "python3"), "-I", "-S", "-c", STOP_PROGRAM, str(uid)],
                     capture_output=True, timeout=timeout)
                 report = json.loads(completed.stdout)
                 if (completed.returncode != 0 or not isinstance(report, dict)
-                        or report.get("schema") != "triton-anchor-process-cleanup/v1" or report.get("uid") != self.uid
+                        or report.get("schema") != "triton-anchor-process-cleanup/v1" or report.get("uid") != uid
                         or report.get("status") != "clean" or report.get("verified") is not True
                         or report.get("remaining") != [] or type(report.get("cleaned_pid_count")) is not int):
                     detail = report.get("error", "cleanup did not verify an empty live-process set") if isinstance(report, dict) else "invalid cleanup report"
                     raise ProcessCleanupError("Container process cleanup failed: " + str(detail))
-                return {**report, "task_id": self.task["task_id"]}
+                return {**report, "task_id": self.task["task_id"], "role": role}
             except ProcessCleanupError:
                 raise
             except Exception as exc:
@@ -314,7 +386,9 @@ class DockerExecutor:
         if task_id is not None and task_id != self.task["task_id"]:
             raise ContractError("Process cleanup is restricted to this task")
         try:
-            return self.cleanup_processes(task_id)
+            reports = [self.cleanup_processes(task_id, role=role) for role in ("candidate", "base", "diagnostic")]
+            return {"verified": True, "remaining": [], "status": "clean", "roles": reports,
+                    "cleaned_pid_count": sum(r["cleaned_pid_count"] for r in reports)}
         finally:
             with self.guard:
                 executions = list(self.processes)
@@ -331,7 +405,7 @@ class DockerExecutor:
                 if execution_id not in self.processes:
                     return {"status": "not_active", "verified": False, "remaining": [], "cleaned_pid_count": 0}
             try:
-                return self.cleanup_processes()
+                return self.cleanup_processes(role=self.process_roles[execution_id])
             finally:
                 self._stop_client(execution_id)
 
@@ -401,7 +475,7 @@ class DockerExecutor:
         return seed
 
     def _execute(self, command: list[str], execution_id: str, log: Path,
-                 cancelled: threading.Event, timeout: int) -> tuple[int, str]:
+                 cancelled: threading.Event, timeout: int, *, role: str = "candidate") -> tuple[int, str]:
         """Bound both Docker client and independently re-sessioned container children."""
         if cancelled.is_set():
             raise InterruptedError("Task cancelled before execution")
@@ -409,6 +483,7 @@ class DockerExecutor:
             process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
             with self.guard:
                 self.processes[execution_id] = process
+                self.process_roles[execution_id] = role
             reason = ""
             try:
                 deadline = time.monotonic() + timeout
@@ -428,6 +503,7 @@ class DockerExecutor:
                     finally:
                         with self.guard:
                             self.processes.pop(execution_id, None)
+                            self.process_roles.pop(execution_id, None)
             return process.returncode, reason
 
     def run(self, tool_id: str, execution_id: str, variant: str, parameters: dict,
@@ -443,47 +519,50 @@ class DockerExecutor:
         artifact_host.parent.mkdir(exist_ok=True)
         artifact_host.parent.chmod(0o711)
         artifact_host.mkdir(parents=True, exist_ok=False)
-        self.writable(artifact_host)
         record = {"execution_id": execution_id, "tool_id": tool_id, "variant": variant,
                   "status": "infra_error", "started_at": started, "exit_code": None,
                   "environment_fingerprint": self.generation["environment_fingerprint"],
                   "workspace_generation": self.generation["generation"],
-                  "artifact_dir": str(artifact_host), "parameters": parameters}
+                  "artifact_dir": str(artifact_host), "parameters": parameters,
+                  "tested_sha": self.task["tested_sha" if variant == "candidate" else "base_sha"],
+                  "attempt_id": self.generation["attempt_id"], "container_id": self.generation["container_id"],
+                  "image_release_id": self.generation["image_release_id"]}
+        prepared = False
         try:
             with resource_lock(self.state_dir, cancelled):
                 record["worker_revision_sha"] = validate_control_revision(self.config, self.task)
-                checkout = self.prepare(variant)
+                self.prepare(variant)
                 env = self.environment(execution_id, variant, parameters)
+                role = "diagnostic" if custom else variant
+                mode = custom.get("mode", "diagnostic") if custom else None
+                if custom and mode not in {"diagnostic", "reproduction", "experiment"}:
+                    raise ContractError("Unknown custom execution mode")
+                self.manager.prepare_execution(self.generation, execution_id, variant, diagnostic=bool(custom))
+                prepared = True
                 limit = self.config.get("tool_timeouts", {}).get(tool_id, 3600)
                 timeout = parameters.get("timeout_seconds", limit)
                 if type(timeout) is not int or not 1 <= timeout <= limit:
                     raise ContractError("Invalid tool deadline")
                 env["LOCAL_CI_TOOL_TIMEOUT_SECONDS"] = str(timeout)
-                home = self.host_root / variant / "home"
-                home.mkdir(exist_ok=True)
-                self.writable(home)
                 venv = self.container_root / variant / "venv"
                 seed_env = {str(k): str(v) for k, v in self.generation.get("env", {}).items()}
                 seed_env.update({"LOCAL_CI_EXECUTION_ID": execution_id, "HOME": env["HOME"]})
-                code, reason = self._execute(self.docker_prefix(seed_env) + [self.seed_python(), "-c", VENV_PROGRAM,
-                    str(venv), self.generation["environment_fingerprint"]], execution_id,
-                    artifact_host / "execution.log", cancelled, self.config.get("venv_timeout_seconds", 600))
-                if reason == "cancelled":
-                    raise InterruptedError("Task cancelled preparing Python environment")
-                if code or reason:
-                    raise RuntimeError("Could not prepare task Python environment: " + (reason or str(code)))
+                if not custom:
+                    code, reason = self._execute(self.docker_prefix(seed_env, role=role) + [self.seed_python(), "-c", VENV_PROGRAM,
+                        str(venv), self.generation["environment_fingerprint"]], execution_id,
+                        artifact_host / "execution.log", cancelled, self.config.get("venv_timeout_seconds", 600), role=role)
+                    if reason == "cancelled":
+                        raise InterruptedError("Task cancelled preparing Python environment")
+                    if code or reason:
+                        raise RuntimeError("Could not prepare task Python environment: " + (reason or str(code)))
                 if tool_id in PERFORMANCE_TOOLS and variant == "candidate":
                     baseline = self.get_baseline(tool_id)
                     record["baseline"] = baseline
                     if baseline["status"] == "available":
                         # Only a host-sealed base result can become a comparison input.
-                        relative = Path(".trusted/baselines") / (tool_id + ".json")
-                        sealed = self.host_root / relative
-                        atomic_json(sealed, json.loads((self.baseline_root / (tool_id + ".json")).read_text()))
-                        sealed.parent.parent.chmod(0o711)
-                        sealed.parent.chmod(0o711)
-                        sealed.chmod(0o444)
-                        env["BASELINE_JSON"] = str(self.container_root / relative)
+                        self.manager.write_baseline(self.generation, tool_id,
+                            json.loads((self.baseline_root / (tool_id + ".json")).read_text()))
+                        env["BASELINE_JSON"] = str(self.container_root / ".trusted/baselines" / (tool_id + ".json"))
                 executable = ["bash", self.config.get("container_control_root", "/opt/local-ci/control") + "/scripts/local_ci/tools/run_tool.sh", tool_id]
                 if custom:
                     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,100}", custom["name"]):
@@ -493,34 +572,76 @@ class DockerExecutor:
                     source_only = custom.get("source_only", False)
                     if type(source_only) is not bool or source_only and custom["language"] != "python":
                         raise ContractError("Source-only checks must use Python")
-                    path = within(self.host_root / variant, "generated/" + custom["name"])
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_text(custom["content"], encoding="utf-8")
-                    self.writable(path.parent)
-                    self.writable(path)
-                    container_path = self.container_root / variant / path.relative_to(self.host_root / variant)
+                    self.manager.authorize_diagnostics(self.generation)
+                    runtime = self.diagnostic_context().get(variant, {})
+                    if mode == "reproduction" and not source_only and not runtime.get("python_available"):
+                        raise ContractError("Reproduction requires the original installed variant environment")
+                    scratch = self.container_root / "diagnostics" / execution_id
+                    python = runtime.get("python_bin") if runtime.get("python_available") else self.seed_python()
+                    if source_only:
+                        python = self.seed_python()
+                    env.update(HOME=str(scratch / "home"), TMPDIR=str(scratch / "tmp"),
+                               XDG_CACHE_HOME=str(scratch / "cache"), TRITON_CACHE_DIR=str(scratch / "cache/triton"),
+                               PYTHONDONTWRITEBYTECODE="1", PYTHON_BIN=python)
+                    experiment_id = custom.get("experiment_id")
+                    if mode == "experiment":
+                        experiment_id = experiment_id or execution_id
+                        if not re.fullmatch(r"[a-f0-9]{32}", experiment_id):
+                            raise ContractError("Invalid experiment identity")
+                        self.manager.create_experiment(self.generation, experiment_id, variant)
+                        experiment = self.container_root / "experiments" / experiment_id
+                        env.update(ANCHOR_DIR=str(experiment / "checkout"),
+                                   LOCAL_CI_TASK_ROOT=str(experiment),
+                                   PYTHON_BIN=str(experiment / "venv/bin/python"),
+                                   PYTHON_VENV_ACTIVATE=str(experiment / "venv/bin/activate"))
+                        if self.generation.get("backend_enabled"):
+                            env["BACKEND_PATH"] = str(experiment / "backend")
+                    elif experiment_id is not None:
+                        raise ContractError("Only experiments accept an experiment_id")
+                    env["PATH"] = str(Path(env["PYTHON_BIN"]).parent) + ":" + self.generation.get("env", {}).get("PATH", "/usr/local/bin:/usr/bin:/bin")
+                    self.manager.write_execution_file(self.generation, execution_id, custom["name"], custom["content"])
+                    container_path = self.container_root / ".trusted/scripts" / execution_id / custom["name"]
                     executable = ([env["PYTHON_BIN"], "-I", *(["-S"] if source_only else [])] if custom["language"] == "python" else ["bash"]) + [str(container_path)]
                     record.update(script_digest=hashlib.sha256(custom["content"].encode()).hexdigest(),
-                                  script_name=custom["name"], source_sha=self.task["tested_sha" if variant == "candidate" else "base_sha"], source_only=source_only)
+                                  script_name=custom["name"], source_sha=record["tested_sha"], source_only=source_only,
+                                  custom_mode=mode, runtime_origin="experiment" if mode == "experiment" else
+                                  "seed" if source_only or not runtime.get("python_available") else "variant",
+                                  execution_uid=self.uids[role], experiment_id=experiment_id)
                     (artifact_host / custom["name"]).write_text(custom["content"], encoding="utf-8")
+                launched = executable
+                if custom and mode in {"reproduction", "experiment"} and not custom.get("source_only"):
+                    setup = [[env["PYTHON_VENV_ACTIVATE"]]]
+                    if env.get("TRUSTED_ANCHOR_ENVSETUP"):
+                        setup.append([env["TRUSTED_ANCHOR_ENVSETUP"]])
+                    if self.generation.get("backend_enabled") and env.get("BACKEND_ENVSETUP"):
+                        path = Path(env["BACKEND_ENVSETUP"])
+                        if not path.is_absolute():
+                            path = Path(env["BACKEND_PATH"]) / path
+                        setup.append([str(path), *shlex.split(env.get("BACKEND_ENVSETUP_ARGS", ""))])
+                    env["LOCAL_CI_CUSTOM_ENVSETUP"] = json.dumps(setup)
+                    record["environment_setup"] = setup
+                    launched = [self.config.get("container_python", "python3"), "-I", "-S", "-c", CUSTOM_ENV_PROGRAM, *executable]
                 launch = 'cd "$ANCHOR_DIR" || exit 2; exec "$@"'
-                command = self.docker_prefix(env) + ["bash", "-c", launch, "--", *executable]
+                command = self.docker_prefix(env, role=role) + ["bash", "-c", launch, "--", *launched]
                 record["command"] = executable
-                record["cwd"] = str(self.container_root / variant / "checkout")
-                code, reason = self._execute(command, execution_id, artifact_host / "execution.log", cancelled, timeout)
+                record["cwd"] = env["ANCHOR_DIR"]
+                record["execution_uid"] = self.uids[role]
+                code, reason = self._execute(command, execution_id, artifact_host / "execution.log", cancelled, timeout, role=role)
                 record["exit_code"] = code
                 record["status"] = "cancelled" if reason == "cancelled" else "infra_error" if reason else "pass" if code == 0 else "fail"
                 record["reason"] = reason or ("completed" if code == 0 else "command_failed")
+                if custom and record.get("environment_setup") and code == 78:
+                    record.update(status="infra_error", reason="custom_environment_setup_failed")
                 with (artifact_host / "execution.log").open("rb") as log:
                     log.seek(max(0, log.seek(0, 2) - 1024 * 1024))
                     log_text = log.read().decode(errors="replace")
                 if not reason and (code in {137, -9} or re.search(r"out of memory|oom.kill|killed signal terminated", log_text, re.I)):
                     record.update(status="infra_error", reason="oom")
-                trusted_git = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "safe.directory=" + str(checkout)]
-                dirty = subprocess.check_output([*trusted_git, "status", "--porcelain", "--untracked-files=no"], cwd=checkout)
-                actual = subprocess.check_output([*trusted_git, "rev-parse", "HEAD"], cwd=checkout).decode().strip()
-                if dirty or actual != self.task["tested_sha" if variant == "candidate" else "base_sha"]:
+                source = self.manager.verify_checkout(self.generation, variant, record["tested_sha"])
+                if not source.get("verified") or source.get("dirty") or source.get("sha") != record["tested_sha"]:
                     record.update(status="infra_error", reason="frozen_checkout_modified")
+                self.manager.export_execution(self.generation, execution_id, artifact_host)
+                record["evidence_exported"] = True
                 detail = artifact_host / "result.json"
                 if detail.is_file() and not detail.is_symlink():
                     if detail.stat().st_size > 16 * 1024 * 1024:
@@ -543,6 +664,14 @@ class DockerExecutor:
             record.update(status="cancelled", reason=str(exc))
         except Exception as exc:
             record.update(status="infra_error", reason=str(exc))
+        if prepared and not record.get("evidence_exported"):
+            try:
+                with resource_lock(self.state_dir, threading.Event()):
+                    self.cleanup_processes(role="diagnostic" if custom else variant)
+                    self.manager.export_execution(self.generation, execution_id, artifact_host)
+                record["evidence_exported"] = True
+            except Exception as exc:
+                record.update(status="infra_error", evidence_export_error=str(exc))
         record["duration_seconds"] = round(time.time() - started, 3)
         atomic_json(self.record_root / (execution_id + ".json"), record)
         atomic_json(artifact_host / "executor-record.json", record)

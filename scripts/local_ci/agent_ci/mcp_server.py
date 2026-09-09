@@ -19,7 +19,7 @@ DESCRIPTIONS = {
     "poll_check": "Read an execution result; optionally wait up to 30 seconds.",
     "read_file": "Read bounded source lines from the candidate or base checkout. Cannot read host configuration or secrets.",
     "read_artifact": "Read bounded log or evidence from one execution belonging to this task.",
-    "run_custom": "Save and execute a task-local Python or Bash reproduction. Do not modify frozen source or shared environments. Each execution is retained.",
+    "run_custom": "Run task-local Python or Bash: diagnostic (default) works before checks pass and reads formal environments; reproduction requires verified formal dependencies; experiment modifies a separate copy. Diagnostics and experiments cannot satisfy mandatory checks or establish original-SHA causality.",
     "submit_review": "Record PR information, architecture or specialized review with verifiable references. High risk blocking requires two candidate failures and a passing base using the same reproduction.",
     "finish": "Validate and seal real evidence, then end Codex work. The durable outbox uploads independently; missing mandatory checks/reviews prevent a passing result.",
 }
@@ -44,7 +44,10 @@ SCHEMAS = {
     "poll_check": schema({"execution_id": EXECUTION_ID, "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 30}}, ["execution_id"]),
     "read_file": schema({"path": NONEMPTY, "variant": VARIANT, "start_line": {"type": "integer", "minimum": 1}, "max_lines": {"type": "integer", "minimum": 1, "maximum": 500}}, ["path"]),
     "read_artifact": schema({"execution_id": EXECUTION_ID, "path": NONEMPTY, "offset": {"type": "integer", "minimum": 0}}, ["execution_id"]),
-    "run_custom": schema({"name": {"type": "string", "pattern": r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}$(?!\s)"}, "content": {"type": "string", "minLength": 1, "maxLength": 128 * 1024}, "language": {"type": "string", "enum": ["python", "bash"]}, "reason": REASON, "variant": VARIANT, "source_only": {"type": "boolean", "description": "Python-only -I -S reproduction using standard library and explicit source reads; no installed packages."}}, ["name", "content", "language", "reason"]),
+    "run_custom": schema({"name": {"type": "string", "pattern": r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}$(?!\s)"}, "content": {"type": "string", "minLength": 1, "maxLength": 128 * 1024}, "language": {"type": "string", "enum": ["python", "bash"]}, "reason": REASON, "variant": VARIANT,
+                          "mode": {"type": "string", "enum": ["diagnostic", "reproduction", "experiment"], "description": "Defaults to diagnostic. Only reproduction may establish original-SHA causality."},
+                          "experiment_id": {"type": "string", "pattern": r"^[a-f0-9]{32}$(?!\s)", "description": "Existing current-task experiment; omit to create one. Allowed only with mode=experiment."},
+                          "source_only": {"type": "boolean", "description": "Python-only -I -S using standard library and explicit source reads; no installed packages."}}, ["name", "content", "language", "reason"]),
     "submit_review": schema({"kind": {"type": "string", "enum": ["pr_info", "architecture", "specialized"]}, "status": {"type": "string", "enum": ["pass", "fail", "incomplete"]}, "summary": REASON, "evidence": {"type": "array", "items": {"type": "object"}}, "findings": {"type": "array", "items": {"type": "object"}}}, ["kind", "status", "summary", "evidence"]),
     "finish": schema({"summary": S}, []),
 }
@@ -102,6 +105,11 @@ def validate_arguments(method: str, arguments: dict) -> None:
     if not isinstance(method, str) or method not in SCHEMAS:
         raise ArgumentValidationError("Unknown task method")
     validate_value(arguments, SCHEMAS[method], method)
+    if method == "run_custom":
+        if "experiment_id" in arguments and arguments.get("mode", "diagnostic") != "experiment":
+            raise ArgumentValidationError("experiment_id is only valid in experiment mode")
+        if arguments.get("source_only", False) and arguments["language"] != "python":
+            raise ArgumentValidationError("source_only requires Python")
 
 
 def call(method: str, arguments: dict) -> dict:

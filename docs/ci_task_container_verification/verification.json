@@ -1,0 +1,141 @@
+{
+  "schema": "triton-anchor-ci-v4-verification/v1",
+  "started_at": "2026-09-09T04:30:33.398860+00:00",
+  "mode": "offline-simulation",
+  "real_model_calls": false,
+  "real_backend_builds": false,
+  "real_docker_daemon": false,
+  "remote_writes": false,
+  "actual_emails": false,
+  "suites": [
+    {
+      "name": "worker-mcp-recovery",
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "pytest",
+        "-q",
+        "--import-mode=importlib",
+        "scripts/local_ci/agent_ci/tests"
+      ],
+      "exit_code": 0,
+      "status": "pass",
+      "passed": 123,
+      "log": "worker-mcp-recovery.log"
+    },
+    {
+      "name": "real-tool-interfaces",
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "pytest",
+        "-q",
+        "--import-mode=importlib",
+        "scripts/local_ci/tools/tests"
+      ],
+      "exit_code": 0,
+      "status": "pass",
+      "passed": 26,
+      "log": "real-tool-interfaces.log"
+    },
+    {
+      "name": "images-task-containers",
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "pytest",
+        "-q",
+        "--import-mode=importlib",
+        "scripts/local_ci/environments/tests"
+      ],
+      "exit_code": 0,
+      "status": "pass",
+      "passed": 39,
+      "log": "images-task-containers.log"
+    },
+    {
+      "name": "deployment-monitoring",
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "pytest",
+        "-q",
+        "--import-mode=importlib",
+        "scripts/local_ci/deploy/tests",
+        "scripts/local_ci/maintenance/tests"
+      ],
+      "exit_code": 0,
+      "status": "pass",
+      "passed": 77,
+      "log": "deployment-monitoring.log"
+    },
+    {
+      "name": "github-gateway",
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "pytest",
+        "-q",
+        "--import-mode=importlib",
+        "scripts/ci/tests"
+      ],
+      "exit_code": 0,
+      "status": "pass",
+      "passed": 27,
+      "log": "github-gateway.log"
+    },
+    {
+      "name": "retained-local-contracts",
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "pytest",
+        "-q",
+        "--import-mode=importlib",
+        "scripts/local_ci/tests",
+        "scripts/local_ci/results/tests",
+        "scripts/local_ci/codex_ai/tests"
+      ],
+      "exit_code": 0,
+      "status": "pass",
+      "passed": 235,
+      "log": "retained-local-contracts.log"
+    },
+    {
+      "name": "api-contracts",
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "pytest",
+        "-q",
+        "--import-mode=importlib",
+        "scripts/api_contract/tests"
+      ],
+      "exit_code": 0,
+      "status": "pass",
+      "passed": 9,
+      "log": "api-contracts.log"
+    },
+    {
+      "name": "frontend-performance-dashboard",
+      "command": [
+        "/usr/bin/python3",
+        "-m",
+        "pytest",
+        "-q",
+        "--import-mode=importlib",
+        "python/triton_anchor/tests"
+      ],
+      "exit_code": 0,
+      "status": "pass",
+      "passed": 45,
+      "log": "frontend-performance-dashboard.log"
+    }
+  ],
+  "syntax_errors": [],
+  "passed": 581,
+  "success": true,
+  "finished_at": "2026-09-09T04:32:06.792254+00:00",
+  "source_digest": "d12c9edf350763d8adf5093ec07f35c28594145ec464b85824eb4a34ccc8fa52",
+  "main_router_digest": "20ef7911e71a3d3e9e1a23989ec9e5fad198b285e4c7975f061e843e73109c9e"
+}

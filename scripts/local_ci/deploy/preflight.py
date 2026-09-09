@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only deployment checks. Missing production values are explicit errors."""
+"""Read-only deployment checks, with an explicit trusted runtime-probe mode."""
 from __future__ import annotations
 
 import argparse
@@ -21,6 +21,8 @@ from environments.manager import DIGEST_RE, NAME_RE, SHA_RE, safe_source
 from maintenance.watchdog import smtp_configuration
 from agent_ci.skill import load_skill
 from agent_ci.protocol import ContractError
+from agent_ci.codex import finish_timeout_seconds
+from deploy.runtime_probe import runtime_status, verify_probe, probe_runtime, validate_runtime_config
 
 
 def check_configuration(config: dict, *, runtime: bool = True, require_notifications: bool = True) -> dict:
@@ -35,10 +37,20 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
             check(name, False, str(exc))
         except RuntimeError as exc:
             check(name, False, str(exc))
-    for name in ("state_dir", "control_root", "codex_sessions_root"):
+    check("schema", config.get("schema") == "triton-anchor-local-ci-config/v2", "Use the explicit v2 Rootless Docker task-container configuration")
+    check("removed_host_codex_user", "codex_user" not in config and "container_execution_user" not in config,
+          "Remove host codex_user/container_execution_user; configure distinct container identities")
+    check("codex_bin", isinstance(config.get("codex_bin"), str) and Path(config["codex_bin"]).is_absolute(), "Configure the actual absolute Codex path inside the trusted image")
+    check("codex_home", isinstance(config.get("codex_home"), str) and Path(config["codex_home"]).is_absolute(), "Configure the existing private company model source; no endpoint or model is guessed")
+    check("max_jobs", type(config.get("max_jobs", 8)) is int and config.get("max_jobs", 8) > 0, "Build parallelism defaults to 8 jobs and must be a positive integer")
+    try:
+        validate_runtime_config(config)
+        check("runtime_resources_identities", True, "Explicit Rootless endpoint/context, CPU/memory/PID budgets and separate task UIDs configured")
+    except ValueError as exc:
+        check("runtime_resources_identities", False, str(exc))
+    for name in ("state_dir", "control_root"):
         value = config.get(name)
         check(name, isinstance(value, str) and Path(value).is_absolute(), "Configure an absolute dedicated server path")
-    state_value, sessions_value = config.get("state_dir"), config.get("codex_sessions_root")
     check("one_way_delivery", "receipt_timeout_seconds" not in config,
           "Remove receipt_timeout_seconds: local completion is immutable Gitee upload; GitHub publication runs independently")
     retention = config.get("results_retention_days", 30)
@@ -53,12 +65,11 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
     cleanup_timeout = config.get("cleanup_timeout_seconds", 60)
     check("cleanup_timeout_seconds", type(cleanup_timeout) is int and cleanup_timeout > 0,
           "Task process cleanup requires a positive whole-number timeout in seconds; the default is 60")
-    snapshot_timeout = config.get("hygiene_snapshot_timeout_seconds", 600)
-    check("hygiene_snapshot_timeout_seconds", type(snapshot_timeout) is int and 1 <= snapshot_timeout <= 3600,
-          "Shared dependency and public-state probes require a timeout from 1 to 3600 seconds; the default is 600")
-    if isinstance(state_value, str) and isinstance(sessions_value, str):
-        state_path, sessions_path = Path(state_value).resolve(), Path(sessions_value).resolve()
-        check("session_state_separation", not sessions_path.is_relative_to(state_path) and not state_path.is_relative_to(sessions_path), "Codex sessions and trusted worker state must use independent, non-overlapping directories")
+    try:
+        deadline = finish_timeout_seconds(config)
+        check("finish_timeout_seconds", True, "Bounded task sealing deadline configured: " + str(deadline) + " seconds")
+    except ContractError as exc:
+        check("finish_timeout_seconds", False, str(exc))
     if config.get("control_root"):
         control = Path(config["control_root"])
         check("trusted_control", (control / "scripts/local_ci/agent_ci/worker.py").is_file() and (control / "scripts/local_ci/tools").is_dir(), "Trusted worker and tools must exist in control_root")
@@ -80,14 +91,13 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
         check(prefix + ":llvm_hash", bool(SHA_RE.fullmatch(str(profile.get("llvm_hash", "")))), "Current exact LLVM revision is required")
         backend = profile.get("backend_enabled", False)
         triton_30 = str(profile.get("triton_version", "")).split(".")[:2] == ["3", "0"]
-        check(prefix + ":backend", isinstance(backend, bool) and (not backend or triton_30), "Only current Triton 3.0 may enable backend capability")
+        check(prefix + ":backend", isinstance(backend, bool) and backend == triton_30, "Triton 3.0 must enable backend capability; other current versions must disable it")
         image = profile.get("image")
-        check(prefix + ":image", isinstance(image, str) and bool(image) and "<" not in image, "Provide an actual approved image; daily rotation has no guessed image fallback")
-        user = profile.get("execution_user", config.get("container_execution_user", ""))
-        numeric_user = isinstance(user, str) and bool(re.fullmatch(r"[1-9][0-9]*(?::[1-9][0-9]*)?", user))
-        check(prefix + ":execution_user", numeric_user, "Configure a dedicated non-root numeric task UID or UID:GID, unused by resident container services and distinct from the host Codex UID")
+        check(prefix + ":image", isinstance(image, str) and bool(re.fullmatch(r"(?:[^\s@]+@)?sha256:[a-f0-9]{64}", image)), "Provide the actual trusted foundation image by immutable SHA256 digest")
+        check(prefix + ":removed_execution_user", "execution_user" not in profile and "existing_container" not in profile,
+              "Task-container mode cannot adopt a persistent container or use the old shared execution_user")
         root = profile.get("workspace_root")
-        check(prefix + ":workspace_root", isinstance(root, str) and Path(root).is_absolute() and root != "/", "Use an absolute dedicated generation workspace root")
+        check(prefix + ":workspace_root", isinstance(root, str) and Path(root).is_absolute() and root != "/", "Use an absolute logical source root for the trusted image recipe; this is not a persistent task workspace")
         env = profile.get("env", {})
         seed = env.get("SEED_PYTHON") or env.get("PYTHON_VENV_ACTIVATE")
         check(prefix + ":seed_python", isinstance(seed, str) and Path(seed).is_absolute(), "Provide an absolute seed Python or venv activation path; manager verifies build/setuptools/wheel/pybind11/PyYAML/pytest imports as the task user")
@@ -107,23 +117,13 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
             check(prefix + ":backend_env", all(isinstance(env.get(key), str) and env[key].strip() for key in backend_required), "3.0 requires actual backend/FlagGems/PPL paths, profile, wheel filename pattern, discovery name and smoke/JIT command")
             backend_path = Path(env.get("BACKEND_PATH") or ".")
             workspace_path = Path(profile.get("workspace_container", "/workspace"))
-            check(prefix + ":backend_workspace", backend_path.is_absolute() and backend_path != workspace_path and backend_path.is_relative_to(workspace_path) and ".." not in backend_path.parts, "Backend source must be inside the generation workspace for isolated task checkouts")
+            check(prefix + ":backend_workspace", backend_path.is_absolute() and backend_path != workspace_path and backend_path.is_relative_to(workspace_path) and ".." not in backend_path.parts, "Backend source must be inside the image recipe logical container root for task-private copies")
         validations = profile.get("validation_commands", {})
-        check(prefix + ":daily_validation", isinstance(validations, dict) and required.issubset(validations) and all(isinstance(command, list) and command and all(isinstance(arg, str) for arg in command) for command in validations.values()), "Daily candidates must run required validation commands before promotion")
-        post_commands = profile.get("post_task_validation_commands", [])
-        post_valid = (isinstance(post_commands, list) and (bool(post_commands) or not (backend or triton_30))
-                      and all(isinstance(command, list) and bool(command)
-                              and all(isinstance(arg, str) and bool(arg.strip()) and "\x00" not in arg for arg in command)
-                              and Path(command[0]).name not in {"true", ":"} for command in post_commands))
-        check(prefix + ":post_task_validation_commands", post_valid,
-              "Triton 3.0 requires actual device readiness checks as non-empty argv lists before reuse; true/: placeholders are rejected")
-        post_timeout = profile.get("post_task_validation_timeout_seconds", 120)
-        check(prefix + ":post_task_validation_timeout_seconds", type(post_timeout) is int and 1 <= post_timeout <= 3600,
-              "Post-task validation requires a timeout from 1 to 3600 seconds; the default is 120")
+        check(prefix + ":daily_validation", isinstance(validations, dict) and required.issubset(validations) and all(isinstance(command, list) and command and all(isinstance(arg, str) for arg in command) for command in validations.values()), "Trusted image candidates must run required validation commands before promotion")
         schedule = profile.get("daily_calendar")
         check(prefix + ":daily_calendar", isinstance(schedule, str) and bool(schedule) and "\n" not in schedule, "Provide a staggered systemd OnCalendar value")
         env = profile.get("env", {})
-        check(prefix + ":credential_boundary", not any(any(part in key for part in ("TOKEN", "PASSWORD", "API_KEY", "SECRET", "CODEX_HOME")) for key in env), "Model/publishing credentials must stay outside candidate containers")
+        check(prefix + ":credential_boundary", not any(any(part in key for part in ("TOKEN", "PASSWORD", "API_KEY", "SECRET", "CODEX_HOME")) for key in env), "Only the Codex-private task directory may receive model credentials; profile environment must contain no credentials")
     calendars = [profile.get("daily_calendar") for profile in profiles.values()]
     check("staggered_rotation", len(calendars) == len(set(calendars)), "Profiles must have distinct daily rebuild times; the resource lock also serializes builds")
     if require_notifications:
@@ -135,52 +135,58 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
         health_env = config.get("health_token_env", "GITEE_HEALTH_TOKEN")
         check("health_publish_auth", bool(os.environ.get(health_env)), "Set the configured health publishing credential environment variable")
     if runtime:
-        check("linux", sys.platform.startswith("linux"), "Worker deployment requires Linux/systemd/Docker")
-        for executable in (config.get("python_bin", "python3"), config.get("codex_bin", "codex"), config.get("docker_bin", "docker"), "git", "systemctl", "runuser"):
-            check("executable:" + executable, bool(shutil.which(executable)), "Required server executable must be installed")
+        check("linux", sys.platform.startswith("linux"), "Worker deployment requires Linux, user systemd and Rootless Docker")
+        check("ordinary_ci_user", os.geteuid() != 0, "Run as the ordinary CI account, without sudo or root-owned runuser")
         try:
-            import tomllib  # noqa: F401
-            toml_ready = True
-        except ImportError:
-            toml_ready = importlib.util.find_spec("tomli") is not None
-        check("toml_parser", toml_ready, "Use Python 3.11+ or install tomli in the worker interpreter")
-        user = config.get("codex_user", "")
-        try:
-            account = pwd.getpwnam(user)
-            groups = {group.gr_name for group in grp.getgrall() if user in group.gr_mem or group.gr_gid == account.pw_gid}
-            check("codex_user", account.pw_uid != 0 and not groups.intersection({"root", "docker", "sudo", "wheel", "admin", "adm", "systemd-journal", "lxd", "libvirt"}), "Codex account must be non-root without Docker, sudo, journal or host administration access")
-            numeric_users = [profile.get("execution_user", config.get("container_execution_user", "")) for profile in profiles.values()]
-            check("container_host_identity_separation", not any(str(value).split(":")[0].isdigit() and int(str(value).split(":")[0]) == account.pw_uid for value in numeric_users), "Container task UID must differ from the host Codex UID; manager also probes actual image identities")
-            if os.geteuid() == 0 and sessions_value:
-                parents = [path for path in Path(sessions_value).parents if path.exists()]
-                traversable = all(subprocess.run(["runuser", "-u", user, "--", "test", "-x", str(path)], capture_output=True).returncode == 0 for path in parents)
-                check("session_parent_traversal", traversable, "Codex account must be able to traverse every existing session-root parent")
-                if state_value and Path(state_value).exists():
-                    writable = subprocess.run(["runuser", "-u", user, "--", "test", "-w", state_value], capture_output=True).returncode == 0
-                    check("worker_state_boundary", not writable, "Codex account must not write trusted worker state")
-                mcp = Path(config.get("control_root", "")) / "scripts/local_ci/agent_ci/mcp_server.py"
-                readable = subprocess.run(["runuser", "-u", user, "--", "test", "-r", str(mcp)], capture_output=True).returncode == 0
-                check("codex_mcp_read_access", readable, "Codex account must read the trusted MCP script through its installed control-root parents")
+            account = pwd.getpwuid(os.getuid())
+            groups = {group.gr_name for group in grp.getgrall() if account.pw_name in group.gr_mem or group.gr_gid == account.pw_gid}
+            check("ci_account_groups", not groups.intersection({"root", "docker", "sudo", "wheel", "admin", "lxd", "libvirt"}),
+                  "The CI account must not belong to rootful Docker or host administration groups")
         except KeyError:
-            check("codex_user", False, "Create the explicitly configured dedicated Codex account before starting services")
-        home_value = config.get("codex_home") or os.environ.get("CODEX_AI_CI_HOME", "")
+            check("ci_account_groups", False, "The ordinary CI account must be provisioned")
+        for executable in (config.get("python_bin", "python3"), config.get("docker_bin", "docker"), "git", "systemctl"):
+            check("executable:" + executable, bool(shutil.which(executable)), "Required host executable must be installed")
+        if os.geteuid() != 0 and shutil.which("systemctl"):
+            service = config.get("runtime", {}).get("service", "docker.service")
+            if isinstance(service, str) and re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", service):
+                try:
+                    result = subprocess.run(["systemctl", "--user", "show", service, "--property=LoadState,ActiveState"],
+                                            text=True, capture_output=True, timeout=15)
+                    fields = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+                    check("user_systemd", result.returncode == 0 and fields.get("LoadState") == "loaded" and fields.get("ActiveState") == "active",
+                          "The configured Rootless Docker user service and user bus must be available")
+                except (OSError, subprocess.TimeoutExpired):
+                    check("user_systemd", False, "Cannot query the configured Rootless Docker user service")
+            else:
+                check("user_systemd", False, "Configure the actual Rootless Docker user service")
+        for key in ("state_dir",):
+            value = config.get(key)
+            if isinstance(value, str) and Path(value).is_absolute():
+                parent = next((path for path in [Path(value), *Path(value).parents] if path.exists()), None)
+                check(key + ":ownership", bool(parent) and parent.stat().st_uid == os.getuid() and os.access(parent, os.W_OK | os.X_OK),
+                      "Dedicated worker state must belong to and be writable by the CI account")
+        home_value = config.get("codex_home", "")
         home = Path(home_value)
-        home_valid = home.is_absolute() and (home / "config.toml").is_file() and (home / "auth.json").is_file()
-        check("codex_credentials", home_valid, "Use the existing dedicated company model configuration and auth files")
+        files = [home / "config.toml", home / "auth.json"]
+        home_valid = home.is_absolute() and all(path.is_file() and not path.is_symlink() and path.stat().st_uid == os.getuid() and not path.stat().st_mode & 0o077 for path in files)
+        check("codex_credentials", home_valid, "Configure actual private company model config/auth files owned by the CI account")
         if home_valid:
             try:
                 spec = importlib.util.spec_from_file_location("credential_validator", LOCAL_ROOT / "codex_ai/validate_codex_ai_credentials.py")
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 module.validate_credentials(home, Path.home() / ".codex")
-                check("company_provider", True, "Dedicated Responses provider/auth validated; no API request made and no values printed")
+                check("company_provider", True, "Existing company model/provider files validated; no API request made")
             except (Exception, SystemExit):
-                check("company_provider", False, "Dedicated company credential/provider configuration failed validation")
-        docker = config.get("docker_bin", "docker")
-        if shutil.which(docker):
-            result = subprocess.run([docker, "info", "--format", "{{.ServerVersion}}"], text=True, capture_output=True, timeout=30)
-            check("docker_daemon", result.returncode == 0, "Docker daemon must be available to the trusted worker")
-    return {"schema": "triton-anchor-local-ci-preflight/v1", "ready": all(item["status"] == "pass" for item in checks), "checks": checks}
+                check("company_provider", False, "Actual company model/provider configuration failed validation")
+        try:
+            info = runtime_status(config)
+            check("rootless_runtime", True, "Explicit endpoint/context, rootless daemon and cgroup v2/systemd verified")
+            evidence = verify_probe(config, info)
+            check("runtime_probe", True, "Verified effective resource limits and trusted image capabilities: " + evidence["config_digest"])
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            check("rootless_runtime_or_probe", False, str(exc))
+    return {"schema": "triton-anchor-local-ci-preflight/v2", "ready": all(item["status"] == "pass" for item in checks), "checks": checks}
 
 
 def main():
@@ -188,9 +194,19 @@ def main():
     parser.add_argument("--config", required=True)
     parser.add_argument("--configuration-only", action="store_true")
     parser.add_argument("--skip-notifications", action="store_true", help="Configuration development only; production preflight must validate notification settings")
+    parser.add_argument("--probe-runtime", action="store_true", help="Run an explicitly labelled trusted canary to prove effective limits and image dependencies; never starts services")
     args = parser.parse_args()
     try:
-        result = check_configuration(json.loads(Path(args.config).read_text()), runtime=not args.configuration_only, require_notifications=not args.skip_notifications)
+        config = json.loads(Path(args.config).read_text())
+        if args.probe_runtime:
+            if args.configuration_only:
+                parser.error("--probe-runtime cannot be combined with --configuration-only")
+            static = check_configuration(config, runtime=False, require_notifications=not args.skip_notifications)
+            if not static["ready"]:
+                print(json.dumps(static, ensure_ascii=False, indent=2))
+                return 1
+            probe_runtime(config)
+        result = check_configuration(config, runtime=not args.configuration_only, require_notifications=not args.skip_notifications)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result["ready"] else 1
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:

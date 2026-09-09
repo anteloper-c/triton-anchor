@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -48,7 +49,35 @@ class FakeProcess:
         return self.returncode
 
 
-@unittest.skipUnless(sys.platform.startswith('linux'), 'Linux account boundary')
+class ContainerExecutor:
+    """Only container transport is mocked; inspect the private delivery boundary."""
+    def __init__(self):
+        self.generation = {'attempt_id': 'fixture-attempt-1',
+                           'uids': {'codex': 60001, 'candidate': 60002, 'base': 60003, 'diagnostic': 60004}}
+        self.layout = {'home': '/codex/home', 'workspace': '/codex/workspace',
+                       'python_bin': '/usr/bin/python3', 'mcp_script': '/trusted/agent_ci/mcp_server.py',
+                       'rpc_socket': '/run/local-ci-rpc/supervisor.sock'}
+        self.files, self.environment, self.deliveries, self.commands = {}, {}, [], []
+        self.stops = 0
+
+    def prepare_codex_session(self, *, files, environment, rpc_socket):
+        self.deliveries.append({'files': dict(files), 'environment': dict(environment), 'rpc_socket': rpc_socket})
+        self.files.update(files)
+        self.environment.update(environment)
+        return self.layout
+
+    def codex_command(self, arguments):
+        command = ['docker', '--host', 'unix:///run/user/1000/docker.sock', 'exec', '-i', '--user', '60001:60001',
+                   'owned-task-container', '/trusted/private-env-launcher', '/trusted/codex', *arguments]
+        self.commands.append(command)
+        return command
+
+    def stop_codex(self):
+        self.stops += 1
+        return {'verified': True, 'remaining': [], 'cleaned_pid_count': 0}
+
+
+@unittest.skipUnless(sys.platform.startswith('linux'), 'Linux container client boundary')
 class CodexTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='local-ci-codex-')
@@ -74,12 +103,11 @@ hooks = true
         self.source.joinpath('auth.json').write_text(json.dumps({'OPENAI_API_KEY': 'fixture-private-model-key'}))
         self.run_dir = self.root / 'run'
         self.run_dir.mkdir()
-        self.account = types.SimpleNamespace(pw_uid=60001, pw_gid=60001, pw_name='fixture-codex', pw_dir='/nonexistent')
-        self.supervisor = types.SimpleNamespace(task={'task_id': 'a' * 64}, executor=types.SimpleNamespace(uid=60002),
+        self.executor = ContainerExecutor()
+        self.supervisor = types.SimpleNamespace(task={'task_id': 'a' * 64}, executor=self.executor,
                                                 run_dir=self.run_dir, cancelled=threading.Event(), closed=False)
         self.service = types.SimpleNamespace(path=self.root / 'task.sock', token='fixture-private-rpc-capability')
-        self.config = {'codex_home': str(self.source), 'codex_sessions_root': str(self.root / 'sessions'),
-                       'codex_user': self.account.pw_name, 'codex_bin': '/trusted/codex', 'python_bin': '/trusted/python'}
+        self.config = {'codex_home': str(self.source), 'codex_bin': '/trusted/codex'}
         self.driver = CodexDriver(self.config, self.root / 'state')
         self.processes = []
 
@@ -93,8 +121,7 @@ hooks = true
 
     def run_driver(self, **kwargs):
         feature_output = '\n'.join(name + ' stable true' for name in DISABLED_FEATURES)
-        with mock.patch.object(CodexDriver, 'account', return_value=self.account), \
-             mock.patch('agent_ci.codex.subprocess.run', return_value=subprocess.CompletedProcess([], 0, feature_output, '')), \
+        with mock.patch('agent_ci.codex.subprocess.run', return_value=subprocess.CompletedProcess([], 0, feature_output, '')), \
              mock.patch('agent_ci.codex.subprocess.Popen', side_effect=self.process):
             return self.driver.run(self.supervisor, self.service, **kwargs)
 
@@ -107,26 +134,32 @@ hooks = true
         self.assertIn('features.shell_tool=false', command)
         self.assertNotIn(self.service.token, ' '.join(command))
         self.assertNotIn('fixture-private-model-key', ' '.join(command))
-        env = self.processes[0].options['env']
+        client_env = self.processes[0].options['env']
+        self.assertNotIn('LOCAL_CI_RPC_TOKEN', client_env)
+        self.assertNotIn('OPENAI_API_KEY', client_env)
+        env = self.executor.environment
         self.assertEqual(self.service.token, env['LOCAL_CI_RPC_TOKEN'])
+        self.assertEqual('/run/local-ci-rpc/supervisor.sock', env['LOCAL_CI_RPC_SOCKET'])
         self.assertNotIn('OPENAI_API_KEY', env)
-        config = Path(env['CODEX_HOME'], 'config.toml').read_text()
+        config = self.executor.files['config.toml']
         self.assertIn('deployed-real-model', config)
         self.assertIn('https://company.invalid/v1', config)
         self.assertNotIn('do-not-run-personal', config)
         self.assertNotIn(self.service.token, config)
         self.assertIn('"env_vars" = ["LOCAL_CI_RPC_SOCKET", "LOCAL_CI_RPC_TOKEN", "LOCAL_CI_FINISH_TIMEOUT_SECONDS"]', config)
-        self.assertEqual('3240', env['LOCAL_CI_FINISH_TIMEOUT_SECONDS'])
-        self.assertIn('"tool_timeout_sec" = 3270', config)
+        self.assertEqual('3600', env['LOCAL_CI_FINISH_TIMEOUT_SECONDS'])
+        self.assertIn('"tool_timeout_sec" = 3630', config)
         self.assertIn('"required" = true', config)
         self.assertIn('"shell_tool" = false', config)
         self.assertIn('"hooks" = false', config)
         self.assertIn('"multi_agent" = false', config)
+        self.assertIn('/trusted/agent_ci/mcp_server.py', config)
+        self.assertNotIn('runuser', command)
         bundle = load_skill()
         self.assertTrue(self.processes[0].input_payload.decode().startswith(bundle.prompt))
-        snapshot = Path(self.processes[0].options['cwd']) / 'TASK_SKILL.md'
-        self.assertEqual(bundle.prompt, snapshot.read_text())
-        self.assertEqual(0o444, snapshot.stat().st_mode & 0o777)
+        self.assertEqual(bundle.prompt, self.executor.files['TASK_SKILL.md'])
+        self.assertEqual(self.run_dir, self.processes[0].options['cwd'])
+        self.assertEqual(self.service.path, self.executor.deliveries[0]['rpc_socket'])
         manifest = json.loads((self.run_dir / 'skill-manifest.json').read_text())
         self.assertEqual(bundle.manifest['digest'], manifest['digest'])
         self.assertEqual(self.supervisor.task['task_id'], manifest['task_id'])
@@ -135,7 +168,8 @@ hooks = true
         (self.run_dir / 'codex-events.jsonl').write_text(json.dumps({'type': 'thread.started', 'thread_id': 'ffffffff-1234-1234-1234-0123456789ab'}) + '\n')
         second = self.run_driver(recovery='Continue saved evidence')
         command = self.processes[1].command
-        self.assertEqual(['exec', 'resume', SESSION_ID], command[command.index('exec'):command.index('exec') + 3])
+        resume = command.index('resume')
+        self.assertEqual(['exec', 'resume', SESSION_ID], command[resume - 1:resume + 2])
         self.assertNotIn('--sandbox', command)
         self.assertIn('sandbox_mode="read-only"', command)
         self.assertIn('approval_policy="never"', command)
@@ -143,13 +177,29 @@ hooks = true
         self.assertNotEqual(first['event_log'], second['event_log'])
         self.assertEqual(first['skill_digest'], second['skill_digest'])
         self.assertTrue(self.processes[1].input_payload.decode().startswith(bundle.prompt))
+        self.assertEqual(4, self.executor.stops)
 
-    def test_finish_deadline_covers_configured_hygiene_checks(self):
-        config = {"hygiene_snapshot_timeout_seconds": 300, "cleanup_timeout_seconds": 40,
-                  "profiles": {"3.0": {"post_task_validation_timeout_seconds": 180}}}
-        self.assertEqual(2060, finish_timeout_seconds(config))
-        with self.assertRaises(ContractError):
-            finish_timeout_seconds({"hygiene_snapshot_timeout_seconds": True})
+    def test_finish_budget_uses_cleanup_and_management_contract(self):
+        self.assertEqual(3600, finish_timeout_seconds({}))
+        config = {"finish_timeout_seconds": 1900, "cleanup_timeout_seconds": 100,
+                  "management_timeout_seconds": 1500,
+                  "hygiene_snapshot_timeout_seconds": True,
+                  "profiles": {"3.0": {"post_task_validation_timeout_seconds": "obsolete"}}}
+        self.assertEqual(1900, finish_timeout_seconds(config))
+        self.config.update(config)
+        self.run_driver()
+        self.assertEqual('1900', self.executor.environment['LOCAL_CI_FINISH_TIMEOUT_SECONDS'])
+        self.assertIn('"tool_timeout_sec" = 1930', self.executor.files['config.toml'])
+
+    def test_finish_budget_rejects_invalid_or_insufficient_limits(self):
+        for config in ({"finish_timeout_seconds": True}, {"finish_timeout_seconds": 86301},
+                       {"finish_timeout_seconds": 0}, {"finish_timeout_seconds": 839},
+                       {"cleanup_timeout_seconds": True}, {"management_timeout_seconds": 0},
+                       {"cleanup_timeout_seconds": 1200}, {"management_timeout_seconds": "600"}):
+            with self.subTest(config=config), self.assertRaises(ContractError):
+                finish_timeout_seconds(config)
+        self.assertEqual(840, finish_timeout_seconds({"finish_timeout_seconds": 840}))
+        self.assertEqual(86300, finish_timeout_seconds({"finish_timeout_seconds": 86300}))
 
     def test_missing_skill_stops_before_codex_launch(self):
         with mock.patch('agent_ci.codex.load_skill', side_effect=ContractError('Missing Skill reference')):
@@ -195,6 +245,23 @@ hooks = true
             self.run_driver()
         self.assertEqual(1, len(self.processes))
 
+    def test_replaced_attempt_archives_old_session_and_starts_new(self):
+        self.run_driver()
+        previous = json.loads((self.run_dir / 'codex-session.json').read_text())
+        self.executor.generation['attempt_id'] = 'fixture-attempt-2'
+        self.run_driver()
+        self.assertNotIn('resume', self.processes[1].command)
+        self.assertIn('previous task container/session volume was replaced', self.processes[1].input_payload.decode())
+        history = list((self.run_dir / 'codex-session-history').glob('*.json'))
+        self.assertEqual(1, len(history))
+        archived = json.loads(history[0].read_text())
+        self.assertEqual(previous['session_id'], archived['session_id'])
+        self.assertEqual('fixture-attempt-1', archived['attempt_id'])
+        self.assertEqual('fixture-attempt-2', archived['replacement_attempt_id'])
+        self.assertEqual('fixture-attempt-2', json.loads((self.run_dir / 'codex-session.json').read_text())['attempt_id'])
+        self.run_driver()
+        self.assertIn('resume', self.processes[2].command)
+
     def test_sealed_task_never_launches_or_resumes_codex(self):
         self.supervisor.closed = True
         result = self.run_driver()
@@ -213,6 +280,53 @@ hooks = true
         self.assertEqual('sealed', result['reason'])
         self.assertEqual(SESSION_ID, result['session_id'])
 
+    def test_active_seal_has_its_own_budget_after_model_deadline(self):
+        self.config['codex_timeout_seconds'] = 10
+        waits = []
+
+        def wait(seconds):
+            waits.append(seconds)
+            self.supervisor.sealing_started = True
+            if len(waits) == 2:
+                self.supervisor.closed = True
+            return False
+
+        self.supervisor.cancelled = mock.Mock(is_set=mock.Mock(return_value=False), wait=mock.Mock(side_effect=wait))
+        with mock.patch.object(FakeProcess, 'poll', lambda process: process.returncode), \
+             mock.patch('agent_ci.codex.os.killpg'), \
+             mock.patch('agent_ci.codex.time.monotonic', side_effect=[0, 11, 200, 201]):
+            result = self.run_driver()
+        self.assertEqual('sealed', result['reason'])
+        self.assertTrue(result['finished'])
+        self.assertEqual(2, len(waits))
+
+    def test_active_seal_budget_is_bounded_and_not_reset_each_poll(self):
+        self.config.update(codex_timeout_seconds=10, finish_timeout_seconds=840)
+
+        def wait(seconds):
+            self.supervisor.sealing_started = True
+            return False
+
+        self.supervisor.cancelled = mock.Mock(is_set=mock.Mock(return_value=False), wait=mock.Mock(side_effect=wait))
+        with mock.patch.object(FakeProcess, 'poll', lambda process: process.returncode), \
+             mock.patch('agent_ci.codex.os.killpg'), \
+             mock.patch('agent_ci.codex.time.monotonic', side_effect=[0, 11, 900, 901]):
+            result = self.run_driver()
+        self.assertEqual('timeout', result['reason'])
+        self.assertFalse(result['finished'])
+        self.assertEqual(2, self.supervisor.cancelled.wait.call_count)
+        self.assertEqual(2, self.executor.stops)
+
+    def test_model_deadline_still_applies_before_sealing(self):
+        self.config['codex_timeout_seconds'] = 10
+        self.supervisor.cancelled = mock.Mock(is_set=mock.Mock(return_value=False), wait=mock.Mock(return_value=False))
+        with mock.patch.object(FakeProcess, 'poll', lambda process: process.returncode), \
+             mock.patch('agent_ci.codex.os.killpg'), \
+             mock.patch('agent_ci.codex.time.monotonic', side_effect=[0, 11, 12]):
+            result = self.run_driver()
+        self.assertEqual('timeout', result['reason'])
+        self.assertEqual(1, self.supervisor.cancelled.wait.call_count)
+
     def test_cancel_stops_process_and_retains_session(self):
         self.supervisor.cancelled = mock.Mock(is_set=mock.Mock(return_value=False), wait=mock.Mock(return_value=True))
         # Keep the process alive until the driver's cancellation path waits it out.
@@ -226,10 +340,10 @@ hooks = true
         kill.assert_called_once()
 
     def test_same_container_uid_and_symlinked_credentials_rejected(self):
-        self.supervisor.executor.uid = self.account.pw_uid
-        with self.assertRaisesRegex(ContractError, 'different UIDs'):
+        self.executor.generation['uids']['candidate'] = 60001
+        with self.assertRaisesRegex(ContractError, 'different non-root UIDs'):
             self.run_driver()
-        self.supervisor.executor.uid = 60002
+        self.executor.generation['uids']['candidate'] = 60002
         auth = self.source / 'auth.json'
         auth.rename(self.source / 'auth-real.json')
         auth.symlink_to(self.source / 'auth-real.json')
@@ -237,19 +351,45 @@ hooks = true
             self.run_driver()
 
     def test_missing_cli_capability_fails_before_model(self):
-        with mock.patch.object(CodexDriver, 'account', return_value=self.account), \
-             mock.patch('agent_ci.codex.subprocess.run', return_value=subprocess.CompletedProcess([], 0, 'shell_tool stable true', '')), \
+        with mock.patch('agent_ci.codex.subprocess.run', return_value=subprocess.CompletedProcess([], 0, 'shell_tool stable true', '')), \
              mock.patch('agent_ci.codex.subprocess.Popen') as popen:
             with self.assertRaisesRegex(ContractError, 'tool boundary'):
                 self.driver.run(self.supervisor, self.service)
             popen.assert_not_called()
+        self.assertEqual(1, self.executor.stops)
 
-    def test_administrative_account_rejected(self):
-        group = types.SimpleNamespace(gr_name='docker', gr_gid=555, gr_mem=[self.account.pw_name])
-        with mock.patch('agent_ci.codex.pwd.getpwnam', return_value=self.account), \
-             mock.patch('agent_ci.codex.grp.getgrall', return_value=[group]):
-            with self.assertRaisesRegex(ContractError, 'administrative'):
-                CodexDriver.account(self.account.pw_name)
+    def test_feature_probe_timeout_still_reaps_container_codex_uid(self):
+        with mock.patch('agent_ci.codex.subprocess.run', side_effect=subprocess.TimeoutExpired(['codex', 'features', 'list'], 30)), \
+             mock.patch('agent_ci.codex.subprocess.Popen') as popen:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                self.driver.run(self.supervisor, self.service)
+            popen.assert_not_called()
+        self.assertEqual(1, self.executor.stops)
+
+    def test_unprivileged_host_never_chowns_or_launches_runuser(self):
+        with mock.patch('os.geteuid', return_value=1000), mock.patch('os.chown', side_effect=AssertionError('host chown')):
+            self.run_driver()
+        self.assertNotIn('runuser', self.processes[0].command)
+        self.assertEqual(2, self.executor.stops)
+
+    def test_company_env_credentials_are_private_and_unrelated_secrets_not_inherited(self):
+        path = self.source / 'config.toml'
+        path.write_text(path.read_text().replace('name = "Company"', 'name = "Company"\nenv_key = "COMPANY_TOKEN"'))
+        with mock.patch.dict(os.environ, {'COMPANY_TOKEN': 'fixture-env-secret', 'GITEE_TOKEN': 'never-to-model',
+                                        'LOCAL_CI_RPC_TOKEN': 'other-task-token'}):
+            self.run_driver()
+        self.assertEqual('fixture-env-secret', self.executor.environment['COMPANY_TOKEN'])
+        self.assertNotIn('GITEE_TOKEN', self.executor.environment)
+        for command in self.executor.commands:
+            self.assertNotIn('fixture-env-secret', ' '.join(command))
+            self.assertNotIn(self.service.token, ' '.join(command))
+        self.assertNotIn('COMPANY_TOKEN', self.processes[0].options['env'])
+
+    def test_cleanup_failure_propagates_after_retaining_events(self):
+        with mock.patch.object(self.executor, 'stop_codex', side_effect=[{}, ContractError('Codex process cleanup failed')]):
+            with self.assertRaisesRegex(ContractError, 'cleanup failed'):
+                self.run_driver()
+        self.assertEqual(SESSION_ID, json.loads((self.run_dir / 'codex-session.json').read_text())['session_id'])
 
 
 if __name__ == '__main__':

@@ -38,18 +38,22 @@ class BoundaryExecutor:
         (path / "README.md").write_text("fixture source\n")
         return path
 
+    def diagnostic_context(self):
+        return {variant: {"runtime_origin": "seed", "python_available": True} for variant in ("candidate", "base")}
+
     def run(self, tool_id, execution_id, variant, parameters, cancelled, custom=None):
         self.calls.append({"tool_id": tool_id, "custom": custom})
         artifact = self.root / execution_id
         artifact.mkdir()
         code = 0
         record = {"execution_id": execution_id, "tool_id": tool_id, "variant": variant,
+                  "tested_sha": ("b" if variant == "base" else "c") * 40,
                   "environment_fingerprint": self.generation["environment_fingerprint"], "artifact_dir": str(artifact)}
         if custom is not None:
             script = artifact / custom["name"]
             script.write_text(custom["content"])
             command = [sys.executable, "-I", *(["-S"] if custom.get("source_only") else []), str(script)]
-            process = subprocess.run(command, capture_output=True, timeout=5)
+            process = subprocess.run(command, capture_output=True, timeout=5, env={**os.environ, "FIXTURE_VARIANT": variant})
             code = process.returncode
             (artifact / "execution.log").write_bytes(process.stdout + process.stderr)
             record["script_digest"] = hashlib.sha256(custom["content"].encode()).hexdigest()
@@ -69,7 +73,7 @@ class MCPBoundaryTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.journal = Journal(self.root / "state")
         self.executor = BoundaryExecutor(self.root)
-        self.task = {"task_id": "a" * 64}
+        self.task = {"task_id": "a" * 64, "tested_sha": "c" * 40, "base_sha": "b" * 40}
         self.policy = {"capabilities": [*TOOLS[:4], "contract_tests"], "required_checks": list(TOOLS[:4])}
         self.supervisor = Supervisor(self.task, self.policy, self.journal, self.executor, self.root / "run")
         self.addCleanup(self.supervisor.close)
@@ -206,13 +210,14 @@ class MCPBoundaryTests(unittest.TestCase):
 
     def test_runtime_custom_still_requires_smoke_then_executes(self):
         self.await_check(self.rpc("start_check", {"tool_id": "environment", "reason": "fixture"}))
-        arguments = {"name": "runtime.py", "content": "print('runtime fixture')", "language": "python", "reason": "runtime fixture"}
+        arguments = {"name": "runtime.py", "content": "print('runtime fixture')", "language": "python", "reason": "runtime fixture", "mode": "reproduction"}
         self.assertIn("error", self.rpc("run_custom", arguments))
         self.assertEqual(1, len(self.records()))
         for tool_id in TOOLS[1:4]:
             self.await_check(self.rpc("start_check", {"tool_id": tool_id, "reason": "fixture"}))
         custom = self.await_check(self.rpc("run_custom", arguments))
         self.assertEqual("custom", custom["execution_kind"])
+        self.assertEqual("reproduction", custom["custom_mode"])
         self.assertFalse(custom["source_only"])
         self.assertTrue(self.supervisor.fresh("frontend_smoke"))
 
@@ -224,16 +229,61 @@ class MCPBoundaryTests(unittest.TestCase):
             {**arguments, "source_only": "true"},
             {**arguments, "name": "../check.py"},
             {**arguments, "content": "x" * (128 * 1024 + 1)},
+            {**arguments, "mode": "read_only"},
+            {**arguments, "experiment_id": "a" * 32},
+            {**arguments, "mode": "experiment", "experiment_id": "../escape"},
+            {**arguments, "mode": "reproduction", "experiment_id": "a" * 32},
+            {**arguments, "mode": "diagnostic", "uid": 0},
         ):
             self.assertEqual(-32602, self.mcp("run_custom", changed)["error"]["code"])
             self.assertIn("error", self.rpc("run_custom", changed))
         self.assertEqual([], self.records())
 
     def test_custom_record_cannot_satisfy_a_builtin_after_restart(self):
-        for marker in ({"script_digest": "f" * 64}, {"source_only": True}, {"execution_kind": "custom"}):
+        for marker in ({"script_digest": "f" * 64}, {"source_only": True}, {"execution_kind": "custom"},
+                       {"custom_mode": "diagnostic"}, {"experiment_id": "a" * 32}):
             self.journal.execution(self.task["task_id"], "environment", "candidate", {
-                "execution_id": uuid.uuid4().hex, "status": "pass", "environment_fingerprint": "fixture-environment", **marker})
+                "execution_id": uuid.uuid4().hex, "status": "pass", "environment_fingerprint": "fixture-environment",
+                "execution_kind": "builtin", **marker})
             self.assertFalse(self.supervisor.fresh("environment"))
+
+    def test_diagnostic_and_experiment_work_before_environment_and_report_seed(self):
+        context = self.rpc("context", {})["result"]
+        self.assertEqual("seed", context["diagnostics"]["candidate"]["runtime_origin"])
+        self.assertFalse(context["diagnostics"]["candidate"]["strict_reproduction_ready"])
+        self.assertEqual([], context["diagnostics"]["candidate"]["diagnostic_requires"])
+        arguments = {"name": "early.py", "content": "print('diagnose failed build')", "language": "python", "reason": "inspect before build"}
+        for mode in (None, "experiment"):
+            with self.subTest(mode=mode):
+                request = dict(arguments)
+                if mode:
+                    request.update(mode=mode)
+                result = self.await_check(self.rpc("run_custom", request))
+                self.assertEqual(mode or "diagnostic", result["custom_mode"])
+                self.assertEqual({}, result["dependency_executions"])
+                self.assertFalse(result["required"])
+        self.assertFalse(self.supervisor.fresh("environment"))
+        self.assertFalse(any(call["custom"] is None for call in self.executor.calls))
+
+    def test_only_strict_reproduction_can_establish_original_sha_causality(self):
+        self.supervisor.changes = [{"path": "README.md"}]
+        for variant in ("candidate", "base"):
+            self.await_check(self.rpc("start_check", {"tool_id": "environment", "reason": "verify source context", "variant": variant}))
+        arguments = {"name": "reproduce.py", "content": "import os\nraise SystemExit(os.environ['FIXTURE_VARIANT'] == 'candidate')\n",
+                     "language": "python", "reason": "compare original variants", "source_only": True}
+        finding = {"path": "README.md", "line": 1, "severity": "high", "summary": "Fixture branch difference"}
+        for mode in ("diagnostic", "experiment", "reproduction"):
+            ids = []
+            for variant in ("candidate", "candidate", "base"):
+                queued = self.rpc("run_custom", {**arguments, "mode": mode, "variant": variant})["result"]
+                record = self.rpc("poll_check", {"execution_id": queued["execution_id"], "wait_seconds": 5})["result"]
+                self.assertEqual("pass" if variant == "base" else "fail", record["status"])
+                ids.append(record["execution_id"])
+            self.assertEqual(mode == "reproduction", self.supervisor.finding_blocker({**finding, "execution_ids": ids}), mode)
+        candidate = next(r for r in self.records() if r["execution_id"] == ids[0])
+        candidate["tested_sha"] = "d" * 40
+        self.journal.execution(self.task["task_id"], candidate["tool_id"], "candidate", candidate)
+        self.assertFalse(self.supervisor.finding_blocker({**finding, "execution_ids": ids}))
 
 
 if __name__ == "__main__":

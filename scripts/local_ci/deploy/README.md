@@ -1,101 +1,119 @@
-# Local CI v4 部署交付
+# Rootless Docker 任务容器部署
 
-本轮交付本机模拟验证和可部署代码，不执行真实服务器上线，不覆盖现有模型、容器或服务配置。模板中的空镜像、依赖来源、账号和通知字段需填写服务器实际值；预检明确失败，不猜测后端镜像或改用其他模型。
+本目录交付部署代码和本机模拟验证，不表示服务器已上线。实际镜像、LLVM/PPL/torch_tpu、设备、公司模型和中转配置必须来自服务器；模板空值会使预检失败，不猜测地址、模型或厂商命令。
 
-## 配置与凭据
+## 运行边界
 
-以 `config.example.json` 建立服务器私有配置，保留实际公司 Codex `config.toml`、`auth.json`。`codex_home` 指向现有独立凭据目录，`codex_bin` 指向实际程序。使用 Python 3.11+；Python 3.10 需安装 `tomli`。JSON 和私有 EnvironmentFile 不得提交。
+宿主机普通 CI 账号运行 Harness、Rootless Docker 和用户级 systemd 服务；自动任务不使用 sudo。每次任务的容器绑定 task_id/run_id 和已验证镜像摘要，Codex 与候选代码在同一任务容器的不同非 root UID 下运行。默认 identities 为 candidate=11001、base=11002、diagnostic=11003、codex=11004、read_gid=11000、codex_gid=11004；四个 UID 不得重复，Codex 私有组不能与只读共享组相同。它们是容器内身份，不要求新建宿主机 Codex 账号。只有 Harness 可通过 Docker 管理接口执行容器 UID 0 的准备/清理操作。
 
-本版本采用单向交付：Codex 成功封存即结束，Harness 上传 Gitee 成功即本地 complete；GitHub 独立接收并发布，没有回执。旧配置删除 `receipt_timeout_seconds`，否则预检明确失败。上传失败保留 outbox 并按轮询间隔继续尝试，每次 Git 上传最多三次网络尝试；不调用模型。保留原 status → comment → Pages 顺序，GitHub 发布失败通过 Actions 和后续定时接收处理。
+任务容器不挂载 Docker socket、完整宿主机 state、Gitee/GitHub 凭据或整个 home。公司 Codex config/auth 只进入该任务的 Codex 私有目录，候选/base/diagnostic 身份不能读取。通用诊断 MCP 的能力由可信宿主机 Harness 验证，只作用于当前任务；不是宿主机任意命令或 Docker 参数透传接口。
 
-`profiles` 按目标分支配置。示例为 `triton_v3.0/3.3/3.6`；若 `main` 也要执行任务，显式为它登记实际版本配方和唯一 profile 名称。3.0 保留后端能力；其他版本不配置 backend、PPL、FlagGems 或性能能力。`container_execution_user` 或 profile 的 `execution_user` 必须填写容器专用 CI 数字 UID，或数字 `UID:GID`；UID/GID 都不得为 0，且 UID 不得用于容器常驻服务。manager 探测实际 UID/GID，工具仅授予当前任务可写目录权限。
+单向交付保持不变：Codex 封存结果后结束，Harness 上传不可变 Gitee 结果成功即本地 complete；没有 receipt。Docker 故障不应阻止已有 outbox 重试上传或独立健康发布。GitHub 保持 status → comment → Pages，发布失败由 Actions 和后续接收重试处理，不触发 Codex 重跑。
 
-宿主机 `codex_user` 由管理员创建，必须非 root 且不属于 root、docker、sudo、wheel、admin、adm、systemd-journal、lxd、libvirt 组，并与容器执行用户使用不同 UID。Codex 通过任务 MCP 调度；可信 worker 持有 Docker 和发布权限。`codex_sessions_root` 必须与 `state_dir` 分离、不互相包含，所有父目录允许该账号遍历；不得向该账号开放可信 state 写权限、部署配置或 Docker socket。可信控制 checkout 的 MCP 脚本与父目录须允许该账号读取/遍历，部署预检会实际以该账号验证。
+## 一次性主机准备
 
-生产 Gitee URL、基础镜像和依赖镜像由配置提供，Local CI 不使用 GitHub 源回退。预编译 LLVM 使用 `llvm.mode=archive`，配置 `archive` 本地绝对路径或 `url`，以及强制 `sha256`、`commit` 和可选 `strip_components`。源码模式使用 `llvm.mode=source`、公司可达 `repository`，checkout 必须匹配任务 LLVM SHA；补丁要求可信路径和 SHA256。默认 LLVM recipe 包含真实链接依赖 host、NVPTX、AMDGPU；厂商派生工具链使用实际参数和补丁。
+管理员确认普通 CI 账号、足够的 subuid/subgid、newuidmap/newgidmap、用户会话/D-Bus、linger、Rootless Docker、cgroup v2/systemd 及 CPU/memory/pids controller delegation。Rootless Docker 使用该账号的 user service；不能用系统 service 加 User= 代替。Docker data-root 使用实际支持的本地文件系统。发行版 user namespace、AppArmor 等要求按实际系统检查，不由任务修改。
 
-新 LLVM 可通过 `llvm.revisions[hash]` 登记匹配制品，或由源码模式自动准备。3.0 仍必须通过后端重建，失败不降级前端。已有容器可显式配置 `existing_container`、`existing_workspace_host` 和真实 `env.LLVM_BUILD_DIR` 导入；manager 检查身份和 workspace mount，不停止或回收导入容器。导入不替代每日轮换所需完整 recipe。
+3.0 的设备节点、组/ACL、驱动与 torch_tpu/PPL/runtime 的匹配版本、宿主机守护服务或 socket、设备恢复命令须逐项确认。不能以普通容器启动成功代替真实后端验收，也不能擅自配置 privileged、系统 Docker fallback 或全局设备放行。公司 CA、DNS、代理及可达镜像/LLVM 来源沿用实际配置。
 
-## 常驻环境与每日轮换
+参考：[Docker Rootless 前提](https://docs.docker.com/engine/security/rootless/)、[用户服务和资源限制](https://docs.docker.com/engine/security/rootless/tips/)、[发行版与运行限制](https://docs.docker.com/engine/security/rootless/troubleshoot/)。管理员准备不在自动任务中执行。
 
-每代拥有独立 workspace、依赖树、容器 ID、环境指纹；容器通过 `docker create/start` 建立，持续服务多个任务，不使用任务 snapshot、`docker commit` 或 `--rm`。控制目录只读挂载 `/opt/local-ci/control`，工具只读挂载 `/opt/local-ci/tools`；额外依赖 mount 只读，设备仅来自可信 `devices` 配置。
+## 私有配置
 
-`repositories` 是目录名到 `{repository, commit}` 的映射，供实际 anchor/backend/FlagGems 镜像按精确提交准备。backend 源码 `BACKEND_PATH` 必须位于当前 workspace 映射内，以便每任务复制独立 checkout。`archives` 可按名称登记 PPL 等预编译包（本地路径或 URL、SHA256、strip_components），安装到 `/workspace/deps/<name>`。`prepare_commands` 为容器内可信 argv 列表，用于现有 venv、runtime 和 Python 依赖；不能携带模型或发布凭据。
+使用 config.example.json 的 schema `triton-anchor-local-ci-config/v2`，填写实际值，私有 JSON/EnvironmentFile 不提交。
 
-每个 profile 必须给出实际 `SEED_PYTHON` 或 `PYTHON_VENV_ACTIVATE`；seed 环境需安装 `build`、`setuptools`、`wheel`、`pybind11`、`PyYAML`、`pytest`。manager 在接单前以真实容器执行用户检查这些导入、LLVM 和可信工具可读性。systemd 使用 `UMask=0077` 保护 journal 和凭据；manager 仅给代际工作区及依赖显式添加读取/遍历权限，保持依赖由 worker 所有且不可由任务用户写入。3.0 的 `BACKEND_WHEEL_PATTERN` 必须填写实际后端 wheel 文件名模式，同时填写后端发现名、smoke/JIT 命令及后端、FlagGems、PPL 路径。
+- `runtime.kind=docker-rootless`；`runtime.endpoint` 必须显式指向当前 CI UID 在 /run/user 下的私有 socket；`runtime.context` 必须指向同一 endpoint；`runtime.service` 是实际 Rootless Docker user unit。每条 Docker 调用固定 --host，拒绝 /var/run/docker.sock、其他 UID 的 socket 和默认 context 回退。
+- `resources.cpus/memory_bytes/pids_limit` 部署必填且为正数，后两项为整数；`max_jobs` 默认仍为 8。仅写 Docker 参数不算资源约束已生效，须通过下面的显式验证。
+- `state_dir` 是普通 CI 用户所有的独立可信目录；`rpc_socket_dir` 使用该用户运行时目录。Codex 会话保存在每个任务的私有 named volume，不再配置独立宿主 `codex_sessions_root`。control_root 是完整受信 checkout，生产必须干净并与任务 worker_revision_sha 一致。
+- `codex_bin` 是受信镜像内的真实 Codex 绝对路径；`codex_home` 是宿主机现有公司专用 config.toml/auth.json 来源，文件由 CI 用户所有且仅该用户可读。沿用实际 provider/model/auth，不写入 profile.env；不再配置宿主机 codex_user/container_execution_user。
+- `profiles` 仍按目标分支索引，记录唯一 name、Triton 版本、精确 llvm_hash、可信来源与错峰 daily_calendar。image 必须是实际基础镜像的不可变 SHA256 引用；不能填写 PR 可变标签，也不能用运行中的 PR 容器制作基础镜像。
+- `workspace_root`、`workspace_container` 保留为可信镜像配方中的逻辑源码根，用于解释依赖来源及重写容器路径，不表示宿主机常驻任务目录或可复用 PR 工作区。实际任务数据由 attempt 私有卷管理。
+- LLVM archive 需要来源、sha256 和精确 commit；源码需要公司可达可信 repository。repositories/archives/prepare_commands 只来自受信控制配置。任务不能把自制依赖写回可信缓存。
+- Triton 3.0 必须开启 backend，其他当前版本必须关闭。真实 PPL、torch/torch_tpu、后端、FlagGems 路径与依赖缺失属于部署失败；validation_commands 必须调用真实基础工具，不能填 true。新 LLVM 仍必须匹配被测代码声明；任务容器不使用旧常驻环境的 post_task_validation_commands 或设备复用检查。
+- `cleanup_timeout_seconds` 默认 60，`management_timeout_seconds` 默认 600；`finish_timeout_seconds` 默认 3600、最大 86300，且须至少覆盖 `3*cleanup_timeout_seconds + management_timeout_seconds + 60`。这些正整数控制任务进程清理、容器管理和整个封存 RPC 的期限，不再按旧公共目录指纹或设备复用检查推算。
 
-`validation_commands` 是检查名到 argv 的映射，必须有 `environment`、`frontend_build`、`wheel_install_import`、`frontend_smoke`；3.0 还要有 `backend_rebuild`、`backend_smoke_jit`。每项可使用 `["python3", "/opt/local-ci/control/scripts/local_ci/deploy/validate_environment.py", "对应工具名"]` 调用真实基础工具，不能填入 `true` 等空检查。默认 checkout 是配置在 `repositories` 的 `triton-anchor`，可用真实 `ANCHOR_DIR` 覆盖；venv、backend 环境由 profile env 提供。
+Gitee 任务/结果仓库与独立健康仓库均填写实际地址。Model、上传、health 和 SMTP 凭据保存在私有来源中；EnvironmentFile 必须由运行用户所有、权限 600。GitHub 侧变量、审批规则及 Pages 配置沿用既有 v4 合同，部署工具不更改分支保护或审批环境。
 
-每日 job 使用全局 `state_dir/resource.lock`，候选全部验证通过才原子晋升。任务 lease 固定代际，晋升只影响新任务。上一可用代际、所有有 lease 的代际保留；其他代际满 `generation_retention_hours` 才按 ownership 标签回收，绝不全局 prune。准备失败停止未使用的候选容器并保留诊断。首次上线先完整验证候选，不能把只准备依赖的环境当作产品验收通过。
+## 镜像准备、预检与资源实效
 
-LLVM 缓存以工具链配方、LLVM SHA 和实际 image ID 为键，保存完整安装树摘要和原子 ready 标记。代际只复制验证成功的缓存，不挂载共享可写缓存；损坏缓存隔离后重建。环境指纹同时包含实际可信控制 checkout 的 Git HEAD，控制脚本变更会创建新代际，不复用旧工具版本的成功环境。
-
-## 任务结束、环境复用与目录回收
-
-任务在常驻容器内使用独立 checkout、venv 和构建目录。任务进程启用 `no_new_privs`；可信 worker 的受控 root reaper 在确认容器身份后，仅终止专用任务 UID 的进程，再验证没有残留。`cleanup_timeout_seconds` 默认 60，必须为正整数，用于等待清理命令完成；超时或无法确认停止会隔离代际，保留诊断。专用 UID 不与常驻服务或宿主机 Codex 账户共用，是按 UID 清理的部署前提。
-
-每代首次可用时保存公共目录、共享依赖和工具链状态摘要；每次任务结束，先停止任务进程，再比对摘要并运行设备复用检查。3.0 profile 必须提供真实 `post_task_validation_commands`（非空 argv 列表的列表），用于确认设备和后端运行时已恢复可接单状态；样例故意留空，预检会失败，需要填入公司服务器实际命令，不能用 `true` 等占位。`post_task_validation_timeout_seconds` 默认 120，`hygiene_snapshot_timeout_seconds` 默认 600，两者须为 1 至 3600 的整数；前者按 profile 配置，后者为全局共享状态探测超时。其他版本可不配置设备检查。
-
-这些复用检查发生在结果封存前，失败记录 `environment_cleanup` 基础设施错误，不能得到整体通过结果。失败代际进入 `quarantined`，不再接单并尝试停止；停止未获确认时阻止接单、轮换和回滚，并持续保留。已确认停止且没有 lease 的隔离代际，从隔离时刻起满 `generation_retention_hours` 后可回收；不能手改 registry 将其恢复为可用。新任务使用经过验证的可用代际；旧任务仅在其工作目录、安装状态和绑定代际仍有效时复用成功执行记录。
-
-目录回收由 worker 每次扫描执行，不新增服务或 timer。成功结果封存进入 `publishing` 后即可删除任务 checkout、venv 和构建目录，不等待 Gitee 上传；已停止的取消任务也可立即回收。失败或待恢复目录默认保留 `task_workspace_retention_hours=24` 小时，允许 0 至 87600 的有限数值，0 表示下次扫描立即回收；`task_workspace_max_bytes` 默认 107374182400（100 GiB），必须为正整数。超出总预算时，按保留时间优先回收较旧的非活动任务目录；运行中或未确认停止的任务不可删除，保护项仍超预算时健康状态报错并阻止新执行。
-
-预算按逐任务目录的逻辑文件字节统计，包含 base/candidate checkout、venv、构建和临时产物；它不是整个磁盘的硬配额。删除前保存执行日志与证据，已有封存证据优先复用；已封存 outbox、上传所需结果目录和审计记录不在回收范围内，不为满足 scratch 预算而删除它们。`workspace-health.json` 另行报告 `durable_evidence_bytes`、`state_free_bytes` 和 `minimum_free_bytes`；可信 state 所在磁盘低于配置的空闲阈值时阻止新任务执行，已有结果仍继续上传。目录删除后撤销相关成功检查的可复用状态；人工续跑会重新创建独立环境并重跑必要检查。封存后目录回收失败会隔离代际并写入 `workspace-health.json`，保持原结果不可变。
-
-worker 启动持有单例锁后，先在旧 lease 指定的原代际停止遗留进程并验证环境，再释放 lease 或接新任务；普通进程重启恢复无需人工 `--resume`。显式续跑使用 `worker.py --config CONFIG --resume TASK_ID`，需先停止常驻 worker，执行该命令后再启动服务，避免与同任务的目录回收并发；常驻 worker 持锁时该命令返回 2。已封存且只待上传的任务重试原 outbox，不重新调用 Codex，也不依赖被回收的工作目录。
-
-## 安装与回退
-
-控制版本必须完整包含 `scripts/local_ci/skills/local-ci/SKILL.md` 和其 `references/`。预检会实际解析入口及引用；复制部分提示词不能通过。Skill 与 Harness 一起版本化，`tools/` 保持原位置。更新此版本前先停止旧接单并处理在途任务，保存旧控制 checkout、状态和会话；没有 Skill 摘要的旧会话不能在新驱动上继续，应在原可信版本收尾或取消后重新投递。回退使用原控制版本及匹配的任务/会话记录，不能手改摘要混用规则。
-
-将实际私有 EnvironmentFile 导入管理员环境后，执行只读预检，不调用模型、下载依赖或发邮件：
+先执行只读配置检查，修正全部缺失字段：
 
 ```bash
-python3 scripts/local_ci/deploy/preflight.py --config /etc/triton-anchor-local-ci/config.json
+python3 scripts/local_ci/deploy/preflight.py --config CONFIG --configuration-only
 ```
 
-先渲染审阅 systemd 文件，默认不安装也不启动：
+在普通 CI 用户会话中检查 Rootless Docker，再对每个配置 profile 执行受信镜像构建/验证；以下命令将创建镜像和验证容器，不是安装服务：
 
 ```bash
-python3 scripts/local_ci/deploy/install.py --config /etc/triton-anchor-local-ci/config.json --credentials-env /etc/triton-anchor-local-ci/credentials.env --render-dir /tmp/local-ci-units
+python3 scripts/local_ci/deploy/rotate.py --config CONFIG --profile PROFILE
 ```
 
-管理员预检通过后给相同命令加 `--apply`。安装保留原 unit 精确备份，绝不修改 JSON、model 配置或容器。随后管理员安排旧 poller 退役，再启动 `triton-anchor-local-ci.service`、`triton-anchor-local-ci-health.timer`、`triton-anchor-local-ci-retention.timer` 和各环境 timer；旧新 worker 不应并行消费生产任务。停旧服务前保存 unit、EnvironmentFile 和在途任务记录。
+每日 timer 仍使用相同 profile 入口，职责已变为可信镜像更新。验证成功才晋升新镜像，已运行任务固定原摘要；缓存与镜像只按 ownership、引用关系及保留策略回收，不做全局 prune。
 
-服务器必须部署与投递任务 `worker_revision_sha` 一致的已提交、干净 CI 控制 checkout；可信脚本有未提交变更或 SHA 不同，worker 会报告基础设施错误。更换控制代码前先停旧接单、核实在途任务已完成或明确取消、再切换 checkout；不能执行任务携带的策略来弥补控制版本差异。
+可信控制代码构建进镜像并绑定 control_revision，不将宿主 control_root 挂载到任务容器；镜像与任务须匹配控制版本。镜像管理器保留上一有效发布，必要时可用 `python3 scripts/local_ci/environments/manager.py --config CONFIG rollback --target-branch BRANCH --release-id RELEASE_ID` 选择已验证镜像；该镜像必须仍匹配当前 profile、LLVM 和控制配方。回退不替换已有 attempt，切换后重新运行资源 probe。
 
-`migrate.py` 提供不执行生产动作的迁移记录：`plan --worker-revision <SHA> --main-revision <SHA> --state <记录.json>` 固定版本，随后通过 `record --state <记录> --phase <阶段> --evidence <证据.json>` 顺序记录兼容 receiver/worker 就绪、main 调度就绪、旧接单停止、旧任务排空、新 poller 与独立监控就绪、最终验收。每阶段保存本地证据路径和 SHA256。旧任务清单必须明确终态、`result_uploaded:true`、匹配本地文件的 `result_digest/evidence_path`，或明确取消原因；运行中和未上传任务不能算排空。迁移记录升级为 v2，不能直接套用旧 v1 的回执证据。
+所有 profile 的受信镜像就绪后，显式运行实际资源验证：
 
-最终验收分别记录 `upload` 和 `github_publication`，两者都指向同一 `task_id/run_id/tested_sha/result_digest`；前者保存上传证据，后者记录 `pages_published/comment_published/github_status_published`。这两份部署验收材料不进入运行期任务状态机，也不要求服务器等待 GitHub。工具仅规划或写本地追溯记录，不停止服务、不部署、不访问远端；填写证据不代替实际执行。
+```bash
+python3 scripts/local_ci/deploy/preflight.py --config CONFIG --probe-runtime
+python3 scripts/local_ci/deploy/preflight.py --config CONFIG
+```
 
-首次启动新版 journal 会在事务中移除旧回执列，将具有成功上传记录的等待任务迁移为 complete；没有上传依据的任务继续待上传或明确 incomplete。先停服务并备份完整 state（包括 SQLite WAL），再升级；回滚旧代码须恢复匹配的数据库及会话备份，不能让旧程序读取已迁移的新数据库。历史 Gitee 回执可留存为旧记录，新代码不读取也不写入。
+--probe-runtime 创建有唯一 ownership 标签的可信验证容器，禁用网络，读取容器内 cpu.max、memory.max、pids.max 并比较实际配置；结束时核对容器 ID 与标签后定点删除。它不执行 PR、调用模型、发邮件或安装服务。本轮只以 Docker 边界替身验证代码，没有在真实服务器执行。
 
-服务回退执行 `install.py --rollback <backup目录>` 审阅，再加 `--apply`；第三方已修改的 unit 不覆盖。环境回退执行 `environments/manager.py --config <配置> --state-dir <状态目录> rollback --target-branch <分支>`，只切换新任务代际，已有 lease 不变。
+通过记录保存在 state_dir/deploy/runtime-probe.json，权限 600，绑定 endpoint、daemon ID、控制版本、配置、活动镜像和实测限额。普通预检只读取；缺记录或配置/镜像变化明确失败，不假定限制生效。更新镜像或配置后重新运行显式 probe。安装 --apply 必须有匹配记录。仅 cgroup v2/Docker info 合法不足以替代该证据。
 
-启用任务目录回收前，回滚备份应同时覆盖 state 与对应版本工作区；仅恢复旧 SQLite 会留下“通过记录存在、venv 已被新版本删除”的不一致。回退到不识别 `reuse_invalidated` 的旧 Worker 时，必须恢复匹配的工作区快照。没有匹配快照时保留旧 state 作审计，使用独立的新 state/环境重新验证，不能直接复用旧安装通过记录。仅回退 systemd unit 不会恢复已经回收的目录。
+## 用户级安装与回退
 
-## 独立监控
+先渲染审阅：
 
-健康 timer 独立于 poller，读取 `health/worker.json`、只读 SQLite、环境 registry、Docker 和磁盘，向已配置 Gitee 健康仓库发布 `worker-health.json`。快照的 `workspaces` 保留 `state_dir/workspace-health.json` 中的目录回收状态、预算和错误；尚未生成时为 `unreported`，损坏或不可读时明确为 `error`。`environments.generations` 同时显示 `dirty/quarantined`、隔离原因、是否确认停止及能否复用，不因 poller 在线而隐藏故障。主机离线由其他机器或 GitHub Actions 的 watchdog 通过快照过期识别。
+```bash
+python3 scripts/local_ci/deploy/install.py --config CONFIG --credentials-env CREDENTIALS_ENV --render-dir REVIEW_DIR
+```
 
-外部执行 `maintenance/watchdog.py --url <Gitee健康JSON或Contents API地址> --expected-worker <ID> --state <持久incident文件>`；SMTP 从 `LOCAL_CI_SMTP_*` 读取，缺配置明确失败。每次执行都要保存 incident 文件，包括发信失败时的 pending 通知，并在下次恢复该文件；仅供下载的 artifact 不能实现跨执行去重。
+普通 CI 用户确认生产预检通过后给相同命令加 --apply。只向当前用户的 XDG_CONFIG_HOME/systemd/user（默认 ~/.config/systemd/user）写 unit、保存原文件备份并执行 systemctl --user daemon-reload；不 start、不 enable、不改模型配置。root/sudo 执行和系统 unit 目录会被拒绝。
 
-模拟使用 `--input <JSON或-> --mail-outbox <目录>` 生成 `.eml`，不发信；`--dry-run` 不写状态。输入支持单 worker 快照或 `{workers: [...], tasks: [...], expected_workers: [...]}`；worker 的 `uploads` 列出未上传 outbox。GitHub 可用 `--tasks-file` 补充尚无结果的队列。默认心跳过期20分钟、未上传等待20分钟、显式进展停止30分钟；上传尝试失败立即告警。上传阶段不误报 Codex 已退出。异常和恢复各通知一次，SMTP失败保留待发通知；不监控 GitHub 回执。
+worker 的 WantedBy 为 default.target，对实际 rootless docker user service 使用 Wants/After；不使用 Requires/BindsTo 阻断 Docker 故障时的 outbox 上传。health 与 retention 不依赖 worker 存活。管理员完成旧接单退役后，由 CI 用户安排启动/启用 worker、health/retention timer 和各镜像 timer；安装器不替代这一切换操作。
 
-目录回收或预算检查报错触发 `workspace_cleanup_failed`；隔离代际尚未确认停止触发按代际区分的 `environment_quarantine_unconfirmed`。二者沿用 SMTP 去重、发送重试和恢复通知；缺少新的对应健康状态时不宣告恢复。v4 Dashboard 的监控 JSON 附带最小 `worker_health` 摘要，显示目录字节量、状态、任务/代际身份和清理原因代码，不复制原始主机路径、配置、凭据或异常全文。
+unit 回退使用 `install.py --rollback BACKUP` 审阅，再加 --apply，仍仅使用用户级 daemon-reload；备份必须属于当前用户，第三方修改过的 unit 不覆盖。旧 v1 系统 unit 备份不能由新用户安装器自动恢复，须按迁移备份由管理员处理旧系统服务。新旧 worker 不能同时消费同一生产队列。
 
-## Gitee 结果保留
+## 从常驻环境迁移
 
-`results_retention_days` 默认 30 天，必须为正整数。独立 retention timer 每日运行 `maintenance/retain_results.py --config CONFIG --apply`；去掉 `--apply` 可先查看清理计划。只清理 `local-ci-results` 分支的 v4 run 目录，年龄依据 `result.json` 的 Git 提交时间（不可变文件的上传时间），不依赖 GitHub 发布或回执，也不删除服务器 outbox。
+先停止旧接单并处理在途任务；旧 Rootful Docker 和新 Rootless Docker 是不同运行时，不能直接导入旧 container ID/lease 当作新任务容器。
 
-删除后保留 `retention/v4/<task>/<run>.json` 的身份、结果摘要和过期时间，Dashboard 显示保留期结束，不重新排队或发布更老结果。无效身份、符号链接不会当作可删除结果；并发上传发生时普通 Git push 拒绝覆盖，清理重新读取最新分支后重试。历史 v3 文件保持原状。此操作保留 Git 历史，不能释放历史 blob 占用；如需仓库压缩需另行安排。若 GitHub 接收中断超过保留周期，结果可能过期，应在到期前恢复接收或调整周期。
+1. 停止旧 worker 后，由其实际管理员显式执行 SQLite checkpoint，使 journal 不再有非空 WAL，再保存旧控制版本、完整 state、封存结果、会话及匹配工作区备份，记录文件摘要和旧容器停止证明。示例为在旧环境中执行 `sqlite3 OLD_STATE/journal.sqlite3 'PRAGMA wal_checkpoint(TRUNCATE);'`，必须检查 checkpoint 成功；不能对运行中数据库操作。离线导入以只读 immutable 模式读取源，不替调用者 checkpoint 或更改旧 schema。
+2. 完成普通 CI 用户、rootless/资源实效、可信镜像、公司模型来源和实际 3.0 后端准备。
+3. 旧计算任务已停止，结果已上传、已封存待上传或明确取消；旧 lease/容器的状态由其实际管理者核对。未停止的未知活动任务不能作为可迁移对象。确认清单包含 `old_intake_stopped/old_worker_stopped/old_containers_stopped/leases_released:true` 和 tasks 列表；显式取消项记录 task_id、state=cancelled 和 reason。导入器直接读取源 journal 验证 publishing outbox 的封存摘要，无需在 tasks 重复提供摘要。
+4. 使用实际离线导入工具，源目标 state 必须分离。先查看计划，再显式应用：
+
+```bash
+python3 scripts/local_ci/agent_ci/migrate_state.py --source-state OLD_STATE --target-state NEW_STATE --inventory CONFIRMED_INVENTORY
+python3 scripts/local_ci/agent_ci/migrate_state.py --source-state OLD_STATE --target-state NEW_STATE --inventory CONFIRMED_INVENTORY --apply
+```
+
+导入保留终态和未上传 outbox/封存证据，避免重复消费 Gitee current 中的已完成任务；旧执行环境通过记录不作为新容器安装状态复用。工具不接管 rootful 容器，不从未知 lease 推断它已停止。未上传结果只重试原封存内容，不重入 Codex。
+
+5. 核对 Gateway 投递的 worker_revision_sha 与新控制 checkout，再由用户级 worker 接单。自动重启从新状态恢复；显式 --resume 必须先停止持有 poll.lock 的 worker。新的运行标识不能覆盖旧封存目录。
+6. 分开验证不可变 Gitee 上传与独立 GitHub status/comment/Pages，保留单向完成语义。
+
+migrate.py 是独立的材料记录层，schema 已为 v3；plan/record/status 不执行安装、服务切换或数据库导入。阶段为 compatibility_ready → rootless_ready → image_releases_ready → main_ready → old_intake_stopped → old_tasks_drained → state_migrated → poller_ready → verified。旧 v1/v2 材料不能直接标为新架构迁移完成。
+
+rootless_ready 引用实际 runtime_proof 文件及 SHA256；image_releases_ready 保存 profile/image_id/llvm_hash/validated；state_migrated 保存终态、outbox、执行复用失效、lease 已核对和 rollback_backup 材料。记录层的 old_tasks_drained 允许 publishing，但须提供 execution_stopped/result_sealed=true、result_digest/evidence_path，验证计算已结束且封存 v4 task/run 一致；这份审计材料与导入器直接读源 journal 的验证互补。rollback_backup 为 runtime-backup/v1 清单，列出 control/state/workspace/sessions 四类备份文件路径、摘要及旧 worker SHA。最终 upload/github_publication 继续匹配相同 task_id/run_id/tested_sha/result_digest。
+
+回退先停止新接单、处理新任务容器并保存 outbox，再恢复旧控制版本及其匹配 state/会话/工作区。仅回退 unit 或 SQLite 不会恢复已删除的 venv/checkout。源 state 保持完整是回退依据；没有匹配工作区备份时应重新验证，不能恢复旧通过记录后直接跳过安装。
+
+## 保留与独立监控
+
+失败/待恢复任务目录默认保留24小时，task_workspace_retention_hours=0 表示下次回收；task_workspace_max_bytes 默认100 GiB，仅约束任务 scratch 的逻辑字节。活动或未确认停止的任务不删；成功封存的 outbox、日志证据不为凑预算而删除。可信 state 空闲不足则阻止新任务，继续已有上传。清理按任务身份、容器 ID、标签和路径边界执行；失败保留诊断并告警。
+
+health timer 使用 systemctl --user，读取公共 image/attempt/runtime 状态和只读 journal；即使 Docker 不可达仍生成可发布的错误快照。watchdog 保留健康、队列、上传、目录及隔离异常的通知去重、发送重试和恢复机制；公共摘要不复制宿主机路径、配置、凭据或异常全文。SMTP 只能来自实际配置，本机测试使用 --mail-outbox，不发送真实邮件。
+
+results_retention_days 默认30天。独立用户级 retention timer 按上传 Git 时间清理 Gitee v4 run，保留身份/摘要/过期标记，不删除本地 outbox、不等待 GitHub 回执、不回退展示更旧结果。
 
 ## 验证边界
 
 ```bash
-python3 -m unittest discover -s scripts/local_ci/environments/tests -v
-python3 -m unittest discover -s scripts/local_ci/maintenance/tests -v
-python3 -m unittest discover -s scripts/local_ci/deploy/tests -v
+python3 -m pytest scripts/local_ci/deploy/tests scripts/local_ci/maintenance/tests -q
 ```
 
-测试运行真实 registry、lease、archive、Git fixture、状态迁移、安装回退和邮件 outbox，Docker/SMTP仅在边界替换。真实 LLVM、公司模型、后端硬件和邮件送达需部署时另行验收，模拟结果不表示这些能力通过。
+测试覆盖用户 unit 安装/回退、Rootless endpoint 与 context、实际 cgroup 值解析、证明失效、受控验证容器清理、Docker 故障健康快照、迁移文件摘要及单向交付。仅 Docker/模型/网络/邮件等边界被替换；本机通过不代表公司 LLVM 编译、设备或模型实际可用。

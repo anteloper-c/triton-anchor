@@ -1,65 +1,76 @@
 # Local CI v4：Codex 主导构建、测试与审查
 
-本目录执行 new_CI.md 顶层设计与已确认决策。GitHub 前置检查及接收实现位于 CI_dev；main 仅路由。服务器只访问 Gitee 中转和公司模型服务。
+本目录执行 new_CI.md 顶层设计与已确认的任务容器方案。GitHub 前置检查及接收实现位于 CI_dev，main 保留必要事件路由。服务器通过 Gitee 中转收发任务与结果，模型沿用公司实际服务。
 
 ## 当前执行入口
 
-`bash scripts/local_ci/poll_gitee_and_run.sh --config /opt/local-ci/config.json`
+`bash scripts/local_ci/poll_gitee_and_run.sh --config CONFIG`
 
-配置示例、预检、安装、轮换、健康发布和回滚见 `deploy/`。配置由服务器维护，不能从 PR checkout 读取。原 `config.env` 不再被执行器自动 source；请按 JSON 示例迁移，模型继续使用专用 CODEX_AI_CI_HOME 中实际的 config.toml/auth.json。
+入口运行 `agent_ci/worker.py`。宿主机普通 CI 用户运行 Harness、Rootless Docker 和用户级 systemd 服务；配置由服务器维护，不能从 PR checkout 读取。部署、预检、可信镜像准备、健康发布与迁移见 [deploy/README.md](deploy/README.md)。旧 `config.env` 不再被执行器自动 source；使用 JSON 配置及实际公司 Codex config.toml/auth.json。
 
-主入口运行 `agent_ci/worker.py`。它验证冻结任务及 merge parents、准备版本环境、启动 Codex，并持久保存状态。Codex 的唯一 Skill 入口为 [skills/local-ci/SKILL.md](skills/local-ci/SKILL.md)：`agent_ci/codex.py` 通过 `agent_ci/skill.py` 显式读取入口，再按入口声明加载 references，随后启动 `codex exec`。最低检查由 `agent_ci/policy.py` 和可信 diff 决定，模型不能减免。
+Harness 验证冻结任务及 merge parents，选择精确 LLVM 对应的可信镜像，为当前 task/run 创建独立任务容器。Codex 与构建、测试在同一任务容器中，通过四个不同的非 root UID 隔离 Codex、candidate、base 和 diagnostic。宿主机 Harness 掌握 journal、调度、权限、容器生命周期和结果发布；只有它能调用 Docker 管理接口执行容器 UID 0 的准备、取证与清理操作。
 
-Skill 规定工作方法；Harness（`agent_ci/`）管理任务、状态、权限和生命周期；MCP 提供任务工具接口；`tools/` 执行真实构建和测试。每任务只有一个 Codex 会话，业务决定为 `continue/block`；检查结果与发布状态保持原协议，具体映射见 [Skill 说明](skills/local-ci/README.md)。
+Codex 的唯一 Skill 入口为 [skills/local-ci/SKILL.md](skills/local-ci/SKILL.md)。`agent_ci/codex.py` 通过 `agent_ci/skill.py` 显式读取入口和声明的 references，再启动公司配置的 `codex exec`。每任务运行期只有一个 Codex 会话，不启动多 Agent。Skill 规定工作循环，MCP 提供任务接口，`tools/` 执行真实业务检查；最低检查由可信 diff 和 `agent_ci/policy.py` 决定，模型不能减免。
 
-每次启动保存只读 `TASK_SKILL.md` 会话快照和任务目录内的 `skill-manifest.json`（入口、文件 SHA256 和整体摘要）。恢复要求任务、公司模型配置及 Skill 摘要一致；缺失入口、引用越界、文件缺失或摘要变化均在模型启动前失败，不回退到旧提示词。旧平铺提示词已删除，历史 `codex_ai/` 中的审查提示词不参与当前驱动加载。
+每次启动保存 `TASK_SKILL.md` 快照和 `skill-manifest.json`（入口、各文件 SHA256 及整体摘要）。任务、公司模型配置与 Skill 身份不一致时，在模型启动前失败。缺入口、引用越界或文件缺失不会回退到旧提示词；历史 `codex_ai/` 提示词不参与当前驱动加载。
 
-## 基础工具和能力
+## 基础工具与诊断
 
-`tools/run_tool.sh TOOL_ID` 一次执行一项工具。完整参数、依赖和产物见 `tools/README.md`。
+`tools/run_tool.sh TOOL_ID` 一次执行一项基础工具；参数、依赖和产物见 [tools/README.md](tools/README.md)。
 
-Triton 3.0：环境、前端 build、wheel install/import、frontend smoke、backend rebuild、backend smoke/JIT、FlagGems、compile-time、pass profile、IR serialization。
+Triton 3.0 提供环境与依赖、Frontend build、wheel 安装/import、Frontend smoke、Backend rebuild、Backend smoke/JIT、FlagGems、Compile-time performance、Pass profiling、IR serialization。其他已配置版本仅提供前四项及相关源码/控制面检查，后端项显示 not_applicable。3.0 已声明能力损坏属于 infra_error，不能降级为不适用。
 
-其他已配置版本：仅前四项，以及相关源码/控制面检查；缺少后端能力显示 not_applicable。3.0 环境临时损坏是 infra_error，不能改成不适用。
+产品改动按影响范围取最低检查并集，未知或跨模块改动覆盖全部可用工具。程序 Markdown、prompt、schema 和运行配置不算纯文档。所有 PR 必须完成信息校验和架构审查；性能执行失败阻断，纯耗时变化只报告。
 
-产品改动按影响范围取最低检查并集；未知或跨模块改动覆盖全部可用工具。程序 Markdown、prompt、schema、运行配置不是纯文档。所有 PR 必须有信息校验和架构审查，额外 AI 高风险阻断必须有实际候选复现与 base 归因。性能执行失败阻断，纯耗时变化只报告。
+Codex 通过当前任务 MCP 的 `start_check` 调用基础工具，也可使用 `run_custom` 的三种模式：
+
+| 模式 | 用途与证据边界 |
+| --- | --- |
+| diagnostic（默认） | 在正式检查通过前诊断环境、源码和失败原因；读取正式 candidate/base 环境，在独立临时目录执行，不满足最低检查或原始 SHA 归因 |
+| reproduction | 在已验证的正式依赖上复现问题；源码复现使用受限 source-only 路径，证据绑定 candidate/base 和同一复现脚本 |
+| experiment | 在单独副本中尝试修改和验证假设，可继续同一 experiment；不改写正式安装状态，不满足最低检查或原始 SHA 归因 |
+
+通用诊断允许任务内 Python/Bash，不是宿主机 shell、任意 Docker 参数或凭据访问接口。额外 AI 高风险阻断仍要求相同复现在 candidate 两次失败、base 通过。生成代码、命令、退出状态及归因证据由执行器保存，模型文字不能代替执行记录。业务决定只有 continue/block，映射见 [Skill 说明](skills/local-ci/README.md)。
+
+## 镜像、任务容器与权限
+
+长期保留的是按版本、精确 LLVM 和可信配方构建并验证的镜像及可信依赖缓存。每日错峰更新镜像，验证成功后供新任务使用；已运行任务固定原镜像 ID。PR 使用的新 LLVM 不能自动晋升正式镜像。来源必须是公司可达可信镜像、源码或本地缓存，并验证摘要；3.0 后端准备失败仍阻断。
+
+任务容器根文件系统、可信控制代码和依赖底座只读。candidate/base 分别拥有任务私有 checkout、venv、构建产物和可写缓存；诊断及实验使用各自目录。任务不能把修改写回可信镜像或缓存，也不通过提交运行中的 PR 容器生成镜像。每个 attempt 拥有独立容器和数据卷，不跨 PR 复用可写环境。
+
+公司模型配置、认证和 MCP token 只进入任务的 Codex 私有目录；另外三个 UID 不可读取。任务容器不挂载 Docker socket、完整宿主机 state、Gitee/GitHub 凭据或整个 home。自动执行不使用 sudo，任务进程设置 no_new_privs。默认全局一个构建测试任务，MAX_JOBS=8；CPU、内存和进程数量限额由可信部署配置决定，Rootless endpoint 固定且禁止回退系统 Docker。
+
+收尾先确认任务进程已终止、保存执行证据并封存结果，再删除私有认证、停止任务容器，按保留策略清理数据。进程清理失败记录 `environment_cleanup`，不能生成整体通过；未确认停止或数据清理失败进入健康异常。任务容器不执行旧常驻环境的设备复用检查；3.0 的后端能力仍通过可信镜像验证和正式任务检查确认。
 
 ## 状态、证据与恢复
 
-宿主机 state_dir 下保存 SQLite journal、任务 metadata/policy、工具记录、Codex session 标识和发布 outbox。模型会话/凭据位于单独的 codex_sessions_root，不发布到结果仓库。
+宿主机 `state_dir` 保存 SQLite journal、task/policy、工具记录、会话身份、镜像/attempt registry、lease 和 outbox。模型凭据和私有会话资料不发布到结果仓库。
 
-任务状态：queued → preparing → running → publishing → complete。`publishing` 仅表示封存结果待上传 Gitee，上传成功即 `complete`。完成表示本地交付完成，`pass/fail/infra_error` 仍分别表示检查通过、失败和未完成。取消和 supersede 保存 cancelled。工具证据记录 SHA、环境指纹、依赖执行 ID、命令、退出码和 artifacts。重复构建使旧下游证据失效；更换环境也不能重用旧通过记录。
+任务状态：queued → preparing → running → publishing → complete。`publishing` 表示封存结果待上传 Gitee；上传成功即本地 complete。完成表示本地交付完成，pass/fail/infra_error 分别表示通过、失败和未完成。取消和 supersede 保存 cancelled。
 
-发布目录为 `runs/v4/<task_id>/<run_id>/`。result.json 封存后不可修改，Codex 到此结束；上传失败只重发原有结果，Harness 保留 outbox 并在后续轮询重试，不再调用模型。GitHub 独立读取、校验并发布结果，没有 Gitee 回执和本地等待。保留原有 status → comment → Dashboard 顺序，GitHub 发布失败由 Actions 显示并由后续定时任务重试；因此 PR status 成功不单独证明 Dashboard 已更新。旧 schema 只用于历史读取，不能满足 v4 门禁。
+执行证据绑定 task/run、被测 SHA、镜像与 attempt 身份、环境指纹、依赖 execution ID、命令、退出码和 artifacts。恢复时分两种情况：
 
-显式续跑：先停止 worker，再执行 `python3 scripts/local_ci/agent_ci/worker.py --config CONFIG --resume TASK_ID`，随后启动 worker。续跑与接单、目录回收共用 poll.lock，避免新 run 与旧目录清理并发。已上传的 infra_error 可开启新 run，复用仍有效的通过项；目录已回收或代际改变时重新执行检查；仍待上传则继续原 outbox，不重新构建。服务重启自动接续未封存任务，已上传的旧回执等待状态迁移为本地 complete。
+- 原容器、镜像、数据卷及归属均能验证，才恢复同一 attempt；依赖和证据仍有效的成功项可复用，原 Codex 会话也须满足任务、模型和 Skill 身份检查。
+- 容器丢失、数据已回收或必须更换 attempt 时，保留已归档证据和历史事实，使依赖原环境的通过记录失效，在新任务容器重新安装和检查。新 attempt 启动新 Codex 会话，读取已有上下文，不冒用旧会话或旧安装状态。
 
-Gitee v4 结果默认保留 30 天，按结果文件的 Git 上传提交时间计算；每日 retention timer 删除过期 run 目录并保留摘要和过期记录。保留周期独立于 GitHub 发布，过期任务显示 expired，不回退发布更老的 run。此清理不改写 Git 历史，也不删除服务器任务证据；长时间接收中断需在到期前修复或调整 `results_retention_days`。
+服务重启自动接续未封存任务；启动恢复先确认旧任务进程和 lease 的状态。显式续跑须先停止 worker，再执行 `python3 scripts/local_ci/agent_ci/worker.py --config CONFIG --resume TASK_ID`，随后启动 worker。`--resume` 与接单、回收共用 poll.lock。已上传 infra_error 可创建新 run；待上传任务继续原 outbox，不重新构建。
 
-## 常驻环境与权限
+成功任务封存后清理可回收任务数据；失败/待恢复数据默认保留 24 小时，scratch 逻辑容量预算默认 100 GiB。活动或未确认停止的任务不能为满足预算而删除。工具日志与证据在回收前归档到宿主机；容器丢失不删除已有归档记录，但尚未导出的容器内容不能伪造为完整证据。持久证据与 outbox 不计入 scratch 预算；state 空闲不足时告警、阻止新构建并继续已有上传。
 
-环境按版本及精确 LLVM/recipe 指纹管理活动、候选和上一代。每日错峰准备候选，验证后切换新任务；旧任务 lease 释放前不能回收。PR 新 LLVM 候选不自动晋升为正式活动环境。3.0 仍尝试匹配后端，失败阻断；source/archive 必须来自公司可达镜像或本地缓存并验证来源。
+## 单向结果发布与监控
 
-默认全局一个构建测试任务、MAX_JOBS=8，环境重建共用资源锁。Codex 专用非 root 账户不具备 Docker 和 journal 写权限；候选代码在常驻容器的任务目录执行。API 凭据与 Gitee 写 token 不进入候选容器。任务描述、源码和生成文件不能授予权限。
+结果目录为 `runs/v4/<task_id>/<run_id>/`。`result.json` 封存后不可修改，Codex 到此结束；上传失败只重发原结果，Harness 保留 outbox 并在后续轮询重试，不再调用模型。Docker 故障不应阻断已有 outbox 上传或独立健康发布。
 
-任务收尾由 `agent_ci/workspaces.py` 管理：持久登记目录与代际 → 标记环境 dirty → 执行检查 → 回收专用 CI UID 的进程 → 检查共享依赖、公共目录和设备 → 封存证据 → 按策略回收任务目录 → 释放占用。PID1/管理进程使用 root，任务 UID 不能用于任何常驻服务；任务进程设置 no_new_privs，可信 reaper 用 Linux pidfd 确认没有仍运行的子进程。正常退出、取消和重启均执行回收。
+GitHub 独立读取并校验结果，没有 Gitee 回执和本地等待。保持 status → comment → Pages 顺序；发布失败由 Actions 显示并由后续定时接收重试。因此 PR status 成功不单独证明 Dashboard 已更新。旧 schema 仅用于历史读取，不能满足 v4 门禁。
 
-复用检查失败会隔离并停止精确代际，未确认停止时阻止新构建；3.0 必须配置真实设备检查。未知公共目录残留不会被盲删，按环境异常处理。检查含有独立时限，MCP finish 的等待上限由这些可信时限计算；进入封存后不能再启动测试。结果中保留 `environment_cleanup`，检查失败不能给出整体通过。
+Gitee v4 结果默认保留 30 天，按结果文件的 Git 上传提交时间计算；独立 retention timer 删除过期 run 并保留身份、摘要与过期标记。周期独立于 GitHub 发布，过期结果显示 expired，不回退发布更老 run。此清理不改写 Git 历史，也不删除服务器任务证据；接收长期中断须在到期前处理或调整 `results_retention_days`。
 
-成功封存后删除任务源码、venv、构建和缓存目录，上传只使用宿主机 outbox。失败/待恢复目录默认保留 24 小时，保留目录的逻辑容量预算默认 100 GiB；超预算优先回收较旧的非活动目录，活动任务不可删。日志优先引用已有封存证据，尚未封存的执行证据先归档并落盘。回收使对应通过记录失去复用资格，但不抹除历史事实。该预算不包含持久证据；磁盘不足时告警、阻止新构建并继续尝试上传。配置和运维命令见 `deploy/README.md`。
+独立用户级 health timer 汇总服务、Rootless runtime、镜像、task attempts、磁盘及执行状态并发布心跳。Docker 不可达也生成错误快照。GitHub watchdog 读取心跳，SMTP 支持异常去重、失败重试和恢复通知；公开摘要不复制主机路径、配置或凭据。中转不可达与主机离线分别处理。GitHub schedule 有平台延迟，告警窗口须容纳发布和调度间隔；模型 API 仍只在服务器使用。
 
-启动恢复同时登记旧版本遗留的已知任务目录，先在原代际终止孤儿进程，再释放旧租约。无法确认归属的目录保留供检查。目录回收失败、环境隔离和磁盘预算状态进入独立健康快照、Dashboard 与异常/恢复通知。
+## 验收与迁移
 
-## 监控
+当前任务容器验收入口为 [验收报告](../../docs/ci_task_container_verification/verification.md) 和 [覆盖说明](../../docs/ci_task_container_verification/coverage.md)。运行 `python3 scripts/local_ci/agent_ci/verify.py --output-dir /tmp/local-ci-task-container-verification` 生成本机报告；模型、Docker、硬件、GitHub HTTP、SMTP 等外部边界的替换范围以报告为准。本机验证不证明实际公司镜像、LLVM/后端、设备、模型、邮件或线上 GitHub/Gitee 已通过验收，上线时须执行部署预检和实际能力验证。
 
-服务器独立 health timer 汇总 worker、容器、磁盘及任务状态并发布心跳。GitHub 定时读取心跳，执行独立离线检查、结果接收和 Dashboard 更新；SMTP 支持异常去重、发送重试和恢复通知。Gitee 无法访问时报告中转不可达，不能直接认定主机离线。
+从旧常驻环境迁移是独立离线操作：停旧接单和 worker、处理在途任务、checkpoint 与备份 → 准备普通用户 Rootless runtime 和可信镜像 → 导入终态、未上传 outbox 与封存证据到新 state → 核对 worker SHA 后切换。旧 container ID、lease 和执行通过项不能作为新任务容器状态直接复用；未知活动任务必须先处理。具体导入工具、材料记录、回滚和用户级 unit 操作见 [部署与回滚](deploy/README.md)。
 
-GitHub schedule 有平台延迟，不承诺实时告警；配置心跳过期窗口须容纳发布和调度间隔。公司模型 API 不会迁移到 GitHub。
-
-## 验证与迁移
-
-运行 `python3 scripts/local_ci/agent_ci/verify.py --output-dir /tmp/local-ci-v4-verification`，输出各套测试结果和可追溯报告。需要 pytest、PyYAML；模型、编译器后端、Docker、Gitee、GitHub 和 SMTP 外部边界由本机 fixtures 模拟，不发送模型请求、邮件或真实仓库写入。
-
-原固定 deterministic→AI advisory 执行路径已退役，旧 Codex/容器入口明确拒绝执行。历史解析器仍用于已有结果读取。迁移顺序：停止旧接单并记录状态 → CI_dev 接收器与 worker → main 路由 → 新 Poller；具体命令及回滚在 deploy/README.md。
-
-本次交付不包含真实服务器、真实 LLVM/后端构建、公司模型、邮件或线上 GitHub 验收；对应部署预检与验收步骤必须在上线时执行。
+旧 deterministic→AI advisory、常驻可写环境及旧 Codex/容器入口均不作为当前执行路径。此前 cleanup、oneway、Skill 验收报告保留为历史记录，不作为当前任务容器部署依据。

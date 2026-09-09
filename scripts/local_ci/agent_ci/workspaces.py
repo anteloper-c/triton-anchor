@@ -1,4 +1,4 @@
-"""Trusted task workspace lifecycle; sealed delivery evidence is never collected."""
+"""Task-volume lifecycle; host evidence and delivery never depend on Docker."""
 from __future__ import annotations
 
 import hashlib
@@ -16,11 +16,11 @@ from .protocol import ContractError, atomic_json, canonical
 
 
 def file_digest(path):
-    result = hashlib.sha256()
+    value = hashlib.sha256()
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
-            result.update(block)
-    return result.digest()
+            value.update(block)
+    return value.digest()
 
 
 class TaskWorkspaces:
@@ -53,173 +53,184 @@ class TaskWorkspaces:
             db.execute("""UPDATE task_workspaces SET phase=?,updated=?,reason=?,
                 retained_at=CASE WHEN ?='active' THEN NULL ELSE COALESCE(retained_at,?) END
                 WHERE task_id=? AND generation=?""", (phase, now, reason, phase, now, task_id, generation))
-        self.journal.event(task_id, "workspace:" + phase, {"generation": generation, "reason": reason})
+        self.journal.event(task_id, "workspace:" + phase, {"attempt_id": generation, "reason": reason})
 
-    def root(self, task_id, generation):
-        if not re.fullmatch(r"[a-f0-9]{64}", task_id):
-            raise ContractError("Invalid workspace task identity")
-        workspace = Path(generation["workspace_host"])
-        if not workspace.is_absolute() or workspace.is_symlink():
-            raise ContractError("Invalid generation workspace")
-        root = workspace / "tasks" / task_id
-        for path in (workspace, workspace / "tasks", root):
-            if path.is_symlink() or (path.exists() and not path.is_dir()):
-                raise ContractError("Workspace cleanup path contains a symlink or non-directory")
-        if root.exists() and os.path.ismount(root):
-            raise ContractError("Refusing mounted task workspace")
-        if root.resolve().is_relative_to(self.state_dir.resolve()) or self.state_dir.resolve().is_relative_to(root.resolve()):
-            raise ContractError("Task scratch and durable state must not overlap")
+    def root(self, task_id, handle):
+        attempt = handle.get("attempt_id", "")
+        if not re.fullmatch(r"[a-f0-9]{64}", task_id) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}", attempt):
+            raise ContractError("Legacy persistent workspaces require offline migration")
+        root = self.state_dir / "task-staging" / task_id / attempt
+        if root.resolve() != root or any(p.is_symlink() for p in (root, *root.parents)):
+            raise ContractError("Task staging path contains a symlink")
+        if root.exists() and not root.is_dir():
+            raise ContractError("Task staging path is not a directory")
         return root
 
-    def attach(self, task, generation):
-        task_id, ident = task["task_id"], generation["generation"]
-        root = self.root(task_id, generation)
-        previous = next((r for r in self.rows() if r["task_id"] == task_id and r["generation"] == ident), None)
-        if not previous or previous["phase"] == "removed" or not root.exists():
-            self.journal.invalidate_workspace(task_id, "workspace_created_or_replaced")
+    def attach(self, task, handle):
+        task_id, attempt = task["task_id"], handle["attempt_id"]
+        if handle.get("task_id") != task_id or handle.get("run_id") != self.journal.task(task_id)["run_id"]:
+            raise ContractError("Container belongs to another task/run")
+        self.root(task_id, handle)
+        previous = next((r for r in self.rows() if r["task_id"] == task_id and r["generation"] == attempt), None)
+        if previous is None or previous["phase"] in {"removed", "lost"}:
+            self.journal.invalidate_workspace(task_id, "task_attempt_created_or_replaced")
             baseline = self.state_dir / "baselines" / task_id
-            # Sealed reports keep historical baseline evidence. Never import a
-            # baseline into a newly created installation merely by recipe hash.
             if baseline.is_symlink():
                 raise ContractError("Invalid baseline directory")
             if baseline.exists():
+                self.usage(baseline)
                 shutil.rmtree(baseline)
         with self.journal.connect() as db:
             db.execute("""INSERT INTO task_workspaces VALUES(?,?,?,?,?,?,?)
                 ON CONFLICT(task_id,generation) DO UPDATE SET manifest=excluded.manifest,
                 phase='active',updated=excluded.updated,retained_at=NULL,reason=''""",
-                (task_id, ident, canonical(generation).decode(), "active", time.time(), None, ""))
-        self.checked.pop((task_id, ident), None)
-        self.manager.mark_dirty(ident, task_id)
-        self.journal.event(task_id, "workspace:attached", {"generation": ident})
+                (task_id, attempt, canonical(handle).decode(), "active", time.time(), None, ""))
+        self.checked.pop((task_id, attempt), None)
+        self.journal.event(task_id, "workspace:attached", {"attempt_id": attempt, "image_release_id": handle["image_release_id"]})
+
+    def executor(self, handle):
+        task = json.loads(self.journal.task(handle["task_id"])["manifest"])
+        return self.executor_factory(self.config, self.state_dir, handle, task, self.relay, manager=self.manager)
+
+    def export_pending(self, handle):
+        """Recover volume-only artifacts before sealing, stopping or deleting."""
+        task_id = handle["task_id"]
+        root = self.root(task_id, handle)
+        for record in self.journal.executions(task_id):
+            ident = record["execution_id"]
+            if not re.fullmatch(r"[a-f0-9]{32}", ident):
+                raise ContractError("Invalid execution identity during export")
+            target = root / "artifacts" / ident
+            # The host artifact directory is created before any container work.
+            # It also binds interrupted queued/running records to this attempt.
+            if record.get("evidence_exported") or not target.is_dir():
+                continue
+            if record.get("workspace_generation", handle["attempt_id"]) != handle["attempt_id"]:
+                continue
+            if record.get("artifact_dir") and Path(record["artifact_dir"]) != target:
+                continue
+            outcome = self.manager.export_execution(handle, ident, target) or {}
+            if outcome.get("evidence_loss"):
+                record.update(status="infra_error", reason="task_volume_missing", evidence_loss=outcome["evidence_loss"], reuse_invalidated=True)
+                self.journal.event(task_id, "execution_evidence_lost", {"execution_id": ident, "attempt_id": handle["attempt_id"], "reason": outcome["evidence_loss"]})
+            record.update(evidence_exported=True, artifact_dir=str(target))
+            self.journal.execution(task_id, record["tool_id"], record["variant"], record)
 
     def check(self, executor):
-        """Stop candidate processes and validate reuse before sealing a result."""
-        task_id, ident = executor.task["task_id"], executor.generation["generation"]
-        key = (task_id, ident)
+        """Reap test identities before sealing. Codex must receive the finish reply."""
+        handle = executor.generation
+        key = (executor.task["task_id"], handle["attempt_id"])
         if key in self.checked:
             return self.checked[key]
-        # PR cancellation must stop candidate work, not cancel trusted cleanup.
         self.manager.cancel_event = None
-        stopped = False
         try:
             with resource_lock(self.state_dir, threading.Event()):
                 processes = executor.stop_task()
                 if processes.get("verified") is not True or processes.get("remaining"):
                     raise ContractError("Task process cleanup was not verified")
-            # Device validation may itself launch descendants; only its final
-            # reaper or a confirmed container stop proves this phase finished.
-            stopped = False
-            validation = self.manager.validate_reuse(ident)
-            with resource_lock(self.state_dir, threading.Event()):
-                after_probe = executor.stop_task()
-                stopped = after_probe.get("verified") is True and not after_probe.get("remaining")
-                if not stopped or after_probe.get("cleaned_pid_count", 0):
-                    raise ContractError("Post-task validation left processes behind")
-            result = {"status": "pass", "processes_stopped": True,
-                      "processes": processes, "validation": {"generation": ident,
-                      "validated_at": validation.get("reuse_validated_at"), "reusable": True}}
+                self.export_pending(handle)
+            result = {"status": "pass", "processes_stopped": True, "processes": processes,
+                      "attempt_id": handle["attempt_id"], "completion": "exported_execution_evidence"}
         except Exception as exc:
-            reason = str(exc)
-            try:
-                quarantine = self.manager.quarantine(ident, reason)
-                stopped = stopped or quarantine.get("stopped") is True
-            except Exception as quarantine_error:
-                reason += "; quarantine: " + str(quarantine_error)
-            result = {"status": "infra_error", "processes_stopped": stopped, "reason": reason}
+            result = {"status": "infra_error", "processes_stopped": False, "reason": str(exc)}
         self.checked[key] = result
-        self.journal.event(task_id, "workspace:reuse_check", {"generation": ident, **result})
+        atomic_json(self.root(key[0], handle) / "cleanup.json", result)
         return result
 
     def finish(self, executor):
-        task_id, ident = executor.task["task_id"], executor.generation["generation"]
-        result = self.check(executor)
-        if not result["processes_stopped"]:
-            self.phase(task_id, ident, "unsafe", result.get("reason", "Processes remain"))
-            return
-        self.phase(task_id, ident, "retained", result.get("reason", "execution_finished"))
-        # Keep the generation lease until evidence is durable. A concurrent
-        # daily generation collector must never delete an unarchived log tree.
-        row = next(r for r in self.rows() if r["task_id"] == task_id and r["generation"] == ident)
+        handle, task_id = executor.generation, executor.task["task_id"]
+        attempt = handle["attempt_id"]
+        row = next(r for r in self.rows() if r["task_id"] == task_id and r["generation"] == attempt)
+        root = self.root(task_id, handle)
         try:
+            self.manager.cancel_event = None
             with resource_lock(self.state_dir, threading.Event()):
-                root = self.root(task_id, executor.generation)
-                self.usage(root)
-                if root.exists():
-                    self.archive(row, root)
-            self.collect()
-            self.release_if_matches(task_id, ident)
+                processes = executor.stop_task()
+                if processes.get("verified") is not True or processes.get("remaining"):
+                    raise ContractError("Cannot release a task with unconfirmed live processes")
+                self.export_pending(handle)
+                self.manager.purge_credentials(handle)
+                stopped = self.manager.stop_task(handle)
+                if stopped.get("verified") is not True:
+                    raise ContractError("Task container stop was not confirmed")
+            self.archive(row, root)
+            current = self.journal.task(task_id)
+            box = self.journal.outbox(task_id)
+            if current["phase"] == "queued" and box is None:
+                # A normal worker restart preserves this exact attempt. No
+                # installed state is implicitly transferred to another run.
+                self.phase(task_id, attempt, "active", "worker_restart")
+                return
+            self.manager.destroy_task(handle, keep_data=True)
+            self.phase(task_id, attempt, "retained", "task_finished")
+            if current["phase"] == "cancelled" or box and self.journal.result_status(box) in {"pass", "cancelled"}:
+                self.remove(next(r for r in self.rows() if r["task_id"] == task_id and r["generation"] == attempt), "task_finished")
         except Exception as exc:
-            self.phase(task_id, ident, "cleanup_failed", str(exc))
-            self.manager.quarantine(ident, "task_evidence_preservation_failed")
-            self.collect()
-
-    def release_if_matches(self, task_id, generation):
-        if self.manager.leases().get(task_id, {}).get("generation") == generation:
-            self.manager.release(task_id)
+            self.phase(task_id, attempt, "unsafe", str(exc))
+            self.journal.event(task_id, "task_cleanup_failed", {"attempt_id": attempt, "error": str(exc)})
+            self.recovered = False
+        self.collect()
 
     def recover(self):
-        """Called under the singleton worker lock, including when Gitee is down."""
-        if self.recovered and not self.discovery_errors and not any(row["phase"] == "unsafe" for row in self.rows()):
+        if self.recovered:
             return
         self.discovery_errors = []
-        leases = self.manager.leases()
-        known = {(r["task_id"], r["generation"]) for r in self.rows()}
-        tasks = {r["task_id"] for r in self.journal.tasks(active=False)}
-        # Existing successful tasks have no lease. Register their scratch too,
-        # otherwise an upgrade would leave old venvs outside the retention cap.
-        for ident, generation in self.manager.generations().items():
-            directory = Path(generation["workspace_host"]) / "tasks"
-            if not directory.exists():
+        # acquire_task persists Docker ownership before returning. A crash or
+        # failed initialization can precede attach(), so recover its registry
+        # entry as well as workspaces already seen by the worker.
+        known = {(row["task_id"], row["generation"]) for row in self.rows()}
+        for handle in self.manager.generations().values():
+            if handle.get("state") == "removed" or not handle.get("attempt_id"):
                 continue
-            if directory.is_symlink():
-                self.discovery_errors.append({"generation": ident, "error": "Task parent is a symlink"})
+            key = (handle["task_id"], handle["attempt_id"])
+            if key in known:
                 continue
-            for root in directory.iterdir():
-                task_id = root.name
-                if (task_id, ident) in known:
-                    continue
-                if task_id not in tasks or not re.fullmatch(r"[a-f0-9]{64}", task_id):
-                    self.discovery_errors.append({"generation": ident, "error": "Unregistered task directory; manual inspection required"})
-                    continue
-                with self.journal.connect() as db:
-                    db.execute("INSERT INTO task_workspaces VALUES(?,?,?,?,?,?,?)",
-                               (task_id, ident, canonical(generation).decode(), "active", time.time(), None, "legacy_workspace"))
-                known.add((task_id, ident))
-        # Import pre-upgrade leases before releasing them; the old generation is
-        # the only correct place to reap children left by a killed worker.
-        for task_id, lease in leases.items():
-            ident = lease["generation"]
-            if (task_id, ident) not in known:
-                generation = self.manager.generation(ident)
-                with self.journal.connect() as db:
-                    db.execute("INSERT INTO task_workspaces VALUES(?,?,?,?,?,?,?)",
-                               (task_id, ident, canonical(generation).decode(), "active", time.time(), None, "legacy_lease"))
+            task_row = self.journal.task(handle["task_id"])
+            if task_row is None or task_row["run_id"] != handle["run_id"]:
+                self.discovery_errors.append("Unattached task container requires run reconciliation: " + handle["attempt_id"])
+                continue
+            self.root(handle["task_id"], handle)
+            with self.journal.connect() as db:
+                db.execute("INSERT INTO task_workspaces VALUES(?,?,?,?,?,?,?)", (*key, canonical(handle).decode(), "active", time.time(), None, "recovered_before_attach"))
+            self.journal.event(handle["task_id"], "workspace:discovered", {"attempt_id": handle["attempt_id"]})
         for row in self.rows():
-            leased = leases.get(row["task_id"], {}).get("generation") == row["generation"]
-            if row["phase"] not in {"active", "unsafe", "cleaning", "cleanup_failed"} and not leased:
+            if row["phase"] == "removed":
                 continue
-            task = json.loads(self.journal.task(row["task_id"])["manifest"])
-            generation = json.loads(row["manifest"])
-            self.checked.pop((row["task_id"], row["generation"]), None)
-            executor = self.executor_factory(self.config, self.state_dir, generation, task, self.relay)
-            result = self.check(executor)
-            if result["processes_stopped"]:
-                phase = row["phase"] if row["phase"] in {"cleaning", "cleanup_failed"} else "retained"
-                self.phase(row["task_id"], row["generation"], phase, "worker_recovery")
-                try:
+            handle = json.loads(row["manifest"])
+            if not handle.get("attempt_id"):
+                self.discovery_errors.append("Legacy persistent workspace needs offline migration: " + row["generation"])
+                continue
+            try:
+                root = self.root(row["task_id"], handle)
+                if row["phase"] in {"retained", "cleaning", "cleanup_failed"}:
+                    continue
+                recovered = self.manager.recover_task(handle)
+                if recovered.get("status") == "rebuild_required":
                     with resource_lock(self.state_dir, threading.Event()):
-                        root = self.root(row["task_id"], generation)
-                        self.usage(root)
-                        if root.exists():
-                            self.archive(row, root)
-                    self.release_if_matches(row["task_id"], row["generation"])
-                except Exception as exc:
-                    self.phase(row["task_id"], row["generation"], "cleanup_failed", str(exc))
-                    self.manager.quarantine(row["generation"], "recovery_evidence_preservation_failed")
-            else:
-                self.phase(row["task_id"], row["generation"], "unsafe", result.get("reason", "recovery_failed"))
-        self.recovered = True
+                        self.export_pending(handle)
+                    self.archive(row, root)
+                    self.journal.invalidate_workspace(row["task_id"], "task_container_lost", generation=row["generation"])
+                    self.phase(row["task_id"], row["generation"], "lost", "container_lost")
+                    continue
+                if recovered.get("status") != "same_attempt":
+                    raise ContractError("Unknown task recovery outcome")
+                executor = self.executor(handle)
+                with resource_lock(self.state_dir, threading.Event()):
+                    report = executor.stop_task()
+                    if report.get("verified") is not True or report.get("remaining"):
+                        raise ContractError("Interrupted task cleanup failed")
+                    executor.stop_codex()
+                    self.export_pending(handle)
+                self.archive(row, root)
+                task_row = self.journal.task(row["task_id"])
+                if task_row["phase"] in {"complete", "cancelled", "incomplete", "publishing"}:
+                    self.finish(executor)
+                else:
+                    self.phase(row["task_id"], row["generation"], "active", "recovered")
+            except Exception as exc:
+                self.phase(row["task_id"], row["generation"], "unsafe", str(exc))
+                self.discovery_errors.append(str(exc))
+        self.recovered = not self.discovery_errors
 
     @staticmethod
     def usage(root):
@@ -310,18 +321,17 @@ class TaskWorkspaces:
             self.journal.execution(row["task_id"], record["tool_id"], record["variant"], record)
 
     def remove(self, row, reason):
-        generation = json.loads(row["manifest"])
-        root = self.root(row["task_id"], generation)
-        # Singleton poll.lock excludes CLI resume; resource.lock excludes tools
-        # and environment rotation. Only confirmed stopped tasks are eligible.
+        handle = json.loads(row["manifest"])
+        root = self.root(row["task_id"], handle)
         with resource_lock(self.state_dir, threading.Event()):
             current = next(r for r in self.rows() if r["task_id"] == row["task_id"] and r["generation"] == row["generation"])
-            if current["phase"] not in {"retained", "cleaning", "cleanup_failed"}:
-                raise ContractError("Workspace became active during collection")
+            if current["phase"] not in {"retained", "cleaning", "cleanup_failed", "lost"}:
+                raise ContractError("Task became active during collection")
             self.phase(row["task_id"], row["generation"], "cleaning", reason)
-            self.usage(root)  # Reject nested mounts before any recursive delete.
-            if root.exists():
-                self.archive(row, root)
+            self.usage(root)
+            self.export_pending(handle)
+            self.archive(row, root)
+            self.manager.destroy_task(handle, keep_data=False)
             self.journal.invalidate_workspace(row["task_id"], reason, generation=row["generation"])
             if root.exists():
                 shutil.rmtree(root)
@@ -333,49 +343,40 @@ class TaskWorkspaces:
         for row in self.rows():
             if row["phase"] == "removed":
                 continue
+            handle = json.loads(row["manifest"])
             try:
-                root = self.root(row["task_id"], json.loads(row["manifest"]))
-                size = self.usage(root)
+                root = self.root(row["task_id"], handle)
+                host_bytes = self.usage(root)
+                volume_bytes = int(self.manager.task_usage(handle))
+                size = host_bytes + volume_bytes
                 total += size
-                if row["phase"] in {"active", "unsafe"}:
-                    if row["phase"] == "unsafe":
-                        errors.append({"task_id": row["task_id"], "error": row["reason"]})
-                    continue
-                task = self.journal.task(row["task_id"])
-                box = self.journal.outbox(row["task_id"])
-                successful = box and self.journal.result_status(box) == "pass"
-                immediate = successful or task["phase"] == "cancelled" or row["phase"] in {"cleaning", "cleanup_failed"}
-                expired = now - (row["retained_at"] or row["updated"]) >= self.retention * 3600
-                candidates.append((not (immediate or expired), row["retained_at"] or row["updated"], row, size,
-                                   "sealed_success" if successful else "cancelled" if task["phase"] == "cancelled" else "retry_cleanup" if immediate else "retention_expired" if expired else "disk_budget"))
+                if row["phase"] in {"unsafe"}:
+                    errors.append(row["task_id"] + ": " + row["reason"])
+                elif row["phase"] in {"retained", "cleaning", "cleanup_failed", "lost"}:
+                    candidates.append((row, size))
             except Exception as exc:
-                try:
-                    self.manager.quarantine(row["generation"], "Workspace inspection failed: " + str(exc))
-                except Exception:
-                    pass
-                errors.append({"task_id": row["task_id"], "error": str(exc)})
-        for optional, _, row, size, reason in sorted(candidates, key=lambda item: (item[0], item[1])):
-            if optional and total <= self.budget:
+                errors.append(str(exc))
+        for row, size in candidates:
+            elapsed = now - (row["retained_at"] or row["updated"])
+            reason = "retention_expired" if elapsed >= self.retention * 3600 else "disk_budget" if total > self.budget else "retry_cleanup" if row["phase"] in {"cleaning", "cleanup_failed", "lost"} else None
+            if reason is None:
                 continue
             try:
                 self.remove(row, reason)
-                self.release_if_matches(row["task_id"], row["generation"])
                 total -= size
             except Exception as exc:
                 self.phase(row["task_id"], row["generation"], "cleanup_failed", str(exc))
-                try:
-                    self.manager.quarantine(row["generation"], "Workspace cleanup failed: " + str(exc))
-                except Exception:
-                    pass
-                errors.append({"task_id": row["task_id"], "error": str(exc)})
+                errors.append(str(exc))
         free = shutil.disk_usage(self.state_dir).free
         minimum = self.config.get("minimum_free_bytes", 10 * 1024**3)
-        durable = sum(self.usage(self.state_dir / path) for path in ("workspace-evidence", "tasks"))
+        if total > self.budget:
+            errors.append("Protected active task data exceeds the scratch budget")
         if free < minimum:
-            errors.append({"error": "Insufficient free durable-state disk space"})
-        report = {"collected_at": now, "status": "error" if errors or total > self.budget else "healthy",
-                  "logical_bytes": total, "max_bytes": self.budget, "retention_hours": self.retention,
-                  "state_free_bytes": free, "minimum_free_bytes": minimum, "durable_evidence_bytes": durable,
+            errors.append("Insufficient free state space for new tasks")
+        durable = sum(self.usage(self.state_dir / name) for name in ("tasks", "workspace-evidence", "executor-records"))
+        result = {"schema": "triton-anchor-workspace-health/v2", "status": "error" if errors else "healthy",
+                  "runtime": "task-containers", "at": now, "scratch_bytes": total, "budget_bytes": self.budget,
+                  "durable_evidence_bytes": durable, "state_free_bytes": free, "minimum_free_bytes": minimum,
                   "errors": errors, "workspaces": [{k: r[k] for k in ("task_id", "generation", "phase", "reason")} for r in self.rows()]}
-        atomic_json(self.state_dir / "workspace-health.json", report)
-        return report
+        atomic_json(self.state_dir / "workspace-health.json", result)
+        return result

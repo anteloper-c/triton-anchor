@@ -14,33 +14,11 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agent_ci.executor import DockerExecutor, ProcessCleanupError, STOP_PROGRAM, VENV_PROGRAM
 from agent_ci.protocol import ContractError
+from container_fixture import FAKE_DOCKER, VolumeManager
 
-
-FAKE_DOCKER = r'''#!/usr/bin/python3
-import json,os,pathlib,subprocess,sys
-args=sys.argv[1:]
-assert args.pop(0)=='exec'
-assert args.pop(0)=='--user'
-user=args.pop(0)
-args.pop(0)
-assert args[:2]==['env','-i']; args=args[2:]
-env={}
-while args and '=' in args[0]:
-    k,v=args.pop(0).split('=',1);env[k]=v
-with open(__file__+'.calls','a') as log: log.write(json.dumps({'user':user,'env':env,'args':args})+'\n')
-if os.geteuid()==0:
-    uid,gid=map(int,user.split(':'));os.setgroups([]);os.setgid(gid);os.setuid(uid)
-prefix=[]; nested=args
-if len(args)>5 and args[1:4]==['-I','-S','-c'] and 'PR_SET_NO_NEW_PRIVS' in args[4]:
-    prefix=args[:5];nested=args[5:]
-if len(nested)>3 and nested[1]=='-c' and 'marker=target/' in nested[2]:
-    assert '--system-site-packages' not in nested[2] and '--copies' in nested[2]
-    # The expensive seeded package copy is the fake boundary. venv creation is real.
-    args=prefix+[nested[0],'-c',"import json,pathlib,subprocess,sys; p=pathlib.Path(sys.argv[1]); subprocess.run([sys.executable,'-m','venv','--without-pip','--copies',str(p)],check=True) if not (p/'bin/python').exists() else None; (p/'.local-ci-environment.json').write_text(json.dumps({'fingerprint':sys.argv[2]}))",*nested[3:]]
-os.execvpe(args[0],args,env)
-'''
 
 FAKE_TOOL = r'''#!/usr/bin/python3
 import json,os,pathlib,sys
@@ -94,19 +72,15 @@ class ExecutorTests(unittest.TestCase):
         self.control.mkdir(parents=True)
         (self.control / 'fake.py').write_text(FAKE_TOOL)
         (self.control / 'run_tool.sh').write_text('#!/bin/bash\nexec /usr/bin/python3 "$(dirname "$0")/fake.py" "$1"\n')
-        # FakeDocker has no PID namespace, so never target a real host account.
-        uid = 100000 + int(uuid.uuid4().hex[:8], 16) % 1000000
-        gid = uid
         self.task = {'task_id': 'a' * 64, 'base_sha': base, 'tested_sha': candidate,
-                     'llvm_hash': 'b' * 40, 'full': False, 'worker_revision_sha': 'c' * 40}
-        self.generation = {'workspace_host': str(self.root / 'workspace'), 'workspace_container': str(self.root / 'workspace'),
-                           'container': 'fake-persistent', 'profile': 'triton30', 'backend_enabled': False,
-                           'generation': 'fixture-generation',
-                           'execution_user': f'{uid}:{gid}', 'execution_uid': uid, 'execution_gid': gid,
-                           'environment_fingerprint': 'environment-v1',
-                           'env': {'SEED_PYTHON': sys.executable, 'PYTHON_VENV_ACTIVATE': '/profile/seed/bin/activate'}}
-        self.config = {'simulation': True, 'docker_bin': str(self.fake), 'container_control_root': str(self.root / 'control')}
-        self.executor = DockerExecutor(self.config, self.root / 'state', self.generation, self.task, LocalRelay(self.source))
+                     'llvm_hash': 'b' * 40, 'full': False, 'worker_revision_sha': 'c' * 40, 'target_branch': 'main'}
+        self.manager = VolumeManager(self.root, docker_bin=self.fake)
+        self.generation = self.manager.acquire_task(self.task, 'simulation-run', rpc_directory=self.root / 'rpc')
+        self.generation['env'] = {'SEED_PYTHON': sys.executable, 'PYTHON_VENV_ACTIVATE': '/profile/seed/bin/activate'}
+        self.config = {'simulation': True, 'docker_bin': str(self.fake), 'container_control_root': str(self.root / 'control'),
+                       'runtime': {'kind': 'docker-rootless', 'endpoint': 'unix:///run/user/1000/docker.sock'}}
+        self.executor = DockerExecutor(self.config, self.root / 'state', self.generation, self.task,
+                                       LocalRelay(self.source), manager=self.manager)
 
     def tearDown(self):
         try:
@@ -163,7 +137,7 @@ class ExecutorTests(unittest.TestCase):
         base = self.run_tool(variant='base')
         candidate = self.run_tool()
         self.assertEqual(('pass', 'pass'), (base['status'], candidate['status']))
-        root = self.executor.host_root
+        root = self.manager.volume(self.generation)
         base_python = root / 'base/venv/bin/python'
         candidate_python = root / 'candidate/venv/bin/python'
         site = Path(subprocess.check_output([str(base_python), '-I', '-c', 'import sysconfig;print(sysconfig.get_path("purelib"))']).decode().strip())
@@ -195,15 +169,18 @@ class ExecutorTests(unittest.TestCase):
         script = {'name': 'detached.py', 'language': 'python', 'source_only': True, 'content':
             "import os,pathlib,subprocess,sys,time\n"
             "child=subprocess.Popen([sys.executable,'-c','import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(90)'],start_new_session=True,env={})\n"
-            "pathlib.Path(os.environ['LOCAL_CI_TASK_ROOT'],'child.pid').write_text(str(child.pid))\n"
+            "pathlib.Path(os.environ['TMPDIR'],'child.pid').write_text(str(child.pid))\n"
             "time.sleep(90)\n"}
         result = []
         thread = threading.Thread(target=lambda: result.append(self.run_tool('custom', custom=script, cancelled=cancelled)))
         thread.start()
-        pidfile = self.executor.host_root / 'candidate/child.pid'
+        volume = self.manager.volume(self.generation)
         deadline = time.monotonic() + 20
-        while not pidfile.exists() and thread.is_alive() and time.monotonic() < deadline:
+        matches = []
+        while not matches and thread.is_alive() and time.monotonic() < deadline:
+            matches = list(volume.glob('diagnostics/*/tmp/child.pid'))
             time.sleep(0.05)
+        pidfile = matches[0] if matches else volume / 'missing.pid'
         try:
             self.assertTrue(pidfile.exists(), result)
             pid = int(pidfile.read_text())
@@ -235,7 +212,7 @@ class ExecutorTests(unittest.TestCase):
     def test_task_cleanup_after_restart_reaps_markerless_uid_and_preserves_root(self):
         child = self.detached()
         root_management = self.detached(uid=0)
-        restarted = DockerExecutor(self.config, self.root / 'state', self.generation, self.task, LocalRelay(self.source))
+        restarted = DockerExecutor(self.config, self.root / 'state', self.generation, self.task, LocalRelay(self.source), manager=self.manager)
         self.assertFalse(restarted.processes)
         try:
             result = restarted.stop_task(self.task['task_id'])
@@ -261,10 +238,10 @@ class ExecutorTests(unittest.TestCase):
         custom = {'name': 'daemon.py', 'language': 'python', 'source_only': True, 'content':
             "import os,pathlib,subprocess,sys\n"
             "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(90)'],start_new_session=True,env={})\n"
-            "pathlib.Path(os.environ['LOCAL_CI_TASK_ROOT'],'daemon.pid').write_text(str(child.pid))\n"}
+            "pathlib.Path(os.environ['TMPDIR'],'daemon.pid').write_text(str(child.pid))\n"}
         result = self.run_tool('custom', custom=custom)
         self.assertEqual('pass', result['status'], result)
-        pid = int((self.executor.host_root / 'candidate/daemon.pid').read_text())
+        pid = int(next(self.manager.volume(self.generation).glob('diagnostics/*/tmp/daemon.pid')).read_text())
         process_stat = Path(f'/proc/{pid}/stat')
         self.assertTrue(not process_stat.exists() or process_stat.read_text().split()[2] == 'Z')
 
@@ -315,11 +292,81 @@ class ExecutorTests(unittest.TestCase):
         record = self.run_tool(parameters={'max_jobs': 100})
         self.assertIn('Parallelism', record['reason'])
 
+    def test_diagnostic_reads_formal_state_but_cannot_write_it_or_read_codex_auth(self):
+        self.assertEqual("pass", self.run_tool()["status"])
+        self.assertEqual("pass", self.run_tool(variant="base")["status"])
+        self.manager.deploy_session(self.generation, {"auth.json": "private-model-token"}, {})
+        custom = {"name": "isolation.py", "language": "python", "source_only": True,
+                  "content": "import os,pathlib\n"
+                  "assert pathlib.Path(os.environ['ANCHOR_DIR'],'README.md').read_text()=='candidate\\n'\n"
+                  "for path in ['/task/candidate/checkout/README.md','/task/base/checkout/README.md','/task/candidate/venv/injected.py']:\n"
+                  " try: pathlib.Path(path).write_text('corrupt')\n"
+                  " except PermissionError: pass\n"
+                  " else: raise AssertionError('diagnostic wrote formal state: '+path)\n"
+                  "try: pathlib.Path('/codex/home/auth.json').read_text()\n"
+                  "except PermissionError: pass\n"
+                  "else: raise AssertionError('model credentials readable')\n"
+                  "pathlib.Path(os.environ['TMPDIR'],'scratch').write_text('allowed')\n"}
+        record = self.run_tool('custom', custom=custom)
+        self.assertEqual('pass', record['status'], record)
+        self.assertEqual(self.generation['uids']['diagnostic'], record['execution_uid'])
+
+    def test_experiment_is_writable_and_resume_cannot_switch_variant(self):
+        custom = {"name": "experiment.py", "language": "python", "mode": "experiment",
+                  "content": "import os,pathlib\npathlib.Path(os.environ['ANCHOR_DIR'],'README.md').write_text('experiment')\n"}
+        first = self.run_tool('custom', custom=custom)
+        self.assertEqual('pass', first['status'], first)
+        ident = first['experiment_id']
+        custom.update(experiment_id=ident, content="import os,pathlib; assert pathlib.Path(os.environ['ANCHOR_DIR'],'README.md').read_text()=='experiment'")
+        self.assertEqual('pass', self.run_tool('custom', custom=custom)['status'])
+        formal = self.manager.volume(self.generation) / 'candidate/checkout/README.md'
+        self.assertEqual('candidate\n', formal.read_text())
+        other = self.run_tool('custom', variant='base', custom=custom)
+        self.assertEqual('infra_error', other['status'])
+        self.assertIn('variant', other['reason'])
+
+    def test_test_cleanup_preserves_codex_until_explicit_session_stop(self):
+        codex = self.detached(uid=self.generation['uids']['codex'])
+        children = [self.detached(uid=self.generation['uids'][role]) for role in ('candidate','base','diagnostic')]
+        self.assertTrue(self.executor.stop_task()['verified'])
+        for child in children:
+            child.wait(timeout=2)
+        self.assertIsNone(codex.poll())
+        self.executor.stop_codex()
+        codex.wait(timeout=2)
+
+    def test_reproduction_loads_setup_but_preserves_task_paths(self):
+        self.assertEqual('pass', self.run_tool()['status'])
+        setup = self.root / 'trusted-setup.sh'
+        setup.write_text('export LOADED_BACKEND=ready\nexport TMPDIR=/shared-tmp\nexport ANCHOR_DIR=/wrong-source\nexport PATH=/usr/bin:/bin\n')
+        self.generation['env']['TRUSTED_ANCHOR_ENVSETUP'] = str(setup)
+        custom = {'name':'environment.py', 'language':'python', 'mode':'reproduction',
+                  'content':"import os; assert os.environ['LOADED_BACKEND']=='ready'; assert '/diagnostics/' in os.environ['TMPDIR']; assert os.environ['ANCHOR_DIR'].endswith('/candidate/checkout')"}
+        record = self.run_tool('custom', custom=custom)
+        self.assertEqual('pass', record['status'], record)
+        self.assertEqual(2, len(record['environment_setup']))
+        self.assertTrue(list(Path(record['artifact_dir']).glob('setup-*.log')))
+        setup.write_text('return 9\n')
+        failed = self.run_tool('custom', custom=custom)
+        self.assertEqual('infra_error', failed['status'], failed)
+        self.assertEqual('custom_environment_setup_failed', failed['reason'])
+        custom.update(mode='diagnostic', source_only=True, content='print("can inspect broken setup")')
+        self.assertEqual('pass', self.run_tool('custom', custom=custom)['status'])
+
+    def test_verify_exception_still_exports_tool_artifacts(self):
+        with mock.patch.object(self.manager, 'verify_checkout', side_effect=OSError('snapshot check interrupted')):
+            result = self.run_tool('compile_time')
+        self.assertEqual('infra_error', result['status'])
+        self.assertTrue(result['evidence_exported'])
+        self.assertTrue((Path(result['artifact_dir']) / 'candidate.json').is_file())
+
     def test_private_service_umask_keeps_task_mount_traversable(self):
         task = {**self.task, 'task_id': 'd' * 64}
         previous = os.umask(0o077)
         try:
-            self.executor = DockerExecutor(self.config, self.root / 'private-state', self.generation, task, LocalRelay(self.source))
+            self.generation = self.manager.acquire_task(task, 'private-run', rpc_directory=self.root / 'private-rpc')
+            self.generation['env'] = {'SEED_PYTHON': sys.executable}
+            self.executor = DockerExecutor(self.config, self.root / 'private-state', self.generation, task, LocalRelay(self.source), manager=self.manager)
             self.task = task
             result = self.run_tool('compile_time', 'base')
             candidate = self.run_tool('compile_time')
@@ -327,8 +374,8 @@ class ExecutorTests(unittest.TestCase):
             os.umask(previous)
         self.assertEqual('pass', result['status'], result)
         self.assertEqual('pass', candidate['status'], candidate)
-        for relative in ('.', 'artifacts', '.trusted', '.trusted/baselines'):
-            self.assertEqual(0o711, (self.executor.host_root / relative).stat().st_mode & 0o777)
+        self.assertEqual(0o700, (self.root / 'private-state').stat().st_mode & 0o777)
+        self.assertNotEqual(self.executor.host_root, self.manager.volume(self.generation))
 
 
 if __name__ == '__main__':
