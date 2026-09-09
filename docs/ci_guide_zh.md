@@ -58,7 +58,7 @@ PR 验证对象是与目标分支合并后的提交，分支推送验证对象�
 
 ## 合入反馈与 Dashboard
 
-PR 的四项必要检查为 `local-ci/basic`、`local-ci/api`、`local-ci/security` 和 `local-ci/summary`，仓库分支保护要求其通过。失败、超时、缺少依赖及必检未完成均不能表现为成功。分支推送和手动全量结果使用独立状态，不覆盖 PR 门禁。
+PR 的四项必要检查为 `local-ci/basic`、`local-ci/api`、`local-ci/security` 和 `local-ci/summary`，仓库规则要求其通过；仓库管理员可在 PR 合入时绕过此要求，检查与审批流程仍照常执行。失败、超时、缺少依赖及必检未完成均不能表现为成功。分支推送和手动全量结果使用独立状态，不覆盖 PR 门禁。
 
 每个 PR 的新提交追加一条 CI 审查评论，同一提交重试更新对应评论。评论标明对应提交，只列出实际执行项目，并提供审查反馈、阻塞项、必要限制和完整结果入口。历史评论不代表最新提交的验证结论；是否满足合入门禁以当前提交的必需检查为准。
 
@@ -77,7 +77,7 @@ Dashboard 分为四个模块：
 
 正式部署目标为 Linux、Docker 和 systemd。每个 Triton 版本使用固定常驻容器，任务之间复用；每日维护在窗口内等待任务结束，再按受信配方重建并替换容器。候选代码、AI 会话、控制程序和远端凭据分别隔离，任务结束清理其进程与临时环境，保留验证证据。
 
-`main` 的 workflows 仅保留 `api-breaking-notify.yml`、`ci-gateway.yml`、`ci.yml` 和 `upstream_watch.yml`。完整 CI、manifest、PR 模板和 watchdog 实现集中在 `ci_repo`；main 通过现有 gateway 的定时 job 转发健康检查。Local CI 脚本控制面集中在 `scripts/local_ci` 与 `scripts/dashboard`；`integration` 目录承载任务投递、结果接收与门禁配置入口。
+`main` 的 workflows 仅保留 `api-breaking-notify.yml`、`ci-gateway.yml`、`ci.yml` 和 `upstream_watch.yml`。完整 CI、嵌入 gateway 的能力声明、PR 模板和 watchdog 实现集中在 `ci_repo`；main 通过现有 gateway 的定时 job 转发健康检查。Local CI 脚本控制面集中在 `scripts/local_ci` 与 `scripts/dashboard`；`integration` 目录承载任务投递、结果接收与门禁配置入口。
 
 任务轮询为 30 秒，运行任务有效性检查为 10 秒，健康采集和发布为 60 秒。独立 watchdog 每 30 分钟检查一次，GitHub 调度可能延迟；故障类别变化或恢复才通知。通知采用 GitHub 运维 Issue 原生订阅，无需单独发件邮箱，邮件投递由订阅者的 GitHub 设置决定。
 
