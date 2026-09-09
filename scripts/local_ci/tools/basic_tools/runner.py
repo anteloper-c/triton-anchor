@@ -170,7 +170,9 @@ def plan(tool_id: str, context: dict[str, Any], parameters: dict[str, Any] | Non
         if not isinstance(keyword, str) or len(keyword) > 300 or any(c in keyword for c in "\n\r\x00"):
             raise ValueError("keyword must be a pytest expression of at most 300 characters")
         action("prepare_tests", {"test_source": test_source, "test_paths": selected})
-        argv = [py, "-I", "-m", "pytest", "-q", "-o", "addopts=", "--import-mode=importlib",
+        # Python capture avoids anonymous-file truncation on Windows bind mounts.
+        # Native stdout/stderr still reach the broker's outer command log.
+        argv = [py, "-I", "-m", "pytest", "-q", "-o", "addopts=", "--capture=sys", "--import-mode=importlib",
                 "--rootdir", test_source, "--junitxml", path_join(out, "tests.xml")]
         if keyword:
             argv += ["-k", keyword]
