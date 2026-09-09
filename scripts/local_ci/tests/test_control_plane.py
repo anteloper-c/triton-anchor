@@ -116,7 +116,7 @@ class ControlPlaneTests(unittest.TestCase):
 
 class ControlPolicyTests(unittest.TestCase):
     def test_control_and_documentation_need_no_compiler_build(self):
-        paths = ['scripts/local_ci/runtime/cache.py', 'docs/pipeline.md', 'README.md']
+        paths = ['scripts/local_ci/runtime/cache.py', 'scripts/ci/tests/test_gateway_contract.py', 'docs/pipeline.md', 'README.md']
         policy = minimum_checks(paths, {'triton_version': '3.0'})
         self.assertEqual(policy['required'], ['environment', 'control_plane', 'architecture_review'])
 

@@ -132,6 +132,6 @@ jobs:
               await github.rest.repos.createCommitStatus({
                 ...context.repo, sha: process.env.HEAD_SHA, context: `local-ci/${name}`,
                 state: result === 'success' ? 'success' : result === 'failure' ? 'failure' : 'error',
-                description: `${name}: ${result}`, target_url: url,
+                description: `${name === 'basic' ? 'Basic CI' : 'API compatibility'}: ${result === 'success' ? 'passed' : result === 'failure' ? 'failed; review the check logs' : 'verification incomplete'}`, target_url: url,
               });
             }

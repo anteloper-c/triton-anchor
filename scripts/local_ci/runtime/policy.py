@@ -50,12 +50,12 @@ def minimum_checks(changed_paths, profile, manual_full=False):
         return ((path.startswith('docs/') and path.lower().endswith(('.md', '.rst', '.txt', '.png', '.svg', '.jpg')))
                 or ('/' not in path and path.lower().endswith(('.md', '.rst'))))
     docs = bool(paths) and all(documentation(p) for p in paths)
-    control = any(p.startswith(('.github/', 'scripts/local_ci/', 'scripts/dashboard/', 'dashboard/')) for p in paths)
+    control = any(p.startswith(('.github/', 'scripts/local_ci/', 'scripts/ci/tests/', 'scripts/dashboard/', 'dashboard/')) for p in paths)
     known = ('python/', 'csrc/', 'include/', 'tests/', 'docs/', 'scripts/', '.github/', 'dashboard/')
     packaging = ('setup.py', 'pyproject.toml', 'MANIFEST.in', 'CMakeLists.txt', 'envsetup.sh')
     unknown = not paths or any(not documentation(p) and not p.startswith(known) and p not in packaging for p in paths)
     compiler = any(p.startswith(('python/', 'csrc/', 'include/', 'tests/')) or p in packaging for p in paths)
-    control_only = control and all(documentation(p) or p.startswith(('.github/', 'scripts/local_ci/', 'scripts/dashboard/', 'dashboard/')) for p in paths)
+    control_only = control and all(documentation(p) or p.startswith(('.github/', 'scripts/local_ci/', 'scripts/ci/tests/', 'scripts/dashboard/', 'dashboard/')) for p in paths)
     required = [] if docs else ['environment'] if control_only else list(MINIMUM_FRONTEND)
     reasons = {t: 'minimum frontend coverage' for t in required}
     if not docs and compiler:

@@ -5,6 +5,7 @@ name: Basic CI
 
 on:
   push:
+    branches: [main, ci_repo]
   pull_request:
 
 # 同一分支上新的推送自动取消旧的运行

@@ -13,12 +13,12 @@
 <body>
   <header class="app-header">
     <div class="brand"><img src="assets/triton-anchor-logo.png" alt="" class="brand-logo"><div><p class="brand-kicker">TRITON ANCHOR</p><h1>Local CI 验证结果</h1></div></div>
-    <div class="header-meta"><span id="updatedAt">等待结果同步</span><button id="refresh" class="button secondary" type="button" title="重新读取已发布的数据，不会重新运行 CI">重新读取数据</button></div>
+    <div class="header-meta"><span id="updatedAt">等待结果同步</span><button id="refresh" class="button secondary" type="button" title="查询最新已发布快照，不触发服务器采样或 CI">查询最新快照</button></div>
   </header>
-  <nav class="view-tabs" aria-label="Dashboard 导航"><a id="tasksTab" class="tab-button active" href="local-ci.html" aria-current="page">任务与证据</a><a id="workersTab" class="tab-button" href="local-ci.html?view=worker">Worker 运行状态</a><a class="tab-button" href="index.html">全量算子 · 后端与性能</a></nav>
+  <nav class="view-tabs" aria-label="Dashboard 导航"><a id="tasksTab" class="tab-button active" href="local-ci.html" aria-current="page">任务与证据</a><a id="workersTab" class="tab-button" href="local-ci.html?view=worker">Worker 运行状态</a><a class="tab-button" href="index.html">全量算子测试</a><a class="tab-button" href="index.html?view=performance">后端与性能</a></nav>
   <main class="ci-main">
     <div id="dataNotice" class="ci-notice" role="status" aria-live="polite" hidden></div>
-    <section id="workerModule" aria-labelledby="workerHeading" class="ci-section ci-service-section" hidden><div class="section-heading"><div><p class="eyebrow">执行服务与版本环境</p><h2 id="workerHeading">Worker 运行状态</h2></div><span class="ci-muted">服务可用不代表任务通过；验证结论见任务与证据</span></div><div id="workers" class="ci-workers"></div></section>
+    <section id="workerModule" aria-labelledby="workerHeading" class="ci-section ci-service-section" hidden><div class="section-heading"><div><p class="eyebrow">执行服务与版本环境</p><h2 id="workerHeading">Worker 运行状态</h2></div><span class="ci-muted">服务可用不代表任务通过；验证结论见任务与证据</span></div><p class="ci-muted">服务器每 60 秒采集并发布一次健康快照；页面可见时每 5 分钟自动查询。公开 Pages 还需等待页面数据发布，因此可能晚于服务器快照。点击“查询最新快照”立即读取已发布数据，不触发心跳或重新采样。请以各项状态更新时间判断新鲜度。</p><div id="workers" class="ci-workers"></div></section>
     <div id="taskModule" class="ci-layout">
       <aside class="ci-task-panel" aria-labelledby="tasksHeading">
         <div class="ci-panel-title"><h2 id="tasksHeading">验证任务</h2><span id="taskCount" class="ci-count">0</span></div>

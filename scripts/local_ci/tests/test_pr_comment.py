@@ -57,7 +57,7 @@ class PRCommentTests(unittest.TestCase):
         self.assertIn('[查看 GitHub 检查记录](https://github.com/anteloper-c/triton-anchor/actions/runs/123)', body)
         self.assertIn(f"被测 PR 提交：`{result['head_sha'][:12]}`", body)
         self.assertIn(f"合并后的验证提交：`{result['tested_sha'][:12]}`", body)
-        self.assertIn('此评论随 PR 的最新提交更新', body)
+        self.assertIn('新提交会追加评论', body)
         for internal in (*receiver.TOOLS, 'skipped', 'not_applicable', 'success', 'Task '):
             self.assertNotIn(internal, body)
         self.assertNotIn('| --- |', body)

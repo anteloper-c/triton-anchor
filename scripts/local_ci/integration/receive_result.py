@@ -379,13 +379,13 @@ def render_comment(result: dict, target_url: str, run_url: str = '') -> str:
     review = result.get('ai_review', {})
     verdict = {'success': '本次要求的检查已通过。', 'failure': '发现合入阻塞，需要处理后重新验证。',
                'error': '验证尚未完成，暂不能确认可合入。', 'cancelled': '验证已中断，暂不能确认可合入。'}
-    lines = ['<!-- local-ci-result -->', '### CI 审查反馈', '',
+    lines = [f"<!-- local-ci-result head={result['head_sha']} -->", '### CI 审查反馈', '',
              '**结论：' + verdict.get(result.get('conclusion'), '尚无完整结论。') + '**']
     head_sha = result.get('head_sha', '')
     tested_sha = result.get('tested_sha', '')
     if SHA.fullmatch(head_sha) and SHA.fullmatch(tested_sha):
         lines += ['', f'被测 PR 提交：`{head_sha[:12]}`；与目标分支合并后的验证提交：`{tested_sha[:12]}`。',
-                  '此评论随 PR 的最新提交更新；历史执行记录保留在 GitHub Actions 和结果页面中。']
+                  '此评论仅对应上述 PR 提交；新提交会追加评论，同一提交重试会更新本条评论。']
     summary = comment_text(review.get('summary'))
     if summary:
         lines += ['', '**变更意图与审查结论**', '', summary]
@@ -457,13 +457,13 @@ def publish(api: API, expected: dict, result: dict, state: str, target_url: str,
     context = summary_context(expected, context)
     validate_current(api, expected)
     prefix = f"repos/{expected['repository']}"
-    status = {"state": state, "context": context, "description": f"Local CI {result['conclusion']}: {expected['tested_sha'][:12]}", "target_url": target_url}
+    status = {"state": state, "context": context, "description": {"success": "Required Local CI checks passed", "failure": "Local CI found blocking issues; review the report", "error": "Local CI could not complete verification", "cancelled": "Local CI verification was cancelled"}.get(result["conclusion"], "Local CI result available"), "target_url": target_url}
     api.call("POST", f"{prefix}/statuses/{expected['tested_sha']}", status)
     if expected["event_kind"] == "pull_request":
         # Recheck immediately before marking the head required check or updating its comment.
         validate_current(api, expected)
         api.call("POST", f"{prefix}/statuses/{expected['head_sha']}", {**status, "context": "local-ci/summary"})
-        marker = "<!-- local-ci-result -->"
+        marker = f"<!-- local-ci-result head={expected['head_sha']} -->"
         run_id = os.environ.get('GITHUB_RUN_ID', '')
         run_url = f'https://github.com/anteloper-c/triton-anchor/actions/runs/{run_id}' if run_id.isdigit() else ''
         body = render_comment(result, target_url, run_url)

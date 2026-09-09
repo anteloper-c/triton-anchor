@@ -328,7 +328,7 @@ class ReceiverHTTPTests(unittest.TestCase):
                         value = {"encoding": "base64", "content": base64.b64encode(content).decode()}
                 elif path.endswith("/comments"):
                     value = ([{"id": 91, "user": {"type": "Bot"},
-                               "body": "<!-- local-ci-result -->\nold result"}]
+                               "body": (f"<!-- local-ci-result head={expected['head_sha']} -->\nold result" if existing_comment == "same_head" else "<!-- local-ci-result head=" + "f" * 40 + " -->\nold result")}]
                              if existing_comment else [])
                 else:
                     self.send_error(404)
@@ -389,9 +389,14 @@ class ReceiverHTTPTests(unittest.TestCase):
         self.assertNotIn('| --- |', comment)
 
     def test_existing_bot_result_comment_is_updated_instead_of_duplicated(self):
-        writes = self.run_receiver(existing_comment=True)
+        writes = self.run_receiver(existing_comment="same_head")
         comment_paths = [path for path, _ in writes if '/comments/' in path or path.endswith('/comments')]
         self.assertEqual(comment_paths, ['/repos/anteloper-c/triton-anchor/issues/comments/91'])
+
+    def test_previous_commit_comment_is_preserved(self):
+        writes = self.run_receiver(existing_comment="older_head")
+        comment_paths = [path for path, _ in writes if '/comments/' in path or path.endswith('/comments')]
+        self.assertEqual(comment_paths, ['/repos/anteloper-c/triton-anchor/issues/19/comments'])
 
     def test_bad_published_bytes_produce_no_remote_writes(self):
         self.assertEqual(self.run_receiver(tamper=True), [])
