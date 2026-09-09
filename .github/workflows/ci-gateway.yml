@@ -1034,7 +1034,7 @@ jobs:
       - route-cancellation
       - prepare-route
       - route-pull-request
-    if: ${{ always() && needs.prepare-route.outputs.should_route == 'true' && ((needs.route-cancellation.result == 'failure' || needs.route-cancellation.result == 'cancelled') || needs.route-pull-request.result == 'failure' || needs.route-pull-request.result == 'cancelled') }}
+    if: ${{ always() && !cancelled() && needs.prepare-route.outputs.should_route == 'true' && ((needs.route-cancellation.result == 'failure' || needs.route-cancellation.result == 'cancelled') || needs.route-pull-request.result == 'failure' || needs.route-pull-request.result == 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -1541,7 +1541,7 @@ jobs:
       - approval-review-card
       - approve-external-fork
       - dispatch
-    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.mode == 'dispatch' && inputs.expected_head_sha != '' && inputs.worker_revision_sha != '' && (needs.basic-and-api.result == 'failure' || needs.approval-review-card.result == 'failure' || needs.approval-review-card.result == 'cancelled' || needs.approve-external-fork.result == 'failure' || needs.approve-external-fork.result == 'cancelled' || needs.validate-dispatch.result == 'failure' || needs.validate-dispatch.result == 'cancelled' || needs.security-gate.result == 'failure' || needs.security-gate.result == 'cancelled' || needs.security-result.result == 'failure' || needs.security-result.result == 'cancelled' || needs.dispatch.result == 'failure' || needs.dispatch.result == 'cancelled') }}
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && inputs.mode == 'dispatch' && inputs.expected_head_sha != '' && inputs.worker_revision_sha != '' && (needs.basic-and-api.result == 'failure' || needs.approval-review-card.result == 'failure' || needs.approval-review-card.result == 'cancelled' || needs.approve-external-fork.result == 'failure' || needs.approve-external-fork.result == 'cancelled' || needs.validate-dispatch.result == 'failure' || needs.validate-dispatch.result == 'cancelled' || needs.security-gate.result == 'failure' || needs.security-gate.result == 'cancelled' || needs.security-result.result == 'failure' || needs.security-result.result == 'cancelled' || needs.dispatch.result == 'failure' || needs.dispatch.result == 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -1754,7 +1754,7 @@ jobs:
     needs:
       - validate-push
       - dispatch-push
-    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.mode == 'push' && inputs.worker_revision_sha != '' && (needs.validate-push.result == 'failure' || needs.validate-push.result == 'cancelled' || needs.dispatch-push.result == 'failure' || needs.dispatch-push.result == 'cancelled') }}
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && inputs.mode == 'push' && inputs.worker_revision_sha != '' && (needs.validate-push.result == 'failure' || needs.validate-push.result == 'cancelled' || needs.dispatch-push.result == 'failure' || needs.dispatch-push.result == 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

@@ -23,12 +23,12 @@ class ApprovalRoutingTests(unittest.TestCase):
     def setUpClass(cls):
         cls.gateway = (ROOT / '.github/workflows/ci-gateway.yml').read_text(encoding='utf-8')
 
-    def condition(self, job, needs):
+    def condition(self, job, needs, *, cancelled=False):
         match = re.search(r'(?m)^    if: \$\{\{(.+)\}\}\s*$', workflow_job(self.gateway, job))
         self.assertIsNotNone(match, f'Job {job} must expose its actual approval condition')
         expression = match[1].strip()
         expression = re.sub(r'needs\.([a-zA-Z0-9_-]+)', lambda m: 'needs[' + json.dumps(m[1]) + ']', expression)
-        script = ('const needs=' + json.dumps(needs) + '; const always=()=>true;'
+        script = ('const needs=' + json.dumps(needs) + '; const always=()=>true; const cancelled=()=>'+json.dumps(cancelled)+';'
                   'const github={event_name:"workflow_dispatch"};'
                   'const inputs={mode:"dispatch",expected_head_sha:"a",worker_revision_sha:"b"};'
                   'process.stdout.write(JSON.stringify(Boolean(' + expression + ')));')
@@ -73,6 +73,7 @@ class ApprovalRoutingTests(unittest.TestCase):
                         self.assertFalse(self.condition('dispatch', needs))
             ready['security-result']['result'] = 'failure'
             self.assertTrue(self.condition('dispatch-failure-status', ready))
+            self.assertFalse(self.condition('dispatch-failure-status', ready, cancelled=True))
         for job in ('approval-review-card', 'approve-external-fork'):
             for status in ('failure', 'cancelled'):
                 with self.subTest(job=job, status=status):
