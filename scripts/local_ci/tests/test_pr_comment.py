@@ -53,9 +53,12 @@ class PRCommentTests(unittest.TestCase):
         self.assertEqual(result, before)
         self.assertIn('不包含编译器构建与运行行为验证', body)
         self.assertIn(f"/blob/{result['tested_sha']}/README.md", body)
-        self.assertIn('[完整执行报告（需要访问权限）](https://example.test/report)', body)
+        self.assertIn('[完整执行报告](https://example.test/report)', body)
         self.assertIn('[查看 GitHub 检查记录](https://github.com/anteloper-c/triton-anchor/actions/runs/123)', body)
-        for internal in (*receiver.TOOLS, 'skipped', 'not_applicable', 'success', 'Task ', '被测提交'):
+        self.assertIn(f"被测 PR 提交：`{result['head_sha'][:12]}`", body)
+        self.assertIn(f"合并后的验证提交：`{result['tested_sha'][:12]}`", body)
+        self.assertIn('此评论随 PR 的最新提交更新', body)
+        for internal in (*receiver.TOOLS, 'skipped', 'not_applicable', 'success', 'Task '):
             self.assertNotIn(internal, body)
         self.assertNotIn('| --- |', body)
 

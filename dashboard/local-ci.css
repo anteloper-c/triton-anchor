@@ -1,15 +1,31 @@
 .view-tabs a { display:flex; align-items:center; text-decoration:none; }
+[hidden] { display:none !important; }
 .ci-main { max-width:1600px; margin:auto; padding:28px clamp(18px,3vw,48px); }
 .ci-section { margin-bottom:28px; }
 .ci-muted,.ci-footer { color:var(--text-muted); font-size:13px; }
+.ci-help { color:var(--text-muted); font-size:12px; line-height:1.6; margin:-6px 0 14px; }
+.ci-help code { background:var(--surface-muted); border-radius:3px; padding:2px 4px; }
 .ci-notice { padding:14px 18px; border:1px solid #eccf92; background:var(--amber-soft); border-radius:7px; margin-bottom:20px; line-height:1.6; }
 .ci-workers { display:grid; grid-template-columns:repeat(auto-fit,minmax(270px,1fr)); gap:14px; }
-.ci-worker { padding:18px; border:1px solid var(--border); border-radius:9px; background:white; }
+.ci-worker { padding:15px 16px; border:1px solid var(--border); border-radius:7px; background:white; }
 .ci-worker-head,.ci-panel-title,.ci-detail-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; }
 .ci-worker h3 { font-size:15px; margin-bottom:8px; overflow-wrap:anywhere; }
 .ci-worker p { margin:6px 0; line-height:1.5; }
 .ci-worker ul { font-size:13px; padding-left:18px; margin-bottom:0; line-height:1.65; }
-.ci-layout { display:grid; grid-template-columns:280px minmax(0,1fr); gap:22px; align-items:start; }
+.ci-workers { grid-template-columns:1fr; }
+.ci-worker-overview,.ci-environments { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:20px; }
+.ci-worker section { margin-top:20px; }
+.ci-worker h4 { margin:0 0 12px; font-size:16px; }
+.ci-environment { border:1px solid var(--border); border-radius:7px; padding:16px; background:var(--surface-muted); }
+.ci-facts { display:grid; grid-template-columns:minmax(95px,auto) minmax(0,1fr); gap:9px 14px; font-size:13px; line-height:1.6; }
+.ci-facts dt { color:var(--text-muted); }
+.ci-facts dd { margin:0; overflow-wrap:anywhere; }
+.ci-worker a { font-size:13px; color:var(--blue); }
+.ci-layout { display:grid; grid-template-columns:300px minmax(0,1fr); gap:22px; align-items:start; }
+.ci-content { min-width:0; }
+.ci-service-section { border:1px solid var(--border); background:white; border-radius:10px; padding:18px 20px; margin-bottom:18px; }
+.ci-service-section .section-heading { margin-bottom:12px; }
+.ci-service-section h2 { font-size:18px; }
 .ci-task-panel,.ci-detail { border:1px solid var(--border); background:white; border-radius:10px; overflow:hidden; }
 .ci-task-panel { padding:18px; }
 .ci-panel-title h2 { font-size:18px; }
@@ -62,6 +78,9 @@
 .ci-footer { line-height:1.8; margin-top:24px; }
 .ci-links { display:flex; gap:14px; font-size:12px; }
 .ci-links a,.ci-receipt a { color:var(--blue); }
+.ci-receipt-row { display:flex; flex-wrap:wrap; align-items:center; gap:9px; }
+.ci-receipt-row strong { min-width:180px; font-size:13px; }
+.ci-receipt-row .ci-muted { margin-left:auto; }
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible { outline:3px solid #76b997; outline-offset:3px; }
 @media(max-width:1000px) { .ci-layout { grid-template-columns:235px minmax(0,1fr); gap:14px; } .ci-detail { padding:18px; } .ci-metric { padding:12px; } }
-@media(max-width:760px) { .ci-layout { grid-template-columns:1fr; } .ci-task-list { max-height:250px; } .ci-metrics { grid-template-columns:repeat(2,1fr); } .ci-metric:nth-child(2) { border-right:0; } .ci-metric:nth-child(-n+2) { border-bottom:1px solid var(--border); } .header-meta { white-space:normal; flex-wrap:wrap; } .section-heading { align-items:flex-start; } .ci-detail-head { flex-wrap:wrap; } .view-tabs { gap:18px; overflow-x:auto; } .ci-main { padding:20px 14px; } }
+@media(max-width:760px) { .ci-layout { grid-template-columns:1fr; } .ci-task-list { max-height:250px; } .ci-metrics { grid-template-columns:repeat(2,1fr); } .ci-metric:nth-child(2) { border-right:0; } .ci-metric:nth-child(-n+2) { border-bottom:1px solid var(--border); } .header-meta { white-space:normal; flex-wrap:wrap; } .section-heading { align-items:flex-start; } .ci-detail-head { flex-wrap:wrap; } .view-tabs { gap:18px; overflow-x:auto; } .ci-main { padding:20px 14px; } .ci-receipt-row .ci-muted { margin-left:0; width:100%; } }

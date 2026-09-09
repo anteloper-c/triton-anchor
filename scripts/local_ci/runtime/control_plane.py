@@ -15,14 +15,9 @@ EXPRESSIONS = re.compile(r'\$\{\{.*?\}\}', re.S)
 
 
 def plan(context):
-    """Bind the router exception to the host's target branch and candidate manifest."""
+    """Use syntax validation only for the host-selected main routing tree."""
     source = Path(context['source_host_dir'])
-    manifest = source / '.github/ci-gateway-manifest.json'
-    router = False
-    if context.get('target_branch') == 'main' and not (source / 'scripts').exists():
-        if manifest.is_file() and not manifest.is_symlink():
-            document = json.loads(read_file(source, manifest))
-            router = document.get('kind') == KIND and document.get('role') == 'router'
+    router = context.get('target_branch') == 'main' and not (source / 'scripts').exists()
     argv = (['/opt/ci-venv/bin/python', '-I',
              '/opt/anchor-ci/runtime/control_plane.py', '--source', context['source_dir']]
             if router else [context['python_bin'], '-m', 'pytest', '-q',
@@ -128,14 +123,10 @@ def check_workflow(name, workflow):
 def check_router(root):
     root = Path(root).resolve()
     require(not (root / 'scripts').exists(), 'router exception cannot replace worker tests')
-    manifest_path = root / '.github/ci-gateway-manifest.json'
-    manifest_text = read_file(root, manifest_path)
-    manifest = json.loads(manifest_text)
-    require(manifest.get('kind') == KIND and manifest.get('role') == 'router',
-            'candidate must explicitly identify the trusted router contract')
     workflow_dir = root / '.github/workflows'
     paths = sorted([*workflow_dir.glob('*.yml'), *workflow_dir.glob('*.yaml')])
-    require(1 <= len(paths) <= 50, 'router needs a bounded nonempty workflow set')
+    require({path.name for path in paths} == {'api-breaking-notify.yml', 'ci-gateway.yml', 'ci.yml', 'upstream_watch.yml'},
+            'main must contain only the four maintained entry workflows')
     workflows, evidence, count = {}, {}, 0
     for path in paths:
         text = read_file(root, path)
@@ -153,17 +144,14 @@ def check_router(root):
             'gateway is missing immutable identity inputs')
     require({'route-cancellation', 'prepare-route', 'route-pull-request', 'route-manual-push',
              'route-failure-status'} <= set(gateway.get('jobs', {})), 'gateway is missing a routing path')
-    watchdog = workflows.get('local-ci-watchdog.yml', {})
-    require('schedule' in watchdog.get('on', {}) and 'workflow_dispatch' in watchdog.get('on', {}),
-            'watchdog router needs scheduled and manual triggers')
-    forward = watchdog.get('jobs', {}).get('forward', {})
+    require('schedule' in events, 'gateway needs a scheduled watchdog trigger')
+    forward = gateway.get('jobs', {}).get('watchdog', {})
     require(forward.get('uses') == 'anteloper-c/triton-anchor/.github/workflows/local-ci-watchdog.yml@ci_repo',
             'watchdog must delegate to the maintained ci_repo implementation')
     for path in sorted((root / '.github/scripts').rglob('*.py')):
         ast.parse(read_file(root, path), filename=path.relative_to(root).as_posix())
         evidence[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
         count += 1
-    evidence[manifest_path.relative_to(root).as_posix()] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     return {'status': 'passed', 'validation': 'candidate-router-syntax-and-contracts',
             'workflow_count': len(workflows), 'script_count': count, 'sha256': evidence}
 

@@ -99,6 +99,11 @@ class WorkflowContextTests(unittest.TestCase):
         env = block.get('env') or block['steps'][0]['env']
         return self.evaluate(env.get('CONTEXT') or env['STATUS_CONTEXT'], inputs)
 
+    def test_automatic_pushes_are_limited_to_maintained_branches(self):
+        triggers = self.dispatch.get('on', self.dispatch.get(True))
+        self.assertEqual(triggers['push']['branches'], ['main', 'ci_repo'])
+        self.assertIn('workflow_dispatch', triggers)
+
     def run_js(self, job, inputs, extra=None):
         step = self.gateway['jobs'][job]['steps'][0]
         env = dict(os.environ, REQUESTED_BRANCH='topic', REQUESTED_SHA='', FLAGGEMS_MODE='sample',

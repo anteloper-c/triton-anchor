@@ -121,5 +121,5 @@ LLVM 与文件哈希再比较；控制器应仅选择 backend/FlagGems/容器配
 不从 benchmark JSON 自称的 SHA 推断。只有候选测量、未发布结果或不匹配的
 历史环境都不能成为基线；无匹配时保持 `baseline_available=false`。
 
-`ai_review_tools/` 提供审查要求；`ai_custom_tools/` 描述任务内脚本边界。
+`ai_review_tools/` 提供架构与专项审查要求；`ai_custom_tools/runner.py` 为任务内复现、分析与证据处理脚本生成执行计划，统一通过 `custom_test` 调用。参数为相对 `artifacts/custom/` 的 Python `path`、字符串数组 `args`、1–900 秒的 `timeout`。分析成功不替代基础工具的必检结果。
 这些工具的报告需要与 broker 命令事实关联，不能以提示词或文件存在代替实际执行。

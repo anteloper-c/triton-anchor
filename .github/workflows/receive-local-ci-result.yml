@@ -118,7 +118,7 @@ jobs:
         run: |
           echo "result_ready=false" >> "${GITHUB_OUTPUT}"
           set +e
-          python scripts/local_ci/github/receive_result.py \
+          python scripts/local_ci/integration/receive_result.py \
             --repository "${REPO}" \
             --gitee-owner "${GITEE_RESULTS_OWNER}" --gitee-repo "${GITEE_RESULTS_REPO}" \
             --gitee-results-branch "${GITEE_RESULTS_BRANCH}" --gitee-web-url "${GITEE_RESULTS_WEB_URL}" \

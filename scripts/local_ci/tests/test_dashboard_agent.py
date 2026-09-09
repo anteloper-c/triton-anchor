@@ -77,6 +77,7 @@ class DashboardAgentFeed(unittest.TestCase):
         self.assertEqual(len(feed['runs']), 1)
         run = feed['runs'][0]
         self.assertTrue(run['is_latest'])
+        self.assertTrue(run['is_current'])
         self.assertEqual(run['tested_sha'], result['tested_sha'])
         self.assertEqual(run['checks'][2]['status'], 'skipped')
         self.assertIn('/logs/command-0002.log', run['evidence'][1]['log_url'])
@@ -141,6 +142,7 @@ class DashboardAgentFeed(unittest.TestCase):
         for result, pointer in fixtures:
             row = by_id[result['task_id']]
             self.assertTrue(row['is_latest'])
+            self.assertTrue(row['is_current'])
             self.assertEqual(row['result_url'], web_link('https://gitee.com/example/new-ci-results', 'local-ci-results', pointer['result_path']))
             self.assertIn('/logs/command-0002.log', row['evidence'][1]['log_url'])
             if '/' in result['target_branch']:
@@ -153,8 +155,19 @@ class DashboardAgentFeed(unittest.TestCase):
         rows = self.sync()['runs']
         self.assertEqual(len(rows), 2)
         self.assertEqual([row['run_id'] for row in rows if row['is_latest']], ['new-run'])
+        self.assertEqual([row['run_id'] for row in rows if row['is_current']], ['new-run'])
         historical = next(row for row in rows if row['run_id'] == 'fixture-run-1')
         self.assertTrue(historical['result_url'].endswith(old['result_path']))
+
+    def test_retries_for_one_pr_have_one_current_public_result(self):
+        first = example_result()
+        first.update(task_id='attempt-one', run_id='run-one', completed_at='2026-09-08T10:00:00Z')
+        second = example_result()
+        second.update(task_id='attempt-two', run_id='run-two', completed_at='2026-09-08T11:00:00Z')
+        self.publish(first, grouped=True)
+        self.publish(second, grouped=True)
+        rows = self.sync()['runs']
+        self.assertEqual([row['task_id'] for row in rows if row['is_current']], ['attempt-two'])
 
     def test_hash_valid_grouped_result_with_wrong_target_or_pr_is_rejected(self):
         result, pointer = self.publish(grouped=True)
@@ -182,6 +195,8 @@ class Element {
   append(...children){this.children.push(...children);}
   replaceChildren(...children){this.children=children;}
   addEventListener(name,callback){this.listeners[name]=callback;}
+  setAttribute(name,value){this[name]=value;}
+  removeAttribute(name){delete this[name];}
 }
 const roots={},intervals=[],now=Date.parse('2026-09-08T12:00:00Z');
 class Clock extends Date {static now(){return now;}}
@@ -205,25 +220,38 @@ const rendered=cases.map(worker=>{
   const card=roots.workers.children[0],badge=card.children[0].children[1];
   return {id:worker.id,label:badge.textContent,tone:badge.className,text:text(card)};
 });
-process.stdout.write(JSON.stringify({rendered,intervals,manual_refresh:typeof roots.refresh.listeners.click==='function'}));
+sandbox.fixture={runs:[
+  {task_id:'one',run_id:'one',pr_number:3,target_branch:'main',tested_sha:'a'.repeat(40),conclusion:'success',is_current:true},
+  {task_id:'contains-3',run_id:'two',pr_number:4,target_branch:'topic-3',tested_sha:'3'.repeat(40),conclusion:'success',is_current:true},
+  {task_id:'old',run_id:'old',pr_number:3,target_branch:'main',tested_sha:'b'.repeat(40),conclusion:'failure',is_current:false}
+]};
+roots.taskSearch.value='3';roots.historyFilter.value='current';roots.resultFilter.value='all';
+const prMatches=vm.runInContext('model.data=fixture;filteredRuns().map(run=>run.pr_number)',sandbox);
+process.stdout.write(JSON.stringify({rendered,intervals,prMatches,manual_refresh:typeof roots.refresh.listeners.click==='function'}));
 '''
         output = subprocess.run([NODE, '-e', harness, str(script)], check=True, capture_output=True, text=True)
         data = json.loads(output.stdout)
         rows = {row['id']: row for row in data['rendered']}
         for name in ('old-healthy', 'old-offline', 'past-boundary'):
             with self.subTest(name=name):
-                self.assertEqual(rows[name]['label'], '快照已过期')
+                self.assertEqual(rows[name]['label'], '状态已过期')
                 self.assertIn('warn', rows[name]['tone'])
-                self.assertIn('状态待刷新', rows[name]['text'])
-                self.assertIn('不能据此判断主机当前是否离线', rows[name]['text'])
+                self.assertIn('快照已超过 15 分钟', rows[name]['text'])
         for name in ('fresh-healthy', 'boundary'):
-            self.assertEqual(rows[name]['label'], '正常')
-            self.assertNotIn('状态待刷新', rows[name]['text'])
-        self.assertEqual(rows['fresh-offline']['label'], '离线')
+            self.assertEqual(rows[name]['label'], '服务可用')
+            self.assertNotIn('快照已超过 15 分钟', rows[name]['text'])
+        self.assertEqual(rows['fresh-offline']['label'], '服务离线')
         self.assertIn('bad', rows['fresh-offline']['tone'])
         self.assertEqual(rows['invalid-time']['label'], '状态未知')
-        self.assertEqual(data['intervals'], [60000])
+        self.assertNotIn('old-healthy', rows['old-healthy']['text'])
+        self.assertEqual(data['prMatches'], [3])
+        self.assertEqual(data['intervals'], [300000])
         self.assertTrue(data['manual_refresh'])
+        source = script.read_text(encoding='utf-8')
+        self.assertIn("'refresh='+Date.now()", source)
+        self.assertIn("refresh.textContent='重新读取数据'", source)
+        for internal in ('工作目录：', '日志 SHA-256：', '任务身份与影响文件'):
+            self.assertNotIn(internal, source)
 
 
 if __name__ == '__main__':

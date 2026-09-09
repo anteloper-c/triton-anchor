@@ -3,6 +3,9 @@ run-name: "${{ inputs.run_title || format('Push {0} | dispatch', inputs.source_b
 
 on:
   push:
+    branches:
+      - main
+      - ci_repo
   workflow_dispatch:
     inputs:
       source_branch:
@@ -237,7 +240,7 @@ jobs:
           fi
           git checkout --detach "${TESTED_SHA}"
           git fetch --no-tags origin "${WORKER_REVISION_SHA}"
-          git show "${WORKER_REVISION_SHA}:scripts/local_ci/github/build_task_metadata.py" > "${RUNNER_TEMP}/build-task-metadata.py"
+          git show "${WORKER_REVISION_SHA}:scripts/local_ci/integration/build_task_metadata.py" > "${RUNNER_TEMP}/build-task-metadata.py"
 
       - name: Push task and metadata refs to Gitee
         id: manifest

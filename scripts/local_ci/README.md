@@ -2,7 +2,7 @@
 
 Codex 在每个 Triton 版本的固定常驻容器内理解 PR、选择工具、补充用例并完成架构审查。主机 Poller 校验任务，证据 broker 执行并记录命令；Gitee 保存任务与结果，GitHub 校验后更新必要检查和 Dashboard。
 
-使用、门禁、最低检查、配置和恢复统一见 [CI 指南](../../docs/ci_guide_zh.md)。本目录保留以下入口：
+产品定位、验证能力、反馈与边界见 [CI 产品说明](../../docs/ci_guide_zh.md)。本目录保留以下入口：
 
 | 入口 | 内容 |
 | --- | --- |
@@ -17,13 +17,13 @@ scripts/local_ci/
 ├── ai_ci_program.md         # Codex 编排
 ├── config.example.json      # 主机配置
 ├── runtime/                 # 任务、broker、执行账本、发布与恢复
-├── github/                  # 审批、结果校验及回写
+├── integration/                  # 审批、结果校验及回写
 ├── schemas/                 # 结果和审查结构
 ├── tools/
 │   ├── basic_tools/         # 真实可调用的基础检查
 │   ├── ai_review_tools/     # 架构与专项审查
-│   └── ai_custom_tools/     # 当前任务辅助工具边界
-├── maintenance/             # 容器维护、健康、邮件与外部监控
+│   └── ai_custom_tools/     # 任务内复现、分析与证据处理
+├── maintenance/             # 容器维护、健康与外部监控
 ├── deploy/                  # 受信配方和服务模板
 └── tests/                   # 控制面测试
 ```

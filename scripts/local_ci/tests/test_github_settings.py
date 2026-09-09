@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'github'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'integration'))
 from configure_required_checks import MANAGED_NAME, managed_rulesets, ruleset_payload
 
 

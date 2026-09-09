@@ -82,6 +82,16 @@ def normalize_result(document, relative, web_url, branch, latest):
     return value
 
 
+def result_scope(result):
+    """Group retries that answer the same public CI question."""
+    if result.get('event_kind') == 'pull_request' and result.get('pr_number'):
+        return f"pr:{result.get('target_branch', '')}:{result['pr_number']}"
+    task_ref = result.get('task_ref', '')
+    if isinstance(task_ref, str) and task_ref.startswith('ci/full/'):
+        return f"full:{result.get('target_branch', '')}"
+    return f"push:{result.get('target_branch', '')}"
+
+
 def sync_agent_results(results_dir, output_dir, results_web_url='', results_branch='local-ci-results', limit=100):
     root, output = Path(results_dir), Path(output_dir)
     warnings, latest, invalid = [], {}, set()
@@ -136,6 +146,12 @@ def sync_agent_results(results_dir, output_dir, results_web_url='', results_bran
         except (OSError, ValueError, KeyError, TypeError) as exc:
             warnings.append({'path': relative, 'reason': str(exc)})
     runs.sort(key=lambda r: (r.get('completed_at', ''), r['run_id']), reverse=True)
+    current_scopes = set()
+    for run in runs:
+        scope = result_scope(run)
+        run['is_current'] = bool(run['is_latest'] and scope not in current_scopes)
+        if run['is_current']:
+            current_scopes.add(scope)
     workers = []
     for path in sorted((root / 'health').glob('*.json')):
         try:
