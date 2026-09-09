@@ -78,7 +78,8 @@ function evidenceList(parent, entries) {
 function blockingSummary(run) {
   const checks=arr(run.checks).filter(check=>['error','skipped','not_applicable'].includes(check.status));
   const original=arr(run.blocking_reasons);
-  const reasons=[...new Set(original.filter(value=>!checks.some(check=>String(value).startsWith(check.id+': '))))];
+  const preparationFailed=original.some(value=>String(value).startsWith('worker preparation'));
+  const reasons=[...new Set(original.filter(value=>!(preparationFailed&&value==='tested tracked source changed during execution')&&!checks.some(check=>String(value).startsWith(check.id+': '))).map(value=>String(value).startsWith('worker preparation')?'CI 运行环境准备未完成，需要维护者处理后重新执行；详细原因见完整报告。':value==='tested tracked source changed during execution'?'源码一致性校验未通过，需要重新验证。':value))];
   if(original.length&&!reasons.length)reasons.push('验证未完成，执行错误和未执行项目详见下方检查结果。');
   return reasons;
 }
