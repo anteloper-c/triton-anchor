@@ -238,6 +238,19 @@ class RootlessManagerTest(unittest.TestCase):
             "base_sha": "f" * 40,
         }
 
+    def test_offline_foundation_tag_must_match_pinned_digest(self):
+        profile = self.config["profiles"]["release/3.1"]
+        profile["local_image_tag"] = "ci/foundation:local"
+        self.fake.images[profile["image"]] = {"Id": "sha256:" + "b" * 64}
+        self.fake.images[profile["local_image_tag"]] = {"Id": "sha256:" + "b" * 64}
+        self.manager.ensure_image("release/3.1", self.sha)
+        build = next(command for command in self.fake.commands if command[3] == "build")
+        self.assertIn("BASE_IMAGE=ci/foundation:local", build)
+        self.assertIn("--pull=false", build)
+        self.fake.images[profile["local_image_tag"]] = {"Id": "sha256:" + "c" * 64}
+        with self.assertRaisesRegex(EnvironmentError, "does not match"):
+            self.manager._foundation_reference(profile)
+
     def acquire(self, task=None, run="run-1"):
         return self.manager.acquire_task(task or self.task, run)
 

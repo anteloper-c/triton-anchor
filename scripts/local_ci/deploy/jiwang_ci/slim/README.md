@@ -16,6 +16,10 @@ The actual wheel inventory/checksums and build logs live under the deployment's
 `packages/slim-foundation` and `deploy-logs` directories. APT packages follow the
 Ubuntu repositories at build time; this is not a byte-reproducible APT snapshot.
 The final image is pinned by immutable digest in the private profile.
+For offline BuildKit, `local_image_tag` can name a local alias. The manager
+checks that alias against the pinned image digest before and after building and
+passes `--pull=false`; a missing or mismatched alias fails closed. Do not retag
+the foundation while an image build is in progress.
 
 `configure.py` switches only the Triton 3.0 profile after saving a private rollback
 configuration. It retains the pinned frontend/backend repositories and existing

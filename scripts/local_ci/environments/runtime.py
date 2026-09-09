@@ -638,6 +638,17 @@ class EnvironmentManager:
             self._docker("rm", container, cancellable=False)
             self._validation_container = None
 
+    def _foundation_reference(self, profile):
+        local = profile.get("local_image_tag")
+        if local is None:
+            return profile["image"]
+        if not isinstance(local, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9_.-]*", local):
+            raise EnvironmentError("Offline foundation needs an explicit local image tag")
+        expected = self._inspect(profile["image"], True).get("Id")
+        if not expected or self._inspect(local, True).get("Id") != expected:
+            raise EnvironmentError("Local foundation tag does not match the pinned image digest")
+        return local
+
     def ensure_image(self, target_branch, llvm_hash, *, force=False):
         with self._lock(True), self._lock():
             daemon = self._daemon()
@@ -694,8 +705,10 @@ class EnvironmentManager:
                 root = Path(directory)
                 try:
                     env = self._build_context(profile, root)
+                    foundation = self._foundation_reference(profile)
                     self._docker(
                         "build",
+                        "--pull=false",
                         "--iidfile",
                         str(root / "image.id"),
                         "--label",
@@ -703,9 +716,10 @@ class EnvironmentManager:
                         "--label",
                         "local-ci.kind=image",
                         "--build-arg",
-                        "BASE_IMAGE=" + profile["image"],
+                        "BASE_IMAGE=" + foundation,
                         str(root),
                     )
+                    self._foundation_reference(profile)
                     image_id = (root / "image.id").read_text().strip()
                     if not IMAGE_RE.fullmatch(image_id):
                         raise EnvironmentError(
