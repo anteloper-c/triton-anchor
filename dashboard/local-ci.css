@@ -1,4 +1,3 @@
-.view-tabs a { display:flex; align-items:center; text-decoration:none; }
 [hidden] { display:none !important; }
 .ci-main { max-width:1600px; margin:auto; padding:28px clamp(18px,3vw,48px); }
 .ci-section { margin-bottom:28px; }
