@@ -180,23 +180,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          DASHBOARD_MAIN_TASK_REF: ${{ vars.DASHBOARD_SOURCE_BRANCH || format('ci/push/{0}', vars.LOCAL_CI_PAGES_BRANCH || 'ci_repo') }}
-          DASHBOARD_FULL_TEST_TASK_REF: ${{ vars.DASHBOARD_FULL_TEST_SOURCE_BRANCH || format('ci/full/{0}', vars.LOCAL_CI_PAGES_BRANCH || 'ci_repo') }}
+          PAGES_BRANCH: ${{ vars.LOCAL_CI_PAGES_BRANCH || 'ci_repo' }}
         run: |
-          if [ "${SOURCE_BRANCH}" != "${GITHUB_REF_NAME}" ]; then
-            echo "Cross-branch result only updates commit status."
-            exit 0
-          fi
-          if [ "${TASK_REF}" != "${DASHBOARD_MAIN_TASK_REF}" ] && \
-             [ "${TASK_REF}" != "${DASHBOARD_FULL_TEST_TASK_REF}" ]; then
-            exit 0
-          fi
-          gh workflow run ci-gateway.yml --repo "${REPO}" --ref "${GITHUB_REF_NAME}" \
+          pages_sha=$(gh api "repos/${REPO}/commits/${PAGES_BRANCH}" --jq .sha)
+          gh workflow run ci-gateway.yml --repo "${REPO}" --ref "${PAGES_BRANCH}" \
             -f gateway_kind=triton-anchor-ci-gateway -f mode=pages \
-            -f tested_sha="${TESTED_SHA}" -f worker_revision_sha="${WORKER_REVISION_SHA}" \
-            -f source_branch="${SOURCE_BRANCH}" -f target_branch="${TARGET_BRANCH}" \
-            -f task_ref="${TASK_REF}" \
-            -f run_title="Push ${SOURCE_BRANCH} | ${TESTED_SHA:0:7} | pages"
+            -f tested_sha="${pages_sha}" -f worker_revision_sha="${pages_sha}" \
+            -f source_branch="${PAGES_BRANCH}" -f target_branch="${PAGES_BRANCH}" \
+            -f task_ref="ci/push/${PAGES_BRANCH}" \
+            -f run_title="Dashboard | CI result refresh"
 
   result-summary:
     name: Local CI result
