@@ -92,11 +92,10 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(command.call_args.args[1]['argv'],
                          ['/trusted/task_python', '/workspace/task/artifacts/custom/compare_ir.py', '--baseline', 'base.json'])
         self.assertEqual(result['evidence'], ['analysis'])
-        from tools.ai_custom_tools.runner import plan
         for parameters in ({'path': '../escape.py'}, {'path': '/outside.py'},
                            {'path': 'compare.py', 'timeout': 0}):
             with self.subTest(parameters=parameters), self.assertRaises(ValueError):
-                plan(context, parameters)
+                broker.invoke('custom_test', parameters)
 
     @unittest.skipIf(os.name == 'nt', 'real bash syntax checks run in the persistent Linux worker and GitHub')
     def test_actual_syntax_checks_never_execute_candidate_programs(self):

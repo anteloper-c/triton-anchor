@@ -3,6 +3,11 @@
 
 Only the broker may turn command execution into trusted CI receipts. Context and
 profile are supplied by the controller; the agent supplies only parameters.
+
+frontend_* uses the tested source checkout; backend_* uses profile.tools.backend_dir.
+Build creates a wheel, install verifies/installs that wheel, tests runs pytest,
+and smoke checks import/JIT. Each stage is independently callable; shared stages
+use the same implementation, with dependencies declared below.
 """
 from __future__ import annotations
 
@@ -19,10 +24,13 @@ from typing import Any
 BACKEND_TOOLS = frozenset({"backend_build", "backend_install", "backend_tests", "backend_smoke",
                            "flaggems", "compile_time", "pass_profile", "ir_serialization"})
 DEPENDENCIES = {
-    "environment": [], "frontend_build": ["environment"],
-    "frontend_install": ["frontend_build"], "frontend_tests": ["frontend_install"],
+    "environment": [],
+    "frontend_build": ["environment"],
+    "frontend_install": ["frontend_build"],
+    "frontend_tests": ["frontend_install"],
     "frontend_smoke": ["frontend_install"],
-    "backend_build": ["environment"], "backend_install": ["backend_build", "frontend_install"],
+    "backend_build": ["environment"],
+    "backend_install": ["backend_build", "frontend_install"],
     "backend_tests": ["frontend_install", "backend_install"],
     "backend_smoke": ["frontend_install", "backend_install"],
     "flaggems": ["backend_smoke"], "compile_time": ["backend_smoke"],
