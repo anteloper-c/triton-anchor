@@ -12,6 +12,8 @@ Poller 校验任务及已安装控制版本，从已验证镜像创建当前 tas
 
 Codex 新建与恢复会话均使用 `danger-full-access`、`approval_policy=never`，启用原生 Shell、unified exec 和编辑能力。原生探索目录为 `/codex/workspace/candidate/`，包含独立 checkout、venv、可用时的 backend 和 home/tmp/cache/state；源码副本排除可变 Git 元数据，通过来源清单绑定冻结提交。Codex 可以直接写脚本和运行实验，原生命令事件及源码快照保存在宿主私有记录，不作为最低检查通过或阻断归因，也不自动发布到 Gitee。
 
+执行模式由可信驱动设置，不依赖部署者修改公司 auth.json 或添加 JSON 沙箱字段。原生 venv 不共享正式候选安装，后端实验按启动上下文提供的 environment_setup 初始化。部署配置、路径与日志的具体步骤见 [jiwang_ci 部署手册](../scripts/local_ci/deploy/jiwang_ci/HANDOFF.md)。
+
 MCP 服务由可信 Harness 绑定当前任务，Codex 通过它调用 `start_check` 和 `run_custom`。后者包含 diagnostic、reproduction、experiment 三种模式：诊断可在正式检查通过前使用，实验在独立副本尝试修改，只有符合条件的正式复现可建立原始 candidate/base 归因。诊断和实验不能代替最低检查，也不是宿主机 shell 或 Docker 管理入口。
 
 十项基础工具仍在 `tools/`，wheel 构建与安装分开。candidate/base 分别拥有 checkout、venv、构建与可写缓存。Triton 3.0 保留后端、FlagGems 和性能能力；其他版本只提供前端及适用的源码/控制面检查。缺少声明能力属于 infra_error。所有 PR 均需信息校验和架构审查；额外 AI 高风险阻断要求相同复现在 candidate 两次失败、base 通过。结构化结果和生成测试证据来自执行器，模型文字不能代替通过记录。
@@ -34,7 +36,9 @@ Codex 的业务决定只有 continue/block。`pass/fail/infra_error` 表示证�
 
 `danger-full-access` 不改变 Linux 文件权限和非 root 身份。Codex 可在实验 venv 安装依赖和任务本地工具；apt、系统库、全局驱动等底座变更需要更新可信镜像配方。
 
-任务完成前确认进程终止并保存执行证据，进程清理失败进入 `environment_cleanup` 并阻断整体通过。封存后清理认证、停止容器并按策略保留或删除任务数据。未确认停止、身份不匹配和清理失败进入健康异常。旧常驻环境的设备复用检查不在任务容器路径中；3.0 后端能力通过可信镜像验证和正式任务检查确认。
+封存前先确认 candidate/base/diagnostic 测试进程终止并保存正式证据；这一阶段失败进入 `environment_cleanup`，不能封存为整体通过。Codex 保留到封存请求完成，随后停止并导出原生修改，再清理认证、停止容器并按策略保留或删除任务数据。封存后的进程清理/导出故障进入运维异常并保留数据，不改写已封存结果。未确认停止、身份不匹配和清理失败进入健康异常。旧常驻环境的设备复用检查不在任务容器路径中；3.0 后端能力通过可信镜像验证和正式任务检查确认。
+
+原生记录位于 `state_dir/tasks/<task_id>/<run_id>/` 的 CLI 事件和 `native/` 子目录，保持私有；源码快照有大小和排除范围限制，不是完整环境备份。worker 中断时根据宿主导出指针补存快照，导出完成或明确记录数据丢失后再回收。正式结果和可发布证据在 `published/`，不包含上述原生记录。宿主私有记录与 outbox 一样不计入任务 scratch 预算，需要另计磁盘容量。
 
 ## 协议、证据与恢复
 

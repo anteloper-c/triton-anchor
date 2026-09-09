@@ -1,8 +1,17 @@
 # Local CI callable tools
 
-The trusted supervisor invokes `bash scripts/local_ci/tools/run_tool.sh TOOL_ID`
-inside the selected persistent version container. Each invocation executes one
-tool. There is no checkout, network relay, model call, or pipeline dispatch here.
+For a PR task, Codex calls `start_check` through MCP; the trusted supervisor
+invokes `bash scripts/local_ci/tools/run_tool.sh TOOL_ID` inside the current
+attempt's independent container, bound to its validated image and frozen commit.
+Trusted image preparation also invokes these tools during image validation.
+Each invocation executes one tool. There is no checkout, network relay, model
+call, or pipeline dispatch here.
+
+Codex may use native commands in its separate writable exploration workspace.
+Those commands and their private audit records cannot replace formal tool
+records or satisfy minimum checks. The supervisor selects execution identity,
+parameters and paths; native experiments do not modify the formal candidate/base
+installations. See [Local CI](../README.md) for the execution boundaries.
 
 | ID | Operation / dependency |
 | --- | --- |

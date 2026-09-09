@@ -2,6 +2,8 @@
 
 本目录交付部署代码和本机模拟验证，不表示服务器已上线。实际镜像、LLVM/PPL/torch_tpu、设备、公司模型和中转配置必须来自服务器；模板空值会使预检失败，不猜测地址、模型或厂商命令。
 
+`jiwang_ci` 服务器的逐步部署、原生环境配置与日志位置统一维护在 [仅 Gitee 部署手册](jiwang_ci/HANDOFF.md)。本文提供通用安装、迁移和回滚参考；本轮服务器操作范围以该手册的“安装后不接单”为准。
+
 ## 运行边界
 
 宿主机普通 CI 账号运行 Harness、Rootless Docker 和用户级 systemd 服务。该账号可有人工维护用的 sudo/wheel/admin 组权限；自动任务不使用 sudo，安装器为所有 CI 服务设置 NoNewPrivileges=yes，禁止服务进程通过 setuid 提权。Rootless Docker 使用单独的用户级 daemon 服务，不把 CI 账号加入系统 docker 组。每次任务的容器绑定 task_id/run_id 和已验证镜像摘要，Codex 与候选代码在同一任务容器的不同非 root UID 下运行。默认 identities 为 candidate=11001、base=11002、diagnostic=11003、codex=11004、read_gid=11000、codex_gid=11004；四个 UID 不得重复，Codex 私有组不能与只读共享组相同。它们是容器内身份，不要求新建宿主机 Codex 账号。只有 Harness 可通过 Docker 管理接口执行容器 UID 0 的准备/清理操作。
@@ -9,6 +11,8 @@
 任务容器不挂载 Docker socket、完整宿主机 state、Gitee/GitHub 凭据或整个 home。公司 Codex config/auth 只进入该任务的 Codex 私有目录，候选/base/diagnostic 身份不能读取。通用诊断 MCP 的能力由可信宿主机 Harness 验证，只作用于当前任务；不是宿主机任意命令或 Docker 参数透传接口。
 
 容器内 Codex 的新会话和恢复会话均使用 `danger-full-access`、`approval_policy=never`，启用原生 Shell、unified exec 和文件编辑。`/codex/workspace/candidate/` 提供绑定冻结提交、排除可变 Git 元数据的源码副本、实验 venv 和私有缓存；原生实验不改写正式 candidate/base 环境。命令事件和源码快照留在宿主私有任务记录，不自动公开到 Gitee；最低检查和阻断复现仍由 MCP 执行并核验。
+
+执行模式由可信 `agent_ci/codex.py` 写入任务配置并用于新建/恢复；不需要改公司 auth.json，也没有 local-ci.json 的 sandbox 开关。公司来源仅提供实际模型、provider 和认证。原生启动上下文给出 `environment_setup` 路径与参数，后端实验按需初始化；不会在 Codex 启动前自动执行可能失败的 envsetup。原生环境独立于正式候选安装，需要时自行在探索 venv 安装候选 wheel。
 
 保留四个 UID 是为了分别保护会话、候选安装、基线安装和诊断执行，且可以清理测试进程而不终止 Codex。它们不需要四个登录账号，不产生四份常驻服务的内存开销。原生命令和 Codex 同身份，能够读取模型认证和任务 RPC；不要把执行候选脚本的原生命令当作凭据隔离边界。容器根文件系统只读且 Codex 非 root，系统包和全局驱动仍通过可信镜像配方准备；任务内可安装 venv 依赖和本地工具。
 
@@ -83,6 +87,10 @@ worker 的 WantedBy 为 default.target，对实际 rootless docker user service 
 
 unit 回退使用 `install.py --rollback BACKUP` 审阅，再加 --apply，仍仅使用用户级 daemon-reload；备份必须属于当前用户，第三方修改过的 unit 不覆盖。旧 v1 系统 unit 备份不能由新用户安装器自动恢复，须按迁移备份由管理员处理旧系统服务。新旧 worker 不能同时消费同一生产队列。
 
+## 更新已有任务容器部署
+
+本次原生命令调整同时修改 Skill、宿主驱动和镜像内管理器。先停止接单并安排旧任务/会话收尾或取消，保留 outbox 和备份；从 Gitee 取得交付方提供的干净控制 SHA，重新 rotate 各 profile，再做资源 probe、正式预检和 unit 渲染。旧会话的 Skill 摘要不匹配时不得强行恢复。镜像 control_revision、运行的控制 checkout 和任务 worker_revision_sha 必须匹配，不能只改启动参数或只更新宿主代码。具体顺序见 [已有部署更新步骤](jiwang_ci/HANDOFF.md#已有部署如何更新到本版)。
+
 ## 从常驻环境迁移
 
 先停止旧接单并处理在途任务；旧 Rootful Docker 和新 Rootless Docker 是不同运行时，不能直接导入旧 container ID/lease 当作新任务容器。
@@ -111,6 +119,8 @@ rootless_ready 引用实际 runtime_proof 文件及 SHA256；image_releases_read
 ## 保留与独立监控
 
 失败/待恢复任务目录默认保留24小时，task_workspace_retention_hours=0 表示下次回收；task_workspace_max_bytes 默认100 GiB，仅约束任务 scratch 的逻辑字节。活动或未确认停止的任务不删；成功封存的 outbox、日志证据不为凑预算而删除。可信 state 空闲不足则阻止新任务，继续已有上传。清理按任务身份、容器 ID、标签和路径边界执行；失败保留诊断并告警。
+
+原生 CLI 事件和源码快照在 `state_dir/tasks/<task_id>/<run_id>/` 内私有保存，不自动上传，且不受上述 scratch 预算回收。原始事件可能包含敏感输出，索引脱敏不能替代分享前检查。先清理正式测试身份并封存，再停止 Codex、导出原生修改；中断后补导出成功或明确记录数据丢失，才继续回收。封存后的异常报告为运维故障，不修改不可变的已封存结果。具体文件对应关系见 [任务日志位置](jiwang_ci/HANDOFF.md#后续自己调试时从哪一步查起)。
 
 health timer 使用 systemctl --user，读取公共 image/attempt/runtime 状态和只读 journal；即使 Docker 不可达仍生成可发布的错误快照。watchdog 保留健康、队列、上传、目录及隔离异常的通知去重、发送重试和恢复机制；公共摘要不复制宿主机路径、配置、凭据或异常全文。SMTP 只能来自实际配置，本机测试使用 --mail-outbox，不发送真实邮件。
 

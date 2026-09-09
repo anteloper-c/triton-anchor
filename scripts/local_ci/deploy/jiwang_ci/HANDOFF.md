@@ -4,6 +4,8 @@
 
 唯一已确认的服务器信息是 CI 用户名 `jiwang_ci`。发行版、家目录、UID、资源额度、镜像、依赖和所有实际地址留待服务器盘点，不猜测。使用本目录的 [配置模板](config.template.json) 和 [凭据变量模板](credentials.env.template)，填写后的文件放在 Git checkout 外，不提交或打印凭据。
 
+本文给服务器部署窗口逐步执行；整体架构见 [实现说明](../../../../docs/ci_v4_implementation.md)，通用迁移与回滚见 [部署 README](../README.md)。聊天压缩交接放在开发机仓库外的 `方案/CI_对话交接.md`，不会随仓库推送，需由用户另行提供；服务器安装所需步骤和模板均在仓库内。
+
 依赖依据是仓库的 [docs/build.md](../../../../docs/build.md)，实际环境变量核对 [envsetup.sh](../../../../envsetup.sh)。用户会自行下载、放置预编译包，并可以只向部署窗口提供文件路径；本手册优先采用本地 LLVM/PPL 等包，不要求服务器在线下载或从源码编译 LLVM。部署窗口负责检查文件、计算 SHA256、确认包版本并补齐配置字段。
 
 ## 先理解要部署什么
@@ -154,6 +156,7 @@ chmod 600 "$CI_CONFIG" "$CI_CREDENTIALS"
 | `state_dir/control_root/codex_home` | 使用该用户所有的实际绝对路径；独立新 state、干净控制 checkout、公司专用 Codex 配置来源，与个人默认 `~/.codex` 分离。 |
 | `worker_id` | 本次部署的唯一标识；由交付方提供或记录供其后续配置网关，本窗口不修改 GitHub。 |
 | `python_bin/codex_bin` | 前者是宿主 Python，后者是镜像内 Codex CLI 的实际绝对路径；Dockerfile 不会自动联网安装 Codex。 |
+| `identities` | 沿用模板的四个不同非 root UID 和两个 GID；它们是容器内数字身份，无需运行 useradd 创建对应宿主账号，也不要为简化部署把它们填成同一个 UID。 |
 | `runtime.endpoint/context`、`rpc_socket_dir` | 使用真实 `jiwang_ci` UID 的用户运行时目录；endpoint 类似 `unix:///run/user/实际UID/docker.sock`，context 必须指向同一 endpoint。 |
 | `resources/max_jobs` | 真实 CPU、内存字节数、PID 上限；编译并行度默认 8，可按额度降低。 |
 | `profiles` 的 key 与 `name` | key 必须等于后续任务的目标分支，由交付方确认；`name` 是镜像轮换命令的 profile 名，两者不可混用。模板中的目标分支需核实。 |
@@ -250,6 +253,21 @@ set -a
 set +a
 ```
 
+### Codex 执行模式与四个身份
+
+`agent_ci/codex.py` 会从公司来源保留实际模型/provider/auth，生成任务专用配置。新建和恢复都由驱动设置 `sandbox_mode="danger-full-access"`、`approval_policy="never"`，启用 Shell、unified exec 和可用的编辑能力。**部署时不需要修改公司 auth.json，也不要向 local-ci.json 增加一个程序不读取的 sandbox 配置字段。** 用户服务启动 Harness，Harness 再在 PR 容器中启动 Codex；不用另装一个宿主 Codex service。
+
+| 容器 UID（模板默认） | 写入范围与作用 |
+| --- | --- |
+| `codex=11004` | Codex 会话及 `/codex/workspace/candidate/` 的原生探索副本。 |
+| `candidate=11001` | `/task/candidate/` 的正式候选源码、安装和构建状态。 |
+| `base=11002` | `/task/base/` 的正式基线状态，避免候选执行改写对照。 |
+| `diagnostic=11003` | MCP 诊断和实验目录；正式候选/基线只读，不能以诊断修改正式安装。 |
+
+这四个身份不对应四个 Agent 或四份常驻进程；身份数量本身不增加常驻内存。代码目前依赖它们进行文件写保护和按 UID 清理，不能只改数字合并。原生命令与 Codex 同身份，可以接触任务模型认证；它没有正式测试身份的凭据隔离。`danger-full-access` 不取消只读镜像和非 root 权限，系统组件仍在可信镜像准备阶段安装。
+
+原生探索副本有独立 checkout、venv、缓存以及 3.0 的 backend；不会自动使用正式检查已安装的候选 wheel。启动上下文中的 `environment_setup` 给出需要 source 的路径和参数，默认不自动运行，便于诊断初始化失败。后端原生实验需先核对初始化、Python 和库路径；构建或安装实验结束后再安排正式检查，避免资源争用。正式通过及阻断复现仍由 MCP/Harness 核验。
+
 ## 5. 准备镜像并完成部署预检
 
 当前安装器要求可信镜像自检与资源限制实测通过。这些是部署前置，会构建镜像、运行受信代码的构建/import/后端自检和资源验证容器；不会领取 PR，也不运行 Codex 审查或调用模型生成。不能用模拟结果、`echo` 或 `true` 替代。
@@ -284,6 +302,8 @@ cd "$CI_CONTROL"
 ```
 
 资源预检检查实际 CPU/memory/pids 限制和镜像身份。SMTP、公司模型配置或其他必需项缺失时如实记录，不能绕过正式预检安装，不能宣称部署完成。预检通过不代表真实模型、邮件、PR 或 GitHub 链路已验收。
+
+镜像自检会检查 Codex CLI 可运行；实际启动驱动还会读取 `codex features list`，确认 Shell/unified exec 功能可用，已移除的功能开关不会重新开启。这不是模型调用成功的证明，本轮不通过运行 PR 或调用模型来补验收。
 
 **检查点：** 正式预检输出 `ready: true`，证明保存在 `state/deploy/runtime-probe.json`。profile、控制版本、镜像或资源配置改变后需要重新生成匹配证明。配置中的资源限额由任务/验证容器使用；目前 `docker build` 调用没有同样的 CPU/memory/pids 参数，不能把此 probe 当成镜像构建过程的资源证明。基础镜像准备或源码编译时，需按批准额度配置 CI 用户/构建器资源；本次使用预编译 LLVM 可以减少这部分编译负担。
 
@@ -325,6 +345,9 @@ systemctl --user list-timers --all 'triton-anchor-local-ci*'
 | `runtime_probe` 缺失或过期 | 资源/配置/控制提交和活动镜像是否变化 | 镜像需要更新时先 rotate，再执行 --probe-runtime 与正式预检。 |
 | 安装失败：凭据权限或 SMTP/health 缺失 | 文件归属/600 权限、当前进程是否已加载 EnvironmentFile | 第 4 步补齐，再做正式预检和安装。 |
 | unit 已安装但没有任务日志 | `ActiveState`，本轮是否仍处于未启用状态 | 本轮 inactive 属于预期，不为制造日志而启动 Worker。 |
+| 更新后仍显示 read-only 或原生命令不可用 | 宿主控制 SHA、镜像 control_revision、实际 Codex CLI 能力 | 按下方更新步骤准备匹配版本；不只改 unit 或公司配置来源。 |
+| 原生 Python/JIT 缺库，但正式工具能运行 | 原生 venv 是否已安装候选 wheel，是否加载 environment_setup，库路径是否指向探索 backend | 在任务副本中初始化和排障；不用实验结果替代正式检查，也不修改正式目录权限。 |
+| 原生证据导出失败，任务数据未回收 | 私有 native 记录的 export.json、环境事件和工作区健康状态 | 修复空间/权限/容器可达性后让恢复逻辑补导出；不先删除数据卷。 |
 
 常用的本地诊断命令如下，均不投递 PR、不上传健康结果：
 
@@ -339,7 +362,29 @@ ls -lt "$CI_STATE/environments/image-logs"
 
 宿主的重要文件是 `state/environments/registry.json`（镜像与任务容器登记）、`state/environments/events.jsonl`（环境事件）、`state/deploy/runtime-probe.json`（资源证明）、`state/deploy-backups/`（unit 备份）。后续真正接单才会有 `state/journal.sqlite3` 等任务记录；不要手改数据库。日志可能含内部路径，分享前脱敏，但不打印凭据文件。
 
+后续接单后，每次运行的宿主记录位于 `state_dir/tasks/<task_id>/<run_id>/`，不是容器内的 `/task`。在该目录下查：
+
+| 相对路径 | 用途 |
+| --- | --- |
+| `task.json`、`policy.json`、`skill-manifest.json` | 冻结任务、最低检查和实际加载的 Skill 摘要。 |
+| `codex-session.json`、`codex-events-<id>.jsonl` | 会话恢复身份和 CLI 原始事件；原始事件未保证脱敏，保持私有。 |
+| `native/codex-events-<id>/actions.jsonl` | 原生命令、输出、退出状态和编辑事件索引；已替换已知凭据文本，仍只供私下排障。 |
+| `native/codex-events-<id>/context.json`、`export.json` | 探索记录所属 attempt、导出是否完成或数据是否丢失；异常时 export.json 可能尚未生成。 |
+| `native/codex-events-<id>/workspace/native-manifest.json` | 有界源码变更快照；中断恢复可能位于 `recovered-*`，以 export.json 的 destination 为准。清单注明排除的依赖、缓存、凭据等目录/文件，不是整个环境备份。 |
+| `published/result.json`、`published/evidence/` | 已封存的正式结果和证据，供 Harness 上传 Gitee。 |
+
+原生记录不自动上传 Gitee，也不能满足最低检查。它们与正式证据分开持久保存，不计入任务 scratch 的 100 GiB 预算；部署者需把这些宿主私有记录计入磁盘规划。成功封存先完成测试身份清理；Codex 随后停止并导出原生变更。封存后的清理/导出异常会保留数据并报告运维异常，不改写已封存结果。
+
 需要撤销本次 unit 安装时，使用安装输出的备份路径，先运行 `install.py --rollback 实际备份路径` 查看计划，再加 `--apply`。它只回退 unit，不回退配置、镜像或任务状态；完整迁移/回滚另见上级 README。
+
+## 已有部署如何更新到本版
+
+仅在后续明确安排升级时执行；当前部署窗口仍只安装、不接单。升级需要更新可信控制代码和匹配的 CI 镜像，不能只改 Codex 参数或复用旧运行容器。
+
+1. 先安排旧任务收尾，停止接单，备份控制版本、私有配置、state/outbox 和必要任务数据。Skill 摘要已变，旧会话不能用新版规则强行 resume；未完成任务在其匹配版本收尾，或明确取消后重新投递。
+2. 从交付方的 Gitee ref 取得干净、完整 SHA 的控制 checkout。保留公司 provider/model/auth；核对配置字段，不覆盖已有私有文件。GitHub 投递的 worker_revision_sha 也须匹配，由交付方负责协调，服务器窗口不访问 GitHub。
+3. 按第 5 步为各 profile 重新 rotate，生成包含新版 Harness/MCP/容器管理代码的镜像，再运行资源 probe 和正式预检。仅更新宿主文件不会更新镜像内控制代码。
+4. 按第 6 步重新渲染并审阅用户 unit，记录备份和新版本；本轮仍保持未启用。回退时恢复匹配的代码、配置、状态和镜像，不能仅恢复旧 unit 或某个沙箱参数。
 
 ## 部署窗口的最终交付
 
@@ -349,6 +394,7 @@ ls -lt "$CI_STATE/environments/image-logs"
 - Gitee 控制仓库/ref/完整 SHA，实际 worker_id 和配置文件路径（不含凭据内容）。
 - 已准备的版本、镜像发布 ID/digest、LLVM/PPL/后端来源版本；未部署版本和缺失材料。
 - 预检日志、已安装 unit 清单、安装备份位置；明确 CI 服务/定时器仍未启用接单。
+- 记录代码已包含容器内 danger-full-access、新建/恢复加载逻辑和原生证据目录；这只是部署能力核对，不能记作真实 Codex 审查已通过。
 - 若存在阻塞，列出已完成部分和缺项；明确未做 PR 试跑、真实模型调用、邮件发送及 GitHub 侧配置或验收。
 
 上级 [部署 README](../README.md) 包含完整产品的运维、迁移和回滚参考；本轮执行范围以本文为准，不自动扩展到其中的上线与联调步骤。

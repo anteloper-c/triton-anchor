@@ -20,6 +20,8 @@
 
 2026-09-09，按用户要求修正容器内 Codex 权限：新建/恢复会话改为 danger-full-access，启用原生命令及编辑；增加冻结来源的可写源码/venv 副本、原生事件索引、私有源码变更快照及中断后补导出，更新 Skill 和部署说明。正式检查仍由 MCP/Harness 核验；保留四个容器 UID，避免候选/基线/诊断互写与进程清理混淆，明确原生命令与 Codex 共享模型凭据权限。8 套本机模拟测试 **603 项通过**，含真实 Linux UID、Shell/Python、脱离进程组清理和恢复；Python/Shell 语法、Ruff F/E9、Skill 校验及差异检查通过。报告位于仓库外 `/tmp/local-ci-native-codex-verification/`，可用 `git log --grep='enable native Codex'` 定位实现提交。未推送、未改变 main 或 GitHub 流程，未做真实 Docker、模型、后端、邮件或服务器验收；用户原有 7 项文档删除仍单独保留。
 
+2026-09-09，按用户补充要求，仅同步本次重构新增的架构、部署/systemd、工具和 Skill 维护说明及仓库外对话交接：补齐执行模式由驱动配置、四 UID 不需宿主账号、镜像/控制 SHA 升级、原生环境初始化与私有日志位置，区分封存前失败和封存后运维异常。核对原始基线 `2d4728a` 的文件来源，撤回本轮对原有 README/开发指南的编辑；原始方案和用户删除保持原状。验证本地文档链接、Bash/JSON 片段、配置模板和差异；未改运行代码、未重新执行 603 项模拟、未部署或推送。提交可用 `git log --grep='align introduced CI deployment docs'` 定位。
+
 需要新报告时，在项目根目录运行（需已有测试依赖）：
 
 ```bash
