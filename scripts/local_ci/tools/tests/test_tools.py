@@ -132,6 +132,34 @@ class ToolBoundaryTests(unittest.TestCase):
         self.assertEqual(result["exit_code"], 17)
         self.assertEqual(result["commands"][-1]["exit_code"], 17)
 
+    def test_install_json_is_not_corrupted_by_python_or_native_import_output(self):
+        self.assertEqual(self.invoke("frontend_build")[0].returncode, 0)
+        site = self.root / "site"
+        site.mkdir()
+        for name in ("triton", "triton_anchor"):
+            package = site / name
+            package.mkdir()
+            (package / "__init__.py").write_text(
+                "import os\nprint('python import diagnostic')\nos.write(1,b'native import diagnostic\\n')\n"
+            )
+        metadata = site / "triton_anchor-0.0.0.dist-info"
+        metadata.mkdir()
+        (metadata / "METADATA").write_text("Name: triton-anchor\nVersion: 0.0.0\n")
+        (metadata / "RECORD").write_text("triton/__init__.py,,\ntriton_anchor/__init__.py,,\n")
+        ctx = tool.Context("wheel_install_import", self.env)
+        ctx.sha = self.sha
+        def run(args, **kwargs):
+            if args[1:3] != ["-I", "-c"]:
+                return ""
+            code = "import sys;sys.path.insert(0," + repr(str(site)) + ")\n" + args[3]
+            result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True)
+            self.assertIn("python import diagnostic", result.stderr)
+            self.assertIn("native import diagnostic", result.stderr)
+            return result.stdout
+        with patch.object(ctx, "run", side_effect=run):
+            tool.wheel_install_import(ctx)
+        self.assertEqual(ctx.details["installation"]["distribution_version"], "0.0.0")
+
     def backend_env(self):
         backend = self.root / "backend"
         backend.mkdir(exist_ok=True)

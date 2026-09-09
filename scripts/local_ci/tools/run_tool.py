@@ -327,12 +327,16 @@ def wheel_install_import(ctx: Context) -> None:
     wheel = ctx.wheel("frontend")
     ctx.run(ctx.package_command("install", "--force-reinstall", "--no-deps", str(wheel)))
     neutral = Path(ctx.env["TMPDIR"])
-    code = """import importlib.metadata as m,json,pathlib,triton,triton_anchor
+    code = """import os
+report_fd=os.dup(1)
+os.dup2(2,1)
+import importlib.metadata as m,json,pathlib,triton,triton_anchor
 d=m.distribution('triton-anchor')
 files={pathlib.Path(d.locate_file(f)).resolve() for f in d.files or []}
 paths={name:pathlib.Path(module.__file__).resolve() for name,module in [('triton',triton),('triton_anchor',triton_anchor)]}
 assert all(path in files for path in paths.values()), 'Imports did not originate from the installed wheel'
-print(json.dumps({'distribution_version':d.version,'imports':{k:str(v) for k,v in paths.items()}}))
+os.write(report_fd,(json.dumps({'distribution_version':d.version,'imports':{k:str(v) for k,v in paths.items()}})+'\\n').encode())
+os.close(report_fd)
 """
     ctx.details["installation"] = json.loads(ctx.run([ctx.python, "-I", "-c", code], cwd=neutral, capture=True))
     ctx.details["wheel"] = read_json(ctx.state / "frontend-wheel.json")

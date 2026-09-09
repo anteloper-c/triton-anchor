@@ -21,7 +21,18 @@ def main():
     env["LOCAL_CI_ARTIFACT_DIR"] = str(workspace / "environment-validation" / "artifacts" / tool)
     env["LOCAL_CI_TOOL_RESULT"] = str(Path(env["LOCAL_CI_ARTIFACT_DIR"]) / "result.json")
     runner = Path(__file__).resolve().parents[1] / "tools/run_tool.py"
-    return subprocess.run([sys.executable, str(runner), tool], env=env).returncode
+    result = subprocess.run([sys.executable, str(runner), tool], env=env)
+    if result.returncode:
+        # Preserve bounded diagnostics before the temporary validation container is removed.
+        root = Path(env["LOCAL_CI_ARTIFACT_DIR"])
+        for path in sorted(root.glob("*.log")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            with path.open("rb") as handle:
+                handle.seek(max(0, path.stat().st_size - 16384))
+                tail = handle.read(16384).decode("utf-8", errors="replace")
+            print(f"\n[{tool}] {path.name}\n{tail}", file=sys.stderr, flush=True)
+    return result.returncode
 
 
 if __name__ == "__main__":
