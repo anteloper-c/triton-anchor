@@ -114,7 +114,7 @@ async function load() {
     const warnings=$('syncWarnings');warnings.replaceChildren();warnings.hidden=!arr(data.warnings).length;if(!warnings.hidden){warnings.append(el('strong','','部分发布数据未通过校验'));const list=el('ul');for(const warning of data.warnings)list.append(el('li','',warning.path+'：'+warning.reason));warnings.append(list);}
     renderWorkers();renderList();
   } catch(error) { notice.hidden=false;notice.textContent='无法加载 Local CI 数据：'+error.message+'。页面不据此推断 CI 通过。';if(!model.data){empty($('workers'),'健康数据不可用。');empty($('taskDetail'),'结果数据不可用。');} }
-  finally {refresh.disabled=false;refresh.textContent='重新读取数据';}
+  finally {refresh.disabled=false;refresh.textContent='查询最新快照';}
 }
 $('refresh').addEventListener('click',load);$('taskSearch').addEventListener('input',()=>model.data&&renderList());$('historyFilter').addEventListener('change',()=>model.data&&renderList());$('resultFilter').addEventListener('change',()=>model.data&&renderList());
 const initialPr=new URLSearchParams(location.search).get('pr');if(/^[1-9][0-9]*$/.test(initialPr||''))$('taskSearch').value=initialPr;
