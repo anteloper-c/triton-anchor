@@ -317,7 +317,7 @@ cd "$CI_CONTROL"
 "$CI_PYTHON" scripts/local_ci/deploy/install.py --config "$CI_CONFIG" --credentials-env "$CI_CREDENTIALS" --render-dir "$CI_REVIEW_DIR" --apply
 ```
 
-安装器生成 Worker、health、retention 和已配置版本的镜像轮换用户服务/定时器，备份已有文件并执行用户级 daemon-reload；不会启动服务。检查生成文件中的运行路径、EnvironmentFile、Rootless endpoint、`NoNewPrivileges=yes` 和定时配置，记录安装器返回的备份目录。
+安装器生成 Worker、health、retention 和已配置版本的镜像轮换用户服务/定时器，备份已有文件并执行用户级 daemon-reload；不会启动服务。检查生成文件中的运行路径、EnvironmentFile、Rootless endpoint、`NoNewPrivileges=yes` 和定时配置，记录安装器返回的备份目录。任务目标分支与环境 profile 不同名时，在私有配置的 `branch_profiles` 中显式映射；当前切换点只允许 `CI_dev` 映射到 `triton_v3.0`，不能用默认 profile 或可变标签兜底。
 
 **检查点：** 安装输出 `services_started: false`；用下面的只读命令确认 unit 已安装且未开始接任务：
 

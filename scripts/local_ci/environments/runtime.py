@@ -87,6 +87,29 @@ def identities(config):
     }
 
 
+def validate_branch_profiles(config):
+    mappings = config.get("branch_profiles", {})
+    profiles = config.get("profiles", {})
+    if not isinstance(mappings, dict) or not isinstance(profiles, dict):
+        raise EnvironmentError("branch_profiles must map task branches to configured profile keys")
+    for branch, profile in mappings.items():
+        if (
+            not isinstance(branch, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,254}", branch)
+            or branch == "CI_dev_forPR"
+            or branch in profiles
+            or not isinstance(profile, str)
+            or profile not in profiles
+            or profile == "CI_dev_forPR"
+            or not isinstance(profiles[profile], dict)
+        ):
+            raise EnvironmentError(
+                "branch_profiles needs explicit non-excluded aliases to existing profiles; "
+                "chains and profile overrides are forbidden"
+            )
+    return dict(mappings)
+
+
 class EnvironmentManager:
     def __init__(self, config, state_dir, runner=None):
         self.config, self.state_dir = config, Path(state_dir).resolve()
@@ -841,7 +864,10 @@ class EnvironmentManager:
             result = self.recover_task(state["attempts"][lease["generation"]])
             if result["status"] == "same_attempt":
                 return result["handle"]
-        image = self.ensure_image(task["target_branch"], task["llvm_hash"])
+        # Resolve only the environment; the frozen task identity is unchanged.
+        mappings = validate_branch_profiles(self.config)
+        profile_branch = mappings.get(task["target_branch"], task["target_branch"])
+        image = self.ensure_image(profile_branch, task["llvm_hash"])
         with self._lock(True), self._lock():
             state = self._load()
             self._safe(state)
@@ -874,6 +900,7 @@ class EnvironmentManager:
             handle.update(
                 dependency_mounts=copy.deepcopy(image.get("dependency_mounts", [])),
                 target_branch=task["target_branch"],
+                profile_branch=profile_branch,
                 task_id=task_id,
                 run_id=run_id,
                 task=task,

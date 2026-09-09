@@ -24,6 +24,7 @@ from agent_ci.protocol import ContractError
 from agent_ci.codex import finish_timeout_seconds
 from deploy.runtime_probe import runtime_status, verify_probe, probe_runtime, validate_runtime_config
 from environments.dependency_mounts import dependency_mounts, validate_mounted_llvm
+from environments.runtime import validate_branch_profiles
 
 
 def check_configuration(config: dict, *, runtime: bool = True, require_notifications: bool = True) -> dict:
@@ -83,6 +84,11 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
     source("health_repo_url", config.get("health_repo_url"))
     profiles = config.get("profiles", {})
     check("profiles", isinstance(profiles, dict) and bool(profiles), "At least one explicit target-branch recipe is required")
+    try:
+        validate_branch_profiles(config)
+        check("branch_profiles", True, "Task branch aliases select existing profiles without changing task identity or LLVM")
+    except RuntimeError as exc:
+        check("branch_profiles", False, str(exc))
     names = set()
     for branch, profile in profiles.items():
         prefix = f"profile:{branch}"

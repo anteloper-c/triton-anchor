@@ -36,7 +36,7 @@
 - `resources.cpus/memory_bytes/pids_limit` 部署必填且为正数，后两项为整数；`max_jobs` 默认仍为 8。仅写 Docker 参数不算资源约束已生效，须通过下面的显式验证。
 - `state_dir` 是普通 CI 用户所有的独立可信目录；`rpc_socket_dir` 使用该用户运行时目录。Codex 会话保存在每个任务的私有 named volume，不再配置独立宿主 `codex_sessions_root`。control_root 是完整受信 checkout，生产必须干净并与任务 worker_revision_sha 一致。
 - `codex_bin` 是受信镜像内的真实 Codex 绝对路径；`codex_home` 是宿主机现有公司专用 config.toml/auth.json 来源，文件由 CI 用户所有且仅该用户可读。沿用实际 provider/model/auth，不写入 profile.env；不再配置宿主机 codex_user/container_execution_user。
-- `profiles` 仍按目标分支索引，记录唯一 name、Triton 版本、精确 llvm_hash、可信来源与错峰 daily_calendar。image 必须是实际基础镜像的不可变 SHA256 引用；不能填写 PR 可变标签，也不能用运行中的 PR 容器制作基础镜像。
+- `profiles` 仍按环境 profile 索引，记录唯一 name、Triton 版本、精确 llvm_hash、可信来源与错峰 daily_calendar。image 必须是实际基础镜像的不可变 SHA256 引用；不能填写 PR 可变标签，也不能用运行中的 PR 容器制作基础镜像。`branch_profiles` 可将任务目标分支映射到已有 profile，例如 `CI_dev` → `triton_v3.0`；映射只改变环境选择，不改变任务身份、目标分支或冻结 SHA，未映射分支不会隐式回退。
 - `workspace_root`、`workspace_container` 保留为可信镜像配方中的逻辑源码根，用于解释依赖来源及重写容器路径，不表示宿主机常驻任务目录或可复用 PR 工作区。实际任务数据由 attempt 私有卷管理。
 - LLVM archive 需要来源、sha256 和精确 commit；源码需要公司可达可信 repository。repositories/archives/prepare_commands 只来自受信控制配置。任务不能把自制依赖写回可信缓存。
 - Triton 3.0 必须开启 backend，其他当前版本必须关闭。真实 PPL、torch/torch_tpu、后端、FlagGems 路径与依赖缺失属于部署失败；validation_commands 必须调用真实基础工具，不能填 true。新 LLVM 仍必须匹配被测代码声明；任务容器不使用旧常驻环境的 post_task_validation_commands 或设备复用检查。

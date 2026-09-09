@@ -137,5 +137,8 @@
       "prepare_commands": [],
       "validation_commands": {}
     }
+  },
+  "branch_profiles": {
+    "CI_dev": "triton_v3.0"
   }
 }

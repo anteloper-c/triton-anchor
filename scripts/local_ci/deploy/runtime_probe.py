@@ -108,7 +108,7 @@ def runtime_status(config):
 
 
 def config_digest(config):
-    public = {key: config.get(key) for key in ("schema", "runtime", "resources", "identities", "profiles", "dependency_root", "control_root", "codex_bin", "container_python")}
+    public = {key: config.get(key) for key in ("schema", "runtime", "resources", "identities", "profiles", "branch_profiles", "dependency_root", "control_root", "codex_bin", "container_python")}
     root = Path(config["control_root"])
     revision = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=15)
     if revision.returncode or not re.fullmatch(r"[a-f0-9]{40}", revision.stdout.strip()):

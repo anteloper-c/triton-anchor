@@ -254,6 +254,51 @@ class RootlessManagerTest(unittest.TestCase):
     def acquire(self, task=None, run="run-1"):
         return self.manager.acquire_task(task or self.task, run)
 
+    def test_branch_alias_reuses_profile_without_changing_task_identity(self):
+        self.config["branch_profiles"] = {"CI_dev": "release/3.1"}
+        image = self.manager.ensure_image("release/3.1", self.sha)
+        task = {**self.task, "target_branch": "CI_dev", "event_kind": "pull_request"}
+        before = json.dumps(task, sort_keys=True)
+        handle = self.acquire(task)
+        self.assertEqual(json.dumps(task, sort_keys=True), before)
+        self.assertEqual(handle["task"], task)
+        self.assertEqual(handle["target_branch"], "CI_dev")
+        self.assertEqual(handle["profile_branch"], "release/3.1")
+        self.assertEqual(handle["image_id"], image["image_id"])
+        self.assertEqual(handle["image_release_id"], image["release_id"])
+        self.assertEqual(list(self.manager.health()["active_images"]), ["release/3.1"])
+        self.assertEqual(sum(c[3] == "build" for c in self.fake.commands), 1)
+        self.assertEqual(self.acquire(task)["attempt_id"], handle["attempt_id"])
+        self.manager.destroy_task(handle, keep_data=False)
+        self.assertTrue(self.manager.generations()[handle["attempt_id"]]["state"] == "removed")
+
+    def test_branch_alias_preserves_exact_mounted_llvm_requirement(self):
+        self.mounted_llvm()
+        self.config["branch_profiles"] = {"CI_dev": "release/3.1"}
+        with self.assertRaisesRegex(EnvironmentError, "New LLVM requires"):
+            self.acquire({**self.task, "target_branch": "CI_dev", "llvm_hash": "b" * 40})
+        self.assertFalse(self.fake.images)
+        self.assertFalse(self.fake.containers)
+
+    def test_unmapped_branch_has_no_implicit_fallback(self):
+        with self.assertRaisesRegex(EnvironmentError, "Trusted profile"):
+            self.acquire({**self.task, "target_branch": "CI_dev"})
+        self.config["branch_profiles"] = {"CI_dev": "release/3.1"}
+        with self.assertRaisesRegex(EnvironmentError, "Trusted profile"):
+            self.acquire({**self.task, "target_branch": "main"})
+
+    def test_invalid_branch_profile_mappings_fail_closed(self):
+        for mappings in (None, [], {"CI_dev": "missing"}, {"CI_dev": []},
+                         {"CI_dev": "alias", "alias": "release/3.1"},
+                         {"release/3.1": "release/3.1"},
+                         {"CI_dev_forPR": "release/3.1"}, {"": "release/3.1"},
+                         {"CI_dev\n": "release/3.1"}, {"*": "release/3.1"}):
+            with self.subTest(mappings=mappings):
+                self.config["branch_profiles"] = mappings
+                with self.assertRaisesRegex(EnvironmentError, "branch_profiles"):
+                    self.acquire({**self.task, "target_branch": "CI_dev"})
+        self.assertFalse(self.fake.commands)
+
     def mounted_llvm(self):
         root = self.root / "dependencies"
         source = root / ("llvm-" + self.sha)
