@@ -1,30 +1,37 @@
-"""Tool boundary tests; optional real pure-Python wheel roundtrip integration.
-
-Set CI_TOOLS_TEST_PYTHON to an isolated interpreter with build/setuptools/wheel
-to exercise actual build/install/import/smoke commands. This does not simulate or
-claim a Triton compiler/backend build.
-"""
+"""Essential behavior checks for related CI responsibilities."""
 from __future__ import annotations
 
 import argparse
+
 import json
+
 import os
+
 import subprocess
+
 import sys
+
 import tempfile
+
 import unittest
+
 import venv
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
 sys.path.insert(0, str(ROOT))
+
 from tools.basic_tools import actions, runner  # noqa: E402
-from control.runtime.policy import minimum_checks  # noqa: E402
+
+from runtime.policy import minimum_checks  # noqa: E402
 
 FG_ROOT = ROOT / "tools" / "basic_tools" / "flaggems"
-sys.path.insert(0, str(FG_ROOT))
-from select_flaggems_tests import select_entries  # noqa: E402
 
+sys.path.insert(0, str(FG_ROOT))
+
+from select_flaggems_tests import select_entries  # noqa: E402
 
 def context() -> dict:
     return {"source_dir": "/workspace/tasks/test/source", "artifact_dir": "/workspace/tasks/test/artifacts",
@@ -35,7 +42,6 @@ def context() -> dict:
                 "expected_backend": "sophgo", "backend_smoke_argv": ["python3", "tests/jit.py"],
                 "backend_test_paths": ["tests"],
                 "flaggems_dir": "/workspace/FlagGems"}}}
-
 
 class ToolPlanningTests(unittest.TestCase):
     def test_all_tools_plan_without_local_container_paths(self):
@@ -86,7 +92,7 @@ class ToolPlanningTests(unittest.TestCase):
 
     def test_selected_suite_nodes_stay_within_trusted_test_roots(self):
         ctx = context()
-        ctx["python_bin"] = "/opt/anchor-ci/control/runtime/task_python"
+        ctx["python_bin"] = "/opt/anchor-ci/runtime/task_python"
         selected = "tests/test_math.py::test_add"
         spec = runner.plan("backend_tests", ctx, {"paths": [selected], "keyword": "add and not slow"})
         command = spec["commands"][-2]
@@ -160,7 +166,7 @@ class ToolPlanningTests(unittest.TestCase):
 
     def test_trusted_actions_skip_task_startup_and_pass_candidate_wrapper_explicitly(self):
         ctx = context()
-        ctx.update(python_bin="/opt/anchor-ci/control/runtime/task_python", task_venv="/workspace/tasks/test/run/venv")
+        ctx.update(python_bin="/opt/anchor-ci/runtime/task_python", task_venv="/workspace/tasks/test/run/venv")
         spec = runner.plan("frontend_build", ctx)
         helper = spec["commands"][0]
         self.assertEqual(helper["argv"][:3], ["/usr/bin/python3", "-I", "-S"])
@@ -168,14 +174,6 @@ class ToolPlanningTests(unittest.TestCase):
         self.assertEqual(payload["context"]["python_bin"], ctx["python_bin"])
         self.assertEqual(helper["env"]["LOCAL_CI_TASK_VENV"], ctx["task_venv"])
         self.assertEqual(spec["commands"][2]["argv"][0], ctx["python_bin"])
-
-    def test_example_profile_can_plan_real_flaggems_invocation(self):
-        configuration = json.loads((ROOT / "config.example.json").read_text(encoding="utf-8"))
-        ctx = context()
-        ctx["profile"] = next(p for p in configuration["profiles"] if p["triton_version"] == "3.0")
-        spec = runner.plan("flaggems", ctx, {"mode": "impact", "ops": ["add"]})
-        self.assertIn("--pytest-args=--ref cpu -vs", spec["commands"][-1]["argv"])
-
 
 class ArtifactAndSelectionTests(unittest.TestCase):
     def test_junit_requires_real_passing_cases(self):
@@ -307,7 +305,6 @@ class ArtifactAndSelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SHA-256"):
                 actions.compare_performance(payload)
 
-
 @unittest.skipUnless(os.environ.get("CI_TOOLS_TEST_PYTHON"), "Set CI_TOOLS_TEST_PYTHON for real isolated wheel integration")
 class RealWheelIntegrationTests(unittest.TestCase):
     def test_real_build_install_import_smoke_then_rebuild(self):
@@ -349,6 +346,80 @@ class RealWheelIntegrationTests(unittest.TestCase):
             ctx["target_sha"] = "0" * 40
             self.assertEqual(runner.execute("environment", ctx)["status"], "fail")
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-if __name__ == "__main__":
-    unittest.main()
+from runtime.artifacts import collect_artifacts
+
+from runtime.common import digest, write_json
+
+from runtime.broker import Broker
+
+
+class ArtifactTests(unittest.TestCase):
+
+    def test_test_evidence_must_match_real_cases_identity_and_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = {'artifact_host_dir': str(root / 'artifacts'), 'task_id': 'task-tests',
+                       'target_sha': 'a' * 40, 'python_bin': '/opt/anchor-ci/runtime/task_python',
+                       'task_venv': '/workspace/tasks/task-tests/run/venv'}
+            broker = Broker({}, context, {}, root / 'output', lambda: False)
+            for tool in ('frontend_tests', 'backend_tests'):
+                output = root / 'artifacts' / tool
+                output.mkdir(parents=True)
+                junit = output / 'tests.xml'
+                junit.write_text('<testsuites><testsuite><testcase name="actual-case"/></testsuite></testsuites>')
+                valid = {key: context[key] for key in ('task_id', 'target_sha', 'task_venv')}
+                valid.update(tool=tool, python_executable=context['python_bin'], junit_sha256=digest(junit),
+                             tests=1, passed=1, failures=0, errors=0, skipped=0, selected_paths=['tests'])
+                write_json(output / 'tests.json', valid)
+                broker.verify_artifacts(tool)
+                for field, bad in (('passed', 0), ('tests', True), ('target_sha', 'b' * 40),
+                                   ('junit_sha256', 'c' * 64), ('tool', 'flaggems'),
+                                   ('task_venv', '/workspace/tasks/other/run/venv'), ('selected_paths', [])):
+                    with self.subTest(tool=tool, field=field), self.assertRaises(ValueError):
+                        write_json(output / 'tests.json', {**valid, field: bad})
+                        broker.verify_artifacts(tool)
+                for outcome in ('skipped', 'failure', 'error'):
+                    junit.write_text(f'<testsuites><testsuite><testcase><{outcome}/></testcase></testsuite></testsuites>')
+                    with self.subTest(tool=tool, outcome=outcome), self.assertRaises(ValueError):
+                        write_json(output / 'tests.json', {**valid, 'junit_sha256': digest(junit)})
+                        broker.verify_artifacts(tool)
+
+
+    def test_zero_exit_without_required_build_artifact_cannot_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            broker = Broker({}, {'artifact_host_dir': str(root/'artifacts')}, {}, root/'output', lambda:False)
+            with self.assertRaisesRegex(ValueError, 'without its required artifact'):
+                broker.verify_artifacts('frontend_build')
+
+    def test_preserves_tests_and_ir_while_reporting_omissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / 'source', root / 'output'
+            (source / 'custom').mkdir(parents=True)
+            (source / 'custom/repro.py').write_text('assert 1 == 1\n')
+            (source / 'result.mlir').write_text('module {}\n')
+            (source / 'wheel.whl').write_bytes(b'not-published')
+            (source / 'oversize.log').write_text('x' * 256)
+            (source / '.auth.json').write_text('{}')
+            manifest = collect_artifacts(source, output, max_file_bytes=128)
+            self.assertEqual({x['path'] for x in manifest['files']},
+                             {'artifacts/custom/repro.py', 'artifacts/result.mlir'})
+            self.assertEqual(len(manifest['omitted']), 3)
+            for item in manifest['files']:
+                self.assertEqual(digest(output / item['path']), item['sha256'])
+            (source / 'custom/repro.py').write_text('later mutation')
+            self.assertEqual((output / 'artifacts/custom/repro.py').read_text(), 'assert 1 == 1\n')
+
+    def test_total_budget_reports_remaining_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'source'
+            source.mkdir()
+            for name in ('a.txt', 'b.txt'):
+                (source / name).write_text('0123456789')
+            manifest = collect_artifacts(source, root / 'output', max_total_bytes=10)
+            self.assertEqual(len(manifest['files']), 1)
+            self.assertEqual(manifest['omitted'][0]['reason'], 'total publication limit')

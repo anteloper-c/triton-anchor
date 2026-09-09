@@ -49,7 +49,7 @@ spec = plan("frontend_build", controller_context, {"jobs": 2})
 受信环境配置。broker 提供 `completed_tools` 并逐命令记录实际退出码及产物。
 计划生成不访问容器文件；checkout、wheel 和工具依赖在容器执行时复核。
 
-生产 `context.python_bin` 指向只读的 `/opt/anchor-ci/control/runtime/task_python`，
+生产 `context.python_bin` 指向只读的 `/opt/anchor-ci/runtime/task_python`，
 `context.task_venv` 绑定当前任务安装目录。入口跳过任务 `.pth` 与
 `sitecustomize`，并让 Python 子进程继续使用该入口。受信预检、wheel 清单与
 性能比较使用独立的 `/usr/bin/python3 -I -S`，不能由可写任务 venv 的启动代码

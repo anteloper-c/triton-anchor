@@ -17,7 +17,7 @@ import unittest
 from unittest import mock
 
 
-HELPER = Path(__file__).resolve().parents[1] / 'control/runtime/task_permissions.py'
+HELPER = Path(__file__).resolve().parents[1] / 'runtime/task_permissions.py'
 spec = importlib.util.spec_from_file_location('task_permissions', HELPER)
 permissions = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(permissions)

@@ -106,7 +106,7 @@ class Engine:
         for key in (*environment_keys, *((provider['env_key'],) if provider else ())):
             prefix += ['-e', key]
         return prefix + [profile['container']['name'], '/usr/bin/python3', '-I',
-                         '/opt/anchor-ci/control/runtime/container_process.py']
+                         '/opt/anchor-ci/runtime/container_process.py']
 
     def __init__(self, config, relay, manager):
         self.config, self.relay, self.manager = config, relay, manager
@@ -132,7 +132,7 @@ class Engine:
             raise RuntimeError('saved preparation belongs to another worker')
         payload = base64.urlsafe_b64encode(json.dumps(saved['spec']).encode()).decode()
         stopped = subprocess.run([self.docker, 'exec', '--user', saved['user'], saved['container'],
-            '/usr/bin/python3', '-I', '/opt/anchor-ci/control/runtime/container_process.py', 'stop', payload],
+            '/usr/bin/python3', '-I', '/opt/anchor-ci/runtime/container_process.py', 'stop', payload],
             capture_output=True, text=True, timeout=30,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         if stopped.returncode:
@@ -150,7 +150,7 @@ class Engine:
             write_json(self.preparation_record, saved)
         payload = base64.urlsafe_b64encode(json.dumps(spec).encode()).decode()
         argv = [self.docker, 'exec', '--user', user, saved['container'], '/usr/bin/python3', '-I',
-                '/opt/anchor-ci/control/runtime/container_process.py', 'run', payload]
+                '/opt/anchor-ci/runtime/container_process.py', 'run', payload]
         process = None
         try:
             process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -411,7 +411,7 @@ class Engine:
                    'artifact_dir': container_task + '/artifacts',
                    'artifact_host_dir': str(host_task / 'artifacts'), 'base_sha': task['base_sha'],
                    'tools_dir': '/opt/anchor-ci/tools', 'triton_version': profile['triton_version'],
-                   'python_bin': '/opt/anchor-ci/control/runtime/task_python',
+                   'python_bin': '/opt/anchor-ci/runtime/task_python',
                    'task_venv': container_task + '/venv',
                    'manual_full': policy['manual_full'], 'changed_files': changed,
                    'changed_paths': changed, 'profile': profile}
@@ -442,7 +442,7 @@ class Engine:
                 raise RuntimeError('task version differs from the trusted branch profile')
             self.heartbeat('preparing', task['task_id'])
             self.docker_run(profile, '/usr/bin/python3', '-I', '-S',
-                            '/opt/anchor-ci/control/runtime/task_permissions.py', container_task)
+                            '/opt/anchor-ci/runtime/task_permissions.py', container_task)
             self.docker_run(profile, 'chown', '-R', '1000:1000', container_task)
             self.docker_run(profile, 'chown', '0:0', container_task)
             self.docker_run(profile, 'chmod', '755', container_task)
@@ -495,7 +495,7 @@ class Engine:
             codex_args = [settings.get('bin', 'codex'), 'exec', '--json', '--skip-git-repo-check', '--ignore-user-config',
                           '--sandbox', 'danger-full-access', '-c', 'approval_policy="never"',
                           '-C', container_task + '/agent', '--output-schema',
-                          '/opt/anchor-ci/control/schemas/completion.schema.json', '-o',
+                          '/opt/anchor-ci/schemas/completion.schema.json', '-o',
                           container_task + '/agent/completion.json']
             codex_args += self.codex_options(settings)
             codex_args.append(prompt)
@@ -542,7 +542,7 @@ class Engine:
                     if self.preparation_cleanup_failed:
                         raise RuntimeError('root preparation cleanup is unconfirmed')
                     self.docker_run(profile, '/usr/bin/python3', '-I',
-                                    '/opt/anchor-ci/control/runtime/container_process.py', 'clean-users')
+                                    '/opt/anchor-ci/runtime/container_process.py', 'clean-users')
                     self.manager.release(profile, task['task_id'])
                 except Exception as exc:
                     failure = f'worker cleanup failed; lease retained: {exc}'
@@ -649,5 +649,5 @@ class Engine:
                     terminate=lambda: subprocess.run(prefix + ['stop', encoded], env=env, capture_output=True, timeout=15,
                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)))
         finally:
-            self.docker_run(profile, '/usr/bin/python3', '-I', '/opt/anchor-ci/control/runtime/container_process.py', 'clean-users')
+            self.docker_run(profile, '/usr/bin/python3', '-I', '/opt/anchor-ci/runtime/container_process.py', 'clean-users')
             self.manager.release(profile, task['task_id'])

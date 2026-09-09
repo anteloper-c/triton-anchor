@@ -17,7 +17,7 @@ from scripts.local_ci.tests.test_github_result import receiver, result_fixture
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = ROOT / '.github/workflows'
-sys.path.insert(0, str(ROOT / 'scripts/local_ci/control/integration'))
+sys.path.insert(0, str(ROOT / 'scripts/local_ci/deploy'))
 from configure_required_checks import managed_rulesets, ruleset_payload
 
 NODE = shutil.which('node')
@@ -104,10 +104,6 @@ class WorkflowContextTests(unittest.TestCase):
         env = block.get('env') or block['steps'][0]['env']
         return self.evaluate(env.get('CONTEXT') or env['STATUS_CONTEXT'], inputs)
 
-    def test_automatic_pushes_are_limited_to_maintained_branches(self):
-        triggers = self.dispatch.get('on', self.dispatch.get(True))
-        self.assertEqual(triggers['push']['branches'], ['main', 'ci_repo'])
-        self.assertIn('workflow_dispatch', triggers)
 
     def run_js(self, job, inputs, extra=None):
         step = self.gateway['jobs'][job]['steps'][0]

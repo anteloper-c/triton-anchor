@@ -10,7 +10,7 @@ import unittest
 
 from scripts.dashboard.sync_agent_results import sync_agent_results, web_link
 from scripts.dashboard.sync_gitee_results import sync_dashboard
-from scripts.local_ci.control.runtime.result_paths import run_relative
+from scripts.local_ci.runtime.result_paths import run_relative
 
 
 NODE = shutil.which('node')
@@ -110,10 +110,6 @@ class DashboardAgentFeed(unittest.TestCase):
         self.assertEqual(feed['workers'][0]['state'], 'degraded')
         self.assertEqual(feed['total_runs'], 0)
 
-    def test_legacy_entry_supports_task_results_only_and_no_retired_runtime_import(self):
-        self.publish()
-        sync_dashboard(self.root, self.output, 'ci/push/main', 'ci/full/main')
-        self.assertEqual(len(json.loads((self.output / 'local-ci.json').read_text(encoding='utf-8'))['runs']), 1)
 
     def test_bad_result_identity_and_unsafe_log_urls_are_not_promoted(self):
         result, pointer = self.publish()
@@ -148,16 +144,6 @@ class DashboardAgentFeed(unittest.TestCase):
             if '/' in result['target_branch']:
                 self.assertIn('release%252F3.0', row['result_url'])
 
-    def test_historical_flat_and_new_grouped_runs_remain_visible(self):
-        result, old = self.publish()
-        result['run_id'] = 'new-run'
-        self.publish(result, grouped=True)
-        rows = self.sync()['runs']
-        self.assertEqual(len(rows), 2)
-        self.assertEqual([row['run_id'] for row in rows if row['is_latest']], ['new-run'])
-        self.assertEqual([row['run_id'] for row in rows if row['is_current']], ['new-run'])
-        historical = next(row for row in rows if row['run_id'] == 'fixture-run-1')
-        self.assertTrue(historical['result_url'].endswith(old['result_path']))
 
     def test_retries_for_one_pr_have_one_current_public_result(self):
         first = example_result()

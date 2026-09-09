@@ -27,7 +27,7 @@ def messages(findings: list[object]) -> list[str]:
 class ScanSecurityTests(unittest.TestCase):
     def test_documented_admin_commands_do_not_request_workflow_privileges(self) -> None:
         administrator_command = "su" + "do"
-        for filename in ("docs/install.md", "scripts/local_ci/control/deploy/README.md"):
+        for filename in ("docs/install.md", "scripts/local_ci/deploy/README.md"):
             with self.subTest(filename=filename):
                 blocking, _ = security.scan([pr_file(filename, [administrator_command + " install -m 0644 service /etc/systemd/system/"])])
                 self.assertEqual(blocking, [])

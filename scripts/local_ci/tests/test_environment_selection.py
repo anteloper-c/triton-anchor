@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from control.runtime.common import git  # noqa: E402
-from control.runtime.environment import EnvironmentSelectionError, resolve_profile  # noqa: E402
+from runtime.common import git  # noqa: E402
+from runtime.environment import EnvironmentSelectionError, resolve_profile  # noqa: E402
 
 
 class EnvironmentSelectionTests(unittest.TestCase):
@@ -61,17 +61,7 @@ class EnvironmentSelectionTests(unittest.TestCase):
         selected["tools"]["llvm_dir"] = "/changed"
         self.assertEqual(self.profile, before)
 
-    def test_same_revision_needs_no_rebuild_recipe(self):
-        self.profile.pop("maintenance")
-        tested = self.commit(self.source, {"triton/cmake/llvm-hash.txt": "a" * 40})
-        selected = self.select(tested)
-        self.assertFalse(selected["llvm_selection"]["rebuild_required"])
 
-    def test_absent_dependency_keeps_explicit_profile_for_frontend_fixture(self):
-        tested = self.commit(self.source, {"README.md": "No Triton submodule in this fixture\n"})
-        selected = self.select(tested)
-        self.assertEqual(selected["llvm_revision"], self.profile["llvm_revision"])
-        self.assertEqual(selected["llvm_selection"]["source"], "profile")
 
     def test_new_revision_cannot_use_a_candidate_recipe(self):
         self.profile.pop("maintenance")

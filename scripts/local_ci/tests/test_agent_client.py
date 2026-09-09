@@ -10,9 +10,9 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from control.runtime.broker import Broker
-from control.runtime.common import write_json
-from control.runtime.engine import Engine
+from runtime.broker import Broker
+from runtime.common import write_json
+from runtime.engine import Engine
 
 
 class AgentParametersFile(unittest.TestCase):
@@ -27,7 +27,7 @@ class AgentParametersFile(unittest.TestCase):
         self.environment = {**os.environ, 'LOCAL_CI_BROKER_URL': f'http://127.0.0.1:{port}/',
                             'LOCAL_CI_BROKER_TOKEN': self.broker.token, 'PYTHONIOENCODING': 'utf-8',
                             'NO_PROXY': '127.0.0.1', 'no_proxy': '127.0.0.1'}
-        self.client = Path(__file__).resolve().parents[1] / 'control/runtime/client.py'
+        self.client = Path(__file__).resolve().parents[1] / 'runtime/client.py'
 
     def send_file(self, raw, *options):
         path = self.root / '中文 review " file.json' if os.name != 'nt' else self.root / '中文 review file.json'
@@ -98,9 +98,9 @@ class PublicationCodexOptions(unittest.TestCase):
             write_json(output / 'task.json', {'task_id': 'fixture-only'})
             session = '01a08034-d35e-7651-8a4d-d0a9bc8e6bc1'
             (output / 'agent-events.jsonl').write_text(json.dumps({'type': 'thread.started', 'thread_id': session}) + '\n')
-            with mock.patch('control.runtime.engine.execute') as execute, \
-                 mock.patch('control.runtime.control.verify_control', return_value={}), \
-                 mock.patch('control.runtime.control.verify_container_control'), mock.patch.object(engine, 'docker_run'):
+            with mock.patch('runtime.engine.execute') as execute, \
+                 mock.patch('runtime.control.verify_control', return_value={}), \
+                 mock.patch('runtime.control.verify_container_control'), mock.patch.object(engine, 'docker_run'):
                 engine.recover_publication(record, 'local transport fixture')
             spec = json.loads(base64.urlsafe_b64decode(execute.call_args.args[0][-1]))
             self.assertEqual(spec['argv'][:3], ['codex', 'exec', 'resume'])

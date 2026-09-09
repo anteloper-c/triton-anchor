@@ -73,7 +73,7 @@ class Broker:
             spec['env'][key] = ''
         encoded = base64.urlsafe_b64encode(json.dumps(spec).encode()).decode()
         prefix = [self.docker, 'exec', '--user', str(self.profile.get('test_user', '1000:1000')),
-                  self.profile['container']['name'], '/usr/bin/python3', '-I', '/opt/anchor-ci/control/runtime/container_process.py']
+                  self.profile['container']['name'], '/usr/bin/python3', '-I', '/opt/anchor-ci/runtime/container_process.py']
         argv = prefix + ['run', encoded]
         def stop():
             subprocess.run(prefix + ['stop', encoded], capture_output=True, timeout=15,

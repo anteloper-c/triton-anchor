@@ -148,12 +148,12 @@ def build_result(task, run_id, policy, broker, *, started_at, source_unchanged,
             else:
                 finding['blocking'] = False
                 finding['qualification'] = 'reported risk; deterministic failure and change attribution not established'
-    if not source_unchanged:
-        blocking.append('tested tracked source changed during execution')
     if agent_exitcode or not broker.review or not review.get('summary', '').strip():
         error = error or 'Codex did not submit a complete review'
     if error:
         blocking.append(error)
+    elif not source_unchanged and not cancelled:
+        blocking.append('源码一致性校验未通过，需要重新验证。')
     conclusion = ('cancelled' if cancelled else 'error' if error or not valid_arch or pr_status == 'error' else
                   'failure' if blocking else 'success')
     return {'schema': 'triton-anchor-local-ci-result', **identity(task), 'run_id': run_id,

@@ -594,8 +594,8 @@ jobs:
             const requiredPaths = [
               '.github/workflows/ci-gateway.yml',
               '.github/workflows/local-ci-prechecks.yml',
-              'scripts/local_ci/control/integration/build_task_metadata.py',
-              'scripts/local_ci/control/integration/receive_result.py',
+              'scripts/local_ci/runtime/build_task_metadata.py',
+              'scripts/local_ci/runtime/receive_result.py',
               '.github/workflows/security-gate.yml',
               'scripts/ci/scan_pr_security.py',
               '.github/workflows/dispatch-local-ci.yml',
