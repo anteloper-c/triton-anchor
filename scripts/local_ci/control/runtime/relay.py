@@ -13,10 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from .common import digest, read_json, safe_id, utcnow, write_json
 from .result_paths import legacy_run_relative, run_relative
-try:
-    from ..maintenance.transport import git_environment, validate_relay_url
-except ImportError:
-    from maintenance.transport import git_environment, validate_relay_url
+from maintenance.transport import git_environment, validate_relay_url
 
 
 def evidence_path(root, relative):

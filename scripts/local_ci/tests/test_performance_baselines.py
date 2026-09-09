@@ -10,9 +10,9 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime.common import digest, read_json, write_json  # noqa: E402
-from runtime.performance import prepare_baselines  # noqa: E402
-from runtime.result_paths import run_relative  # noqa: E402
+from control.runtime.common import digest, read_json, write_json  # noqa: E402
+from control.runtime.performance import prepare_baselines  # noqa: E402
+from control.runtime.result_paths import run_relative  # noqa: E402
 
 
 class PerformanceBaselineTests(unittest.TestCase):

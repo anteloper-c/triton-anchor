@@ -8,9 +8,9 @@ from pathlib import Path
 from urllib import error, request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime.broker import Broker  # noqa: E402
-from runtime.common import digest, read_json  # noqa: E402
-from runtime.report import build_source_index  # noqa: E402
+from control.runtime.broker import Broker  # noqa: E402
+from control.runtime.common import digest, read_json  # noqa: E402
+from control.runtime.report import build_source_index  # noqa: E402
 
 
 def review():

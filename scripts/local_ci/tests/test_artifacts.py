@@ -5,9 +5,9 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime.artifacts import collect_artifacts
-from runtime.common import digest, write_json
-from runtime.broker import Broker, DEPENDENCIES
+from control.runtime.artifacts import collect_artifacts
+from control.runtime.common import digest, write_json
+from control.runtime.broker import Broker, DEPENDENCIES
 from tools.basic_tools.runner import DEPENDENCIES as TOOL_DEPENDENCIES
 
 
@@ -21,7 +21,7 @@ class ArtifactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             context = {'artifact_host_dir': str(root / 'artifacts'), 'task_id': 'task-tests',
-                       'target_sha': 'a' * 40, 'python_bin': '/opt/anchor-ci/runtime/task_python',
+                       'target_sha': 'a' * 40, 'python_bin': '/opt/anchor-ci/control/runtime/task_python',
                        'task_venv': '/workspace/tasks/task-tests/run/venv'}
             broker = Broker({}, context, {}, root / 'output', lambda: False)
             for tool in ('frontend_tests', 'backend_tests'):

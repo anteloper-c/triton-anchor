@@ -36,7 +36,7 @@
       "env_key": "DEEPSEEK_API_KEY",
       "wire_api": "responses"
     },
-    "model_catalog_json": "/opt/anchor-ci/etc/deepseek-models.json",
+    "model_catalog_json": "/opt/anchor-ci/deepseek-models.json",
     "reasoning_effort": "high",
     "auto_compact_token_limit": 80000,
     "tool_output_token_limit": 4000

@@ -10,7 +10,7 @@ import unittest
 
 from scripts.dashboard.sync_agent_results import sync_agent_results, web_link
 from scripts.dashboard.sync_gitee_results import sync_dashboard
-from scripts.local_ci.runtime.result_paths import run_relative
+from scripts.local_ci.control.runtime.result_paths import run_relative
 
 
 NODE = shutil.which('node')
@@ -227,10 +227,17 @@ sandbox.fixture={runs:[
 ]};
 roots.taskSearch.value='3';roots.historyFilter.value='current';roots.resultFilter.value='all';
 const prMatches=vm.runInContext('model.data=fixture;filteredRuns().map(run=>run.pr_number)',sandbox);
-process.stdout.write(JSON.stringify({rendered,intervals,prMatches,manual_refresh:typeof roots.refresh.listeners.click==='function'}));
+const blockers=vm.runInContext(`blockingSummary({checks:[{id:'frontend_build',status:'error'},{id:'frontend_install',status:'skipped'}],blocking_reasons:['frontend_build: timeout','frontend_install: required check was not completed','Worker disconnected','Worker disconnected']})`,sandbox);
+const unfinished=vm.runInContext(`blockingSummary({checks:[{id:'frontend_install',status:'skipped'}],blocking_reasons:['frontend_install: required check was not completed']})`,sandbox);
+const failed=vm.runInContext(`blockingSummary({checks:[{id:'frontend_tests',status:'failed'}],blocking_reasons:['frontend_tests: assertion failed']})`,sandbox);
+process.stdout.write(JSON.stringify({rendered,intervals,prMatches,blockers,unfinished,failed,manual_refresh:typeof roots.refresh.listeners.click==='function'}));
 '''
         output = subprocess.run([NODE, '-e', harness, str(script)], check=True, capture_output=True, text=True)
         data = json.loads(output.stdout)
+        self.assertEqual(data['blockers'], ['Worker disconnected'])
+        self.assertEqual(data['failed'], ['frontend_tests: assertion failed'])
+        self.assertEqual(len(data['unfinished']), 1)
+        self.assertNotIn('frontend_install', data['unfinished'][0])
         rows = {row['id']: row for row in data['rendered']}
         for name in ('old-healthy', 'old-offline', 'past-boundary'):
             with self.subTest(name=name):

@@ -8,14 +8,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from test_github_result import receiver, result_fixture
-from runtime.common import digest
-from runtime.report import build_result, build_source_index
+from control.runtime.common import digest
+from control.runtime.report import build_result, build_source_index
 
 
 class PRCommentTests(unittest.TestCase):
     def test_unstarted_required_control_check_survives_the_result_to_comment_path(self):
         task, expected, seed = result_fixture()
-        task['changed_paths'] = ['scripts/local_ci/runtime/engine.py']
+        task['changed_paths'] = ['scripts/local_ci/control/runtime/engine.py']
         policy = receiver.minimum_checks(task['changed_paths'], {'triton_version': '3.0'})
         receipt = dict(id='command-1', tool='environment', returncode=0, termination=None)
         broker = SimpleNamespace(
@@ -175,8 +175,8 @@ class PRCommentTests(unittest.TestCase):
 
     def test_code_link_keeps_the_exact_filename(self):
         _, _, result = result_fixture()
-        text = receiver.comment_evidence([{'path': 'scripts/local_ci/runtime/environment.py', 'line': 2}], result)
-        self.assertIn('runtime/environment.py:2]', text)
+        text = receiver.comment_evidence([{'path': 'scripts/local_ci/control/runtime/environment.py', 'line': 2}], result)
+        self.assertIn('control/runtime/environment.py:2]', text)
         self.assertNotIn('构建环境', text)
 
     def test_compound_tool_names_are_not_partially_translated(self):

@@ -8,9 +8,9 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import control_plane
-from runtime.broker import Broker
-from runtime.policy import BACKEND_TOOLS, minimum_checks
+from control.runtime import control_plane
+from control.runtime.broker import Broker
+from control.runtime.policy import BACKEND_TOOLS, minimum_checks
 
 
 def router(root):
@@ -115,7 +115,7 @@ class ControlPlaneTests(unittest.TestCase):
 
 class ControlPolicyTests(unittest.TestCase):
     def test_control_and_documentation_need_no_compiler_build(self):
-        paths = ['scripts/local_ci/runtime/cache.py', 'scripts/ci/tests/test_gateway_contract.py', 'docs/pipeline.md', 'README.md']
+        paths = ['scripts/local_ci/control/runtime/cache.py', 'scripts/ci/tests/test_gateway_contract.py', 'docs/pipeline.md', 'README.md']
         policy = minimum_checks(paths, {'triton_version': '3.0'})
         self.assertEqual(policy['required'], ['environment', 'control_plane', 'architecture_review'])
 

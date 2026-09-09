@@ -1,7 +1,9 @@
 """Regression: branch CI on a PR head must never replace its required status."""
 from __future__ import annotations
 
+import copy
 import json
+import sys
 import os
 import shutil
 import subprocess
@@ -15,6 +17,9 @@ from scripts.local_ci.tests.test_github_result import receiver, result_fixture
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = ROOT / '.github/workflows'
+sys.path.insert(0, str(ROOT / 'scripts/local_ci/control/integration'))
+from configure_required_checks import managed_rulesets, ruleset_payload
+
 NODE = shutil.which('node')
 BASH = shutil.which('bash') if os.name != 'nt' else next(
     (path for path in (r'C:\msys64\usr\bin\bash.exe',) if Path(path).is_file()), None)
@@ -174,6 +179,33 @@ const github={rest:{repos:{
                     self.assertNotIn('context=local-ci/summary ', calls)
                     self.assertEqual(calls.count('statuses/' + 'b' * 40), 1)
                     self.assertEqual('mode=receive' in calls, attempt == '1')
+
+
+class SettingsTests(unittest.TestCase):
+    def test_equivalent_gate_is_selected_without_matching_its_old_name(self):
+        desired = ruleset_payload(['main', 'ci_repo'], 15368)
+        old = {'id': 42, 'source': 'anteloper-c/triton-anchor', 'target': 'branch', 'name': 'Previous display name'}
+        calls = []
+        class API:
+            def call(self, method, path):
+                calls.append((method, path))
+                document = copy.deepcopy(desired)
+                document['conditions']['ref_name']['include'].reverse()
+                document['rules'][0]['parameters']['required_status_checks'].reverse()
+                return document
+        self.assertEqual(managed_rulesets(API(), 'repos/anteloper-c/triton-anchor', old['source'], [old], desired), [old])
+        self.assertEqual(calls, [('GET', 'repos/anteloper-c/triton-anchor/rulesets/42')])
+
+    def test_other_target_or_bypass_rules_are_never_selected_for_rename(self):
+        desired = ruleset_payload(['main', 'ci_repo'], 15368)
+        old = {'id': 42, 'source': 'anteloper-c/triton-anchor', 'target': 'branch', 'name': 'Other gate'}
+        for field, value in [('bypass_actors', [{'actor_id': 1}]), ('conditions', {'ref_name': {'include': ['refs/heads/main']}})]:
+            document = {**copy.deepcopy(desired), field: value}
+            class API:
+                def call(self, method, path):
+                    return document
+            with self.subTest(field=field):
+                self.assertEqual(managed_rulesets(API(), 'repos/anteloper-c/triton-anchor', old['source'], [old], desired), [])
 
 
 if __name__ == '__main__':

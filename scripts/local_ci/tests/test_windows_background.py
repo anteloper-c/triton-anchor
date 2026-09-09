@@ -22,7 +22,7 @@ class WindowlessHostExecution(unittest.TestCase):
                 import ctypes, json, sys
                 from pathlib import Path
                 sys.path.insert(0, sys.argv[1])
-                from runtime.common import execute
+                from control.runtime.common import execute
                 root = Path(sys.argv[3])
                 child = "import ctypes,json; print(json.dumps({'console':ctypes.windll.kernel32.GetConsoleWindow(),'output':'captured'})); raise SystemExit(7)"
                 result = execute([sys.argv[2], '-I', '-c', child], root / 'child.log', timeout=20)

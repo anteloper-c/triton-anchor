@@ -19,7 +19,7 @@ def plan(context):
     source = Path(context['source_host_dir'])
     router = context.get('target_branch') == 'main' and not (source / 'scripts').exists()
     argv = (['/opt/ci-venv/bin/python', '-I',
-             '/opt/anchor-ci/runtime/control_plane.py', '--source', context['source_dir']]
+             '/opt/anchor-ci/control/runtime/control_plane.py', '--source', context['source_dir']]
             if router else [context['python_bin'], '-m', 'pytest', '-q',
                             '-o', 'pythonpath=' + context['source_dir'],
                             'scripts/local_ci/tests', 'scripts/ci/tests'])

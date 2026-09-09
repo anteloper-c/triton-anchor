@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.local_ci.runtime.result_paths import (
+from scripts.local_ci.control.runtime.result_paths import (
     branch_directory, iter_run_files, run_relative, task_run_files, validate_result_path,
 )
 

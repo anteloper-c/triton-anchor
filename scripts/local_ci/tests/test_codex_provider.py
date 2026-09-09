@@ -12,9 +12,9 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime.broker import Broker
-from runtime.common import digest, write_json
-from runtime.engine import Engine
+from control.runtime.broker import Broker
+from control.runtime.common import digest, write_json
+from control.runtime.engine import Engine
 
 
 PROVIDER = {'id': 'deepseek', 'name': 'DeepSeek', 'base_url': 'https://api.deepseek.com',
@@ -129,10 +129,10 @@ class ProviderExecution(unittest.TestCase):
         def fast_backoff(event, timeout=None):
             return event.is_set() if timeout == 30 else real_wait(event, timeout)
         with mock.patch.dict(os.environ, {'DEEPSEEK_API_KEY': self.key}), \
-             mock.patch('runtime.engine.Broker', side_effect=broker_factory), \
-             mock.patch('runtime.engine.execute', side_effect=cli), \
-             mock.patch('runtime.control.verify_control', return_value={'tree_sha256': 'fixture', 'verified': False}), \
-             mock.patch('runtime.control.verify_container_control', return_value={'verified': False}), \
+             mock.patch('control.runtime.engine.Broker', side_effect=broker_factory), \
+             mock.patch('control.runtime.engine.execute', side_effect=cli), \
+             mock.patch('control.runtime.control.verify_control', return_value={'tree_sha256': 'fixture', 'verified': False}), \
+             mock.patch('control.runtime.control.verify_container_control', return_value={'verified': False}), \
              mock.patch.object(self.engine, 'docker_run', return_value=''), \
              mock.patch.object(self.engine, 'prepare_agent_home', return_value='/home/agent/.codex'), \
              mock.patch.object(threading.Event, 'wait', new=fast_backoff):
@@ -165,9 +165,9 @@ class ProviderExecution(unittest.TestCase):
         write_json(output / 'task.json', self.task)
         (output / 'agent-events.jsonl').write_text(json.dumps({'type': 'thread.started', 'thread_id': SESSION}) + '\n')
         with mock.patch.dict(os.environ, {'DEEPSEEK_API_KEY': self.key}), \
-             mock.patch('runtime.engine.execute') as execute, \
-             mock.patch('runtime.control.verify_control', return_value={}), \
-             mock.patch('runtime.control.verify_container_control'), mock.patch.object(self.engine, 'docker_run'):
+             mock.patch('control.runtime.engine.execute') as execute, \
+             mock.patch('control.runtime.control.verify_control', return_value={}), \
+             mock.patch('control.runtime.control.verify_container_control'), mock.patch.object(self.engine, 'docker_run'):
             self.engine.recover_publication(record, 'transport fixture')
         argv = execute.call_args.args[0]
         spec = json.loads(base64.urlsafe_b64decode(argv[-1]))
@@ -184,7 +184,7 @@ class ProviderExecution(unittest.TestCase):
         output.mkdir()
         broker = Broker(self.profile, {'task_id': 'provider-fixture'}, {}, output, lambda: False)
         with mock.patch.dict(os.environ, {'DEEPSEEK_API_KEY': self.key}), \
-             mock.patch('runtime.broker.execute', return_value={'returncode': 0, 'elapsed_seconds': 0.1}) as execute:
+             mock.patch('control.runtime.broker.execute', return_value={'returncode': 0, 'elapsed_seconds': 0.1}) as execute:
             broker.command('environment', {'argv': ['python', '--version'], 'cwd': '/workspace'})
         argv = execute.call_args.args[0]
         spec = json.loads(base64.urlsafe_b64decode(argv[-1]))

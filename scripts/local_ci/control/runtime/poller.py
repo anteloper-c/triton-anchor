@@ -117,7 +117,7 @@ class Poller:
                     raise RuntimeError('another task holds the worker; recovery deferred')
                 if status['running']:
                     self.engine.docker_run(profile, '/usr/bin/python3', '-I',
-                          '/opt/anchor-ci/runtime/container_process.py', 'clean-users')
+                          '/opt/anchor-ci/control/runtime/container_process.py', 'clean-users')
                 self.manager.release(profile, task['task_id'])
                 self.engine.run(task, profile, resume_record=record)
             except Exception as exc:

@@ -20,10 +20,10 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMON_SPEC = importlib.util.spec_from_file_location('process_test_common', ROOT / 'runtime/common.py')
+COMMON_SPEC = importlib.util.spec_from_file_location('process_test_common', ROOT / 'control/runtime/common.py')
 common = importlib.util.module_from_spec(COMMON_SPEC)
 COMMON_SPEC.loader.exec_module(common)
-HELPER = ROOT / 'runtime/container_process.py'
+HELPER = ROOT / 'control/runtime/container_process.py'
 
 
 class HostProcessCleanup(unittest.TestCase):

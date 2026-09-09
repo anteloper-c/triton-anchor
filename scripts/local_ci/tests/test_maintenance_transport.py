@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 from scripts.local_ci.maintenance.transport import git_environment, validate_relay_url
 from scripts.local_ci.maintenance.workers import atomic_json
-from scripts.local_ci.runtime.common import digest
-from scripts.local_ci.runtime.relay import Relay
-from scripts.local_ci.runtime.result_paths import run_relative
+from scripts.local_ci.control.runtime.common import digest
+from scripts.local_ci.control.runtime.relay import Relay
+from scripts.local_ci.control.runtime.result_paths import run_relative
 
 
 class GitCredentialEnvironment(unittest.TestCase):
@@ -124,7 +124,7 @@ class RealArtifactPublication(unittest.TestCase):
             captured.append((argv, kwargs))
             return subprocess.CompletedProcess(argv, 128, '', 'fixture-secret should not appear in error')
         with patch.dict(os.environ, {'CI_FIXTURE_USERNAME': 'fixture-user', 'CI_FIXTURE_TOKEN': 'fixture-secret'}):
-            with patch('scripts.local_ci.runtime.relay.subprocess.run', side_effect=fail):
+            with patch('scripts.local_ci.control.runtime.relay.subprocess.run', side_effect=fail):
                 with self.assertRaises(RuntimeError) as failure:
                     self.relay.fetch()
         self.assertNotIn('fixture-secret', str(failure.exception))
