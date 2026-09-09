@@ -3,6 +3,7 @@ run-name: ${{ inputs.run_title || github.event.pull_request.title || github.even
 
 on:
   push:
+    branches: [main, ci_repo]
     paths:
       - "dashboard/**"
       - "scripts/dashboard/**"

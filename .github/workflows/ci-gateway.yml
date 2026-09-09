@@ -313,16 +313,7 @@ jobs:
               core.notice('No compatible worker was available for lifecycle cancellation.');
             }
 
-            if (action === 'closed' || action === 'converted_to_draft') {
-              await github.rest.repos.createCommitStatus({
-                owner,
-                repo,
-                sha: pull.head.sha,
-                state: 'error',
-                context: `${process.env.STATUS_CONTEXT}/routing`,
-                description: `local CI cancelled: ${reason}`.slice(0, 140),
-              });
-            }
+            // Lifecycle cleanup does not change the completed commit's validation result.
             if (failures.length > 0) {
               throw new Error(`Lifecycle cancellation routing failed: ${failures.join('; ')}`);
             }
@@ -1283,7 +1274,7 @@ jobs:
               for (const check of ['basic', 'api', 'security', 'summary']) {
                 await github.rest.repos.createCommitStatus({
                   owner, repo, sha: pull.head.sha, state: 'pending',
-                  context: `local-ci/${check}`, description: 'Frozen PR checks are pending',
+                  context: `local-ci/${check}`, description: 'Waiting for required PR checks',
                   target_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
                 });
               }
@@ -1301,7 +1292,7 @@ jobs:
                 sha: pull.head.sha,
                 state: 'pending',
                 context: 'local-ci/summary',
-                description: `Merge ${process.env.TESTED_SHA.slice(0, 12)}: Local CI in progress`,
+                description: `Merge ${process.env.TESTED_SHA.slice(0, 12)}: Local CI queued or running`,
                 target_url:
                   `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
               });

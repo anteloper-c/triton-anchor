@@ -3,6 +3,7 @@ name: Public API Compatibility
 on:
   pull_request:
   push:
+    branches: [main, ci_repo]
   workflow_dispatch:
 
 permissions:
