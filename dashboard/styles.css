@@ -126,6 +126,7 @@ h1 {
 }
 
 .tab-button {
+  text-decoration: none;
   min-height: 49px;
   padding: 0 2px;
   color: var(--text-muted);

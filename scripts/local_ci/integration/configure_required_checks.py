@@ -24,7 +24,8 @@ def ruleset_payload(branches: list[str], integration_id: int) -> dict:
     if not branches or any(not branch or branch.startswith("refs/") or ".." in branch for branch in branches):
         raise ValueError("Explicit valid target branch names are required")
     return {
-        "name": MANAGED_NAME, "target": "branch", "enforcement": "active", "bypass_actors": [],
+        "name": MANAGED_NAME, "target": "branch", "enforcement": "active",
+        "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "pull_request"}],
         "conditions": {"ref_name": {"include": ["refs/heads/" + branch for branch in branches], "exclude": []}},
         "rules": [{"type": "required_status_checks", "parameters": {
             "strict_required_status_checks_policy": True,
@@ -53,7 +54,7 @@ def managed_rulesets(api, prefix: str, repository: str, existing: list, desired:
         same_targets = (set(actual_refs.get('include', [])) == set(desired_refs['include'])
                         and actual_refs.get('exclude', []) == desired_refs['exclude'])
         actual_rules = detail.get('rules', [])
-        if (same_targets and detail.get('bypass_actors', []) == [] and len(actual_rules) == 1
+        if (same_targets and detail.get('bypass_actors', []) in ([], desired['bypass_actors']) and len(actual_rules) == 1
                 and actual_rules[0].get('type') == 'required_status_checks'):
             actual = dict(actual_rules[0].get('parameters', {}))
             wanted = dict(desired['rules'][0]['parameters'])
