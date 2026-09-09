@@ -77,9 +77,18 @@ class WatchdogTests(unittest.TestCase):
         result = watchdog.evaluate(worker, now=self.now)
         self.assertEqual({entry["code"] for entry in result["active"].values()}, {"disk_space_low", "codex_unavailable", "task_no_progress"})
 
-    def test_mail_config_missing_fails_explicitly(self):
+    def test_mail_config_missing_disables_optional_delivery(self):
+        self.assertIsNone(watchdog.smtp_configuration({}))
+        self.assertIsNone(watchdog.smtp_configuration({"LOCAL_CI_SMTP_HOST": "", "LOCAL_CI_SMTP_PORT": "587",
+                                                      "LOCAL_CI_SMTP_SSL": "0", "LOCAL_CI_SMTP_STARTTLS": "true"}))
+
+    def test_partial_mail_config_fails_explicitly(self):
         with self.assertRaisesRegex(ValueError, "configuration is incomplete"):
-            watchdog.smtp_configuration({})
+            watchdog.smtp_configuration({"LOCAL_CI_SMTP_HOST": "fixture.invalid"})
+
+    def test_direct_delivery_without_smtp_does_not_claim_success(self):
+        with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(ValueError, "delivery is disabled"):
+            watchdog.deliver({})
 
     def test_outbox_replay_is_idempotent(self):
         result = watchdog.evaluate({**self.worker, "state": "offline"}, now=self.now)
@@ -103,16 +112,41 @@ class WatchdogTests(unittest.TestCase):
             self.assertEqual(len(list((root / "outbox").glob("*.eml"))), 1)
             self.assertFalse(json.loads((root / "state.json").read_text())["pending_notifications"])
 
-    def test_missing_smtp_preserves_pending_and_dashboard_output(self):
+    def test_missing_smtp_preserves_incidents_and_recovery_without_mail_backlog(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             env = {key: value for key, value in os.environ.items() if not key.startswith("LOCAL_CI_SMTP_")}
             command = [sys.executable, str(MODULE), "--input", "-", "--state", str(root / "state.json"),
                        "--output", str(root / "dashboard.json"), "--now", watchdog.iso(self.now)]
             result = subprocess.run(command, input=json.dumps({"workers": [], "expected_workers": ["worker"]}), env=env, text=True, capture_output=True)
-            self.assertEqual(result.returncode, 1)
-            self.assertTrue(json.loads((root / "state.json").read_text())["pending_notifications"])
-            self.assertTrue((root / "dashboard.json").is_file())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = json.loads((root / "state.json").read_text())
+            self.assertEqual("disabled", state["mail_delivery"])
+            self.assertTrue(state["active"])
+            self.assertFalse(state["healthy"])
+            self.assertFalse(state["pending_notifications"])
+            self.assertEqual(state, json.loads((root / "dashboard.json").read_text()))
+            healthy = {"workers": [{**self.worker, "worker_id": "worker"}], "expected_workers": ["worker"]}
+            for _ in range(2):
+                recovered = subprocess.run(command, input=json.dumps(healthy), env=env, text=True, capture_output=True)
+                self.assertEqual(recovered.returncode, 0, recovered.stderr)
+            state = json.loads((root / "state.json").read_text())
+            self.assertTrue(state["healthy"])
+            self.assertFalse(state["pending_notifications"])
+            self.assertEqual(["opened", "recovered"], [entry["transition"] for entry in state["history"]])
+
+    def test_partial_smtp_preserves_pending_and_dashboard_on_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            argv = [str(MODULE), "--input", "-", "--state", str(root / "state.json"),
+                    "--output", str(root / "dashboard.json"), "--now", watchdog.iso(self.now)]
+            with patch.object(sys, "argv", argv), patch.object(sys, "stdin", io.StringIO(json.dumps({"workers": [], "expected_workers": ["worker"]}))), \
+                 patch.dict(os.environ, {"LOCAL_CI_SMTP_HOST": "fixture.invalid"}, clear=True), patch.object(watchdog.smtplib, "SMTP") as smtp:
+                self.assertEqual(1, watchdog.main())
+                smtp.assert_not_called()
+            state = json.loads((root / "state.json").read_text())
+            self.assertTrue(state["pending_notifications"])
+            self.assertEqual(state, json.loads((root / "dashboard.json").read_text()))
 
     def test_queued_work_has_separate_threshold(self):
         task = {"status": "queued", "task_id": "queued", "created_at": watchdog.iso(self.now - timedelta(minutes=30))}

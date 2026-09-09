@@ -60,7 +60,7 @@ jiwang_ci + Rootless Docker
 | 基础镜像及不可变 digest、离线镜像文件或公司镜像源 | 留空；使用可信来源，不从执行过 PR 的容器制作镜像 |
 | 各版本 LLVM、前端代码；3.0 的 PPL、仿真后端、torch/torch_tpu、FlagGems | 用户放好包并提供路径；部署窗口计算摘要、核对实际版本/来源，源码通过 Gitee 取得 |
 | Codex CLI、公司模型配置及私有凭据来源 | 留空；复用实际可用配置，不猜模型名或中转地址 |
-| Gitee 凭据、SMTP、公司 CA/代理 | 留空；在服务器私下填写 |
+| Gitee 凭据、公司 CA/代理 | 留空；在服务器私下填写；此部署不配置 SMTP |
 
 **代码交付前提：** 能访问 GitHub 的交付方需要先将本次 `CI_dev` 控制代码同步到公司可达 Gitee，并给出 URL、ref、完整 SHA。这是交付方的工作，不要求服务器窗口连接 GitHub。已有 Gitee PR 代码 refs 不保证包含控制分支；只有 PR 快照时不能据此安装本版 Harness。`main` 的 GitHub 调度部署不在服务器窗口的工作范围。
 
@@ -242,7 +242,7 @@ LLVM 配方结构如下，空串需填实际值。当前用户模板已采用 ar
 
 **检查点：** 基础镜像在 `jiwang_ci` 的 daemon 中可见；LLVM 包提交匹配、归档结构正确；PPL/厂商 wheel 与 Python/仿真版本匹配；公司 CLI 已安装在基础镜像中，或由可信 `prepare_commands` 从本地材料安装。不需要人工在未来的 PR 容器里逐次装这批公共依赖。
 
-保留公司实际 provider/model/config.toml/auth.json。它们位于宿主私有来源，运行时仅进入任务的 Codex 私有目录，不写入 Git、镜像层或普通测试环境。仅补充实际 provider 的 `env_key/env_http_headers` 所引用变量。SMTP 仅填写配置，不发送邮件。
+保留公司实际 provider/model/config.toml/auth.json。它们位于宿主私有来源，运行时仅进入任务的 Codex 私有目录，不写入 Git、镜像层或普通测试环境。仅补充实际 provider 的 `env_key/env_http_headers` 所引用变量。此部署不配置 SMTP；GitHub PR 评论和状态发布链路保持不变。
 
 `--credentials-env` 指定安装后服务读取的文件，不会替安装器当前进程加载变量。手动执行预检和安装前，在 `jiwang_ci` 会话中加载同时兼容 shell/systemd 格式的私有文件，不开启 xtrace：
 
@@ -290,7 +290,7 @@ cd "$CI_CONTROL"
 "$CI_PYTHON" scripts/local_ci/deploy/rotate.py --config "$CI_CONFIG" --profile "$CI_PROFILE_NAME"
 ```
 
-配置检查输出 `ready: true` 后才构建镜像；失败时按 `checks` 中具体 `check/message` 补配置。这里会检查 SMTP/health 变量是否填写，但不发信。`rotate.py` 成功应返回 `state: ready`、`validated: true`、`image_id` 和 `release_id`；记下它们，不手工修改登记文件。
+配置检查输出 `ready: true` 后才构建镜像；失败时按 `checks` 中具体 `check/message` 补配置。这里要求 Gitee 任务/结果和 health 发布凭据；SMTP 全空时通过，部分配置仍报错，不发信。`rotate.py` 成功应返回 `state: ready`、`validated: true`、`image_id` 和 `release_id`；记下它们，不手工修改登记文件。
 
 若想把某条命令的输出存为部署日志，可以在同一 Bash 中先 `set -o pipefail`，再将命令加上 `2>&1 | tee "$CI_LOG_DIR/本步名称.log"`。不要只看 tee 是否成功；命令退出状态和 JSON 检查项都要通过。镜像构建和自检的详细日志还会自动写入 `state/environments/image-logs/发布ID.log`。
 
@@ -301,7 +301,7 @@ cd "$CI_CONTROL"
 "$CI_PYTHON" scripts/local_ci/deploy/preflight.py --config "$CI_CONFIG"
 ```
 
-资源预检检查实际 CPU/memory/pids 限制和镜像身份。SMTP、公司模型配置或其他必需项缺失时如实记录，不能绕过正式预检安装，不能宣称部署完成。预检通过不代表真实模型、邮件、PR 或 GitHub 链路已验收。
+资源预检检查实际 CPU/memory/pids 限制和镜像身份。公司模型配置、Gitee/health 凭据或其他必需项缺失时如实记录，不能绕过正式预检安装，不能宣称部署完成。SMTP 未配置不阻塞部署，watchdog 仍维护异常、恢复和健康输出，但跳过邮件且不积压邮件队列。预检通过不代表真实模型、PR 或 GitHub 链路已验收。
 
 镜像自检会检查 Codex CLI 可运行；实际启动驱动还会读取 `codex features list`，确认 Shell/unified exec 功能可用，已移除的功能开关不会重新开启。这不是模型调用成功的证明，本轮不通过运行 PR 或调用模型来补验收。
 
@@ -343,7 +343,7 @@ systemctl --user list-timers --all 'triton-anchor-local-ci*'
 | LLVM 摘要/提交不匹配，include/lib 不存在 | 包 SHA256、llvm-hash.txt、strip_components | 修正 archive 配方或更换匹配包，然后重新 rotate。 |
 | Backend rebuild/smoke 失败 | 3.0 镜像日志、厂商版本、BACKEND_*、PPL_ROOT | 修复实际依赖和命令，保留 backend_enabled=true。 |
 | `runtime_probe` 缺失或过期 | 资源/配置/控制提交和活动镜像是否变化 | 镜像需要更新时先 rotate，再执行 --probe-runtime 与正式预检。 |
-| 安装失败：凭据权限或 SMTP/health 缺失 | 文件归属/600 权限、当前进程是否已加载 EnvironmentFile | 第 4 步补齐，再做正式预检和安装。 |
+| 安装失败：凭据权限或 Gitee/health 缺失 | 文件归属/600 权限、当前进程是否已加载 EnvironmentFile | 第 4 步补齐，再做正式预检和安装；SMTP 全空不算失败。 |
 | unit 已安装但没有任务日志 | `ActiveState`，本轮是否仍处于未启用状态 | 本轮 inactive 属于预期，不为制造日志而启动 Worker。 |
 | 更新后仍显示 read-only 或原生命令不可用 | 宿主控制 SHA、镜像 control_revision、实际 Codex CLI 能力 | 按下方更新步骤准备匹配版本；不只改 unit 或公司配置来源。 |
 | 原生 Python/JIT 缺库，但正式工具能运行 | 原生 venv 是否已安装候选 wheel，是否加载 environment_setup，库路径是否指向探索 backend | 在任务副本中初始化和排障；不用实验结果替代正式检查，也不修改正式目录权限。 |

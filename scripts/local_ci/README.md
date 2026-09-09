@@ -73,7 +73,7 @@ GitHub 独立读取并校验结果，没有 Gitee 回执和本地等待。保持
 
 Gitee v4 结果默认保留 30 天，按结果文件的 Git 上传提交时间计算；独立 retention timer 删除过期 run 并保留身份、摘要与过期标记。周期独立于 GitHub 发布，过期结果显示 expired，不回退发布更老 run。此清理不改写 Git 历史，也不删除服务器任务证据；接收长期中断须在到期前处理或调整 `results_retention_days`。
 
-独立用户级 health timer 汇总服务、Rootless runtime、镜像、task attempts、磁盘及执行状态并发布心跳。Docker 不可达也生成错误快照。GitHub watchdog 读取心跳，SMTP 支持异常去重、失败重试和恢复通知；公开摘要不复制主机路径、配置或凭据。中转不可达与主机离线分别处理。GitHub schedule 有平台延迟，告警窗口须容纳发布和调度间隔；模型 API 仍只在服务器使用。
+独立用户级 health timer 汇总服务、Rootless runtime、镜像、task attempts、磁盘及执行状态并发布心跳。Docker 不可达也生成错误快照。GitHub watchdog 读取心跳；SMTP 是可选通道，未配置时仍维护异常、恢复和健康输出，但不积压邮件；已配置时支持去重、失败重试和恢复通知。GitHub PR 评论和状态发布不依赖 SMTP。公开摘要不复制主机路径、配置或凭据。中转不可达与主机离线分别处理。GitHub schedule 有平台延迟，告警窗口须容纳发布和调度间隔；模型 API 仍只在服务器使用。
 
 ## 验收与迁移
 

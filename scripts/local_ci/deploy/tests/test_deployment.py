@@ -99,6 +99,18 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn("profile:triton_v3.0:image", failed)
         self.assertIn("profile:triton_v3.0:daily_validation", failed)
 
+    def test_smtp_optional_but_gitee_and_health_tokens_required(self):
+        config = json.loads((DEPLOY / "config.example.json").read_text())
+        config["health_token_env"] = "CUSTOM_HEALTH_TOKEN"
+        for env, expected in (({}, ("pass", "fail", "fail")),
+                              ({"GITEE_TOKEN": "fixture", "GITEE_HEALTH_TOKEN": "wrong-key"}, ("pass", "pass", "fail")),
+                              ({"GITEE_TOKEN": "fixture", "CUSTOM_HEALTH_TOKEN": "fixture"}, ("pass", "pass", "pass")),
+                              ({"LOCAL_CI_SMTP_HOST": "fixture.invalid"}, ("fail", "fail", "fail"))):
+            with self.subTest(expected=expected), patch.dict(os.environ, env, clear=True):
+                result = preflight.check_configuration(config, runtime=False)
+                checks = {item["check"]: item["status"] for item in result["checks"]}
+                self.assertEqual(expected, tuple(checks[key] for key in ("smtp", "gitee_publish_auth", "health_publish_auth")))
+
     def test_preflight_loads_skill_and_rejects_partial_control_package(self):
         config = json.loads((DEPLOY / "config.example.json").read_text())
         config['control_root'] = str(DEPLOY.parents[2])

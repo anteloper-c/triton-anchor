@@ -42,7 +42,7 @@
 - Triton 3.0 必须开启 backend，其他当前版本必须关闭。真实 PPL、torch/torch_tpu、后端、FlagGems 路径与依赖缺失属于部署失败；validation_commands 必须调用真实基础工具，不能填 true。新 LLVM 仍必须匹配被测代码声明；任务容器不使用旧常驻环境的 post_task_validation_commands 或设备复用检查。
 - `cleanup_timeout_seconds` 默认 60，`management_timeout_seconds` 默认 600；`finish_timeout_seconds` 默认 3600、最大 86300，且须至少覆盖 `3*cleanup_timeout_seconds + management_timeout_seconds + 60`。这些正整数控制任务进程清理、容器管理和整个封存 RPC 的期限，不再按旧公共目录指纹或设备复用检查推算。
 
-Gitee 任务/结果仓库与独立健康仓库均填写实际地址。Model、上传、health 和 SMTP 凭据保存在私有来源中；EnvironmentFile 必须由运行用户所有、权限 600。GitHub 侧变量、审批规则及 Pages 配置沿用既有 v4 合同，部署工具不更改分支保护或审批环境。
+Gitee 任务/结果仓库与独立健康仓库均填写实际地址。Model、上传和 health 凭据保存在私有来源中；EnvironmentFile 必须由运行用户所有、权限 600。预检要求 `GITEE_TOKEN` 和 `health_token_env` 指定的健康发布凭据。SMTP 是可选通道，未配置不阻塞部署；部分配置仍报错。GitHub 侧变量、审批规则及 Pages 配置沿用既有 v4 合同，PR 评论和状态发布不依赖 SMTP，部署工具不更改分支保护或审批环境。
 
 ## 镜像准备、预检与资源实效
 
@@ -122,7 +122,7 @@ rootless_ready 引用实际 runtime_proof 文件及 SHA256；image_releases_read
 
 原生 CLI 事件和源码快照在 `state_dir/tasks/<task_id>/<run_id>/` 内私有保存，不自动上传，且不受上述 scratch 预算回收。原始事件可能包含敏感输出，索引脱敏不能替代分享前检查。先清理正式测试身份并封存，再停止 Codex、导出原生修改；中断后补导出成功或明确记录数据丢失，才继续回收。封存后的异常报告为运维故障，不修改不可变的已封存结果。具体文件对应关系见 [任务日志位置](jiwang_ci/HANDOFF.md#后续自己调试时从哪一步查起)。
 
-health timer 使用 systemctl --user，读取公共 image/attempt/runtime 状态和只读 journal；即使 Docker 不可达仍生成可发布的错误快照。watchdog 保留健康、队列、上传、目录及隔离异常的通知去重、发送重试和恢复机制；公共摘要不复制宿主机路径、配置、凭据或异常全文。SMTP 只能来自实际配置，本机测试使用 --mail-outbox，不发送真实邮件。
+health timer 使用 systemctl --user，读取公共 image/attempt/runtime 状态和只读 journal；即使 Docker 不可达仍生成可发布的错误快照。watchdog 保留健康、队列、上传、目录及隔离异常的记录、去重和恢复机制；公共摘要不复制宿主机路径、配置、凭据或异常全文。SMTP 的 host/from/to/username/password 均为空时禁用邮件（单独的 port/TLS 默认值不启用），输出 `mail_delivery: disabled`，仍维护 active/history/healthy 和 dashboard，但不保留邮件待发送队列，后续启用邮件也不补发已跳过的历史通知。部分配置仍失败，已启用通道发送失败保留队列重试。SMTP 只能来自实际配置，本机测试使用 --mail-outbox，不发送真实邮件。
 
 results_retention_days 默认30天。独立用户级 retention timer 按上传 Git 时间清理 Gitee v4 run，保留身份/摘要/过期标记，不删除本地 outbox、不等待 GitHub 回执、不回退展示更旧结果。
 

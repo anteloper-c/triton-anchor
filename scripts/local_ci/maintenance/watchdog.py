@@ -287,9 +287,13 @@ def evaluate(document: dict[str, Any], previous: dict[str, Any] | None = None, *
             "worker_health": worker_health}
 
 
-def smtp_configuration(environ: dict[str, str] | None = None) -> dict[str, Any]:
+def smtp_configuration(environ: dict[str, str] | None = None) -> dict[str, Any] | None:
     env = os.environ if environ is None else environ
     required = ("LOCAL_CI_SMTP_HOST", "LOCAL_CI_SMTP_FROM", "LOCAL_CI_SMTP_TO")
+    # Port/TLS defaults alone do not opt a deployment into email delivery.
+    settings = (*required, "LOCAL_CI_SMTP_USERNAME", "LOCAL_CI_SMTP_PASSWORD")
+    if not any(env.get(key, "").strip() for key in settings):
+        return None
     missing = [key for key in required if not env.get(key, "").strip()]
     if missing:
         raise ValueError("Mail configuration is incomplete: " + ", ".join(missing))
@@ -334,6 +338,8 @@ def deliver(notification: dict[str, Any], *, outbox: Path | None = None, smtp: d
             output.write_bytes(message.as_bytes())
         return
     smtp = smtp or smtp_configuration()
+    if smtp is None:
+        raise ValueError("Mail delivery is disabled; configure SMTP before sending")
     message = message_for(notification, smtp["sender"], smtp["recipients"])
     cls = smtplib.SMTP_SSL if smtp["ssl"] else smtplib.SMTP
     kwargs = {"context": ssl.create_default_context()} if smtp["ssl"] else {}
@@ -417,10 +423,14 @@ def main() -> int:
                              upload_seconds=args.upload_seconds, progress_seconds=args.progress_seconds,
                              queue_seconds=args.queue_seconds, disk_free_bytes=args.disk_free_bytes)
             if not args.dry_run:
-                # Validate SMTP even for a healthy run: an inert monitor is a deployment error.
                 atomic_json(state_path, state)
                 try:
                     smtp = None if args.mail_outbox else smtp_configuration()
+                    state["mail_delivery"] = "outbox" if args.mail_outbox else "smtp" if smtp else "disabled"
+                    if state["mail_delivery"] == "disabled":
+                        # Incidents/history remain visible, but disabled mail is not a retry queue.
+                        state["pending_notifications"] = []
+                    atomic_json(state_path, state)
                     for notification in list(state["pending_notifications"]):
                         deliver(notification, outbox=Path(args.mail_outbox) if args.mail_outbox else None, smtp=smtp)
                         state["pending_notifications"] = [item for item in state["pending_notifications"] if item["id"] != notification["id"]]

@@ -135,12 +135,15 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
     check("staggered_rotation", len(calendars) == len(set(calendars)), "Profiles must have distinct daily rebuild times; the resource lock also serializes builds")
     if require_notifications:
         try:
-            smtp_configuration()
-            check("smtp", True, "Mail transport configured; no message sent")
+            smtp = smtp_configuration()
+            check("smtp", True, "Mail transport configured; no message sent" if smtp else
+                  "Optional SMTP is disabled; health publishing and GitHub PR notifications remain independent")
         except ValueError as exc:
             check("smtp", False, str(exc))
+        check("gitee_publish_auth", bool(os.environ.get("GITEE_TOKEN", "").strip()),
+              "Set GITEE_TOKEN for task/result repository access")
         health_env = config.get("health_token_env", "GITEE_HEALTH_TOKEN")
-        check("health_publish_auth", bool(os.environ.get(health_env)), "Set the configured health publishing credential environment variable")
+        check("health_publish_auth", bool(os.environ.get(health_env, "").strip()), "Set the configured health publishing credential environment variable")
     if runtime:
         check("linux", sys.platform.startswith("linux"), "Worker deployment requires Linux, user systemd and Rootless Docker")
         check("ordinary_ci_user", os.geteuid() != 0, "Run as the ordinary CI account, without sudo or root-owned runuser")
