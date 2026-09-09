@@ -91,3 +91,9 @@
 用户明确服务器窗口无法连接 GitHub，只需要部署内容，不需要试跑。重写 deploy/jiwang_ci/HANDOFF.md：交付方先提供 Gitee 控制代码 URL/ref/完整 SHA，服务器本地核验版本；保留 jiwang_ci 账户、Rootless、实际依赖和私有配置、镜像自检、资源预检及用户服务安装。删除 GitHub 配置、正常/失败 PR 试跑和线上联调步骤，CI 服务安装后保持未启用接单；未提供的服务器信息继续留空。上级 README 同步说明交接边界。
 
 本轮仅修改交接文档和工作记录，核对命令与现有安装器接口、Markdown 相对链接及 git diff --check；未改运行代码或重跑模拟套件，未推送、连接服务器、部署、调用模型或发信。变更随本地 CI_dev 提交保存，可用 git log -1 -- scripts/local_ci/deploy/jiwang_ci/HANDOFF.md 追溯。
+
+## 2026-09-09：按 docs/build 与本地预编译包补齐逐步部署手册
+
+用户要求可自行逐步执行和调试，明确会放好 LLVM/PPL 等包并希望只提供文件路径。核对 docs/build.md、开发 Dockerfile、envsetup.sh 与真实镜像管理/预检/安装入口；在 jiwang_ci/HANDOFF.md 增加部署架构、目录与宿主 venv、依赖对应、基础镜像导入、每步检查点和日志定位。区分开发 privileged 示例与当前 CI，说明开发镜像缺少的 Codex/PyYAML/厂商组件和文档 TODO；保留仅 Gitee、安装后不接单的范围。
+
+jiwang_ci/config.template.json 的 LLVM 改为 archive 空值模板；部署窗口可根据用户路径计算摘要、检查包结构并填写配置，LLVM commit 仍须从实际来源确认并匹配目标，不能冒充运行时支持仅路径配置。手册说明当前资源 probe 覆盖任务/验证容器，不代表 docker build 已获相同资源限额。验证文档相对链接、Bash 语法、模板结构及缺配置时预检仍失败，并执行 git diff --check；未运行真实 Docker、编译、模型、邮件或 PR，未推送、部署服务器。本轮变更随本地 CI_dev 提交保存。

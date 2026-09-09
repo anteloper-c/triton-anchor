@@ -1,8 +1,35 @@
-# jiwang_ci 服务器部署交接（仅 Gitee）
+# jiwang_ci 服务器部署与调试手册（仅 Gitee）
 
 请在目标服务器上完成 Local CI 的部署准备与用户服务安装。服务器无法访问 GitHub，只能通过 Gitee 取得代码；本轮不配置 GitHub、不投递或试跑 PR、不进行线上联调、不调用模型生成、不发送邮件。安装后的 CI 服务和定时器保持未启用、未启动，避免自动消费已有队列；Rootless Docker 本身需要启动以完成部署预检。
 
 唯一已确认的服务器信息是 CI 用户名 `jiwang_ci`。发行版、家目录、UID、资源额度、镜像、依赖和所有实际地址留待服务器盘点，不猜测。使用本目录的 [配置模板](config.template.json) 和 [凭据变量模板](credentials.env.template)，填写后的文件放在 Git checkout 外，不提交或打印凭据。
+
+依赖依据是仓库的 [docs/build.md](../../../../docs/build.md)，实际环境变量核对 [envsetup.sh](../../../../envsetup.sh)。用户会自行下载、放置预编译包，并可以只向部署窗口提供文件路径；本手册优先采用本地 LLVM/PPL 等包，不要求服务器在线下载或从源码编译 LLVM。部署窗口负责检查文件、计算 SHA256、确认包版本并补齐配置字段。
+
+## 先理解要部署什么
+
+部署时先准备可以重复使用的镜像，再安装负责接任务的宿主服务。镜像准备和 PR 执行是两个阶段：
+
+```text
+部署阶段
+jiwang_ci + Rootless Docker
+  → Gitee 上的可信 CI_dev 控制代码
+  → 基础镜像 + 本地预编译包 + 各版本源码与配置
+  → rotate.py 构建并自检 CI 镜像
+  → preflight.py 验证配置与资源限制
+  → install.py 安装用户服务，暂不接单
+
+后续运行阶段（本轮不启动）
+宿主 Harness 读取 Gitee 任务
+  → 从对应 CI 镜像创建独立任务容器
+  → 容器内 Codex 分析，借助 Harness 调用测试工具
+  → 宿主保存状态和证据、上传 Gitee
+  → 按保留策略清理该任务的容器和数据
+```
+
+`profile.image` 填的是作为构建起点的**基础镜像**。`rotate.py` 加入可信控制代码、版本源码、LLVM/PPL 等依赖，生成带新 digest 的**CI 镜像**，验证后登记为活动版本。PR 使用后者；不需要预先启动三个常驻测试容器。多个版本可以共用合适的基础镜像，但各自的 LLVM 和后端能力由 profile 区分。
+
+下面的命令都在服务器 Bash 中逐条执行，前一步失败就停在该步。除第 2 步明确的管理员准备外，使用 `jiwang_ci`，不加 sudo。检查结果和日志保留在自己的目录，便于之后从失败阶段继续。
 
 ## 部署架构与边界
 
@@ -26,7 +53,7 @@
 | Gitee 任务/结果仓库、独立健康仓库和健康分支 | 留空；沿用实际中转配置，确认健康分支已存在 |
 | CPU、内存、PID 和磁盘额度 | 留空；按 CI 可用额度配置，不按整机资源占满 |
 | 基础镜像及不可变 digest、离线镜像文件或公司镜像源 | 留空；使用可信来源，不从执行过 PR 的容器制作镜像 |
-| 各版本 LLVM、前端代码；3.0 的 PPL、仿真后端、torch/torch_tpu、FlagGems | 留空；提供精确版本、来源、路径及摘要 |
+| 各版本 LLVM、前端代码；3.0 的 PPL、仿真后端、torch/torch_tpu、FlagGems | 用户放好包并提供路径；部署窗口计算摘要、核对实际版本/来源，源码通过 Gitee 取得 |
 | Codex CLI、公司模型配置及私有凭据来源 | 留空；复用实际可用配置，不猜模型名或中转地址 |
 | Gitee 凭据、SMTP、公司 CA/代理 | 留空；在服务器私下填写 |
 
@@ -43,6 +70,38 @@
 通过真实 `jiwang_ci` 登录会话安装并启动该用户的 Rootless Docker service。与其他人的系统 Docker 共存，不停用系统 daemon。使用支持的本地文件系统存储 Docker 数据，不使用 NFS。
 
 配置显式的该用户 endpoint/context，核对 Docker info 中的 rootless、cgroup v2 和 systemd；CPU/memory/pids controller delegation 仅按需要配置。后续资源预检会检查实际限制，不把传入 Docker 参数等同于限制生效。
+
+**检查点：** 登录 `jiwang_ci` 后，先确认身份、用户服务总线和私有 Docker，再继续准备目录：
+
+```bash
+id
+test "$(id -un)" = jiwang_ci
+systemctl --user status docker.service --no-pager
+CI_DOCKER_ENDPOINT="unix:///run/user/$(id -u)/docker.sock"
+test -S "/run/user/$(id -u)/docker.sock"
+docker --host "$CI_DOCKER_ENDPOINT" info --format '{{json .SecurityOptions}}'
+docker --host "$CI_DOCKER_ENDPOINT" info --format '{{.CgroupVersion}} {{.CgroupDriver}}'
+docker context ls
+```
+
+预期有 `rootless`、`2 systemd`，context 指向相同 socket。`docker.service` 若在实际部署中另有名称，要同步修改配置和命令。无法连接用户总线时先修复真实登录会话/D-Bus/linger；socket 不存在时查 Rootless 安装和 `journalctl --user -u docker.service -n 100 --no-pager`，不要用 sudo Docker 绕过。
+
+下面提供一套**建议目录**，使用该用户实际 `$HOME` 推导，不假定家目录是 `/home/jiwang_ci`。如果磁盘另有规划，可在创建前改 `CI_ROOT`：
+
+```bash
+CI_ROOT="$HOME/triton-anchor-ci"
+CI_CONTROL="$CI_ROOT/control"
+CI_STATE="$CI_ROOT/state"
+CI_CONFIG="$CI_ROOT/config/local-ci.json"
+CI_CREDENTIALS="$CI_ROOT/config/credentials.env"
+CI_MODEL_SOURCE="$CI_ROOT/config/codex-source"
+CI_REVIEW_DIR="$CI_ROOT/deploy-review"
+CI_LOG_DIR="$CI_ROOT/deploy-logs"
+umask 077
+mkdir -p "$CI_ROOT/config" "$CI_MODEL_SOURCE" "$CI_STATE" "$CI_LOG_DIR" "$CI_ROOT/packages"
+```
+
+`control` 只存 Git 代码，`config` 存私有配置，`state` 存任务与镜像登记，`packages` 可存用户准备的离线包，`deploy-logs` 存部署命令输出。Docker 镜像/卷实际位于该用户 Rootless daemon 的 data-root，通过 `docker info` 查看。重新开终端后要重新设置这些变量；不要覆盖已有部署的配置或 state。
 
 ## 3. 从 Gitee 取得并固定控制代码
 
@@ -68,9 +127,24 @@ SHA 比对依据是交付方提供的值，无须向 GitHub 查询。检查依�
 
 配置中的 `repositories: ["likehupochuan/triton-anchor"]` 是任务身份白名单，不是让服务器访问 GitHub 的 clone 地址，不能直接改成 Gitee URL。实际网络来源由 `gitee_repo_url`、各 profile 的 repositories/LLVM 配置等指定。不操作 `CI_dev_forPR`，不对 `RACE-org/triton-anchor` 执行远端操作。
 
+**检查点：** HEAD 等于交付 SHA、工作区干净，且 `scripts/local_ci/deploy/install.py` 存在。然后准备宿主 Harness 的独立 Python 环境，并复制配置模板：
+
+```bash
+python3 --version
+python3 -m venv "$CI_ROOT/harness-venv"
+CI_PYTHON="$CI_ROOT/harness-venv/bin/python"
+test ! -e "$CI_CONFIG"
+test ! -e "$CI_CREDENTIALS"
+cp "$CI_CONTROL/scripts/local_ci/deploy/jiwang_ci/config.template.json" "$CI_CONFIG"
+cp "$CI_CONTROL/scripts/local_ci/deploy/jiwang_ci/credentials.env.template" "$CI_CREDENTIALS"
+chmod 600 "$CI_CONFIG" "$CI_CREDENTIALS"
+```
+
+宿主 Python 建议 3.11 或以上；若系统缺 Python/venv，先通过实际发行版的公司源或离线包补齐。这个 venv 运行 Harness；容器内另有 seed Python，编译依赖安装在镜像里。JSON 不会展开 `$HOME` 或上述变量，配置字段必须填展开后的绝对路径。
+
 ## 4. 填写服务器配置与凭据
 
-复制本目录两个模板到可信配置目录，归属 `jiwang_ci`，含凭据文件权限设为 600。所有空值须补齐；只配置本次已准备好的版本，其余版本明确记录为未部署。Triton 3.0 必须具备后端和性能能力，其他版本仅前端能力，不能把 3.0 缺失后端改为禁用以通过预检。
+填写第 3 步已复制的两个配置文件，保持归属 `jiwang_ci`，含凭据文件权限为 600，不重复复制覆盖。补齐当前部署必需的地址、路径、版本和资源值，可选参数按真实环境决定；只配置本次已准备好的版本，其余版本明确记录为未部署。Triton 3.0 必须具备后端和性能能力，其他版本仅前端能力，不能把 3.0 缺失后端改为禁用以通过预检。
 
 | 配置 | 填写规则 |
 | --- | --- |
@@ -88,6 +162,79 @@ SHA 比对依据是交付方提供的值，无须向 GitHub 查询。检查依�
 | `gitee_repo_url/health_repo_url/health_branch` | 实际中转地址和已有分支；记录任务/结果与健康发布所需权限。配置不代表已执行远端发布。 |
 
 基础镜像需具备编译器、CMake/Ninja、Git、Python/venv 和依赖；seed Python 能 import build/setuptools/wheel/pybind11/yaml/pytest。3.0 还需要匹配的 PPL、torch/torch_tpu、仿真后端和 FlagGems；用户使用仿真，不预设物理设备，也不凭“已有 LLVM 和 PPL”判断全部依赖齐全。
+
+### 将 docs/build 的依赖落实到镜像
+
+| 构建文档的内容 | 当前 CI 如何使用 |
+| --- | --- |
+| Ubuntu 24.04 | 可作为镜像基础系统；不是要求重装宿主系统。来源与 digest 以实际提供为准。 |
+| `build-essential cmake ninja-build git python3 python3-pip python3-venv python3-dev libz-dev libzstd-dev libxml2-dev` | 安装到可信基础镜像，APT 源换成公司可达源或使用离线包。 |
+| `/opt/venv`、setuptools/wheel/pybind11 | 可沿用该 seed venv 路径；CI 还需要 `build`、`PyYAML`（import 名为 `yaml`）、`pytest`。`uv` 可保留，非必须依赖其公网安装脚本。 |
+| LLVM 预编译包 | 使用下方 `llvm.mode=archive`；`docs/build.md` 中示例 SHA 不能替代实际目标版本的 `llvm-hash.txt`。 |
+| `LLVM_BUILD_DIR`、`envsetup.sh` | manager 自动设为镜像内 `/opt/local-ci/runtime/deps/llvm-完整SHA`；原文 `/workspace/llvm-release` 是开发默认路径。 |
+| wheel 构建、安装、smoke | 由 `validation_commands` 调用真实工具；不用开发目录里的旧 wheel 代替。 |
+| 后端集成 TODO | 仍需真实后端构建配置、wheel 规则、envsetup、smoke/JIT 命令和依赖；3.0 另提供 PPL/torch/torch_tpu/FlagGems。 |
+| `docker run --privileged` 示例 | 是开发示例，不用于本 CI；容器的创建和身份隔离由 Harness 管理。 |
+
+[docker/build-env.Dockerfile](../../../../docker/build-env.Dockerfile) 可用作基础镜像配方参考，但当前它仍使用默认联网 APT/pip 源，未提供 Codex CLI、PyYAML 和厂商组件，不能直接当作完整 CI 镜像。离线部署时补齐这些材料和依赖，使用公司源或已经下载的包；不把模型凭据烘焙进镜像。
+
+如果已有可信的完整基础镜像 tar，可直接导入该用户的 Docker。先填 `CI_FOUNDATION_ARCHIVE`、交付方给出的包 SHA256 `CI_FOUNDATION_ARCHIVE_SHA256`，以及预期 Docker 镜像 ID `CI_FOUNDATION_IMAGE`，再执行：
+
+```bash
+: "${CI_FOUNDATION_ARCHIVE:?填写本地镜像 tar 的绝对路径}"
+: "${CI_FOUNDATION_ARCHIVE_SHA256:?填写交付方提供的镜像包 SHA256}"
+: "${CI_FOUNDATION_IMAGE:?填写预期 sha256 格式 Docker 镜像 ID}"
+printf '%s  %s\n' "$CI_FOUNDATION_ARCHIVE_SHA256" "$CI_FOUNDATION_ARCHIVE" | sha256sum --check -
+docker --host "$CI_DOCKER_ENDPOINT" image load --input "$CI_FOUNDATION_ARCHIVE"
+docker --host "$CI_DOCKER_ENDPOINT" image inspect "$CI_FOUNDATION_IMAGE" --format '{{.Id}}'
+```
+
+检查成功后，把这个基础镜像 ID 填到对应 `profile.image`。普通 LLVM/PPL 压缩包不是 Docker 镜像，不能 `docker load`；它们由下面的 archive 配方装入最终镜像。
+
+### 用户放好 LLVM/PPL 包以后怎样配置
+
+用户只需提供本地包的绝对路径；**当前 JSON 并不支持只填路径直接运行**。部署窗口负责检查文件存在且可读，用 `sha256sum 实际文件` 计算摘要，检查归档目录层级，并将这些值写入配置。若下载来源提供校验值，再进行比对；本地计算的摘要用于固定这份文件，不能单独证明来源。用户以后替换包时必须重新计算摘要并准备镜像，不能让内容变化沿用旧记录。
+
+LLVM 的 Git commit 需要从包名、随包说明或构建记录确认，与目标源码的 `llvm-hash.txt` 比对；不能从 SHA256 反推，也不能直接把目标 hash 填作不明包的来源证明。没有可确认的版本记录时，只需补这一项材料，不要求用户手填整套 JSON。PPL 和厂商 wheel 同样要检查 CPU 架构、Python ABI 和 runtime 兼容性；单独一个 PPL 文件不能代替完整后端依赖。
+
+部署窗口对用户提供的包可先执行下列只读操作。`CI_DEPENDENCY_ARCHIVE` 填实际 tar 包路径；如果是 wheel/zip，使用对应格式的列表工具，不执行未知包内脚本：
+
+```bash
+: "${CI_DEPENDENCY_ARCHIVE:?填写用户提供的本地依赖包绝对路径}"
+test -f "$CI_DEPENDENCY_ARCHIVE"
+test -r "$CI_DEPENDENCY_ARCHIVE"
+sha256sum "$CI_DEPENDENCY_ARCHIVE"
+tar -tf "$CI_DEPENDENCY_ARCHIVE"
+```
+
+LLVM 配方结构如下，空串需填实际值。当前用户模板已采用 archive 模式，不会默认从源码编译 LLVM：
+
+```json
+{
+  "mode": "archive",
+  "archive": "",
+  "sha256": "",
+  "commit": "",
+  "strip_components": 1
+}
+```
+
+`archive` 是宿主可读的包路径；`commit` 必须等于该 profile 的 `llvm_hash`。manager 校验摘要后解包到镜像内 `deps/llvm-完整SHA`。`strip_components` 要按实际包结构填写：若包是 `llvm-release/bin、include、lib`，通常为 1；如果顶层直接就是 `bin、include、lib`，通常为 0。错填会导致 include/lib/bin 路径缺失，不能靠修改记录绕过。
+
+如果 PPL 以归档依赖接入，可在 profile 中增加：
+
+```json
+{
+  "archives": {
+    "ppl": {"archive": "", "sha256": "", "strip_components": 1}
+  },
+  "env": {"PPL_ROOT": "/workspace/deps/ppl"}
+}
+```
+
+这是**合并片段**，不是完整 profile；不要覆盖已有 `env` 的其他键。上述 PPL 路径只是统一解包到 deps/ppl 时的逻辑示例，厂商若要求子目录则按实际调整。wheel 包使用已确定的 seed Python 安装，不能当 tar 直接套用解包配置。源码依赖依然通过固定 commit 的 Gitee repository 进入配方。
+
+**检查点：** 基础镜像在 `jiwang_ci` 的 daemon 中可见；LLVM 包提交匹配、归档结构正确；PPL/厂商 wheel 与 Python/仿真版本匹配；公司 CLI 已安装在基础镜像中，或由可信 `prepare_commands` 从本地材料安装。不需要人工在未来的 PR 容器里逐次装这批公共依赖。
 
 保留公司实际 provider/model/config.toml/auth.json。它们位于宿主私有来源，运行时仅进入任务的 Codex 私有目录，不写入 Git、镜像层或普通测试环境。仅补充实际 provider 的 `env_key/env_http_headers` 所引用变量。SMTP 仅填写配置，不发送邮件。
 
@@ -122,6 +269,10 @@ cd "$CI_CONTROL"
 "$CI_PYTHON" scripts/local_ci/deploy/rotate.py --config "$CI_CONFIG" --profile "$CI_PROFILE_NAME"
 ```
 
+配置检查输出 `ready: true` 后才构建镜像；失败时按 `checks` 中具体 `check/message` 补配置。这里会检查 SMTP/health 变量是否填写，但不发信。`rotate.py` 成功应返回 `state: ready`、`validated: true`、`image_id` 和 `release_id`；记下它们，不手工修改登记文件。
+
+若想把某条命令的输出存为部署日志，可以在同一 Bash 中先 `set -o pipefail`，再将命令加上 `2>&1 | tee "$CI_LOG_DIR/本步名称.log"`。不要只看 tee 是否成功；命令退出状态和 JSON 检查项都要通过。镜像构建和自检的详细日志还会自动写入 `state/environments/image-logs/发布ID.log`。
+
 逐条执行，失败则停止。对配置中每个 profile 完成镜像准备后再执行：
 
 ```bash
@@ -130,6 +281,8 @@ cd "$CI_CONTROL"
 ```
 
 资源预检检查实际 CPU/memory/pids 限制和镜像身份。SMTP、公司模型配置或其他必需项缺失时如实记录，不能绕过正式预检安装，不能宣称部署完成。预检通过不代表真实模型、邮件、PR 或 GitHub 链路已验收。
+
+**检查点：** 正式预检输出 `ready: true`，证明保存在 `state/deploy/runtime-probe.json`。profile、控制版本、镜像或资源配置改变后需要重新生成匹配证明。配置中的资源限额由任务/验证容器使用；目前 `docker build` 调用没有同样的 CPU/memory/pids 参数，不能把此 probe 当成镜像构建过程的资源证明。基础镜像准备或源码编译时，需按批准额度配置 CI 用户/构建器资源；本次使用预编译 LLVM 可以减少这部分编译负担。
 
 ## 6. 安装用户服务，保持未接单
 
@@ -143,7 +296,47 @@ cd "$CI_CONTROL"
 
 安装器生成 Worker、health、retention 和已配置版本的镜像轮换用户服务/定时器，备份已有文件并执行用户级 daemon-reload；不会启动服务。检查生成文件中的运行路径、EnvironmentFile、Rootless endpoint、`NoNewPrivileges=yes` 和定时配置，记录安装器返回的备份目录。
 
+**检查点：** 安装输出 `services_started: false`；用下面的只读命令确认 unit 已安装且未开始接任务：
+
+```bash
+systemctl --user list-unit-files 'triton-anchor-local-ci*'
+systemctl --user show triton-anchor-local-ci.service --property=LoadState,ActiveState,SubState,NoNewPrivileges
+systemctl --user list-timers --all 'triton-anchor-local-ci*'
+```
+
+新安装的 Worker 应为 loaded/inactive，CI timer 不应 active。Worker 是常驻轮询服务，**没有 Worker timer**；health/retention/各版本镜像轮换才使用 timer。这与旧版“timer 周期启动 pull-and-run 脚本”有区别，不要再给新 Worker 额外套一个轮询 timer。
+
 本轮不启用或启动这些 CI unit，不运行 `worker.py --once`，不迁移生产队列、不停旧 CI。Worker 一旦启动会自动处理有效任务；health/retention 等定时器也会产生发布或清理操作，因此统一留到后续启用。本轮无需构造正常或失败 PR，也无需 GitHub Gateway 操作。
+
+## 后续自己调试时，从哪一步查起
+
+先判断失败发生在账户/Docker、镜像准备、预检还是服务阶段。保留当前日志，修正该阶段配置后重做对应步骤；不要通过删除整个 state 或手动把 validated 改为 true 来恢复。
+
+| 现象 | 先看什么 | 从哪里继续 |
+| --- | --- | --- |
+| `Failed to connect to bus`、Docker socket 不存在 | 当前用户、登录会话、Docker 用户服务日志 | 第 2 步修复 user systemd/Rootless；不切换到系统 Docker。 |
+| 镜像找不到，另一个用户却能看到 | 当前 `--host` 与该 daemon 的 `image inspect` | 第 4 步向正确的 Rootless daemon 导入。 |
+| `yaml` / `build` / `torch_tpu` import 失败 | seed Python 的实际路径、基础镜像中的安装环境；镜像日志 | 第 4 步补依赖或可信 prepare_commands，然后重新 rotate。 |
+| LLVM 摘要/提交不匹配，include/lib 不存在 | 包 SHA256、llvm-hash.txt、strip_components | 修正 archive 配方或更换匹配包，然后重新 rotate。 |
+| Backend rebuild/smoke 失败 | 3.0 镜像日志、厂商版本、BACKEND_*、PPL_ROOT | 修复实际依赖和命令，保留 backend_enabled=true。 |
+| `runtime_probe` 缺失或过期 | 资源/配置/控制提交和活动镜像是否变化 | 镜像需要更新时先 rotate，再执行 --probe-runtime 与正式预检。 |
+| 安装失败：凭据权限或 SMTP/health 缺失 | 文件归属/600 权限、当前进程是否已加载 EnvironmentFile | 第 4 步补齐，再做正式预检和安装。 |
+| unit 已安装但没有任务日志 | `ActiveState`，本轮是否仍处于未启用状态 | 本轮 inactive 属于预期，不为制造日志而启动 Worker。 |
+
+常用的本地诊断命令如下，均不投递 PR、不上传健康结果：
+
+```bash
+journalctl --user -u docker.service -n 100 --no-pager
+journalctl --user -u triton-anchor-local-ci.service -n 100 --no-pager
+"$CI_PYTHON" "$CI_CONTROL/scripts/local_ci/environments/manager.py" --config "$CI_CONFIG" health
+ls -lt "$CI_STATE/environments/image-logs"
+```
+
+`manager.py health` 读取镜像/任务登记，不能单凭它判断 Docker 真正可用；结合 Docker info 和预检查看。对某个镜像问题，用 `tail -n 120 "$CI_STATE/environments/image-logs/实际发布ID.log"` 查看构建、自检输出。`docker logs` 只看容器入口输出，不能替代 `docker exec` 工具检查的日志。
+
+宿主的重要文件是 `state/environments/registry.json`（镜像与任务容器登记）、`state/environments/events.jsonl`（环境事件）、`state/deploy/runtime-probe.json`（资源证明）、`state/deploy-backups/`（unit 备份）。后续真正接单才会有 `state/journal.sqlite3` 等任务记录；不要手改数据库。日志可能含内部路径，分享前脱敏，但不打印凭据文件。
+
+需要撤销本次 unit 安装时，使用安装输出的备份路径，先运行 `install.py --rollback 实际备份路径` 查看计划，再加 `--apply`。它只回退 unit，不回退配置、镜像或任务状态；完整迁移/回滚另见上级 README。
 
 ## 部署窗口的最终交付
 
