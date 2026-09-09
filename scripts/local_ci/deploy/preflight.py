@@ -23,6 +23,7 @@ from agent_ci.skill import load_skill
 from agent_ci.protocol import ContractError
 from agent_ci.codex import finish_timeout_seconds
 from deploy.runtime_probe import runtime_status, verify_probe, probe_runtime, validate_runtime_config
+from environments.dependency_mounts import dependency_mounts, validate_mounted_llvm
 
 
 def check_configuration(config: dict, *, runtime: bool = True, require_notifications: bool = True) -> dict:
@@ -103,7 +104,13 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
         check(prefix + ":seed_python", isinstance(seed, str) and Path(seed).is_absolute(), "Provide an absolute seed Python or venv activation path; manager verifies build/setuptools/wheel/pybind11/PyYAML/pytest imports as the task user")
         llvm = profile.get("llvm", {})
         mode = llvm.get("mode")
-        check(prefix + ":llvm_mode", mode in {"source", "archive"}, "Daily/new-LLVM preparation requires an archive or source recipe")
+        check(prefix + ":llvm_mode", mode in {"source", "archive", "mount"}, "LLVM requires an archive, source or verified read-only mount recipe")
+        try:
+            mounts = dependency_mounts(config, profile, verify_content=True)
+            validate_mounted_llvm(profile, mounts)
+            check(prefix + ":dependency_mounts", True, "Versioned CI-owned read-only dependencies verified")
+        except (OSError, ValueError, RuntimeError) as exc:
+            check(prefix + ":dependency_mounts", False, str(exc))
         if mode == "archive":
             source(prefix + ":llvm_source", llvm.get("archive", llvm.get("url")))
             check(prefix + ":llvm_checksum", bool(DIGEST_RE.fullmatch(str(llvm.get("sha256", "")))), "Trusted LLVM archive SHA256 is mandatory")

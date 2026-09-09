@@ -16,6 +16,8 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from environments import runtime
+from environments.artifacts import tree_digest
+from environments.dependency_mounts import dependency_mounts
 from environments.manager import (
     EnvironmentManager,
     EnvironmentError,
@@ -238,6 +240,92 @@ class RootlessManagerTest(unittest.TestCase):
 
     def acquire(self, task=None, run="run-1"):
         return self.manager.acquire_task(task or self.task, run)
+
+    def mounted_llvm(self):
+        root = self.root / "dependencies"
+        source = root / ("llvm-" + self.sha)
+        source.mkdir(parents=True)
+        (source / "version.txt").write_text("trusted LLVM fixture")
+        root.chmod(0o755)
+        source.chmod(0o755)
+        (source / "version.txt").chmod(0o644)
+        self.config["dependency_root"] = str(root)
+        profile = self.config["profiles"]["release/3.1"]
+        profile["llvm"] = {"mode": "mount", "commit": self.sha}
+        profile["mounts"] = [{
+            "source": str(source),
+            "target": "/opt/local-ci/runtime/deps/llvm-" + self.sha,
+            "read_only": True,
+            "sha256": tree_digest(source),
+        }]
+        return profile, source
+
+    def test_mounted_toolchain_is_not_copied_to_image_context(self):
+        profile, source = self.mounted_llvm()
+        checked = self.manager._profile("release/3.1", self.sha)
+        context = self.root / "context"
+        context.mkdir()
+        self.manager._build_context(checked, context)
+        target = context / "payload/deps" / source.name
+        self.assertTrue(target.is_dir())
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertFalse((self.manager.directory / "downloads").exists())
+
+    def test_image_validation_and_tasks_share_verified_readonly_dependencies(self):
+        profile, source = self.mounted_llvm()
+        handle = self.acquire()
+        self.assertEqual(handle["dependency_mounts"], profile["mounts"])
+        creates = [c for c in self.fake.commands if c[3] == "create"]
+        self.assertEqual(len(creates), 2)
+        expected = "type=bind,source=" + str(source) + ",target=" + profile["mounts"][0]["target"] + ",readonly,bind-recursive=disabled"
+        self.assertTrue(all(expected in command for command in creates))
+        mount = self.fake.containers[handle["container_id"]]["Mounts"][-1]
+        mount["RW"] = True
+        with self.assertRaisesRegex(EnvironmentError, "dependency mount"):
+            self.manager.recover_task(handle)
+
+    def test_dependency_drift_blocks_new_tasks_and_resume(self):
+        profile, source = self.mounted_llvm()
+        handle = self.acquire()
+        (source / "version.txt").write_text("replaced toolchain")
+        with self.assertRaisesRegex(EnvironmentError, "SHA256 changed"):
+            self.manager.recover_task(handle)
+        with self.assertRaisesRegex(EnvironmentError, "SHA256 changed"):
+            self.acquire({**self.task, "task_id": "2" * 64})
+
+    def test_missing_dependencies_do_not_block_management_evidence_recovery(self):
+        profile, source = self.mounted_llvm()
+        handle = self.acquire()
+        source.rename(source.with_name("moved"))
+        del self.fake.containers[handle["container_id"]]
+        self.assertEqual(self.manager.task_usage(handle), 99)
+        recovery = self.fake.containers[self.manager.generations()[handle["attempt_id"]]["recovery_container_id"]]
+        self.assertEqual({m["Destination"] for m in recovery["Mounts"]}, {"/task", "/codex"})
+
+    def test_dependency_configuration_rejects_unsafe_or_mutable_mounts(self):
+        profile, source = self.mounted_llvm()
+        entry = profile["mounts"][0]
+        for key, value in (("read_only", False), ("target", "/task"), ("target", "/opt/venv"),
+                           ("source", str(self.root)), ("sha256", "bad")):
+            original = entry[key]
+            entry[key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(EnvironmentError):
+                dependency_mounts(self.config, profile, verify_content=True)
+            entry[key] = original
+        outside = source / "external"
+        outside.symlink_to(self.root / "control")
+        with self.assertRaisesRegex(EnvironmentError, "link escapes"):
+            dependency_mounts(self.config, profile, verify_content=True)
+        outside.unlink()
+        (source / "version.txt").chmod(0o666)
+        with self.assertRaisesRegex(EnvironmentError, "no group/other writes"):
+            dependency_mounts(self.config, profile, verify_content=True)
+
+    def test_mounted_llvm_commit_must_match_requested_version(self):
+        profile, _ = self.mounted_llvm()
+        profile["llvm"]["commit"] = "b" * 40
+        with self.assertRaisesRegex(EnvironmentError, "LLVM"):
+            self.acquire()
 
     def test_fixed_endpoint_and_four_distinct_nonroot_users(self):
         self.assertEqual(

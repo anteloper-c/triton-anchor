@@ -35,6 +35,12 @@ from .artifacts import (
     safe_source,
     extract_verified_archive,
 )
+from .dependency_mounts import (
+    dependency_mounts,
+    mount_arguments,
+    validate_mounted_llvm,
+    verify_mounts,
+)
 
 SCHEMA = "triton-anchor-local-ci-environments/v2"
 HELPER = "/opt/local-ci/control/scripts/local_ci/environments/container_fs.py"
@@ -339,6 +345,8 @@ class EnvironmentManager:
                     "New LLVM requires a trusted archive or source recipe"
                 )
         llvm.pop("revisions", None)
+        mounts = dependency_mounts(self.config, profile, verify_content=True)
+        validate_mounted_llvm({**profile, "requested_llvm_hash": revision}, mounts)
         profile.update(
             target_branch=branch,
             requested_llvm_hash=revision,
@@ -457,8 +465,12 @@ class EnvironmentManager:
                     raise EnvironmentError("LLVM patch checksum mismatch")
                 self._run(["git", "-C", str(target), "apply", "--check", str(path)])
                 self._run(["git", "-C", str(target), "apply", str(path)])
+        elif llvm["mode"] == "mount":
+            validate_mounted_llvm(profile, profile.get("mounts", []))
         else:
-            raise EnvironmentError("LLVM mode must be archive or source")
+            raise EnvironmentError("LLVM mode must be archive, source or mount")
+        for entry in dependency_mounts(self.config, profile):
+            (payload / "deps" / Path(entry["target"]).name).mkdir()
         for name, entry in profile.get("archives", {}).items():
             if not NAME_RE.fullmatch(name):
                 raise EnvironmentError("Unsafe dependency name")
@@ -559,6 +571,7 @@ class EnvironmentManager:
                 "--label",
                 "local-ci.kind=image-validation",
                 *self._limits(),
+                *mount_arguments(dependency_mounts(self.config, profile, verify_content=True)),
                 ident,
             )
             .decode()
@@ -566,6 +579,7 @@ class EnvironmentManager:
         )
         self._validation_container = container
         try:
+            verify_mounts(self._inspect(container), profile.get("mounts", []))
             self._docker("start", container)
             prefix = ["exec"]
             for key, value in env.items():
@@ -613,6 +627,7 @@ class EnvironmentManager:
                     self._docker(*prefix, seed, "-I", "-c", "import torch,torch_tpu")
             for check in [*order, *sorted(set(commands) - set(order))]:
                 self._docker(*prefix, *commands[check])
+            dependency_mounts(self.config, profile, verify_content=True)
             return dict(
                 checks=sorted(commands),
                 imports="verified",
@@ -664,6 +679,7 @@ class EnvironmentManager:
                 backend_enabled=bool(profile.get("backend_enabled")),
                 daemon_id=daemon,
                 control_revision=profile["control_revision"],
+                dependency_mounts=copy.deepcopy(profile.get("mounts", [])),
             )
             state["images"][release] = row
             self._save(state, "image_preparing", release_id=release)
@@ -842,6 +858,7 @@ class EnvironmentManager:
                 )
             }
             handle.update(
+                dependency_mounts=copy.deepcopy(image.get("dependency_mounts", [])),
                 target_branch=task["target_branch"],
                 task_id=task_id,
                 run_id=run_id,
@@ -918,9 +935,18 @@ class EnvironmentManager:
                         + (",readonly" if readonly else ""),
                     ]
                 handle["container_id"] = (
-                    self._docker(*args, image["image_id"]).decode().strip()
+                    self._docker(
+                        *args,
+                        *mount_arguments(dependency_mounts(
+                            self.config,
+                            {"mounts": handle["dependency_mounts"],
+                             "llvm": {"mode": "mount", "commit": handle["llvm_hash"]}},
+                        )),
+                        image["image_id"],
+                    ).decode().strip()
                 )
                 self._save(state)
+                self._verify(handle)
                 self._docker("start", handle["container_id"])
                 payload = {
                     key: handle[key]
@@ -993,6 +1019,8 @@ class EnvironmentManager:
             or row
             and handle.get("container_id") is not None
             and row.get("container_id") != handle.get("container_id")
+            or row
+            and row.get("dependency_mounts", []) != handle.get("dependency_mounts", [])
         ):
             raise EnvironmentError("Attempt handle differs from trusted registry")
         return row
@@ -1027,6 +1055,12 @@ class EnvironmentManager:
                 or mount.get("RW") is not writable
             ):
                 raise EnvironmentError("Task container mount identity changed")
+        mounts = dependency_mounts(
+            self.config,
+            {"mounts": handle.get("dependency_mounts", []),
+             "llvm": {"mode": "mount", "commit": handle["llvm_hash"]}},
+        )
+        verify_mounts(info, mounts)
         return info
 
     def recover_task(self, handle):
@@ -1037,6 +1071,12 @@ class EnvironmentManager:
             return dict(status="rebuild_required")
         if self._daemon() != handle["daemon_id"]:
             raise EnvironmentError("Rootless daemon identity changed")
+        dependency_mounts(
+            self.config,
+            {"mounts": handle.get("dependency_mounts", []),
+             "llvm": {"mode": "mount", "commit": handle["llvm_hash"]}},
+            verify_content=True,
+        )
         try:
             info = self._verify(handle)
         except EnvironmentError:

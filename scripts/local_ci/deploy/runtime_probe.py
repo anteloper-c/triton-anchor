@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from environments.manager import EnvironmentManager, atomic_json
+from environments.dependency_mounts import dependency_mounts, mount_arguments, verify_mounts
 
 PROBE_SCHEMA = "triton-anchor-rootless-runtime-probe/v1"
 DEFAULT_IDENTITIES = {"candidate": 11001, "base": 11002, "diagnostic": 11003, "codex": 11004,
@@ -20,6 +21,22 @@ DEFAULT_IDENTITIES = {"candidate": 11001, "base": 11002, "diagnostic": 11003, "c
 LIMIT_PROBE = """import json,pathlib
 p=pathlib.Path('/sys/fs/cgroup')
 print(json.dumps({k:(p/k).read_text().strip() for k in ('cpu.max','memory.max','pids.max')}))
+"""
+DEPENDENCY_PROBE = """
+import errno,os,sys,tempfile
+for root in sys.argv[1:]:
+    for directory,dirs,files in os.walk(root):
+        assert os.access(directory, os.R_OK | os.X_OK), directory
+        for name in files:
+            with open(os.path.join(directory,name),'rb') as handle: handle.read(1)
+    try:
+        fd,path=tempfile.mkstemp(prefix='.local-ci-readonly-probe-',dir=root)
+    except OSError as exc:
+        assert exc.errno in (errno.EROFS,errno.EACCES,errno.EPERM), str(exc)
+    else:
+        os.close(fd)
+        os.unlink(path)
+        raise RuntimeError('Dependency is writable: ' + root)
 """
 
 
@@ -91,7 +108,7 @@ def runtime_status(config):
 
 
 def config_digest(config):
-    public = {key: config.get(key) for key in ("schema", "runtime", "resources", "identities", "profiles", "control_root", "codex_bin", "container_python")}
+    public = {key: config.get(key) for key in ("schema", "runtime", "resources", "identities", "profiles", "dependency_root", "control_root", "codex_bin", "container_python")}
     root = Path(config["control_root"])
     revision = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=15)
     if revision.returncode or not re.fullmatch(r"[a-f0-9]{40}", revision.stdout.strip()):
@@ -130,6 +147,8 @@ def proof_path(config):
 
 
 def verify_probe(config, info):
+    for profile in config.get("profiles", {}).values():
+        dependency_mounts(config, profile, verify_content=True)
     path = proof_path(config)
     if not path.is_file() or path.is_symlink() or path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o077:
         raise ValueError("Missing private runtime proof; build images then explicitly run preflight --probe-runtime")
@@ -157,6 +176,7 @@ def probe_runtime(config):
     proof_path(config).chmod(0o600)
     try:
         for branch, image in images.items():
+            mounts = dependency_mounts(config, config["profiles"][branch], verify_content=True)
             nonce = uuid.uuid4().hex
             name = "local-ci-deployment-probe-" + nonce
             container = ""
@@ -165,11 +185,15 @@ def probe_runtime(config):
                                    "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                                    "--cpus", str(resources["cpus"]), "--memory", str(resources["memory_bytes"]), "--pids-limit", str(resources["pids_limit"]),
                                    "--user", str(identities["candidate"]), "--entrypoint", config.get("container_python", "python3"),
-                                   image, "-I", "-c", LIMIT_PROBE).strip()
+                                   *mount_arguments(mounts),
+                                   image, "-I", "-c", LIMIT_PROBE + DEPENDENCY_PROBE,
+                                   *(entry["target"] for entry in mounts)).strip()
                 if not re.fullmatch(r"[a-f0-9]{64}", container):
                     raise ValueError("Docker returned an invalid deployment probe identity")
                 proof["limits"][branch] = json.loads(docker(config, "start", "--attach", container, timeout=120))
                 validate_limits(proof["limits"][branch], resources)
+                if mounts:
+                    verify_mounts(json.loads(docker(config, "inspect", container))[0], mounts)
             finally:
                 # Name+nonce also identifies a create that timed out before returning its ID.
                 try:
