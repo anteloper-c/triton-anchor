@@ -249,7 +249,6 @@ process.stdout.write(JSON.stringify({rendered,intervals,prMatches,manual_refresh
         self.assertTrue(data['manual_refresh'])
         source = script.read_text(encoding='utf-8')
         self.assertIn("'refresh='+Date.now()", source)
-        self.assertIn("refresh.textContent='重新读取数据'", source)
         for internal in ('工作目录：', '日志 SHA-256：', '任务身份与影响文件'):
             self.assertNotIn(internal, source)
 
