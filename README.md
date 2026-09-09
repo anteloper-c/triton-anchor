@@ -457,9 +457,12 @@ pytest tests/ -v
 
 ### 9.3 CI
 
-`main` 的 [CI 调度入口](.github/workflows/ci-gateway.yml) 将任务交给 `ci_repo` 的受信实现。GitHub 完成前置检查与按需审批，Local CI 在固定版本环境中由 Codex 自主组织验证，结果经过校验后回写必要检查。
+项目已配置 [GitHub Actions CI](.github/workflows/ci.yml)，每次 push / PR 自动运行：
 
-使用、配置和维护统一见 [CI 指南](docs/ci_guide_zh.md)，该入口明确链接到 `ci_repo` 的完整文档。
+| Job | 内容 | 矩阵 |
+|-----|------|------|
+| **lint** | `ruff check` + `ruff format --check` | Python 3.10 |
+| **unit-test** | 纯 Python 单元测试 + 覆盖率 | Python 3.9 / 3.10 / 3.11 / 3.12 |
 
 ## 10 参与贡献
 
