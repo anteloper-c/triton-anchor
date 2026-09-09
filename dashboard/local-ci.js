@@ -1,7 +1,7 @@
 /* Render remote result text as text nodes. No result field can inject HTML. */
 const labels = {success:'通过',passed:'通过',failure:'失败',failed:'失败',error:'执行错误',cancelled:'已取消',skipped:'未执行',not_applicable:'不适用',healthy:'正常',degraded:'异常',offline:'离线',snapshot_stale:'快照已过期',unknown:'状态未知',waiting:'等待',ready:'就绪'};
 const names = {environment:'环境与依赖',frontend_build:'前端构建',frontend_install:'前端安装与导入',frontend_tests:'前端测试',wheel_install:'Wheel 安装与导入',frontend_smoke:'前端基本功能验证',backend_build:'后端构建',backend_install:'后端安装与发现',backend_tests:'后端测试',backend_rebuild:'后端重新构建',backend_smoke:'后端基本功能与 JIT 验证',flaggems:'FlagGems',compile_time:'编译时间性能',pass_profile:'编译阶段性能剖析',ir_serialization:'IR 序列化',pr_information:'PR 说明与改动核验',architecture_review:'架构与接口约束审查',control_plane:'CI 流程检查',custom_test:'定向测试'};
-const friendlyReasons = {'all commands completed successfully':'命令执行成功','not selected for this change':'本次改动未触发该项检查','minimum frontend coverage':'编译器改动的最低检查范围','frontend code or test behavior changed':'前端代码或测试行为发生变化','architecture contract review is mandatory':'架构审查为必检项'};
+const friendlyReasons = {'cancelled':'任务已取消','missing required check':'必检尚未完成','PR intent and attributes were not reviewed':'PR 意图与属性尚未完成核验','all commands completed successfully':'命令执行成功','not selected for this change':'本次改动未触发该项检查','minimum frontend coverage':'编译器改动的最低检查范围','frontend code or test behavior changed':'前端代码或测试行为发生变化','architecture contract review is mandatory':'架构审查为必检项'};
 const issueMessages = {poller_stale:'任务接收服务超过预期时间未更新。',task_stalled:'任务长时间没有进度，请维护者检查。',task_overdue:'任务超过最长预期时长，请维护者检查。',publication_pending:'结果发布正在重试。',health_publication_pending:'服务状态发布正在重试。',disk_low:'可用磁盘空间不足。',disk_unavailable:'工作磁盘不可用。',container_unavailable:'版本环境未运行。',container_oom:'版本环境发生内存不足。',maintenance_failed:'环境维护失败。',docker_unavailable:'容器服务不可用。',service_unavailable:'Local CI 服务不可用。'};
 const model = {data:null, selected:null};
 const $ = id => document.getElementById(id);
@@ -16,7 +16,7 @@ function section(parent,title) { const s=el('section'); s.append(el('h3','',titl
 function key(run) { return run.task_id+'/'+run.run_id; }
 function title(run) { return run.pr_number?'PR #'+run.pr_number+' · '+run.target_branch:run.target_branch+' · '+(run.event_kind==='push'?'分支提交':'手动任务'); }
 function reason(value) { return friendlyReasons[value]||txt(value)||'没有记录原因'; }
-function publicText(value) { return txt(value).replaceAll('base..merge','基准提交与合并验证提交之间').replace(/\bhead\(([^)]+)\)/g,'PR 提交 $1').replace(/\bmerge\(([^)]+)\)/g,'合并验证提交 $1').replaceAll('changed_paths','影响文件列表').replaceAll('Frontend','前端').replaceAll('Backend','后端').replaceAll(' smoke','基本功能验证').replaceAll(' wheel',' wheel 包'); }
+function publicText(value) { let text=txt(value);for(const [id,label] of Object.entries(names))text=text.replaceAll(id+':',label+'：');for(const [message,label] of Object.entries(friendlyReasons))text=text.replaceAll(message,label);return text.replaceAll('Codex cancelled','AI 验证已取消').replaceAll('base..merge','基准提交与合并验证提交之间').replace(/\bhead\(([^)]+)\)/g,'PR 提交 $1').replace(/\bmerge\(([^)]+)\)/g,'合并验证提交 $1').replaceAll('changed_paths','影响文件列表').replaceAll('Frontend','前端').replaceAll('Backend','后端').replaceAll(' smoke','基本功能验证').replaceAll(' wheel',' wheel 包'); }
 
 function renderWorkers() {
   const root=$('workers'); root.replaceChildren();
@@ -34,10 +34,14 @@ function renderWorkers() {
     if(!profiles.length)item.append(el('p','ci-muted','尚无版本环境状态。'));
     for(const profile of profiles) {
       const profileName=(profile.profile_id||'版本环境').replace(/^triton-/i,'Triton ');
-      const profileState=profile.draining?'等待维护':profile.lease?'正在执行任务，结果发布后显示在下方':profile.running?'已就绪，当前空闲':'当前不可用';
+      const profileState=profile.draining?'等待维护':profile.lease?'正在执行任务':profile.running?'已就绪，当前空闲':'当前不可用';
       item.append(el('p','ci-muted',profileName+' · '+profileState));
     }
     if(arr(worker.issues).length) { const list=el('ul'); for(const issue of worker.issues)list.append(el('li','',issueMessages[issue.code]||'执行服务报告异常，请查看运维 Issue。')); item.append(list); }
+    const activeId=worker.task?.task_id;
+    const task=arr(model.data.runs).find(run=>run.task_id===activeId);
+    const taskLink=el('a','','查看任务与证据');taskLink.href=task?.pr_number?'local-ci.html?pr='+task.pr_number:'local-ci.html';item.append(taskLink);
+    const disks=arr(worker.disks);for(const disk of disks){if(Number.isFinite(disk.free_bytes)&&Number.isFinite(disk.total_bytes))item.append(el('p','ci-muted','工作磁盘可用 '+(disk.free_bytes/1073741824).toFixed(1)+' / '+(disk.total_bytes/1073741824).toFixed(1)+' GiB'));}
     root.append(item);
   }
 }
@@ -75,7 +79,7 @@ function renderDetail(run) {
   const links=el('div','ci-links'); for(const [label,url] of [['查看完整结果',run.result_url],['查看执行产物',run.artifacts_url]]) { const a=link(label,url); if(a)links.append(a); }root.append(links);
   const metrics=el('div','ci-metrics'); const checks=arr(run.checks); const values=[[checks.filter(c=>c.required).length,'最低必检项'],[checks.filter(c=>c.status==='passed').length,'已通过检查'],[checks.filter(c=>['skipped','not_applicable'].includes(c.status)).length,'未执行 / 不适用'],[arr(run.evidence).length,'命令执行记录']];
   for(const [value,label] of values){const box=el('div','ci-metric');box.append(el('strong','',value),el('span','',label));metrics.append(box);}root.append(metrics);
-  if(arr(run.blocking_reasons).length){const box=el('div','ci-blockers');box.append(el('h3','','阻塞原因'));const list=el('ul');for(const reason of run.blocking_reasons)list.append(el('li','',reason));box.append(list);root.append(box);}
+  if(arr(run.blocking_reasons).length){const box=el('div','ci-blockers');box.append(el('h3','','阻塞原因'));const list=el('ul');for(const reason of run.blocking_reasons)list.append(el('li','',publicText(reason)));box.append(list);root.append(box);}
   if(run.source_unchanged===false)root.append(el('p','ci-notice','被测源码在执行中发生变化，当前结果不能作为对应提交的通过证据。'));
   const scope=section(root,'检查选择与执行结果');
   const policy=run.policy||{};scope.append(el('p','ci-muted',policy.docs_only?'文档变更：依规则免构建；架构审查仍需提供证据。':policy.manual_full?'维护者手动触发全量测试。':'按改动影响选择检查，并满足主机控制面规定的最低要求。'));
@@ -110,4 +114,7 @@ async function load() {
 }
 $('refresh').addEventListener('click',load);$('taskSearch').addEventListener('input',()=>model.data&&renderList());$('historyFilter').addEventListener('change',()=>model.data&&renderList());$('resultFilter').addEventListener('change',()=>model.data&&renderList());
 const initialPr=new URLSearchParams(location.search).get('pr');if(/^[1-9][0-9]*$/.test(initialPr||''))$('taskSearch').value=initialPr;
-load();setInterval(load,60000);
+const workerView=new URLSearchParams(location.search).get('view')==='worker';
+$('workerModule').hidden=!workerView;$('taskModule').hidden=workerView;
+for(const [id,active] of [['workersTab',workerView],['tasksTab',!workerView]]){const tab=$(id);tab.className='tab-button'+(active?' active':'');if(active)tab.setAttribute('aria-current','page');else tab.removeAttribute('aria-current');}
+load();setInterval(()=>{if(!document.hidden)load();},300000);

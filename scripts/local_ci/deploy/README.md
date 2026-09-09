@@ -88,7 +88,7 @@ GitHub 配置 `GITEE_RESULTS_OWNER`、`GITEE_RESULTS_REPO`、`GITEE_RESULTS_REPO
 sudo python3 -m scripts.local_ci.maintenance.health --config /etc/anchor-ci/config.json --dry-run
 ```
 
-服务器 health 只采集并发布快照，不需要 SMTP、邮箱或 OAuth 配置。默认由 GitHub 独立读取快照：`main` 每 15 分钟转发到 `ci_repo` 的完整 [watchdog 工作流](../../../.github/workflows/local-ci-watchdog.yml)。维护者先在本仓库创建一个保持打开的运维 Issue，设置下表配置，手动验证后再开启调度。
+服务器 health 只采集并发布快照，不需要 SMTP、邮箱或 OAuth 配置。默认由 GitHub 独立读取快照：`main` 的现有 `ci-gateway.yml` 每 30 分钟转发到 `ci_repo` 的完整 [watchdog 工作流](../../../.github/workflows/local-ci-watchdog.yml)。维护者先在本仓库创建一个保持打开的运维 Issue，设置下表配置，手动验证后再开启调度。
 
 | GitHub 配置 | 名称 |
 | --- | --- |

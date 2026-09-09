@@ -195,6 +195,8 @@ class Element {
   append(...children){this.children.push(...children);}
   replaceChildren(...children){this.children=children;}
   addEventListener(name,callback){this.listeners[name]=callback;}
+  setAttribute(name,value){this[name]=value;}
+  removeAttribute(name){delete this[name];}
 }
 const roots={},intervals=[],now=Date.parse('2026-09-08T12:00:00Z');
 class Clock extends Date {static now(){return now;}}
@@ -243,7 +245,7 @@ process.stdout.write(JSON.stringify({rendered,intervals,prMatches,manual_refresh
         self.assertEqual(rows['invalid-time']['label'], '状态未知')
         self.assertNotIn('old-healthy', rows['old-healthy']['text'])
         self.assertEqual(data['prMatches'], [3])
-        self.assertEqual(data['intervals'], [60000])
+        self.assertEqual(data['intervals'], [300000])
         self.assertTrue(data['manual_refresh'])
         source = script.read_text(encoding='utf-8')
         self.assertIn("'refresh='+Date.now()", source)

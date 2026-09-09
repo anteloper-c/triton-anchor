@@ -15,10 +15,11 @@
     <div class="brand"><img src="assets/triton-anchor-logo.png" alt="" class="brand-logo"><div><p class="brand-kicker">TRITON ANCHOR</p><h1>Local CI 验证结果</h1></div></div>
     <div class="header-meta"><span id="updatedAt">等待结果同步</span><button id="refresh" class="button secondary" type="button" title="重新读取已发布的数据，不会重新运行 CI">重新读取数据</button></div>
   </header>
-  <nav class="view-tabs" aria-label="Dashboard 导航"><a class="tab-button active" href="local-ci.html" aria-current="page">任务与证据</a><a class="tab-button" href="index.html">全量算子 · 后端与性能</a></nav>
+  <nav class="view-tabs" aria-label="Dashboard 导航"><a id="tasksTab" class="tab-button active" href="local-ci.html" aria-current="page">任务与证据</a><a id="workersTab" class="tab-button" href="local-ci.html?view=worker">Worker 运行状态</a><a class="tab-button" href="index.html">全量算子 · 后端与性能</a></nav>
   <main class="ci-main">
     <div id="dataNotice" class="ci-notice" role="status" aria-live="polite" hidden></div>
-    <div class="ci-layout">
+    <section id="workerModule" aria-labelledby="workerHeading" class="ci-section ci-service-section" hidden><div class="section-heading"><div><p class="eyebrow">执行服务与版本环境</p><h2 id="workerHeading">Worker 运行状态</h2></div><span class="ci-muted">服务可用不代表任务通过；验证结论见任务与证据</span></div><div id="workers" class="ci-workers"></div></section>
+    <div id="taskModule" class="ci-layout">
       <aside class="ci-task-panel" aria-labelledby="tasksHeading">
         <div class="ci-panel-title"><h2 id="tasksHeading">验证任务</h2><span id="taskCount" class="ci-count">0</span></div>
         <label class="ci-field" for="taskSearch">按 PR 编号、分支或提交查找<input type="search" id="taskSearch" placeholder="例如：3、main、提交 SHA"></label>
@@ -28,7 +29,6 @@
         <div id="taskList" class="ci-task-list"></div>
       </aside>
       <div class="ci-content">
-        <section aria-labelledby="workerHeading" class="ci-section ci-service-section"><div class="section-heading"><div><p class="eyebrow">执行服务</p><h2 id="workerHeading">版本环境状态</h2></div><span class="ci-muted">服务状态只表示能否接收任务，不代表任何任务通过</span></div><div id="workers" class="ci-workers"></div></section>
         <section id="taskDetail" class="ci-detail" aria-label="任务详情" aria-live="polite"></section>
       </div>
     </div>

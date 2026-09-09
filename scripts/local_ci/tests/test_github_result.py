@@ -14,7 +14,7 @@ from unittest.mock import patch
 from urllib.parse import unquote, urlparse
 
 
-GITHUB = Path(__file__).resolve().parents[1] / "github"
+GITHUB = Path(__file__).resolve().parents[1] / "integration"
 
 
 def module(name):

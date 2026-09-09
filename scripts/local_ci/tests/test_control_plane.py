@@ -16,18 +16,16 @@ from runtime.policy import BACKEND_TOOLS, minimum_checks
 def router(root):
     directory = root / '.github/workflows'
     directory.mkdir(parents=True)
-    (root / '.github/ci-gateway-manifest.json').write_text(json.dumps({
-        'kind': control_plane.KIND, 'role': 'router'}), encoding='utf-8')
     inputs = '\n'.join(f'      {name}: {{type: string}}' for name in (
         'task_id', 'expected_head_sha', 'comparison_base_sha', 'tested_sha', 'worker_revision_sha'))
     jobs = '\n'.join(f'  {name}:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo syntax-only' for name in (
         'route-cancellation', 'prepare-route', 'route-pull-request', 'route-manual-push', 'route-failure-status'))
     (directory / 'ci-gateway.yml').write_text(
-        'on:\n  pull_request_target:\n  workflow_dispatch:\n    inputs:\n' + inputs +
-        '\nenv:\n  GATEWAY_KIND: triton-anchor-ci-gateway\njobs:\n' + jobs + '\n', encoding='utf-8')
-    (directory / 'local-ci-watchdog.yml').write_text(
-        "on:\n  schedule:\n    - cron: '*/15 * * * *'\n  workflow_dispatch:\njobs:\n  forward:\n"
-        '    uses: anteloper-c/triton-anchor/.github/workflows/local-ci-watchdog.yml@ci_repo\n', encoding='utf-8')
+        "on:\n  schedule:\n    - cron: '17,47 * * * *'\n  pull_request_target:\n  workflow_dispatch:\n    inputs:\n" + inputs +
+        '\nenv:\n  GATEWAY_KIND: triton-anchor-ci-gateway\njobs:\n' + jobs +
+        '\n  watchdog:\n    uses: anteloper-c/triton-anchor/.github/workflows/local-ci-watchdog.yml@ci_repo\n', encoding='utf-8')
+    for name in ('api-breaking-notify.yml', 'ci.yml', 'upstream_watch.yml'):
+        (directory / name).write_text('on: push\njobs:\n  check:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo checked\n', encoding='utf-8')
 
 
 class ControlPlaneTests(unittest.TestCase):
@@ -39,15 +37,13 @@ class ControlPlaneTests(unittest.TestCase):
         self.context = {'source_host_dir': str(self.root), 'source_dir': '/workspace/candidate',
                         'target_branch': 'main', 'python_bin': '/trusted/task_python'}
 
-    def test_router_exception_requires_main_and_explicit_manifest(self):
+    def test_router_exception_requires_main_without_worker_scripts(self):
         command = control_plane.plan(self.context)['commands'][0]
         self.assertEqual(command['argv'][:2], ['/opt/ci-venv/bin/python', '-I'])
         self.assertEqual(command['argv'][-1], '/workspace/candidate')
         for branch in ('ci_repo', 'feature', ''):
             with self.subTest(branch=branch):
                 self.assertIn('scripts/local_ci/tests', control_plane.plan({**self.context, 'target_branch': branch})['commands'][0]['argv'])
-        (self.root / '.github/ci-gateway-manifest.json').unlink()
-        self.assertIn('scripts/ci/tests', control_plane.plan(self.context)['commands'][0]['argv'])
 
     def test_partial_worker_tree_never_falls_back_to_router(self):
         (self.root / 'scripts/local_ci/tests').mkdir(parents=True)
@@ -74,7 +70,7 @@ class ControlPlaneTests(unittest.TestCase):
         with patch.object(control_plane, 'syntax'), self.assertRaisesRegex(ValueError, 'immutable identity'):
             control_plane.check_router(self.root)
         gateway.write_text(original, encoding='utf-8')
-        watchdog = self.root / '.github/workflows/local-ci-watchdog.yml'
+        watchdog = gateway
         watchdog.write_text(watchdog.read_text(encoding='utf-8').replace('@ci_repo', '@main'), encoding='utf-8')
         with patch.object(control_plane, 'syntax'), self.assertRaisesRegex(ValueError, 'delegate'):
             control_plane.check_router(self.root)
@@ -87,6 +83,21 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(result['status'], 'failed')
         self.assertEqual(result['evidence'], ['syntax-failure'])
 
+    def test_custom_analysis_uses_task_interpreter_and_keeps_receipt(self):
+        context = {**self.context, 'artifact_dir': '/workspace/task/artifacts'}
+        broker = Broker({}, context, {'required': [], 'not_applicable': []},
+                        self.root / 'analysis', lambda: False)
+        with patch.object(broker, 'command', return_value={'id': 'analysis', 'returncode': 0, 'termination': None}) as command:
+            result = broker.invoke('custom_test', {'path': 'compare_ir.py', 'args': ['--baseline', 'base.json']})
+        self.assertEqual(command.call_args.args[1]['argv'],
+                         ['/trusted/task_python', '/workspace/task/artifacts/custom/compare_ir.py', '--baseline', 'base.json'])
+        self.assertEqual(result['evidence'], ['analysis'])
+        from tools.ai_custom_tools.runner import plan
+        for parameters in ({'path': '../escape.py'}, {'path': '/outside.py'},
+                           {'path': 'compare.py', 'timeout': 0}):
+            with self.subTest(parameters=parameters), self.assertRaises(ValueError):
+                plan(context, parameters)
+
     @unittest.skipIf(os.name == 'nt', 'real bash syntax checks run in the persistent Linux worker and GitHub')
     def test_actual_syntax_checks_never_execute_candidate_programs(self):
         marker = self.root / 'must-not-exist'
@@ -98,9 +109,9 @@ class ControlPlaneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'syntax failed'):
             control_plane.syntax('const = ;\n', 'javascript', 'bad-js')
         result = control_plane.check_router(self.root)
-        self.assertEqual(result['workflow_count'], 2)
-        self.assertEqual(result['script_count'], 5)
-        self.assertEqual(len(result['sha256']), 3)
+        self.assertEqual(result['workflow_count'], 4)
+        self.assertEqual(result['script_count'], 8)
+        self.assertEqual(len(result['sha256']), 4)
 
 
 class ControlPolicyTests(unittest.TestCase):

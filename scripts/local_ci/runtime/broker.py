@@ -254,16 +254,8 @@ class Broker:
                 from .control_plane import plan as control_plan
                 plan = control_plan(context)
             elif tool == 'custom_test':
-                path = parameters.get('path', '')
-                if not isinstance(path, str) or not path.endswith('.py') or path.startswith('/') or '..' in Path(path).parts:
-                    raise ValueError('custom test must be a relative .py under artifacts/custom')
-                args = parameters.get('args', [])
-                if not isinstance(args, list) or not all(isinstance(x, str) for x in args):
-                    raise ValueError('custom args must be string argv')
-                plan = {'status': 'ready', 'commands': [{
-                    'argv': [self.context.get('python_bin', 'python3'),
-                             self.context['artifact_dir'] + '/custom/' + path, *args],
-                    'cwd': self.context['source_dir'], 'env': {}, 'timeout': min(int(parameters.get('timeout', 300)), 900)}]}
+                from tools.ai_custom_tools.runner import plan as custom_plan
+                plan = custom_plan(context, parameters)
             else:
                 from tools.basic_tools.runner import plan as build_plan
                 plan = build_plan(tool, context, parameters)
