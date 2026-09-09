@@ -10,7 +10,7 @@
 
 单向交付保持不变：Codex 封存结果后结束，Harness 上传不可变 Gitee 结果成功即本地 complete；没有 receipt。Docker 故障不应阻止已有 outbox 重试上传或独立健康发布。GitHub 保持 status → comment → Pages，发布失败由 Actions 和后续接收重试处理，不触发 Codex 重跑。
 
-供服务器部署窗口使用的逐步交接材料见 [jiwang_ci/HANDOFF.md](jiwang_ci/HANDOFF.md)；该目录的配置和凭据模板有意留空实际服务器信息。
+供仅能访问 Gitee 的服务器窗口使用的部署交接见 [jiwang_ci/HANDOFF.md](jiwang_ci/HANDOFF.md)：范围为依赖与配置准备、部署预检和用户服务安装，安装后不启动接单，不包含 GitHub 配置或 PR 试跑。该目录的配置和凭据模板有意留空实际服务器信息；本 README 的完整运维流程不扩大该交接范围。
 
 ## 一次性主机准备
 

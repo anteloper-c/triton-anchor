@@ -85,3 +85,9 @@
 用户确认 CI 用户名 jiwang_ci，其余服务器信息留空，由后续有服务器权限的窗口部署。新增 deploy/jiwang_ci/HANDOFF.md、空值配置和凭据变量模板，说明账户、Rootless、Gitee控制代码来源、镜像配方、首次PR试跑、服务、迁移与真实验收。
 
 核对发现 preflight 仍拒绝 sudo/wheel/admin 组，与用户已确认的人工维护权限不符：现允许这些组，仍拒绝 root/rootful Docker/lxd/libvirt 组；所有生成及示例 CI 服务增加 NoNewPrivileges=yes，自动任务不使用 sudo。部署回归50项通过，含组权限和所有服务限制断言；Ruff及差异检查随本提交验证。未推送、登录服务器、部署、调用模型或发信。此前581项报告对应任务容器交付源码，本补充不冒充已完成服务器验收。
+
+## 2026-09-09：收窄为仅 Gitee 的服务器部署交接
+
+用户明确服务器窗口无法连接 GitHub，只需要部署内容，不需要试跑。重写 deploy/jiwang_ci/HANDOFF.md：交付方先提供 Gitee 控制代码 URL/ref/完整 SHA，服务器本地核验版本；保留 jiwang_ci 账户、Rootless、实际依赖和私有配置、镜像自检、资源预检及用户服务安装。删除 GitHub 配置、正常/失败 PR 试跑和线上联调步骤，CI 服务安装后保持未启用接单；未提供的服务器信息继续留空。上级 README 同步说明交接边界。
+
+本轮仅修改交接文档和工作记录，核对命令与现有安装器接口、Markdown 相对链接及 git diff --check；未改运行代码或重跑模拟套件，未推送、连接服务器、部署、调用模型或发信。变更随本地 CI_dev 提交保存，可用 git log -1 -- scripts/local_ci/deploy/jiwang_ci/HANDOFF.md 追溯。
