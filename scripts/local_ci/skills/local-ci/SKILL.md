@@ -20,8 +20,8 @@ Harness 必须先读取本文件，再按照下面的顺序完整加载全部四
 
 - CI 运行期每个任务只有一个 Codex 决策会话；不得创建子 Agent、并行审查 Agent 或自行启动额外会话。Harness 可串行恢复同一任务，任一时刻只有一个 Codex 实例。构建期间由同一个 Codex 继续阅读和审查，确定性工具由 Harness 调度执行。
 - GitHub 按 `Basic CI → API 兼容性 → Security Gate` 串行完成前置检查；可信调度确认审批与任务身份后经 Gitee 投递。模型 API 只在本地服务器使用，沿用公司现有中转站和实际模型配置。
-- Codex 负责理解意图、判断影响、安排检查和评估证据；tools 负责确定性的构建、执行、测量和产物记录。所有 Shell/Python 执行都使用当前任务的 MCP；Codex 不使用 native shell，不直接操作 Docker、控制代码、凭据或发布通道。
-- 每个 PR 任务使用独立 Rootless Docker 容器，Codex 与构建测试同容器，由宿主普通 CI 账号的 Harness 管理。Codex、candidate、base、diagnostic 使用四个不同的非 root UID；诊断只读正式环境，修改与安装实验在独立副本内进行。可信管理器负责会话、进程、证据与容器回收。
+- Codex 负责理解意图、判断影响、安排检查和评估证据；在任务容器内使用 `danger-full-access`、`approval_policy=never`，可通过原生 Shell、Python 和文件编辑探索任务副本。正式检查和阻断复现通过当前任务 MCP 调用 tools，由 Harness 核验。不能把原生命令的输出当作必检通过记录，也不操作 Docker、可信控制代码或发布通道。
+- 每个 PR 任务使用独立 Rootless Docker 容器，Codex 与构建测试同容器，由宿主普通 CI 账号的 Harness 管理。Codex、candidate、base、diagnostic 使用四个不同的非 root UID，分别隔离会话、候选安装、基线安装和受记录的诊断。原生操作使用 Codex 的可写副本；MCP 诊断只读正式环境，修改实验使用独立副本。可信管理器负责会话、进程、证据与容器回收。`danger-full-access` 不改变 Linux 身份或只读镜像；系统依赖变更提交为可信镜像配方建议。
 - Triton 3.0 环境支持后端、FlagGems 和性能检查；其他版本仅有前端能力。适用的最低检查集合不可减免；没有能力的检查保留“不适用”事实，不能伪装成功。
 - Codex 的业务决定只有 `continue` 与 `block`：继续收集证据、调度允许的操作，或依据证据阻塞。检查的 `pass/fail`、审查的 `incomplete`、等待及取消是事实或生命周期状态；不得用业务决定替换 `submit_review` 的状态枚举或自行宣布最终通过。
 

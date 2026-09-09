@@ -8,6 +8,10 @@
 
 任务容器不挂载 Docker socket、完整宿主机 state、Gitee/GitHub 凭据或整个 home。公司 Codex config/auth 只进入该任务的 Codex 私有目录，候选/base/diagnostic 身份不能读取。通用诊断 MCP 的能力由可信宿主机 Harness 验证，只作用于当前任务；不是宿主机任意命令或 Docker 参数透传接口。
 
+容器内 Codex 的新会话和恢复会话均使用 `danger-full-access`、`approval_policy=never`，启用原生 Shell、unified exec 和文件编辑。`/codex/workspace/candidate/` 提供绑定冻结提交、排除可变 Git 元数据的源码副本、实验 venv 和私有缓存；原生实验不改写正式 candidate/base 环境。命令事件和源码快照留在宿主私有任务记录，不自动公开到 Gitee；最低检查和阻断复现仍由 MCP 执行并核验。
+
+保留四个 UID 是为了分别保护会话、候选安装、基线安装和诊断执行，且可以清理测试进程而不终止 Codex。它们不需要四个登录账号，不产生四份常驻服务的内存开销。原生命令和 Codex 同身份，能够读取模型认证和任务 RPC；不要把执行候选脚本的原生命令当作凭据隔离边界。容器根文件系统只读且 Codex 非 root，系统包和全局驱动仍通过可信镜像配方准备；任务内可安装 venv 依赖和本地工具。
+
 单向交付保持不变：Codex 封存结果后结束，Harness 上传不可变 Gitee 结果成功即本地 complete；没有 receipt。Docker 故障不应阻止已有 outbox 重试上传或独立健康发布。GitHub 保持 status → comment → Pages，发布失败由 Actions 和后续接收重试处理，不触发 Codex 重跑。
 
 供仅能访问 Gitee 的服务器窗口及用户逐步部署、调试的手册见 [jiwang_ci/HANDOFF.md](jiwang_ci/HANDOFF.md)：按 docs/build.md 对照镜像依赖，优先使用用户放好的 LLVM/PPL 预编译包，说明路径、摘要、版本与配置的对应关系，提供每步检查点和日志排查。范围为依赖与配置准备、部署预检和用户服务安装，安装后不启动接单，不包含 GitHub 配置或 PR 试跑。该目录的配置和凭据模板有意留空实际服务器信息；本 README 的完整运维流程不扩大该交接范围。

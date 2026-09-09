@@ -119,6 +119,51 @@ class WorkspaceTests(unittest.TestCase):
         self.worker.workspaces.recover()
         self.assertNotEqual('unsafe', self.row()['phase'])
 
+    def native_interruption(self):
+        original = self.driver.run
+        def run(supervisor, service, recovery=""):
+            root = supervisor.run_dir / 'native/codex-events-fixture'
+            root.mkdir(parents=True)
+            (root / 'context.json').write_text(json.dumps({
+                'task_id': supervisor.task['task_id'],
+                'attempt_id': supervisor.executor.generation['attempt_id'],
+            }))
+            # Simulate successful sealing followed by driver death before it
+            # can export native changes. Normal workspace cleanup must recover.
+            return original(supervisor, service, recovery)
+        return run
+
+    def test_native_edits_survive_post_seal_interruption_and_stay_private(self):
+        def export(handle, destination):
+            self.assertFalse(handle.get('credentials_purged'))
+            destination.mkdir(parents=True)
+            (destination / 'repro.py').write_text('print("native experiment")')
+            return {'exported': True, 'destination': str(destination)}
+        with mock.patch.object(self.driver, 'run', side_effect=self.native_interruption()), \
+             mock.patch.object(self.manager, 'export_native_evidence', side_effect=export, create=True) as exports:
+            self.worker.scan()
+        self.assertEqual(1, exports.call_count)
+        self.assertEqual('removed', self.row()['phase'])
+        box = self.worker.journal.outbox(self.fixture.task['task_id'])
+        published = Path(box['payload_path']).parent
+        marker = next((published.parent / 'native').glob('*/export.json'))
+        self.assertTrue((Path(json.loads(marker.read_text())['destination']) / 'repro.py').is_file())
+        self.assertFalse(list(published.rglob('repro.py')))
+
+    def test_failed_native_recovery_preserves_volume_until_snapshot_saved(self):
+        with mock.patch.object(self.driver, 'run', side_effect=self.native_interruption()), \
+             mock.patch.object(self.manager, 'export_native_evidence', side_effect=OSError('native export interrupted'), create=True):
+            self.worker.scan()
+        self.assertEqual('unsafe', self.row()['phase'])
+        self.assertTrue(self.scratch().exists())
+        def recovered(handle, destination):
+            destination.mkdir(parents=True)
+            return {'exported': True, 'destination': str(destination)}
+        with mock.patch.object(self.manager, 'export_native_evidence', side_effect=recovered, create=True) as exports:
+            self.worker.workspaces.recover()
+        self.assertEqual(1, exports.call_count)
+        self.assertEqual('removed', self.row()['phase'])
+
     def test_failure_retention_expires_without_deleting_upload(self):
         self.fail()
         self.assertEqual("retained", self.row()["phase"])

@@ -10,6 +10,8 @@
 
 Poller 校验任务及已安装控制版本，从已验证镜像创建当前 task/run 的独立 attempt。宿主机 Harness 显式加载 [local-ci/SKILL.md](../scripts/local_ci/skills/local-ci/SKILL.md) 及其 references，再在任务容器内启动公司配置的单一 Codex 会话。`agent_ci/policy.py` 通过真实 diff 决定不可删减的最低检查，Skill 规定工作循环；模型可安排顺序、增补验证，并在构建期间开展只读审查。
 
+Codex 新建与恢复会话均使用 `danger-full-access`、`approval_policy=never`，启用原生 Shell、unified exec 和编辑能力。原生探索目录为 `/codex/workspace/candidate/`，包含独立 checkout、venv、可用时的 backend 和 home/tmp/cache/state；源码副本排除可变 Git 元数据，通过来源清单绑定冻结提交。Codex 可以直接写脚本和运行实验，原生命令事件及源码快照保存在宿主私有记录，不作为最低检查通过或阻断归因，也不自动发布到 Gitee。
+
 MCP 服务由可信 Harness 绑定当前任务，Codex 通过它调用 `start_check` 和 `run_custom`。后者包含 diagnostic、reproduction、experiment 三种模式：诊断可在正式检查通过前使用，实验在独立副本尝试修改，只有符合条件的正式复现可建立原始 candidate/base 归因。诊断和实验不能代替最低检查，也不是宿主机 shell 或 Docker 管理入口。
 
 十项基础工具仍在 `tools/`，wheel 构建与安装分开。candidate/base 分别拥有 checkout、venv、构建与可写缓存。Triton 3.0 保留后端、FlagGems 和性能能力；其他版本只提供前端及适用的源码/控制面检查。缺少声明能力属于 infra_error。所有 PR 均需信息校验和架构审查；额外 AI 高风险阻断要求相同复现在 candidate 两次失败、base 通过。结构化结果和生成测试证据来自执行器，模型文字不能代替通过记录。
@@ -26,7 +28,11 @@ Codex 的业务决定只有 continue/block。`pass/fail/infra_error` 表示证�
 
 每个 attempt 固定 task_id、run_id、容器 ID、镜像 ID 和私有数据卷。容器内 Codex、candidate、base、diagnostic 使用四个不同非 root UID；只有宿主机 Harness 能通过 Docker 管理接口执行容器 UID 0 的准备、取证与清理。模型认证和 MCP token 位于 Codex 私有目录，其他身份不可读取。任务进程使用 no_new_privs；容器不挂载 Docker socket、完整宿主机 state、GitHub/Gitee 凭据或整个 home。
 
+四个身份分别保护会话、候选安装、基线安装和诊断执行，也使 Harness 可以先终止测试进程而保留 Codex 完成封存请求。它们不是四个宿主账号或四个常驻服务。原生命令与 Codex 同身份，可以访问模型认证和当前任务 RPC；正式检查与复现通过其他 UID 执行，不能用这层隔离宣称 Codex 自行启动的程序也无法读取凭据。
+
 长期复用的是经可信来源、精确 LLVM 和配方验证的镜像与依赖缓存。镜像根文件系统、控制代码及可信底座只读，任务写入私有目录；不跨任务复用可写 checkout/venv，不把 PR 容器提交成镜像。每日 timer 错峰构建与验证镜像，新任务才使用新发布的摘要，已有 attempt 不被替换。PR 的新 LLVM 不自动晋升正式镜像，3.0 后端准备失败不降级。
+
+`danger-full-access` 不改变 Linux 文件权限和非 root 身份。Codex 可在实验 venv 安装依赖和任务本地工具；apt、系统库、全局驱动等底座变更需要更新可信镜像配方。
 
 任务完成前确认进程终止并保存执行证据，进程清理失败进入 `environment_cleanup` 并阻断整体通过。封存后清理认证、停止容器并按策略保留或删除任务数据。未确认停止、身份不匹配和清理失败进入健康异常。旧常驻环境的设备复用检查不在任务容器路径中；3.0 后端能力通过可信镜像验证和正式任务检查确认。
 

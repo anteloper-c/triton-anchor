@@ -1208,6 +1208,7 @@ class EnvironmentManager:
         read_operations = {
             "export-execution",
             "export-evidence",
+            "export-native-evidence",
             "task-usage",
             "purge-credentials",
             "read-file",
@@ -1233,6 +1234,10 @@ class EnvironmentManager:
                 self._docker("start", container_id, cancellable=False)
                 temporary_start = True
         try:
+            if op == "export-native-evidence" and self._record(handle).get(
+                "credential_volume_missing"
+            ):
+                raise EnvironmentError("Native evidence Codex volume is missing")
             output = self._docker(
                 "exec",
                 "-i",
@@ -1329,6 +1334,12 @@ class EnvironmentManager:
             h, "create-experiment", dict(experiment_id=experiment_id, variant=variant)
         )
 
+    def prepare_native_workspace(self, h):
+        h = self._record(h)
+        return self._helper(
+            h, "prepare-native-workspace", dict(expected_sha=h["task"]["tested_sha"])
+        )
+
     def read_file(self, h, scope, path):
         return base64.b64decode(
             self._helper(h, "read-file", dict(scope=scope, path=path))["base64"]
@@ -1381,6 +1392,20 @@ class EnvironmentManager:
 
     def export_evidence(self, h, destination):
         return self._export(h, "export-evidence", {}, destination)
+
+    def export_native_evidence(self, h, destination):
+        """Private exploratory audit, deliberately separate from formal exports."""
+        if self._record(h).get("credential_volume_missing"):
+            return dict(exported=False, evidence_loss="codex_volume_missing")
+        try:
+            result = self._export(h, "export-native-evidence", {}, destination)
+            if result.get("exported"):
+                Path(destination).chmod(0o700)
+            return result
+        except EnvironmentError:
+            if self._record(h).get("credential_volume_missing"):
+                return dict(exported=False, evidence_loss="codex_volume_missing")
+            raise
 
     def deploy_session(self, h, files, environment):
         layout = dict(

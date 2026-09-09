@@ -326,14 +326,98 @@ class ExecutorTests(unittest.TestCase):
         self.assertIn('variant', other['reason'])
 
     def test_test_cleanup_preserves_codex_until_explicit_session_stop(self):
-        codex = self.detached(uid=self.generation['uids']['codex'])
+        layout = self.executor.prepare_native_workspace()
+        self.executor.prepare('base')
+        binary = self.root / 'trusted-fake-codex'
+        probe = r'''
+import ctypes,os,pathlib,sys
+root=pathlib.Path(os.environ['LOCAL_CI_NATIVE_ROOT'])
+assert pathlib.Path.cwd()==root/'checkout'
+assert pathlib.Path(os.environ['ANCHOR_DIR'])==pathlib.Path.cwd()
+assert pathlib.Path(sys.prefix)==root/'venv'
+assert pathlib.Path(os.environ['HOME'])==root/'home'
+assert pathlib.Path(os.environ['PYTHON_BIN'])==root/'venv/bin/python'
+assert pathlib.Path(os.environ['PYTHON_VENV_ACTIVATE'])==root/'venv/bin/activate'
+assert ctypes.CDLL(None).prctl(39,0,0,0,0)==1
+assert 'HOST_ONLY_SECRET' not in os.environ
+assert pathlib.Path(os.environ['CODEX_HOME'],'auth.json').read_text()=='model-only-secret'
+for path in ['/task/candidate/checkout/README.md','/task/base/checkout/README.md']:
+    try: pathlib.Path(path).write_text('corrupt formal input')
+    except PermissionError: pass
+    else: raise AssertionError('Native command wrote formal state: '+path)
+for key in ('HOME','TMPDIR','XDG_CACHE_HOME','TRITON_CACHE_DIR'):
+    path=pathlib.Path(os.environ[key]);assert path.is_relative_to(root)
+    path.mkdir(parents=True,exist_ok=True)
+    (path/'native-marker').write_text('writable')
+pathlib.Path('README.md').write_text('native experiment\n')
+print('native Python used private venv and preserved formal state')
+'''
+        source = (
+            '#!/usr/bin/python3\nimport json,os,pathlib,subprocess,sys,time\n'
+            "assert sys.argv[1:]==['exec','--sandbox','danger-full-access']\n"
+            f"pathlib.Path('native_probe.py').write_text({probe!r})\n"
+            "result=subprocess.run(['/bin/bash','-c','printf native-shell > shell.txt; python native_probe.py'],capture_output=True,text=True,check=True)\n"
+            "print(json.dumps({'type':'item.completed','item':{'id':'native-command','type':'command_execution','command':'python native_probe.py','exit_code':result.returncode,'aggregated_output':result.stdout}}),flush=True)\n"
+            "child=subprocess.Popen([sys.executable,'-I','-S','-c','import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(90)'],env={},start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+            "pathlib.Path(os.environ['TMPDIR'],'native-child.pid').write_text(str(child.pid))\n"
+            "time.sleep(90)\n"
+        )
+        binary.write_text(self.manager.translate(self.generation, source))
+        binary.chmod(0o755)
+        self.config['codex_bin'] = str(binary)
+        environment = {**self.executor.native_environment(layout), 'CODEX_HOME': '/codex/home',
+                       'LOCAL_CI_CODEX_WORKSPACE': layout['checkout']}
+        self.executor.prepare_codex_session(files={'auth.json': 'model-only-secret'}, environment=environment,
+            rpc_socket=Path(self.generation['rpc_host_dir']) / 'supervisor.sock')
+        auth = self.manager.codex_volume(self.generation) / 'home/auth.json'
+        for role in ('candidate', 'base', 'diagnostic'):
+            denied = subprocess.run([sys.executable, '-I', '-S', '-c',
+                'import pathlib,sys;pathlib.Path(sys.argv[1]).read_text()', str(auth)],
+                user=self.generation['uids'][role], group=self.generation['gids'][role], extra_groups=(),
+                env={}, capture_output=True)
+            self.assertNotEqual(0, denied.returncode)
+            self.assertIn(b'PermissionError', denied.stderr)
+        with mock.patch.dict(os.environ, {'HOST_ONLY_SECRET': 'must-not-enter'}):
+            codex = subprocess.Popen(self.executor.codex_command(['exec', '--sandbox', 'danger-full-access']),
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        codex_uid = self.generation['uids']['codex']
+        def close_codex():
+            # unittest cleanups run after tearDown removes the fake Docker file.
+            # Reap only this fixture's reserved UID, including a detached child
+            # if an assertion failed before the real stop_codex call below.
+            subprocess.run([sys.executable, '-I', '-S', '-c', STOP_PROGRAM, str(codex_uid)],
+                           capture_output=True, check=True)
+            if codex.poll() is None:
+                codex.kill()
+            codex.communicate(timeout=3)
+        self.addCleanup(close_codex)
+        native = self.manager.codex_volume(self.generation) / 'workspace/candidate'
+        pidfile = native / 'tmp/native-child.pid'
+        deadline = time.monotonic() + 10
+        while not pidfile.exists() and codex.poll() is None and time.monotonic() < deadline:
+            time.sleep(.05)
+        if not pidfile.exists():
+            self.fail('Native launch did not complete probe: ' + repr(codex.communicate(timeout=3)))
+        pid = int(pidfile.read_text())
+        self.assertIn(f'Uid:\t{self.generation["uids"]["codex"]}', Path(f'/proc/{pid}/status').read_text())
+        self.assertIn('NoNewPrivs:\t1', Path(f'/proc/{pid}/status').read_text())
+        self.assertNotIn(b'LOCAL_CI_EXECUTION_ID', Path(f'/proc/{pid}/environ').read_bytes())
+        self.assertEqual('native-shell', (native / 'checkout/shell.txt').read_text())
+        self.assertEqual('native experiment\n', (native / 'checkout/README.md').read_text())
+        self.assertEqual('candidate\n', (self.manager.volume(self.generation) / 'candidate/checkout/README.md').read_text())
+        self.assertEqual('base\n', (self.manager.volume(self.generation) / 'base/checkout/README.md').read_text())
         children = [self.detached(uid=self.generation['uids'][role]) for role in ('candidate','base','diagnostic')]
         self.assertTrue(self.executor.stop_task()['verified'])
         for child in children:
             child.wait(timeout=2)
         self.assertIsNone(codex.poll())
+        self.assertNotEqual('Z', Path(f'/proc/{pid}/stat').read_text().split()[2])
         self.executor.stop_codex()
-        codex.wait(timeout=2)
+        output, error = codex.communicate(timeout=3)
+        self.assertEqual(b'', error)
+        self.assertEqual(0, json.loads(output)['item']['exit_code'])
+        child_stat = Path(f'/proc/{pid}/stat')
+        self.assertTrue(not child_stat.exists() or child_stat.read_text().split()[2] == 'Z')
 
     def test_reproduction_loads_setup_but_preserves_task_paths(self):
         self.assertEqual('pass', self.run_tool()['status'])
@@ -352,6 +436,20 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual('custom_environment_setup_failed', failed['reason'])
         custom.update(mode='diagnostic', source_only=True, content='print("can inspect broken setup")')
         self.assertEqual('pass', self.run_tool('custom', custom=custom)['status'])
+
+    def test_native_setup_paths_are_explicit_without_blocking_diagnostics(self):
+        self.generation['backend_enabled'] = True
+        self.generation['env'].update(TRUSTED_ANCHOR_ENVSETUP='/trusted/frontend.sh',
+            BACKEND_ENVSETUP='envsetup.sh', BACKEND_ENVSETUP_ARGS='"simulation only"',
+            LLVM_BUILD_DIR='/trusted/llvm')
+        layout = self.executor.prepare_native_workspace()
+        self.assertFalse(layout['setup_automatic'])
+        self.assertEqual(['/codex/workspace/candidate/backend/envsetup.sh', 'simulation only'],
+                         layout['environment_setup'][-1])
+        self.assertIn(['/trusted/frontend.sh'], layout['environment_setup'])
+        env = self.executor.native_environment(layout)
+        self.assertTrue(env['PATH'].startswith('/codex/workspace/candidate/venv/bin:/trusted/llvm/bin:'))
+        self.assertEqual('/codex/workspace/candidate/backend', env['BACKEND_PATH'])
 
     def test_verify_exception_still_exports_tool_artifacts(self):
         with mock.patch.object(self.manager, 'verify_checkout', side_effect=OSError('snapshot check interrupted')):

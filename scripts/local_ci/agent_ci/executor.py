@@ -133,7 +133,7 @@ if libc.prctl(38,1,0,0,0)!=0: raise OSError(ctypes.get_errno(),'no_new_privs')
 with open('/codex/environment.json') as stream: environment=json.load(stream)
 if not isinstance(environment,dict) or any(not isinstance(k,str) or not isinstance(v,str) for k,v in environment.items()):
     raise RuntimeError('Invalid private Codex environment')
-os.chdir('/codex/workspace')
+os.chdir(environment.get('LOCAL_CI_CODEX_WORKSPACE','/codex/workspace'))
 os.execvpe(sys.argv[1],sys.argv[1:],environment)
 '''
 
@@ -342,6 +342,52 @@ class DockerExecutor:
             f"{self.uids['codex']}:{self.gids['codex']}", self.generation["container_id"],
             self.config.get("container_python", "/usr/bin/python3"), "-I", "-S", "-c",
             CODEX_LAUNCH_PROGRAM, binary, *arguments)
+
+    def prepare_native_workspace(self) -> dict:
+        # The manager copies frozen input, never a writable host mount. Native
+        # commands own this exploratory copy, not formal candidate/base state.
+        self.prepare()
+        layout = self.manager.prepare_native_workspace(self.generation)
+        env = self.generation.get("env", {})
+        setup = [[str(Path(layout["root"]) / "venv/bin/activate")]]
+        if env.get("TRUSTED_ANCHOR_ENVSETUP"):
+            setup.append([env["TRUSTED_ANCHOR_ENVSETUP"]])
+        if self.generation.get("backend_enabled") and env.get("BACKEND_ENVSETUP"):
+            path = Path(env["BACKEND_ENVSETUP"])
+            if not path.is_absolute():
+                path = Path(layout["root"]) / "backend" / path
+            setup.append([str(path), *shlex.split(env.get("BACKEND_ENVSETUP_ARGS", ""))])
+        # Expose exact source paths/arguments without executing setup at launch:
+        # Codex must still be able to investigate a broken environment setup.
+        return {**layout, "environment_setup": setup, "setup_automatic": False}
+
+    def native_environment(self, layout: dict) -> dict[str, str]:
+        trusted = {str(k): str(v) for k, v in self.generation.get("env", {}).items()}
+        if any(any(word in k.upper() for word in SECRET_NAMES) for k in trusted):
+            raise ContractError("Credentials must not enter the native profile environment")
+        root = Path(layout["root"])
+        llvm_bin = str(Path(trusted["LLVM_BUILD_DIR"]) / "bin") + ":" if trusted.get("LLVM_BUILD_DIR") else ""
+        trusted.update({
+            "PATH": str(root / "venv/bin") + ":" + llvm_bin + trusted.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+            "HOME": str(root / "home"), "TMPDIR": str(root / "tmp"),
+            "XDG_CACHE_HOME": str(root / "cache"), "TRITON_CACHE_DIR": str(root / "cache/triton"),
+            "ANCHOR_DIR": layout["checkout"], "WORKSPACE": str(root),
+            "PYTHON_BIN": str(root / "venv/bin/python"),
+            "PYTHON_VENV_ACTIVATE": str(root / "venv/bin/activate"),
+            "LOCAL_CI_NATIVE_ROOT": str(root), "LOCAL_CI_TASK_ID": self.task["task_id"],
+            "LOCAL_CI_TESTED_SHA": self.task["tested_sha"],
+            "LOCAL_CI_ENVIRONMENT_FINGERPRINT": self.generation["environment_fingerprint"],
+            "MAX_JOBS": str(self.config.get("max_jobs", 8)),
+            "CMAKE_BUILD_PARALLEL_LEVEL": str(self.config.get("max_jobs", 8)),
+        })
+        if self.generation.get("backend_enabled"):
+            trusted["BACKEND_PATH"] = str(root / "backend")
+        return trusted
+
+    def export_native_evidence(self, destination: Path) -> dict:
+        # Kept privately with the Codex event stream; never formal check facts
+        # or an automatic attachment to the public result bundle.
+        return self.manager.export_native_evidence(self.generation, destination)
 
     def stop_codex(self) -> dict:
         return self.cleanup_processes(role="codex")

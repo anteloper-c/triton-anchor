@@ -311,6 +311,22 @@ class VolumeManager(FakeManager):
             os.chown(target, handle['uids']['codex'], handle['gids']['codex'])
             target.chmod(0o600)
 
+    def prepare_native_workspace(self, handle):
+        # As for formal venvs, substitute only the expensive trusted seed copy.
+        # Launcher tests still exercise real independent files and POSIX UIDs.
+        root = self.codex_volume(handle) / 'workspace/candidate'
+        if not root.exists():
+            root.mkdir()
+            shutil.copytree(self.volume(handle) / 'candidate/checkout', root / 'checkout', symlinks=True)
+            subprocess.run([sys.executable, '-m', 'venv', '--without-pip', '--copies', str(root / 'venv')], check=True)
+            for name in ('home', 'tmp', 'cache', 'state'):
+                (root / name).mkdir()
+            self.assign_tree(root, handle['uids']['codex'], handle['gids']['codex'])
+        logical = Path('/codex/workspace/candidate')
+        return {'root': str(logical), 'checkout': str(logical / 'checkout'),
+                'venv': str(logical / 'venv'), 'python_bin': str(logical / 'venv/bin/python'),
+                'home': str(logical / 'home'), 'tmp': str(logical / 'tmp'), 'cache': str(logical / 'cache')}
+
     def purge_credentials(self, handle):
         super().purge_credentials(handle)
         for relative in ('environment.json', 'home/auth.json'):

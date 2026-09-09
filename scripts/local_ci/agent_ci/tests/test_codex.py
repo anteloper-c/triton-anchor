@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from agent_ci.codex import CodexDriver, DISABLED_FEATURES, finish_timeout_seconds
+from agent_ci.codex import CodexDriver, DISABLED_FEATURES, ENABLED_FEATURES, finish_timeout_seconds
 from agent_ci.protocol import ContractError
 from agent_ci.skill import load_skill, SkillBundle
 
@@ -59,6 +59,19 @@ class ContainerExecutor:
                        'rpc_socket': '/run/local-ci-rpc/supervisor.sock'}
         self.files, self.environment, self.deliveries, self.commands = {}, {}, [], []
         self.stops = 0
+        self.exports = []
+
+    def prepare_native_workspace(self):
+        return {'root': '/codex/workspace/candidate', 'checkout': '/codex/workspace/candidate/checkout'}
+
+    def native_environment(self, layout):
+        return {'PATH': layout['root'] + '/venv/bin:/usr/bin:/bin', 'HOME': layout['root'] + '/home'}
+
+    def export_native_evidence(self, destination):
+        self.exports.append(destination)
+        destination.mkdir()
+        (destination / 'manifest.json').write_text('{}')
+        return {'exported': True}
 
     def prepare_codex_session(self, *, files, environment, rpc_socket):
         self.deliveries.append({'files': dict(files), 'environment': dict(environment), 'rpc_socket': rpc_socket})
@@ -120,7 +133,7 @@ hooks = true
         return process
 
     def run_driver(self, **kwargs):
-        feature_output = '\n'.join(name + ' stable true' for name in DISABLED_FEATURES)
+        feature_output = '\n'.join(name + ' stable true' for name in DISABLED_FEATURES | ENABLED_FEATURES)
         with mock.patch('agent_ci.codex.subprocess.run', return_value=subprocess.CompletedProcess([], 0, feature_output, '')), \
              mock.patch('agent_ci.codex.subprocess.Popen', side_effect=self.process):
             return self.driver.run(self.supervisor, self.service, **kwargs)
@@ -129,9 +142,12 @@ hooks = true
         first = self.run_driver()
         command = self.processes[0].command
         self.assertIn('--sandbox', command)
-        self.assertIn('sandbox_mode="read-only"', command)
+        self.assertIn('sandbox_mode="danger-full-access"', command)
+        self.assertEqual('danger-full-access', command[command.index('--sandbox') + 1])
+        self.assertEqual('/codex/workspace/candidate/checkout', command[command.index('--cd') + 1])
         self.assertIn('approval_policy="never"', command)
-        self.assertIn('features.shell_tool=false', command)
+        self.assertIn('features.shell_tool=true', command)
+        self.assertIn('features.unified_exec=true', command)
         self.assertNotIn(self.service.token, ' '.join(command))
         self.assertNotIn('fixture-private-model-key', ' '.join(command))
         client_env = self.processes[0].options['env']
@@ -150,7 +166,9 @@ hooks = true
         self.assertEqual('3600', env['LOCAL_CI_FINISH_TIMEOUT_SECONDS'])
         self.assertIn('"tool_timeout_sec" = 3630', config)
         self.assertIn('"required" = true', config)
-        self.assertIn('"shell_tool" = false', config)
+        self.assertIn('"shell_tool" = true', config)
+        self.assertIn('"unified_exec" = true', config)
+        self.assertIn('"apply_patch_freeform" = true', config)
         self.assertIn('"hooks" = false', config)
         self.assertIn('"multi_agent" = false', config)
         self.assertIn('/trusted/agent_ci/mcp_server.py', config)
@@ -171,13 +189,57 @@ hooks = true
         resume = command.index('resume')
         self.assertEqual(['exec', 'resume', SESSION_ID], command[resume - 1:resume + 2])
         self.assertNotIn('--sandbox', command)
-        self.assertIn('sandbox_mode="read-only"', command)
+        self.assertIn('sandbox_mode="danger-full-access"', command)
+        self.assertIn('features.shell_tool=true', command)
+        self.assertIn('features.unified_exec=true', command)
         self.assertIn('approval_policy="never"', command)
         self.assertEqual(SESSION_ID, second['session_id'])
         self.assertNotEqual(first['event_log'], second['event_log'])
         self.assertEqual(first['skill_digest'], second['skill_digest'])
         self.assertTrue(self.processes[1].input_payload.decode().startswith(bundle.prompt))
         self.assertEqual(4, self.executor.stops)
+        self.assertEqual(2, len(self.executor.exports))
+        self.assertTrue(Path(first['native_evidence']).is_dir())
+        self.assertNotEqual(first['native_evidence'], second['native_evidence'])
+
+    def test_native_command_and_edit_events_are_private_exploration_records(self):
+        def native_process(command, **kwargs):
+            process = self.process(command, **kwargs)
+            events = [
+                {'type': 'item.started', 'item': {'id': 'cmd', 'type': 'command_execution',
+                    'command': 'python repro.py', 'status': 'in_progress'}},
+                {'type': 'item.completed', 'item': {'id': 'cmd', 'type': 'command_execution',
+                    'command': 'python repro.py', 'status': 'failed', 'exit_code': 3,
+                    'aggregated_output': 'fixture-private-model-key ' + self.service.token}},
+                {'type': 'item.completed', 'item': {'id': 'edit', 'type': 'file_change',
+                    'status': 'completed', 'changes': [{'path': 'repro.py', 'kind': 'add'}]}},
+            ]
+            for event in events:
+                kwargs['stdout'].write((json.dumps(event) + '\n').encode())
+            kwargs['stdout'].flush()
+            return process
+        features = '\n'.join(name + ' stable true' for name in DISABLED_FEATURES | ENABLED_FEATURES)
+        with mock.patch('agent_ci.codex.subprocess.run', return_value=subprocess.CompletedProcess([], 0, features, '')), \
+             mock.patch('agent_ci.codex.subprocess.Popen', side_effect=native_process):
+            result = self.driver.run(self.supervisor, self.service)
+        path = Path(result['native_audit'])
+        actions = [json.loads(line) for line in path.read_text().splitlines()]
+        self.assertEqual(3, len(actions))
+        self.assertEqual(3, actions[1]['exit_code'])
+        self.assertTrue(all(not action['counts_as_check'] for action in actions))
+        self.assertTrue(all(action['task_id'] == self.supervisor.task['task_id'] for action in actions))
+        self.assertNotIn(self.service.token, path.read_text())
+        self.assertNotIn('fixture-private-model-key', path.read_text())
+        self.assertEqual(0o600, path.stat().st_mode & 0o777)
+        self.assertEqual(0o600, Path(result['event_log']).stat().st_mode & 0o777)
+        self.assertFalse((self.run_dir / 'published').exists())
+
+    def test_native_export_failure_does_not_erase_event_history(self):
+        with mock.patch.object(self.executor, 'export_native_evidence', side_effect=ContractError('native evidence export failed')):
+            with self.assertRaisesRegex(ContractError, 'native evidence export failed'):
+                self.run_driver()
+        self.assertEqual(SESSION_ID, json.loads((self.run_dir / 'codex-session.json').read_text())['session_id'])
+        self.assertTrue(list(self.run_dir.glob('codex-events-*.jsonl')))
 
     def test_finish_budget_uses_cleanup_and_management_contract(self):
         self.assertEqual(3600, finish_timeout_seconds({}))
@@ -357,6 +419,17 @@ hooks = true
                 self.driver.run(self.supervisor, self.service)
             popen.assert_not_called()
         self.assertEqual(1, self.executor.stops)
+
+    def test_removed_editing_flag_is_not_reenabled(self):
+        features = '\n'.join(name + ' stable true' for name in DISABLED_FEATURES | ENABLED_FEATURES
+                             if name != 'apply_patch_freeform') + '\napply_patch_freeform removed false'
+        with mock.patch('agent_ci.codex.subprocess.run', return_value=subprocess.CompletedProcess([], 0, features, '')), \
+             mock.patch('agent_ci.codex.subprocess.Popen', side_effect=self.process):
+            self.driver.run(self.supervisor, self.service)
+        config = self.executor.files['config.toml']
+        self.assertNotIn('apply_patch_freeform', config)
+        self.assertIn('"multi_agent_v2" = false', config)
+        self.assertIn('"shell_tool" = true', config)
 
     def test_feature_probe_timeout_still_reaps_container_codex_uid(self):
         with mock.patch('agent_ci.codex.subprocess.run', side_effect=subprocess.TimeoutExpired(['codex', 'features', 'list'], 30)), \

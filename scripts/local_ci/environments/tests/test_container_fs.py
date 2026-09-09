@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -322,6 +323,160 @@ class ContainerFsTest(unittest.TestCase):
             self.assertEqual(Path(result["root"]).stat().st_uid, 11003)
             with self.assertRaisesRegex(ValueError, "identity"):
                 fs.create_experiment({"experiment_id": "repro-1", "variant": "base"})
+
+    def prepare_native(self):
+        def seed(root, environment):
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-m",
+                    "venv",
+                    "--without-pip",
+                    "--copies",
+                    str(root / "venv"),
+                ],
+                check=True,
+                capture_output=True,
+            )
+
+        with mock.patch.object(fs, "seed_venv", side_effect=seed):
+            return fs.prepare_native_workspace({"expected_sha": self.sha})
+
+    def test_native_commands_edit_build_and_run_with_separate_formal_identities(self):
+        self.import_variant()
+        self.import_variant("base")
+        fs.deploy_session({"files": {"auth.json": "private-token"}, "environment": {}})
+        layout = self.prepare_native()
+        checkout = Path(layout["checkout"])
+        self.assertFalse((checkout / ".git").exists())
+        program = """from pathlib import Path
+import subprocess,sys
+root=Path(sys.argv[1]);python=sys.argv[2]
+(root/'tracked.py').write_text('VALUE = 7\\n')
+(root/'generated_test.py').write_text('from tracked import VALUE; assert VALUE == 7; print("native-ok")\\n')
+result=subprocess.run([python,str(root/'generated_test.py')],cwd=root,capture_output=True,text=True)
+assert result.returncode == 0, result.stderr
+assert result.stdout.strip() == 'native-ok'
+"""
+        execution = self.as_uid("codex", program, checkout, layout["python_bin"])
+        self.assertEqual(execution.returncode, 0, execution.stderr)
+        self.assertEqual((checkout / "tracked.py").read_text(), "VALUE = 7\n")
+        reader = "from pathlib import Path;import sys;Path(sys.argv[1]).read_text()"
+        writer = (
+            "from pathlib import Path;import sys;Path(sys.argv[1]).write_text('wrong')"
+        )
+        for role in ("candidate", "base", "diagnostic"):
+            self.assertNotEqual(
+                self.as_uid(role, reader, self.codex / "home/auth.json").returncode, 0
+            )
+        for variant in ("candidate", "base"):
+            formal = self.task / variant / "checkout/tracked.py"
+            self.assertNotEqual(self.as_uid("codex", writer, formal).returncode, 0)
+            self.assertTrue(
+                fs.verify_checkout({"variant": variant, "expected_sha": self.sha})[
+                    "verified"
+                ]
+            )
+        second = self.prepare_native()
+        self.assertTrue(second["reused"])
+        self.assertEqual(second["source_sha"], self.sha)
+        self.assertEqual((checkout / "tracked.py").read_text(), "VALUE = 7\n")
+        self.assertTrue((checkout / "generated_test.py").is_file())
+
+    def test_native_preparation_uses_frozen_files_without_mutable_git_or_untracked_content(
+        self,
+    ):
+        self.import_variant()
+        formal = self.task / "candidate/checkout"
+        (formal / ".git/config").write_text("not Git configuration\n")
+        (formal / "untracked.py").write_text("print('not frozen')")
+        with mock.patch.object(
+            fs, "git", side_effect=AssertionError("Mutable Git is forbidden")
+        ):
+            layout = self.prepare_native()
+        self.assertFalse((Path(layout["checkout"]) / "untracked.py").exists())
+
+    def test_native_preparation_rejects_modified_frozen_source_before_copy(self):
+        self.import_variant()
+        (self.task / "candidate/checkout/tracked.py").write_text("VALUE = 2\n")
+        with self.assertRaisesRegex(ValueError, "frozen candidate"):
+            self.prepare_native()
+        self.assertFalse((self.codex / "workspace/candidate").exists())
+
+    def test_native_resume_rejects_marker_and_directory_replacement(self):
+        self.import_variant()
+        layout = self.prepare_native()
+        marker = self.task / ".control/native-workspace.json"
+        before = marker.read_bytes()
+        value = json.loads(before)
+        value["identity"]["attempt_id"] = "b" * 32
+        marker.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "identity changed"):
+            self.prepare_native()
+        marker.write_bytes(before)
+        checkout = Path(layout["checkout"])
+        checkout.rename(checkout.with_name("discarded"))
+        checkout.symlink_to(self.task / "candidate/checkout")
+        with self.assertRaisesRegex(ValueError, "Symlinked"):
+            self.prepare_native()
+
+    def test_native_export_keeps_changed_and_generated_sources_without_secrets_or_dependencies(
+        self,
+    ):
+        self.import_variant()
+        layout = self.prepare_native()
+        checkout = Path(layout["checkout"])
+        (checkout / "tracked.py").write_text("VALUE = 2\n")
+        (checkout / "script.sh").unlink()
+        (checkout / "repro.py").write_text("print('saved reproduction')\n")
+        (checkout / "outside-link").symlink_to(self.codex / "home/auth.json")
+        (checkout / "build").mkdir()
+        (checkout / "build/binary").write_bytes(b"expensive discarded build")
+        (self.codex / "home/auth.json").write_text("private-token")
+        (self.codex / "workspace/config.toml").write_text("private-config")
+        (Path(layout["venv"]) / "installed-package.py").write_text("discard dependency")
+        output = io.BytesIO()
+        fs.export_native_evidence(output)
+        with tarfile.open(fileobj=io.BytesIO(output.getvalue())) as archive:
+            names = archive.getnames()
+            self.assertEqual(
+                set(names),
+                {
+                    "native-manifest.json",
+                    "files/candidate/checkout/tracked.py",
+                    "files/candidate/checkout/repro.py",
+                },
+            )
+            report = json.load(archive.extractfile("native-manifest.json"))
+            self.assertTrue(report["exploratory_only"])
+            self.assertEqual(report["identity"]["source_sha"], self.sha)
+            changes = report["changes"]
+            self.assertEqual(
+                changes["candidate/checkout/tracked.py"]["change"], "modified"
+            )
+            self.assertEqual(
+                changes["candidate/checkout/script.sh"]["change"], "deleted"
+            )
+            self.assertEqual(
+                changes["candidate/checkout/outside-link"]["type"], "symlink"
+            )
+            self.assertNotIn("candidate/checkout/link", changes)
+        self.assertNotIn(b"private-token", output.getvalue())
+        self.assertNotIn(b"private-config", output.getvalue())
+
+    def test_native_export_rejects_hardlinks_and_bounds_generated_output(self):
+        self.import_variant()
+        layout = self.prepare_native()
+        checkout = Path(layout["checkout"])
+        os.link(checkout / "tracked.py", checkout / "hardlink")
+        with self.assertRaisesRegex(ValueError, "hardlinks"):
+            fs.export_native_evidence(io.BytesIO())
+        (checkout / "hardlink").unlink()
+        (checkout / "large-result").write_bytes(b"x" * 100)
+        with mock.patch.object(fs, "MAX_EXPORT", 64):
+            with self.assertRaisesRegex(ValueError, "bound"):
+                fs.export_native_evidence(io.BytesIO())
 
 
 if __name__ == "__main__":

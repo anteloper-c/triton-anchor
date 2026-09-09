@@ -22,7 +22,7 @@ jiwang_ci + Rootless Docker
 后续运行阶段（本轮不启动）
 宿主 Harness 读取 Gitee 任务
   → 从对应 CI 镜像创建独立任务容器
-  → 容器内 Codex 分析，借助 Harness 调用测试工具
+  → 容器内 Codex 原生分析与实验，经 MCP/Harness 执行正式检查
   → 宿主保存状态和证据、上传 Gitee
   → 按保留策略清理该任务的容器和数据
 ```
@@ -35,6 +35,9 @@ jiwang_ci + Rootless Docker
 
 - 宿主机 `jiwang_ci` 以普通权限运行 Harness、Rootless Docker 和用户级 systemd 服务。该用户可以有人工维护用的 sudo 权限；自动 CI 服务使用 `NoNewPrivileges=yes`，不调用 sudo，也不加入系统 docker 组。
 - 运行期每个 PR 任务使用独立容器，内含单一 Codex 和确定性工具。candidate/base/diagnostic/Codex 是容器内四个非 root UID，不需要新建四个宿主账号。镜像长期维护，任务容器不复用。
+- Codex 使用 `danger-full-access`、`approval_policy=never`，启用原生 Shell、unified exec 和编辑。原生实验在 `/codex/workspace/candidate/` 的独立源码、venv 和缓存中进行；源码来源清单绑定冻结提交，副本不包含可变 Git 元数据。正式检查及阻断复现仍走 MCP/Harness。
+- 四身份分别保护候选安装、基线安装、只读诊断和 Codex 会话；不增加四份常驻进程，也不需要手工维护四个账号。原生命令与 Codex 同身份，能读取其模型认证和当前任务 RPC；这部分没有测试身份的凭据隔离。
+- Codex 非 root，任务根文件系统只读。原生 venv 可安装实验依赖，apt、系统库和全局驱动应在可信镜像配方中准备。原生命令事件与源码快照保存在宿主私有任务记录，不直接作为正式通过证据或自动上传 Gitee。
 - 保持其他用户的服务、容器和数据不变；不停止系统 Docker，不执行全局 prune，不直接复用旧 CI 状态目录。若 `jiwang_ci` 下已有同名运行服务，先记录冲突，不覆盖或重启它。
 - 本文是部署交接，不是运行期提示词。运行期唯一入口仍是 `scripts/local_ci/skills/local-ci/SKILL.md`。
 - 服务器仅负责 Gitee 任务读取、执行和结果上传。GitHub 独立发布，不需要 Gitee receipt；本轮不处理任何 GitHub 侧配置。

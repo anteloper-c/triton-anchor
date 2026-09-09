@@ -14,14 +14,16 @@ from pathlib import Path
 from .protocol import ContractError, atomic_json
 from .mcp_server import SCHEMAS
 from .skill import load_skill
+from .native_audit import NativeAudit
 
 UUID = re.compile(r"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}")
 DISABLED_FEATURES = {
-    "shell_tool", "unified_exec", "apps", "hooks", "plugins", "browser_use",
-    "computer_use", "multi_agent", "image_generation", "memories", "shell_snapshot",
+    "apps", "hooks", "plugins", "browser_use",
+    "computer_use", "multi_agent", "multi_agent_v2", "image_generation", "memories", "shell_snapshot",
     "skill_mcp_dependency_install", "code_mode_host", "js_repl", "python_repl",
-    "apply_patch_freeform",
 }
+REQUIRED_FEATURES = {"shell_tool", "unified_exec"}
+ENABLED_FEATURES = REQUIRED_FEATURES | {"apply_patch_freeform"}
 MODEL_SETTINGS = {
     "model", "model_provider", "model_reasoning_effort", "model_reasoning_summary",
     "model_verbosity", "model_context_window", "model_auto_compact_token_limit",
@@ -148,16 +150,17 @@ class CodexDriver:
                 recovery = ("The previous task container/session volume was replaced. Start a new Codex session; "
                             "read context and revalidate invalidated checks in the current attempt. " + recovery)
         layout = executor.prepare_codex_session(files={}, environment={}, rpc_socket=Path(service.path))
-        home, workspace = layout["home"], layout["workspace"]
+        native = executor.prepare_native_workspace()
+        home, workspace = layout["home"], native["checkout"]
         program = skill.prompt
         atomic_json(supervisor.run_dir / "skill-manifest.json", {"task_id": task_id, **skill.manifest})
         # Preserve the deployed model/provider, not unrelated hooks or MCP servers.
         effective = {key: value for key, value in settings.items() if key in MODEL_SETTINGS}
         finish_timeout = finish_timeout_seconds(self.config)
         effective.update({"model_providers": {provider_name: provider},
-                          "sandbox_mode": "read-only", "approval_policy": "never", "web_search": "disabled",
+                          "sandbox_mode": "danger-full-access", "approval_policy": "never", "web_search": "disabled",
                           "cli_auth_credentials_store": "file", "project_doc_max_bytes": 0,
-                          "features": {"shell_tool": False, "unified_exec": False},
+                          "features": {name: True for name in sorted(REQUIRED_FEATURES)},
                           "mcp_servers": {"local_ci": {
                               "command": layout["python_bin"],
                               "args": [layout["mcp_script"]],
@@ -165,8 +168,9 @@ class CodexDriver:
                               "required": True, "enabled": True, "enabled_tools": sorted(SCHEMAS),
                               "startup_timeout_sec": 30, "tool_timeout_sec": finish_timeout + 30,
                           }}})
-        child_env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(home),
+        child_env = {**executor.native_environment(native),
                      "CODEX_HOME": str(home), "LANG": "C.UTF-8",
+                     "LOCAL_CI_CODEX_WORKSPACE": str(workspace),
                      "LOCAL_CI_RPC_SOCKET": layout["rpc_socket"], "LOCAL_CI_RPC_TOKEN": service.token,
                      "LOCAL_CI_FINISH_TIMEOUT_SECONDS": str(finish_timeout)}
         provider_env = [provider["env_key"]] if provider.get("env_key") else []
@@ -189,23 +193,46 @@ class CodexDriver:
                                       env=client_env, capture_output=True, text=True, timeout=30)
         finally:
             executor.stop_codex()
-        supported = {line.split()[0] for line in features.stdout.splitlines() if line.strip()}
-        if features.returncode or not {"shell_tool", "unified_exec"} <= supported:
+        # Removed flags can remain in `features list`; do not enable a retired
+        # editing switch. Current CLIs expose ordinary editing without it.
+        supported = {parts[0] for line in features.stdout.splitlines()
+                     if len(parts := line.split()) >= 3 and parts[1] != "removed"}
+        if features.returncode or not REQUIRED_FEATURES <= supported:
             raise ContractError("Deployed Codex CLI cannot enforce the required tool boundary")
         effective["features"] = {name: False for name in sorted(DISABLED_FEATURES & supported)}
+        effective["features"].update({name: True for name in sorted(ENABLED_FEATURES & supported)})
         executor.prepare_codex_session(files={"config.toml": config_text(effective)},
                                        environment=child_env, rpc_socket=Path(service.path))
         # Resume has no --sandbox option. Global overrides apply to both forms.
-        command = ["-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"',
-                   "-c", "features.shell_tool=false", "-c", "features.unified_exec=false", "-c", 'web_search="disabled"']
+        command = ["-c", 'sandbox_mode="danger-full-access"', "-c", 'approval_policy="never"',
+                   "-c", "features.shell_tool=true", "-c", "features.unified_exec=true", "-c", 'web_search="disabled"']
         prompt = program + "\n\n先调用 context，完成当前任务。所有工具只能作用于当前任务。"
+        prompt += "\n原生命令工作区（探索副本，不计入正式检查）：" + json.dumps(native, ensure_ascii=False)
         if recovery:
             prompt += "\n恢复信息（可信监督器）：" + recovery
         if session_id:
             command += ["exec", "resume", session_id, "--json", "--skip-git-repo-check", "-"]
         else:
-            command += ["exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "--cd", str(workspace), "-"]
+            command += ["exec", "--json", "--sandbox", "danger-full-access", "--skip-git-repo-check", "--cd", str(workspace), "-"]
         output = supervisor.run_dir / ("codex-events-" + uuid.uuid4().hex + ".jsonl")
+        native_root = supervisor.run_dir / "native" / output.stem
+        native_root.mkdir(parents=True, mode=0o700)
+        native_root.parent.chmod(0o700)
+        atomic_json(native_root / "context.json", {"task_id": task_id, "attempt_id": attempt_id,
+                    "tested_sha": supervisor.task.get("tested_sha"), "event_log": str(output)})
+
+        def credential_strings(value):
+            if isinstance(value, str):
+                return [value]
+            if isinstance(value, dict):
+                return [s for item in value.values() for s in credential_strings(item)]
+            return []
+
+        audit_path = native_root / "actions.jsonl"
+        audit = NativeAudit(audit_path, {
+            "task_id": task_id, "tested_sha": supervisor.task.get("tested_sha"),
+            "attempt_id": attempt_id, "environment_fingerprint": executor.generation.get("environment_fingerprint"),
+        }, output, secrets=[service.token, *credential_strings(auth), *(child_env[k] for k in provider_env)])
         started = time.monotonic()
         reason, offset, pending = "completed", 0, b""
         sealing_started_at = None
@@ -223,6 +250,7 @@ class CodexDriver:
                     event = json.loads(line)
                 except (ValueError, UnicodeError):
                     continue
+                audit.ingest(event)
                 if isinstance(event, dict) and event.get("type") == "thread.started" and UUID.fullmatch(str(event.get("thread_id", ""))):
                     if session_id and session_id != event["thread_id"]:
                         raise ContractError("Codex resumed a different session")
@@ -230,7 +258,8 @@ class CodexDriver:
                     atomic_json(saved, {"task_id": task_id, "session_id": session_id, "provider_identity": provider_identity,
                                         "skill_digest": skill.manifest["digest"], "attempt_id": attempt_id})
 
-        with output.open("wb") as stream:
+        with audit, output.open("wb") as stream:
+            output.chmod(0o600)
             process = subprocess.Popen(executor.codex_command(command), cwd=supervisor.run_dir, env=client_env, stdin=subprocess.PIPE,
                                        stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
             try:
@@ -262,6 +291,10 @@ class CodexDriver:
                     # Killing docker exec only stops its client. Reap the
                     # container's Codex UID and bridge even after a normal exit.
                     executor.stop_codex()
+                    exported = executor.export_native_evidence(native_root / "workspace")
+                    if not isinstance(exported, dict) or not (exported.get("exported") or exported.get("evidence_loss")):
+                        raise ContractError("Native evidence export did not report completion")
+                    atomic_json(native_root / "export.json", exported)
                 finally:
                     if process.poll() is None:
                         try:
@@ -276,4 +309,5 @@ class CodexDriver:
                     consume_events()
         return {"exit_code": process.returncode, "reason": reason,
                 "duration_seconds": round(time.monotonic() - started, 3), "finished": supervisor.closed,
-                "session_id": session_id, "event_log": str(output), "skill_digest": skill.manifest["digest"]}
+                "session_id": session_id, "event_log": str(output), "native_audit": str(audit_path),
+                "native_evidence": str(native_root / "workspace"), "skill_digest": skill.manifest["digest"]}

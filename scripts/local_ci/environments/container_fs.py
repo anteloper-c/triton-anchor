@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -540,7 +541,19 @@ def create_experiment(params):
         shutil.copytree(backend, root / "backend", symlinks=True)
     for name in ("home", "tmp", "cache", "state"):
         (root / name).mkdir()
-    environment = data.get("env", {})
+    seed_venv(root, data.get("env", {}))
+    set_tree_identity(root, data["uids"]["diagnostic"], data["gids"]["diagnostic"])
+    write(marker, json.dumps({"variant": variant}).encode())
+    return {
+        "experiment_id": ident,
+        "root": str(root),
+        "checkout": str(root / "checkout"),
+        "venv": str(root / "venv"),
+    }
+
+
+def seed_venv(root, environment):
+    """Copy packages only from the immutable image interpreter, never PR Python."""
     seed = environment.get("SEED_PYTHON") or str(
         Path(environment.get("PYTHON_VENV_ACTIVATE", "/opt/venv/bin/activate")).parent
         / "python"
@@ -567,14 +580,229 @@ def create_experiment(params):
         if not source.is_absolute() or not source.is_dir():
             continue
         shutil.copytree(source, target, dirs_exist_ok=True, symlinks=False)
-    set_tree_identity(root, data["uids"]["diagnostic"], data["gids"]["diagnostic"])
-    write(marker, json.dumps({"variant": variant}).encode())
+
+
+def trusted_json(path):
+    info = path.lstat()
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != 0
+        or info.st_nlink != 1
+        or info.st_mode & 0o022
+    ):
+        raise ValueError("Trusted native workspace metadata changed")
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "r") as stream:
+        return json.load(stream)
+
+
+def native_layout(root):
     return {
-        "experiment_id": ident,
         "root": str(root),
         "checkout": str(root / "checkout"),
         "venv": str(root / "venv"),
+        "python_bin": str(root / "venv/bin/python"),
+        "home": str(root / "home"),
+        "tmp": str(root / "tmp"),
+        "cache": str(root / "cache"),
+        "backend": str(root / "backend") if (root / "backend").is_dir() else None,
     }
+
+
+def native_directory_identity(root, data):
+    result = {}
+    names = [".", "checkout", "venv", "home", "tmp", "cache", "state"]
+    if data.get("backend_enabled"):
+        names.append("backend")
+    for name in names:
+        path = root if name == "." else checked(root, name, exists=True)
+        info = path.lstat()
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != data["uids"]["codex"]
+            or info.st_gid != data["gids"]["codex"]
+            or info.st_mode & 0o027
+        ):
+            raise ValueError("Native workspace directory identity changed")
+        result[name] = [info.st_dev, info.st_ino]
+    return result
+
+
+def prepare_native_workspace(params):
+    """Make an editable exploratory checkout without changing formal evidence."""
+    data = manifest()
+    expected_sha = safe_name(params["expected_sha"], r"[a-f0-9]{40,64}")
+    identity = {key: data[key] for key in ("task_id", "run_id", "attempt_id")} | {
+        "source_sha": expected_sha
+    }
+    root = checked(CODEX, "workspace/candidate")
+    marker = CONTROL / "native-workspace.json"
+    if marker.exists() or marker.is_symlink():
+        saved = trusted_json(marker)
+        if saved.get("identity") != identity or saved.get(
+            "directories"
+        ) != native_directory_identity(root, data):
+            raise ValueError("Native workspace identity changed")
+        return {**native_layout(root), "source_sha": expected_sha, "reused": True}
+    if root.exists():
+        raise ValueError("Incomplete native workspace requires a new attempt")
+    require_idle(data)
+    source = checked(TASK, "candidate/checkout", exists=True)
+    saved = trusted_json(CONTROL / "candidate-source-manifest.json")
+    if not verify_checkout({"variant": "candidate", "expected_sha": expected_sha})[
+        "verified"
+    ]:
+        raise ValueError("Native workspace source differs from the frozen candidate")
+    root.mkdir(mode=0o700)
+    checkout = root / "checkout"
+    checkout.mkdir()
+    # Only copy the root-owned initial source inventory. Never follow PR links,
+    # copy untracked files, or execute mutable candidate Git/Python as root.
+    for name, entry in saved["files"].items():
+        target = checked(checkout, name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if entry["type"] == "directory":
+            target.mkdir(exist_ok=True)
+        elif entry["type"] == "symlink":
+            target.symlink_to(entry["target"])
+        else:
+            origin = source / name
+            descriptor = os.open(origin, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise ValueError("Native source must be an unlinked regular file")
+                with target.open("xb") as output:
+                    shutil.copyfileobj(stream, output)
+            target.chmod(0o750 if entry["executable"] else 0o640)
+            if source_entry(checkout, name) != entry:
+                raise ValueError("Native source changed during preparation")
+    environment = data.get("env", {})
+    if data.get("backend_enabled"):
+        backend = Path(environment.get("BACKEND_PATH", ""))
+        if not backend.is_absolute() or not backend.is_dir():
+            raise ValueError("Trusted native backend source is unavailable")
+        shutil.copytree(backend, root / "backend", symlinks=True)
+    for name in ("home", "tmp", "cache", "state"):
+        (root / name).mkdir()
+    seed_venv(root, environment)
+    set_tree_identity(root, data["uids"]["codex"], data["gids"]["codex"])
+    write(
+        marker,
+        json.dumps(
+            {
+                "identity": identity,
+                "directories": native_directory_identity(root, data),
+                "source_files": saved["files"],
+            },
+            sort_keys=True,
+        ).encode(),
+    )
+    return {**native_layout(root), "source_sha": expected_sha, "reused": False}
+
+
+NATIVE_EXCLUDED = {
+    ".git",
+    "venv",
+    ".venv",
+    "backend",
+    "home",
+    "tmp",
+    "cache",
+    "state",
+    "build",
+    "dist",
+    "__pycache__",
+    ".cache",
+    ".pytest_cache",
+    ".mypy_cache",
+    "auth.json",
+    "config.toml",
+    "environment.json",
+    "TASK_SKILL.md",
+    "sessions",
+}
+
+
+def export_native_evidence(output):
+    """Export bounded exploratory changes, never Codex credentials or formal facts."""
+    data = manifest()
+    marker = CONTROL / "native-workspace.json"
+    if not marker.exists() and not marker.is_symlink():
+        raise ValueError("Native workspace has not been prepared")
+    saved = trusted_json(marker)
+    root = checked(CODEX, "workspace/candidate", exists=True)
+    if any(
+        saved["identity"].get(key) != data[key]
+        for key in ("task_id", "run_id", "attempt_id")
+    ) or saved["directories"] != native_directory_identity(root, data):
+        raise ValueError("Native export identity changed")
+    workspace = checked(CODEX, "workspace", exists=True)
+    original = {
+        "candidate/checkout/" + name: entry
+        for name, entry in saved["source_files"].items()
+    }
+    entries, content, observed, total = {}, {}, set(), 0
+    for parent, directories, files in os.walk(workspace, followlinks=False):
+        directories[:] = [name for name in directories if name not in NATIVE_EXCLUDED]
+        for name in [*directories, *files]:
+            if name in NATIVE_EXCLUDED:
+                continue
+            path = Path(parent) / name
+            relative = path.relative_to(workspace).as_posix()
+            observed.add(relative)
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                entry = {"type": "symlink", "target": os.readlink(path)}
+            elif stat.S_ISDIR(info.st_mode):
+                continue
+            elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                if info.st_size > MAX_EXPORT:
+                    raise ValueError("Native evidence file exceeds its bound")
+                with os.fdopen(
+                    os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb"
+                ) as stream:
+                    current = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
+                        raise ValueError("Native evidence file changed type")
+                    payload = stream.read(MAX_EXPORT + 1)
+                entry = {
+                    "type": "file",
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "executable": bool(info.st_mode & 0o111),
+                }
+                if entry != original.get(relative):
+                    total += len(payload)
+                    if total > MAX_EXPORT - 2 * 1024**2:
+                        raise ValueError("Native evidence export exceeds its limit")
+                    content[relative] = payload
+            else:
+                raise ValueError("Native evidence forbids hardlinks and special files")
+            if entry != original.get(relative):
+                entries[relative] = {
+                    **entry,
+                    "change": "modified" if relative in original else "added",
+                }
+    for name in sorted(set(original) - observed):
+        if not any(part in NATIVE_EXCLUDED for part in Path(name).parts):
+            entries[name] = {"change": "deleted", "original": original[name]}
+    metadata = {
+        "schema": "local-ci-native-evidence/v1",
+        "exploratory_only": True,
+        "identity": saved["identity"],
+        "changes": entries,
+        "excluded_names": sorted(NATIVE_EXCLUDED),
+    }
+    encoded = json.dumps(metadata, sort_keys=True).encode()
+    if len(encoded) > 2 * 1024**2:
+        raise ValueError("Native evidence metadata exceeds its limit")
+    with tarfile.open(fileobj=output, mode="w|") as archive:
+        for name, payload in [
+            ("native-manifest.json", encoded),
+            *[("files/" + name, value) for name, value in sorted(content.items())],
+        ]:
+            member = tarfile.TarInfo(name)
+            member.size, member.mode = len(payload), 0o600
+            archive.addfile(member, io.BytesIO(payload))
 
 
 def deploy_session(payload):
@@ -775,6 +1003,11 @@ def main():
         result = authorize_diagnostics()
     elif operation == "create-experiment":
         result = create_experiment(params)
+    elif operation == "prepare-native-workspace":
+        result = prepare_native_workspace(params)
+    elif operation == "export-native-evidence":
+        export_native_evidence(sys.stdout.buffer)
+        return 0
     elif operation == "purge-credentials":
         result = purge_credentials()
     elif operation == "write-baseline":

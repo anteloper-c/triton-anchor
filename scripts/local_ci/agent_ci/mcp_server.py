@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small stdio MCP bridge. All effects go through a task-scoped supervisor."""
+"""Task-scoped MCP bridge for formal checks; native Codex experiments are separate."""
 from __future__ import annotations
 
 import json

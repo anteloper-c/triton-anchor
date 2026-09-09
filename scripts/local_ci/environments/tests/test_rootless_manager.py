@@ -424,6 +424,62 @@ class RootlessManagerTest(unittest.TestCase):
         self.assertNotIn("secret-auth", repr(self.fake.commands))
         self.assertIn(b"secret-value", self.fake.inputs[-1])
 
+    def test_native_workspace_is_bound_to_task_sha_and_separate_private_export(self):
+        handle = self.acquire()
+        handle["task"] = {**handle["task"], "tested_sha": "0" * 40}
+        self.manager.prepare_native_workspace(handle)
+        command = next(
+            command
+            for command in reversed(self.fake.commands)
+            if "prepare-native-workspace" in command
+        )
+        self.assertEqual(
+            json.loads(command[-1]), {"expected_sha": self.task["tested_sha"]}
+        )
+        self.assertEqual(command[command.index("--user") + 1], "0:0")
+        destination = self.root / "private-native"
+        result = self.manager.export_native_evidence(handle, destination)
+        self.assertTrue(result["exported"])
+        self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
+        self.assertTrue(
+            any("export-native-evidence" in command for command in self.fake.commands)
+        )
+        self.assertFalse(
+            any("export-evidence" in command for command in self.fake.commands)
+        )
+
+    def test_native_export_recovers_stopped_container_and_reports_lost_codex_volume(
+        self,
+    ):
+        handle = self.acquire()
+        self.manager.stop_task(handle)
+        self.assertTrue(
+            self.manager.export_native_evidence(handle, self.root / "native-a")[
+                "exported"
+            ]
+        )
+        self.assertFalse(
+            self.fake.containers[handle["container_id"]]["State"]["Running"]
+        )
+        del self.fake.containers[handle["container_id"]]
+        del self.fake.volumes[handle["volumes"]["codex"]]
+        self.assertEqual(
+            self.manager.export_native_evidence(handle, self.root / "native-b"),
+            {
+                "exported": False,
+                "evidence_loss": "codex_volume_missing",
+            },
+        )
+        self.assertTrue(
+            self.manager.export_evidence(handle, self.root / "formal-evidence")[
+                "exported"
+            ]
+        )
+        row = self.manager.generation(handle["attempt_id"])
+        self.assertFalse(
+            self.fake.containers[row["recovery_container_id"]]["State"]["Running"]
+        )
+
     def test_offline_foundation_import_is_checksum_bound_and_not_validated_release(
         self,
     ):

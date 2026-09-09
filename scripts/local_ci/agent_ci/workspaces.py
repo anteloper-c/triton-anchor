@@ -9,6 +9,7 @@ import shutil
 import stat
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from .executor import resource_lock
@@ -137,6 +138,35 @@ class TaskWorkspaces:
         atomic_json(self.root(key[0], handle) / "cleanup.json", result)
         return result
 
+    def export_native_pending(self, handle):
+        """Keep native edits after a worker crash, before removing its volume.
+
+        The trusted driver creates these pointers before launching Codex. CLI
+        events are already on the host; snapshots remain private and cannot
+        become official check evidence.
+        """
+        row = self.journal.task(handle["task_id"])
+        if row["run_id"] != handle["run_id"]:
+            raise ContractError("Native evidence belongs to a different task run")
+        root = self.state_dir / "tasks" / handle["task_id"] / row["run_id"] / "native"
+        for context in root.glob("codex-events-*/context.json"):
+            if context.resolve() != context:
+                raise ContractError("Native evidence pointer contains symlinks")
+            identity = json.loads(context.read_text())
+            if identity.get("task_id") != handle["task_id"] or identity.get("attempt_id") != handle["attempt_id"]:
+                continue
+            marker = context.parent / "export.json"
+            if marker.is_file():
+                continue
+            # A failed export can leave files behind. Export into a new directory
+            # so retry never overwrites a saved snapshot or accepts a partial one.
+            destination = context.parent / ("recovered-" + uuid.uuid4().hex)
+            outcome = self.manager.export_native_evidence(handle, destination)
+            if not isinstance(outcome, dict) or not (outcome.get("exported") or outcome.get("evidence_loss")):
+                raise ContractError("Native evidence export did not report completion")
+            atomic_json(marker, outcome)
+            self.journal.event(handle["task_id"], "native_evidence_recovered", {"attempt_id": handle["attempt_id"], **outcome})
+
     def finish(self, executor):
         handle, task_id = executor.generation, executor.task["task_id"]
         attempt = handle["attempt_id"]
@@ -148,6 +178,8 @@ class TaskWorkspaces:
                 processes = executor.stop_task()
                 if processes.get("verified") is not True or processes.get("remaining"):
                     raise ContractError("Cannot release a task with unconfirmed live processes")
+                executor.stop_codex()
+                self.export_native_pending(handle)
                 self.export_pending(handle)
                 self.manager.purge_credentials(handle)
                 stopped = self.manager.stop_task(handle)
@@ -207,6 +239,7 @@ class TaskWorkspaces:
                 recovered = self.manager.recover_task(handle)
                 if recovered.get("status") == "rebuild_required":
                     with resource_lock(self.state_dir, threading.Event()):
+                        self.export_native_pending(handle)
                         self.export_pending(handle)
                     self.archive(row, root)
                     self.journal.invalidate_workspace(row["task_id"], "task_container_lost", generation=row["generation"])
@@ -220,6 +253,7 @@ class TaskWorkspaces:
                     if report.get("verified") is not True or report.get("remaining"):
                         raise ContractError("Interrupted task cleanup failed")
                     executor.stop_codex()
+                    self.export_native_pending(handle)
                     self.export_pending(handle)
                 self.archive(row, root)
                 task_row = self.journal.task(row["task_id"])
