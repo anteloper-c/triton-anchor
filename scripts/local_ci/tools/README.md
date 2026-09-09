@@ -4,6 +4,10 @@ Codex 通过运行时客户端向证据 broker 请求工具。控制器选择并
 被测 PR 中的同名脚本不作为控制程序加载。工具不规定整体顺序，依赖只表达真正的
 构建产物要求。最低检查范围由运行时策略决定，不能由 agent 参数降低。
 
+`basic_tools/runner.py` 定义各工具的命令与依赖，`actions.py` 实现容器内的
+产物校验、安装和结果记录。前后端共用阶段实现，通过独立工具 ID 区分；
+不会为每个阶段再创建一层脚本。前端源码来自本次被测 checkout，后端源码来自受信配置的 `backend_dir`。
+
 | 工具 ID | 实际行为 | 必须已有的本任务成功检查 |
 | --- | --- | --- |
 | `environment` | 检查命令、Python 模块、源码、LLVM 目录，执行 `pip check` | 无 |
@@ -121,5 +125,5 @@ LLVM 与文件哈希再比较；控制器应仅选择 backend/FlagGems/容器配
 不从 benchmark JSON 自称的 SHA 推断。只有候选测量、未发布结果或不匹配的
 历史环境都不能成为基线；无匹配时保持 `baseline_available=false`。
 
-`ai_review_tools/` 提供架构与专项审查要求；`ai_custom_tools/runner.py` 为任务内复现、分析与证据处理脚本生成执行计划，统一通过 `custom_test` 调用。参数为相对 `artifacts/custom/` 的 Python `path`、字符串数组 `args`、1–900 秒的 `timeout`。分析成功不替代基础工具的必检结果。
+`ai_review_tools/` 提供架构与专项审查要求；`ai_custom_tools/` 说明任务内复现、分析与证据处理的使用边界，脚本统一通过现有 broker 的 `custom_test` 调用。参数为相对 `artifacts/custom/` 的 Python `path`、字符串数组 `args`、1–900 秒的 `timeout`。分析成功不替代基础工具的必检结果。
 这些工具的报告需要与 broker 命令事实关联，不能以提示词或文件存在代替实际执行。

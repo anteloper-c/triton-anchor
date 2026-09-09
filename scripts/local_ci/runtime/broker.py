@@ -9,7 +9,7 @@ import secrets
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import xml.etree.ElementTree as ET
 
 from .common import digest, execute, read_json, utcnow, write_json
@@ -254,8 +254,20 @@ class Broker:
                 from .control_plane import plan as control_plan
                 plan = control_plan(context)
             elif tool == 'custom_test':
-                from tools.ai_custom_tools.runner import plan as custom_plan
-                plan = custom_plan(context, parameters)
+                path = parameters.get('path', '')
+                if (not isinstance(path, str) or not path.endswith('.py') or '\\' in path
+                        or PurePosixPath(path).is_absolute() or '..' in PurePosixPath(path).parts):
+                    raise ValueError('custom script must be a relative .py under artifacts/custom')
+                args = parameters.get('args', [])
+                if not isinstance(args, list) or not all(isinstance(value, str) for value in args):
+                    raise ValueError('custom args must be string argv')
+                timeout = int(parameters.get('timeout', 300))
+                if not 1 <= timeout <= 900:
+                    raise ValueError('custom timeout must be between 1 and 900 seconds')
+                plan = {'status': 'ready', 'commands': [{
+                    'argv': [context.get('python_bin', 'python3'),
+                             context['artifact_dir'] + '/custom/' + path, *args],
+                    'cwd': context['source_dir'], 'env': {}, 'timeout': timeout}]}
             else:
                 from tools.basic_tools.runner import plan as build_plan
                 plan = build_plan(tool, context, parameters)
