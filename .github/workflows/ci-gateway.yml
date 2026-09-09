@@ -334,7 +334,7 @@ jobs:
 
   prepare-route:
     name: Prepare trusted PR route
-    if: ${{ github.event_name == 'pull_request_target' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'dispatch' && inputs.expected_head_sha == '' && inputs.worker_revision_sha == '') }}
+    if: ${{ (github.event_name == 'pull_request_target' && github.event.pull_request.state == 'open') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'dispatch' && inputs.expected_head_sha == '' && inputs.worker_revision_sha == '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
