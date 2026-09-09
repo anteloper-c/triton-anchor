@@ -20,7 +20,7 @@ class SlimFoundationTests(unittest.TestCase):
                              (Path(temporary) / "local_ci_flaggems.pth").read_text())
 
     def test_rejects_paths_outside_trusted_mount_root(self):
-        for source in ("/task/candidate", "/opt/local-ci/runtime/deps/flaggems/nested", "/tmp/import\nmalicious"):
+        for source in ("/task/candidate", "/opt/local-ci/runtime/deps/..", "/opt/local-ci/runtime/deps/flaggems/nested", "/tmp/import\nmalicious"):
             with self.subTest(source=source), patch("sys.argv", ["enable_flaggems", "--source", source]), \
                  self.assertRaises(ValueError):
                 enable_flaggems.main()

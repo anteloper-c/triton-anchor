@@ -28,7 +28,7 @@ def main():
     source = Path(args.flaggems_source).resolve(strict=True)
     expected = profile["repositories"]["FlagGems"]["commit"]
     actual = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
-    if actual != expected or subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"]):
+    if actual != expected or subprocess.check_output(["git", "--no-optional-locks", "-C", str(source), "status", "--porcelain"]):
         raise ValueError("FlagGems must be the configured clean pinned checkout")
     target = "/opt/local-ci/runtime/deps/flaggems"
     profile["mounts"].append({"source": str(source), "target": target, "read_only": True, "sha256": tree_digest(source)})
