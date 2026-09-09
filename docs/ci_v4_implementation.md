@@ -68,6 +68,12 @@ GitHub 侧继续使用 `GITEE_RESULTS_REPO_URL`、`GITEE_USERNAME`、`LOCAL_CI_H
 
 ## 当前验收入口
 
-当前架构以 [任务容器验收报告](ci_task_container_verification/verification.md) 和 [覆盖说明](ci_task_container_verification/coverage.md) 为准。运行 `python3 scripts/local_ci/agent_ci/verify.py --output-dir /tmp/ci-task-container-verification` 生成本机验收材料；具体实测范围、边界替换和源码摘要由报告记录。
+测试代码和生成入口保留在仓库中，报告与原始日志按需输出到仓库外：
 
-本机验收不代表公司模型、LLVM/后端真实编译、设备、实际邮件或线上 GitHub/Gitee 已通过验证；部署时仍须执行实际资源和能力预检。此前 `ci_cleanup_verification`、`ci_oneway_verification`、`ci_skill_verification` 报告仅说明当时实现，不能作为当前任务容器部署依据。
+```bash
+python3 scripts/local_ci/agent_ci/verify.py --output-dir /tmp/local-ci-task-container-verification
+```
+
+输出包含 verification.md、verification.json 和各套测试日志，记录当前源码摘要和外部边界替换范围。历史阶段与提交见 [工作记录](ci_refactor_log.md)；旧报告可从对应 Git 提交读取，当前目录不再保存多轮生成产物。
+
+本机验收不代表公司模型、LLVM/后端真实编译、设备、实际邮件或线上 GitHub/Gitee 已通过验证；部署时仍须执行实际资源和能力预检。历史验证结果只说明对应提交，不能代替当前代码或服务器验收。

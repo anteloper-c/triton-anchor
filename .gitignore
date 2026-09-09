@@ -189,3 +189,6 @@ htmlcov/
 
 # temp
 ./docs/*triton/include/
+
+# Generated Local CI acceptance reports; keep outputs outside the checkout.
+/docs/ci_*_verification/

@@ -69,8 +69,8 @@ Gitee v4 结果默认保留 30 天，按结果文件的 Git 上传提交时间�
 
 ## 验收与迁移
 
-当前任务容器验收入口为 [验收报告](../../docs/ci_task_container_verification/verification.md) 和 [覆盖说明](../../docs/ci_task_container_verification/coverage.md)。运行 `python3 scripts/local_ci/agent_ci/verify.py --output-dir /tmp/local-ci-task-container-verification` 生成本机报告；模型、Docker、硬件、GitHub HTTP、SMTP 等外部边界的替换范围以报告为准。本机验证不证明实际公司镜像、LLVM/后端、设备、模型、邮件或线上 GitHub/Gitee 已通过验收，上线时须执行部署预检和实际能力验证。
+运行 `python3 scripts/local_ci/agent_ci/verify.py --output-dir /tmp/local-ci-task-container-verification` 将本机报告和日志生成到仓库外；测试代码保留，生成产物不提交。模型、Docker、硬件、GitHub HTTP、SMTP 等外部边界的替换范围以本次报告为准。历史阶段与提交见 [工作记录](../../docs/ci_refactor_log.md)。本机验证不证明实际公司镜像、LLVM/后端、设备、模型、邮件或线上 GitHub/Gitee 已通过验收，上线时须执行部署预检和实际能力验证。
 
 从旧常驻环境迁移是独立离线操作：停旧接单和 worker、处理在途任务、checkpoint 与备份 → 准备普通用户 Rootless runtime 和可信镜像 → 导入终态、未上传 outbox 与封存证据到新 state → 核对 worker SHA 后切换。旧 container ID、lease 和执行通过项不能作为新任务容器状态直接复用；未知活动任务必须先处理。具体导入工具、材料记录、回滚和用户级 unit 操作见 [部署与回滚](deploy/README.md)。
 
-旧 deterministic→AI advisory、常驻可写环境及旧 Codex/容器入口均不作为当前执行路径。此前 cleanup、oneway、Skill 验收报告保留为历史记录，不作为当前任务容器部署依据。
+旧 deterministic→AI advisory、常驻可写环境及旧 Codex/容器入口均不作为当前执行路径。历史验收材料可从对应 Git 提交读取，不作为当前任务容器部署依据。
