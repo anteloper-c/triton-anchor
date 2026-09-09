@@ -394,6 +394,11 @@ def render_comment(result: dict, target_url: str, run_url: str = '') -> str:
     rendered_blocking_reasons = set()
     for check in result.get('checks', []):
         name, status = check['id'], check['status']
+        if status in {'skipped', 'not_applicable'}:
+            rendered_blocking_reasons.add(f"{name}: {check.get('reason', '')}")
+            if check.get('required') and status == 'skipped':
+                limitations.append('部分必检尚未执行，补齐验证前不能确认可合入；检查范围见完整报告。')
+            continue
         label = CHECK_NAMES.get(name, '补充检查')
         refs = check.get('evidence', [])
         ran = any(isinstance(ref, str) and receipts.get(ref, {}).get('tool') == name for ref in refs)
@@ -429,6 +434,9 @@ def render_comment(result: dict, target_url: str, run_url: str = '') -> str:
     if findings:
         lines += ['', '**需要关注的发现**', '', *('- ' + value for value in findings[:10])]
     for reason in result.get('blocking_reasons', []):
+        if reason == 'tested tracked source changed during execution' and any(
+                str(item).startswith('worker preparation') for item in result['blocking_reasons']):
+            continue
         if reason not in rendered_blocking_reasons:
             blockers.append(comment_text(reason))
     for item in review.get('uncompleted', []):
