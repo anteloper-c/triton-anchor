@@ -11,11 +11,9 @@ permissions:
 jobs:
   forward:
     if: ${{ github.repository == 'anteloper-c/triton-anchor' && (github.event_name == 'workflow_dispatch' || vars.LOCAL_CI_WATCHDOG_ENABLED == 'true') }}
+    permissions:
+      contents: read
+      issues: write
     uses: anteloper-c/triton-anchor/.github/workflows/local-ci-watchdog.yml@ci_repo
     secrets:
-      LOCAL_CI_SMTP_FROM: ${{ secrets.LOCAL_CI_SMTP_FROM }}
-      LOCAL_CI_EMAIL_HERON_MC: ${{ secrets.LOCAL_CI_EMAIL_HERON_MC }}
-      LOCAL_CI_EMAIL_LIKEHUPOCHUAN: ${{ secrets.LOCAL_CI_EMAIL_LIKEHUPOCHUAN }}
       LOCAL_CI_HEARTBEAT_READ_TOKEN: ${{ secrets.LOCAL_CI_HEARTBEAT_READ_TOKEN }}
-      LOCAL_CI_SMTP_USERNAME: ${{ secrets.LOCAL_CI_SMTP_USERNAME }}
-      LOCAL_CI_SMTP_PASSWORD: ${{ secrets.LOCAL_CI_SMTP_PASSWORD }}
