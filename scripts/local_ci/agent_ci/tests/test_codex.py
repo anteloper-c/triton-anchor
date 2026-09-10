@@ -15,6 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from agent_ci.codex import CodexDriver, DISABLED_FEATURES, ENABLED_FEATURES, finish_timeout_seconds
+from agent_ci.credentials import CredentialValidationError, parse_toml_fallback, validate_credentials
 from agent_ci.protocol import ContractError
 from agent_ci.skill import load_skill, SkillBundle
 
@@ -131,6 +132,28 @@ hooks = true
         process = FakeProcess(command, **kwargs)
         self.processes.append(process)
         return process
+
+    def test_dedicated_credentials_validate_without_old_codex_ai_helpers(self):
+        home = self.root / "validated-company"
+        home.mkdir(mode=0o700)
+        config = '''model_provider = "company"
+[model_providers.company]
+base_url = "https://company.invalid/v1"
+wire_api = "responses"
+requires_openai_auth = true
+'''
+        (home / "config.toml").write_text(config)
+        (home / "auth.json").write_text('{"OPENAI_API_KEY":"fixture"}')
+        for path in home.iterdir():
+            path.chmod(0o600)
+        warnings = []
+        self.assertEqual(validate_credentials(home, self.root / "personal", warnings=warnings), home)
+        self.assertEqual(parse_toml_fallback(config)["model_providers"]["company"]["wire_api"], "responses")
+        auth = home / "auth.json"
+        auth.unlink()
+        auth.symlink_to(home / "config.toml")
+        with self.assertRaises(CredentialValidationError):
+            validate_credentials(home, self.root / "personal")
 
     def run_driver(self, **kwargs):
         feature_output = '\n'.join(name + ' stable true' for name in DISABLED_FEATURES | ENABLED_FEATURES)

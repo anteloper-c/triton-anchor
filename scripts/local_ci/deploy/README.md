@@ -2,7 +2,7 @@
 
 本目录交付部署代码和本机模拟验证，不表示服务器已上线。实际镜像、LLVM/PPL/torch_tpu、设备、公司模型和中转配置必须来自服务器；模板空值会使预检失败，不猜测地址、模型或厂商命令。
 
-`jiwang_ci` 服务器的逐步部署、原生环境配置与日志位置统一维护在 [仅 Gitee 部署手册](jiwang_ci/HANDOFF.md)。本文提供通用安装、迁移和回滚参考；本轮服务器操作范围以该手册的“安装后不接单”为准。
+`jiwang_ci` 服务器的逐步部署、原生环境配置与日志位置统一维护在 [仅 Gitee 部署手册](jiwang_ci/HANDOFF.md)。本文提供通用安装、更新和回滚参考；本轮服务器操作范围以该手册的“安装后不接单”为准。
 
 ## 运行边界
 
@@ -87,38 +87,13 @@ python3 scripts/local_ci/deploy/install.py --config CONFIG --credentials-env CRE
 
 普通 CI 用户确认生产预检通过后给相同命令加 --apply。只向当前用户的 XDG_CONFIG_HOME/systemd/user（默认 ~/.config/systemd/user）写 unit、保存原文件备份并执行 systemctl --user daemon-reload；不 start、不 enable、不改模型配置。root/sudo 执行和系统 unit 目录会被拒绝。
 
-worker 的 WantedBy 为 default.target，对实际 rootless docker user service 使用 Wants/After；不使用 Requires/BindsTo 阻断 Docker 故障时的 outbox 上传。health 与 retention 不依赖 worker 存活。管理员完成旧接单退役后，由 CI 用户安排启动/启用 worker、health/retention timer 和各镜像 timer；安装器不替代这一切换操作。
+worker 的 WantedBy 为 default.target，对实际 rootless docker user service 使用 Wants/After；不使用 Requires/BindsTo 阻断 Docker 故障时的 outbox 上传。health 与 retention 不依赖 worker 存活。确认没有其他 worker 消费同一队列后，由 CI 用户安排启动/启用 worker、health/retention timer 和各镜像 timer；安装器不替代这一切换操作。
 
-unit 回退使用 `install.py --rollback BACKUP` 审阅，再加 --apply，仍仅使用用户级 daemon-reload；备份必须属于当前用户，第三方修改过的 unit 不覆盖。旧 v1 系统 unit 备份不能由新用户安装器自动恢复，须按迁移备份由管理员处理旧系统服务。新旧 worker 不能同时消费同一生产队列。
+unit 回退使用 `install.py --rollback BACKUP` 审阅，再加 --apply，仍仅使用用户级 daemon-reload；备份必须属于当前用户，第三方修改过的 unit 不覆盖。不同版本的 worker 不能同时消费同一生产队列。
 
 ## 更新已有任务容器部署
 
 先停止接单并安排旧任务/会话收尾，保留 outbox 和备份；从 Gitee 取得干净控制 SHA，使用 rotate.py --reuse 验证现有依赖，再做资源 probe 和正式预检，最后重启 Worker。仅 unit 定义变化时重新渲染 unit。宿主 Python 进程不会自动热更新，因此不要在 Worker 运行中原地覆盖其代码。任务 worker_revision_sha 必须匹配当前控制 checkout；镜像的 control_revision 仅记录历史构建来源，不要求同步重建。旧会话的 Skill 摘要不匹配时不得强行恢复。具体顺序见 [已有部署更新步骤](jiwang_ci/HANDOFF.md#已有部署如何更新到本版)。
-
-## 从常驻环境迁移
-
-先停止旧接单并处理在途任务；旧 Rootful Docker 和新 Rootless Docker 是不同运行时，不能直接导入旧 container ID/lease 当作新任务容器。
-
-1. 停止旧 worker 后，由其实际管理员显式执行 SQLite checkpoint，使 journal 不再有非空 WAL，再保存旧控制版本、完整 state、封存结果、会话及匹配工作区备份，记录文件摘要和旧容器停止证明。示例为在旧环境中执行 `sqlite3 OLD_STATE/journal.sqlite3 'PRAGMA wal_checkpoint(TRUNCATE);'`，必须检查 checkpoint 成功；不能对运行中数据库操作。离线导入以只读 immutable 模式读取源，不替调用者 checkpoint 或更改旧 schema。
-2. 完成普通 CI 用户、rootless/资源实效、可信镜像、公司模型来源和实际 3.0 后端准备。
-3. 旧计算任务已停止，结果已上传、已封存待上传或明确取消；旧 lease/容器的状态由其实际管理者核对。未停止的未知活动任务不能作为可迁移对象。确认清单包含 `old_intake_stopped/old_worker_stopped/old_containers_stopped/leases_released:true` 和 tasks 列表；显式取消项记录 task_id、state=cancelled 和 reason。导入器直接读取源 journal 验证 publishing outbox 的封存摘要，无需在 tasks 重复提供摘要。
-4. 使用实际离线导入工具，源目标 state 必须分离。先查看计划，再显式应用：
-
-```bash
-python3 scripts/local_ci/agent_ci/migrate_state.py --source-state OLD_STATE --target-state NEW_STATE --inventory CONFIRMED_INVENTORY
-python3 scripts/local_ci/agent_ci/migrate_state.py --source-state OLD_STATE --target-state NEW_STATE --inventory CONFIRMED_INVENTORY --apply
-```
-
-导入保留终态和未上传 outbox/封存证据，避免重复消费 Gitee current 中的已完成任务；旧执行环境通过记录不作为新容器安装状态复用。工具不接管 rootful 容器，不从未知 lease 推断它已停止。未上传结果只重试原封存内容，不重入 Codex。
-
-5. 核对 Gateway 投递的 worker_revision_sha 与新控制 checkout，再由用户级 worker 接单。自动重启从新状态恢复；显式 --resume 必须先停止持有 poll.lock 的 worker。新的运行标识不能覆盖旧封存目录。
-6. 分开验证不可变 Gitee 上传与独立 GitHub status/comment/Pages，保留单向完成语义。
-
-migrate.py 是独立的材料记录层，schema 已为 v3；plan/record/status 不执行安装、服务切换或数据库导入。阶段为 compatibility_ready → rootless_ready → image_releases_ready → main_ready → old_intake_stopped → old_tasks_drained → state_migrated → poller_ready → verified。旧 v1/v2 材料不能直接标为新架构迁移完成。
-
-rootless_ready 引用实际 runtime_proof 文件及 SHA256；image_releases_ready 保存 profile/image_id/llvm_hash/validated；state_migrated 保存终态、outbox、执行复用失效、lease 已核对和 rollback_backup 材料。记录层的 old_tasks_drained 允许 publishing，但须提供 execution_stopped/result_sealed=true、result_digest/evidence_path，验证计算已结束且封存 v4 task/run 一致；这份审计材料与导入器直接读源 journal 的验证互补。rollback_backup 为 runtime-backup/v1 清单，列出 control/state/workspace/sessions 四类备份文件路径、摘要及旧 worker SHA。最终 upload/github_publication 继续匹配相同 task_id/run_id/tested_sha/result_digest。
-
-回退先停止新接单、处理新任务容器并保存 outbox，再恢复旧控制版本及其匹配 state/会话/工作区。仅回退 unit 或 SQLite 不会恢复已删除的 venv/checkout。源 state 保持完整是回退依据；没有匹配工作区备份时应重新验证，不能恢复旧通过记录后直接跳过安装。
 
 ## 保留与独立监控
 
@@ -136,4 +111,4 @@ results_retention_days 默认30天。独立用户级 retention timer 按上传 G
 python3 -m pytest scripts/local_ci/deploy/tests scripts/local_ci/maintenance/tests -q
 ```
 
-测试覆盖用户 unit 安装/回退、Rootless endpoint 与 context、实际 cgroup 值解析、证明失效、受控验证容器清理、Docker 故障健康快照、迁移文件摘要及单向交付。仅 Docker/模型/网络/邮件等边界被替换；本机通过不代表公司 LLVM 编译、设备或模型实际可用。
+测试覆盖用户 unit 安装/回退、Rootless endpoint 与 context、实际 cgroup 值解析、证明失效、受控验证容器清理、Docker 故障健康快照及单向交付。仅 Docker/模型/网络/邮件等边界被替换；本机通过不代表公司 LLVM 编译、设备或模型实际可用。

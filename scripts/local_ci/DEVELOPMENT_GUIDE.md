@@ -2,13 +2,13 @@
 
 当前架构和运行入口见 README.md；最高指导是 new_CI.md 及用户确认的实施计划。旧固定流水线、一次性 Codex 容器与“AI 永远非阻塞”的说明已被替换。
 
-- agent_ci：任务身份、可信最低策略、持久 journal、MCP 服务、Docker 执行器、Codex 会话、Gitee 发布与回执。
+- agent_ci：任务身份、可信最低策略、持久 journal、MCP 服务、Docker 执行器、Codex 会话与 Gitee 单向结果发布。
 - tools：一个入口对应一个真实检查，不能转调旧整条 runner。命令失败、空测例、缺必要数据必须准确反映在退出码中。
-- environments：可信版本配方、LLVM provenance、常驻代际、lease、轮换、回退。
+- environments：可信版本配方、LLVM provenance、镜像发布、任务容器 attempt、lease、轮换与回退。
 - deploy/maintenance：部署预检、systemd、独立健康发布、外部 watchdog 与 SMTP outbox。
-- GitHub：CI_dev 的 gateway_v4 负责 PR 模板、顺序前置检查、审批、投递、取消、接收和回执；main 保持小路由。
+- GitHub：CI_dev 的 gateway_v4 负责 PR 信息检查、顺序前置检查、审批、投递、取消、结果接收和页面发布；main 保持小路由。
 
-任务、结果与回执的身份必须一致。变更任意 SHA、PR 元数据或执行策略须有明确新任务/新执行身份。结果是否通过由真实执行记录与必检检查计算，不能把模型 summary 当作退出状态。
+任务与结果的身份必须一致。变更任意 SHA、PR 元数据或执行策略须有明确新任务/新执行身份。结果是否通过由真实执行记录与必检检查计算，不能把模型 summary 当作退出状态。
 
 PR 路径先识别控制程序与运行规则，再识别纯文档。重命名、删除、symlink、gitlink 和 vendored Triton 都参与分类。新增工具应声明依赖、能力、参数限制、失败语义、产物，以及相应行为测试。
 

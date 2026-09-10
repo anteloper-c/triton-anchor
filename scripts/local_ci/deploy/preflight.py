@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import grp
-import importlib.util
 import json
 import math
 import os
@@ -188,10 +187,8 @@ def check_configuration(config: dict, *, runtime: bool = True, require_notificat
         check("codex_credentials", home_valid, "Configure actual private company model config/auth files owned by the CI account")
         if home_valid:
             try:
-                spec = importlib.util.spec_from_file_location("credential_validator", LOCAL_ROOT / "codex_ai/validate_codex_ai_credentials.py")
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                module.validate_credentials(home, Path.home() / ".codex")
+                from agent_ci.credentials import validate_credentials
+                validate_credentials(home, Path.home() / ".codex")
                 check("company_provider", True, "Existing company model/provider files validated; no API request made")
             except (Exception, SystemExit):
                 check("company_provider", False, "Actual company model/provider configuration failed validation")

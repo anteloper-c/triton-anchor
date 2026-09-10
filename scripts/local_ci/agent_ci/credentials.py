@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
+"""Validate the dedicated company Codex configuration used by Local CI."""
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
 import stat
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -343,35 +342,3 @@ def validate_credentials(
     validate_config(files["config.toml"])
     validate_auth(files["auth.json"])
     return resolved_home
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="校验 Codex AI CI 独立静态凭据")
-    parser.add_argument("--codex-home", required=True)
-    parser.add_argument(
-        "--personal-codex-home",
-        default=str(Path.home() / ".codex"),
-    )
-    parser.add_argument("--quiet", action="store_true")
-    args = parser.parse_args()
-
-    try:
-        warnings: list[str] = []
-        resolved_home = validate_credentials(
-            Path(args.codex_home),
-            Path(args.personal_codex_home),
-            warnings=warnings,
-        )
-    except CredentialValidationError as exc:
-        print(f"Codex AI CI 凭据校验失败：{exc}", file=sys.stderr)
-        return 1
-
-    for warning in warnings:
-        print(f"Codex AI CI 凭据警告：{warning}", file=sys.stderr)
-    if not args.quiet:
-        print(f"Codex AI CI 独立凭据校验通过：{resolved_home}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

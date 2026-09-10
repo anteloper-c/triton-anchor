@@ -161,9 +161,7 @@ class EnvironmentManager:
         except (OSError, ValueError):
             raise EnvironmentError("Environment registry is unreadable") from None
         if state.get("schema") != SCHEMA:
-            raise EnvironmentError(
-                "Drain legacy rootful environments before using a fresh rootless state"
-            )
+            raise EnvironmentError("Unsupported environment registry; use fresh v4 state")
         return state
 
     def _save(self, state, event=None, **details):
@@ -733,28 +731,15 @@ class EnvironmentManager:
                 reverse=True,
             )
             for row in candidates:
-                # Adopt a verified legacy image only when its complete old recipe
-                # differs by control SHA alone. Keep its original build provenance.
-                legacy_match = (
-                    not row.get("control_delivery")
-                    and row["recipe_digest"] == fingerprint([
-                        {**profile, "control_revision": row.get("control_revision")},
-                        self.uids, self.gids,
-                    ])
-                )
                 if (
                     not force
-                    and (row["recipe_digest"] == digest
-                         or row.get("compatibility_recipe_digest") == digest or legacy_match)
+                    and row["recipe_digest"] == digest
                     and row["validated"]
                     and row.get("daemon_id") == daemon
                     and row["state"] != "quarantined"
                 ):
                     self._inspect(row["image_id"], True)
                     self._revalidate_image(row, profile, state)
-                    if legacy_match:
-                        row.update(compatibility_recipe_digest=digest,
-                                   control_delivery="snapshot-mount-legacy-image")
                     self._save(state, "image_reused", release_id=row["release_id"],
                                control_revision=profile["control_revision"])
                     return copy.deepcopy(row)
@@ -896,9 +881,7 @@ class EnvironmentManager:
                 or not row.get("validated")
                 or row.get("state") != "ready"
                 or row.get("daemon_id") != daemon
-                or self._recipe_digest(profile) not in {
-                    row.get("recipe_digest"), row.get("compatibility_recipe_digest")
-                }
+                or self._recipe_digest(profile) != row.get("recipe_digest")
             ):
                 raise EnvironmentError(
                     "Rollback requires a validated image with the current dependency recipe"

@@ -23,7 +23,7 @@ class SkillTests(unittest.TestCase):
         self.entry.write_text("---\nname: local-ci\ndescription: CI fixture\n---\n"
                               "[Program](references/program.md)\n[Rules](references/rules.md)\n", encoding="utf-8")
 
-    def test_entry_controls_order_and_ignores_unreferenced_or_legacy_prompts(self):
+    def test_entry_controls_order_and_ignores_unreferenced_prompts(self):
         for path in (self.root / "ai_ci_program.md", self.root / "architecture_review.md",
                      self.root / "ai_review.md", self.root / "README.md", self.root / "references/unused.md"):
             path.write_text("MUST NEVER ENTER PROMPT", encoding="utf-8")
@@ -36,7 +36,7 @@ class SkillTests(unittest.TestCase):
         (self.root / "references/rules.md").write_text("Changed trusted rules", encoding="utf-8")
         self.assertNotEqual(before, load_skill(self.root).manifest["digest"])
 
-    def test_missing_entry_or_reference_fails_without_legacy_fallback(self):
+    def test_missing_entry_or_reference_fails_without_implicit_fallback(self):
         (self.root / "ai_ci_program.md").write_text("Old instructions", encoding="utf-8")
         (self.root / "references/program.md").unlink()
         with self.assertRaisesRegex(ContractError, "references/program.md"):

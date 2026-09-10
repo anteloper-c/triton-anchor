@@ -1,243 +1,41 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="light">
-    <title>Triton Anchor Backend CI</title>
-    <link rel="icon" type="image/png" href="assets/triton-anchor-logo.png">
-    <link rel="stylesheet" href="styles.css">
-  </head>
-  <body>
-    <header class="app-header">
-      <div class="brand">
-        <img src="assets/triton-anchor-logo.png" alt="Triton Anchor" class="brand-logo">
-        <div>
-          <p class="brand-kicker">TRITON ANCHOR</p>
-          <h1>Backend CI Status</h1>
-        </div>
-      </div>
-      <div class="header-meta">
-        <span id="generatedAt">--</span>
-      </div>
-    </header>
-
-    <nav class="view-tabs" aria-label="Dashboard views">
-      <a class="tab-button" href="v4.html">Local CI 任务与告警</a>
-      <button class="tab-button active" type="button" data-view="operators">全量算子测试</button>
-      <button class="tab-button" type="button" data-view="performance">后端与性能</button>
-      <button class="tab-button" type="button" data-view="worker">Worker 运行状态</button>
-    </nav>
-
-    <main>
-      <section id="operatorsView" class="view active" aria-labelledby="operatorHeading">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">MANUAL FULL TEST</p>
-            <h2 id="operatorHeading">全量算子测试</h2>
-          </div>
-          <div class="run-identity">
-            <span id="fullRunBackend">--</span>
-            <code id="fullRunSha">-------</code>
-          </div>
-        </div>
-
-        <div id="operatorMetrics" class="metric-band" aria-label="Full test summary"></div>
-
-        <div class="toolbar">
-          <label class="search-control">
-            <span>搜索算子</span>
-            <input id="operatorSearch" type="search" placeholder="例如 add、softmax" autocomplete="off">
-          </label>
-
-          <div class="segmented-control" aria-label="Status filter">
-            <button type="button" class="segment active" data-status="all">全部</button>
-            <button type="button" class="segment" data-status="exception">仅异常</button>
-            <button type="button" class="segment" data-status="failed">失败</button>
-            <button type="button" class="segment" data-status="timeout">超时</button>
-            <button type="button" class="segment" data-status="passed">通过</button>
-          </div>
-
-          <label class="select-control">
-            <span>失败阶段</span>
-            <select id="stageFilter">
-              <option value="all">全部阶段</option>
-            </select>
-          </label>
-
-          <label class="select-control page-size-control">
-            <span>每页</span>
-            <select id="pageSize">
-              <option value="25">25</option>
-              <option value="50" selected>50</option>
-              <option value="100">100</option>
-              <option value="all">全部</option>
-            </select>
-          </label>
-
-          <div class="download-actions">
-            <a id="downloadRawCsv" class="button secondary" href="#" download>下载原始 CSV</a>
-            <button id="downloadFilteredXlsx" class="button primary" type="button">下载当前结果（Excel）</button>
-          </div>
-        </div>
-
-        <div class="table-shell">
-          <table>
-            <thead>
-              <tr>
-                <th class="number-column">序号</th>
-                <th>算子名称</th>
-                <th>状态</th>
-                <th>失败阶段</th>
-                <th>耗时</th>
-              </tr>
-            </thead>
-            <tbody id="operatorRows"></tbody>
-          </table>
-          <div id="operatorEmpty" class="empty-state" hidden>没有符合当前条件的算子。</div>
-        </div>
-
-        <div class="pagination">
-          <p id="rowCount">--</p>
-          <div class="pagination-actions">
-            <button id="previousPage" type="button" class="button secondary">上一页</button>
-            <span id="pageIndicator">--</span>
-            <button id="nextPage" type="button" class="button secondary">下一页</button>
-          </div>
-        </div>
-      </section>
-
-      <section id="performanceView" class="view" aria-labelledby="performanceHeading">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">LATEST BACKEND RESULTS</p>
-            <h2 id="performanceHeading">后端状态与性能</h2>
-          </div>
-        </div>
-
-        <div class="table-shell backend-table-shell">
-          <table>
-            <thead>
-              <tr>
-                <th>后端</th>
-                <th>总体</th>
-                <th>交付测试</th>
-                <th>编译时间</th>
-                <th>Pass</th>
-                <th>IR 开销</th>
-                <th>版本</th>
-                <th>更新时间</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody id="backendRows"></tbody>
-          </table>
-        </div>
-
-        <div class="performance-layout">
-          <section class="performance-panel" aria-labelledby="compileHeading">
-            <div class="panel-heading">
-              <h3 id="compileHeading">Kernel 编译时间</h3>
-              <span id="performanceBackend" class="panel-context">--</span>
-            </div>
-            <div id="compileMetrics" class="performance-list"></div>
-          </section>
-
-          <section class="performance-panel" aria-labelledby="passHeading">
-            <div class="panel-heading">
-              <h3 id="passHeading">Pass 热点</h3>
-              <span>Median</span>
-            </div>
-            <div id="passMetrics" class="performance-list"></div>
-          </section>
-
-          <section class="performance-panel" aria-labelledby="irHeading">
-            <div class="panel-heading">
-              <h3 id="irHeading">IR 序列化开销</h3>
-              <span>Median</span>
-            </div>
-            <div id="irMetrics" class="performance-list"></div>
-          </section>
-        </div>
-      </section>
-
-      <section id="workerView" class="view" aria-labelledby="workerHeading">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">LOCAL CI WORKER</p>
-            <h2 id="workerHeading">Worker 运行状态</h2>
-          </div>
-          <div class="run-identity worker-identity">
-            <span id="workerProfile">--</span>
-            <code id="workerId">--</code>
-            <span id="workerSnapshotAt">快照 --</span>
-          </div>
-        </div>
-
-        <div id="workerMetrics" class="metric-band worker-metric-band" aria-label="Worker summary"></div>
-
-        <div class="worker-layout">
-          <section class="performance-panel" aria-labelledby="activeTaskHeading">
-            <div class="panel-heading">
-              <h3 id="activeTaskHeading">当前任务</h3>
-              <span id="activeTaskState">--</span>
-            </div>
-            <dl id="activeTaskDetails" class="fact-list"></dl>
-          </section>
-
-          <section class="performance-panel" aria-labelledby="pollerHeading">
-            <div class="panel-heading">
-              <h3 id="pollerHeading">Poller</h3>
-              <span id="pollerState">--</span>
-            </div>
-            <dl id="pollerDetails" class="fact-list"></dl>
-          </section>
-
-          <section class="performance-panel" aria-labelledby="containerHeading">
-            <div class="panel-heading">
-              <h3 id="containerHeading">运行容器</h3>
-              <span id="containerState">--</span>
-            </div>
-            <dl id="containerDetails" class="fact-list"></dl>
-          </section>
-        </div>
-
-        <div class="table-shell worker-storage-shell">
-          <table>
-            <thead>
-              <tr>
-                <th>存储位置</th>
-                <th>配置路径</th>
-                <th>文件夹大小</th>
-                <th>占磁盘总量</th>
-              </tr>
-            </thead>
-            <tbody id="workerStorageRows"></tbody>
-          </table>
-          <div id="workerStorageEmpty" class="empty-state" hidden>当前没有可用的存储数据。</div>
-        </div>
-
-        <section class="performance-panel last-result-panel" aria-labelledby="lastResultHeading">
-          <div class="panel-heading">
-            <h3 id="lastResultHeading">最近任务结果</h3>
-            <span id="lastResultState">--</span>
-          </div>
-          <dl id="lastResultDetails" class="fact-list fact-list-wide"></dl>
-        </section>
-      </section>
-
-      <section id="loadError" class="load-error" hidden>
-        <h2>数据加载失败</h2>
-        <p id="loadErrorMessage"></p>
-      </section>
-    </main>
-
-    <footer>
-      <span>Triton Anchor Backend CI</span>
-      <span id="schemaVersion">--</span>
-    </footer>
-
-    <script src="xlsx.js" defer></script>
-    <script src="app.js" defer></script>
-  </body>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Triton Anchor · Local CI</title>
+<style>
+body{font:16px/1.6 system-ui,sans-serif;margin:0;background:#f5f7fa;color:#17253a}main{max-width:1100px;margin:auto;padding:32px 20px}h1{margin-bottom:0}a{color:#1760b5}header p{color:#586779}article,section{background:white;border:1px solid #dce3ed;border-radius:12px;padding:20px;margin:20px 0}table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;padding:10px;border-bottom:1px solid #e9edf3}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.5 ui-monospace,monospace}small{color:#586779}summary{cursor:pointer;font-weight:600}.pass{color:#16764c}.fail,.infra_error{color:#b32a33}.pending{color:#94621b}.cancelled{color:#637187}code{overflow-wrap:anywhere}#empty{padding:32px;color:#586779}
+</style>
+<main>
+<header><h1>Local CI 任务与运行状态</h1><p id="updated">正在加载最近一次 GitHub 回写快照…</p></header>
+<section><h2>服务与通知</h2><div id="health">尚无监控快照</div></section>
+<div id="tasks"></div>
+</main>
+<script>
+const el=(tag,text)=>{const node=document.createElement(tag);if(text!==undefined)node.textContent=text;return node};
+function detail(title,data){const node=el('details');node.append(el('summary',title),el('pre',JSON.stringify(data??[],null,2)));return node}
+async function refresh(){
+  try{
+    const response=await fetch('data/v4-tasks.json',{cache:'no-store'});if(!response.ok)throw Error('尚无 v4 任务快照');
+    const data=await response.json();document.querySelector('#updated').textContent='更新于 '+data.generated_at+' · 仅当前有效任务可回写通过状态';
+    const target=document.querySelector('#tasks');target.replaceChildren();
+    if(!data.tasks.length)target.append(el('p','暂无已投递任务。'));
+    for(const row of data.tasks){
+      const task=row.task, result=row.result, article=el('article');
+      article.append(el('h2',(task.pr_number?'PR #'+task.pr_number:task.target_branch)+' · '+task.title));
+      const status=el('strong',row.status);status.className=row.status;article.append(status);
+      article.append(el('p','目标：'+task.target_branch+' · 被测提交：'+task.tested_sha));
+      article.append(el('small','task '+task.task_id+(result?' · run '+result.run_id:'')));
+      if(result){const table=el('table'),head=el('tr');for(const label of ['检查','结果','必检','原因'])head.append(el('th',label));table.append(head);
+        for(const check of result.checks){const tr=el('tr');for(const value of [check.tool_id,check.status,check.required?'是':'否',check.reason||''])tr.append(el('td',value));table.append(tr)}
+        article.append(table,detail('阻塞项与后续处理',result.blockers),detail('AI 审查、定向验证和证据',{reviews:result.reviews,findings:result.findings}),detail('性能变化（纯耗时回退不阻断）',result.performance),detail('未完成与环境', {unfinished:result.unfinished,environment:result.environment}));
+      }else if(row.retention){article.append(el('p','结果已超过 Gitee 保留期，证据目录已清理；GitHub 已发布的状态保留。'),detail('过期结果身份与摘要',row.retention));
+      }else article.append(el('p','任务尚未返回结果。取消、未完成的任务不会显示为通过。'));
+      target.append(article);
+    }
+  }catch(error){document.querySelector('#updated').textContent=error.message;}
+  try{const response=await fetch('data/v4-incidents.json',{cache:'no-store'});if(response.ok){const data=await response.json();document.querySelector('#health').replaceChildren(detail('查看服务器、服务、容器和通知状态',data));}}catch(_error){}
+}
+refresh();setInterval(refresh,60000);
+</script>
 </html>

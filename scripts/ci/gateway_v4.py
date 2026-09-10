@@ -35,6 +35,16 @@ DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,159}\Z")
 
 
+class GitHubAPIError(RuntimeError):
+    """A diagnostic GitHub failure that never exposes response bodies or credentials."""
+
+    def __init__(self, code: int, method: str, path: str, reason: str = ""):
+        self.code = code
+        endpoint = path.split("?", 1)[0].lstrip("/")
+        detail = f": {reason}" if reason else ""
+        super().__init__(f"GitHub API {method} {endpoint} failed with HTTP {code}{detail}")
+
+
 def now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -92,36 +102,9 @@ def validate_task(task: dict) -> dict:
 
 
 FIELD_NAMES = {
-    "types": ("类型", "type", "types", "change type"),
-    "purpose": ("目的", "purpose", "motivation"),
-    "scope": ("改动范围", "scope", "change scope"),
-    "validation": ("验证", "验证方式", "validation"),
-    "reproduction": ("复现", "reproduction", "repro"),
-    "expected_actual": ("实际预期", "实际与预期", "expected and actual", "expected_actual"),
-    "behavior": ("行为变化", "behavior", "behavior changes"),
-    "compatibility": ("兼容性", "compatibility"),
-    "baseline": ("基线", "baseline"),
-    "measurement": ("测量方法", "measurement"),
-    "expected_change": ("预期变化", "expected change", "expected_change"),
-    "versions": ("前后版本", "versions"),
-    "sources": ("来源", "sources"),
-    "environment": ("环境影响", "environment"),
-    "recovery": ("恢复", "恢复方式", "recovery", "rollback"),
-    "ci_impact": ("触发权限协议影响", "ci impact", "ci_impact"),
-    "subject": ("修改对象", "subject"),
-    "consistency": ("一致性", "consistency"),
-    "coverage": ("覆盖行为", "coverage"),
-    "execution": ("执行", "execution"),
-}
-TYPE_FIELDS = {
-    "fix": ("reproduction", "expected_actual"),
-    "feat": ("behavior", "compatibility"),
-    "refactor": ("behavior", "compatibility"),
-    "perf": ("baseline", "measurement", "expected_change"),
-    "build": ("versions", "sources", "environment", "recovery"),
-    "ci": ("ci_impact", "recovery"),
-    "docs": ("subject", "consistency"),
-    "test": ("coverage", "execution"),
+    "summary": ("变更概述", "概述", "summary", "change summary"),
+    "scope": ("影响范围", "改动范围", "scope", "change scope"),
+    "validation": ("验证情况", "验证", "验证方式", "validation"),
 }
 
 
@@ -147,21 +130,11 @@ def validate_pr_info(task: dict) -> list[str]:
     if not task["pr_number"]:
         return []
     fields = pr_fields(task["description"])
-    text = fields.get("types", "").lower()
-    if "[" in text:
-        types = re.findall(r"\[[xX]\]\s*(fix|feat|refactor|perf|build|ci|docs|test)\b", text)
-    else:
-        types = [x for x in re.split(r"[^a-z]+", text) if x in TYPE_FIELDS]
-    required = {"purpose", "scope", "validation"}
-    for kind in types:
-        required.update(TYPE_FIELDS[kind])
     errors = []
-    if not task["title"].strip() or task["title"].strip().lower() in {"wip", "todo", "test", "update", "更新"}:
+    if not task["title"].strip() or task["title"].strip().lower() in {"wip", "todo", "tbd"}:
         errors.append("请填写能描述改动目的的 PR 标题。")
-    if not types:
-        errors.append("请在 types 中选择至少一个类型：fix/feat/refactor/perf/build/ci/docs/test。")
-    placeholders = re.compile(r"^(?:todo|tbd|待填写|待补充|请填写.*|\.\.\.|<.*>)$", re.I | re.S)
-    for key in sorted(required):
+    placeholders = re.compile(r"^(?:todo|tbd|wip|待填写|待补充|请填写.*|\.\.\.|<.*>)$", re.I | re.S)
+    for key in ("summary", "scope", "validation"):
         value = fields.get(key, "").strip()
         if not value or placeholders.fullmatch(value):
             errors.append(f"请补充 {FIELD_NAMES[key][0]}（field:{key}）。")
@@ -183,14 +156,18 @@ class GitHub:
                       data=canonical(data) if data is not None else None, method=method,
                       headers={"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json",
                                "Content-Type": "application/json", "User-Agent": "triton-anchor-ci-v4"})
-        with urlopen(req, timeout=30) as response:
-            body = response.read()
-            return json.loads(body) if body else None
+        try:
+            with urlopen(req, timeout=30) as response:
+                body = response.read()
+                return json.loads(body) if body else None
+        except HTTPError as error:
+            reason = re.sub(r"[\r\n]+", " ", str(error.reason or "")).strip()[:160]
+            raise GitHubAPIError(error.code, method, path, reason) from None
 
     def optional(self, path: str):
         try:
             return self.request(path)
-        except HTTPError as error:
+        except GitHubAPIError as error:
             if error.code == 404:
                 return None
             raise

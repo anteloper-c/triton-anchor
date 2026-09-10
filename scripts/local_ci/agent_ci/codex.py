@@ -56,10 +56,7 @@ def load_toml(path: Path) -> dict:
         try:
             import tomli as tomllib
         except ImportError:
-            try:
-                from codex_ai.validate_codex_ai_credentials import parse_toml_fallback
-            except ImportError:
-                from ..codex_ai.validate_codex_ai_credentials import parse_toml_fallback
+            from .credentials import parse_toml_fallback
             return parse_toml_fallback(path.read_text(encoding="utf-8"))
     return tomllib.loads(path.read_text(encoding="utf-8"))
 

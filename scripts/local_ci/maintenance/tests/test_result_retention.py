@@ -38,7 +38,7 @@ class ResultRetentionTests(unittest.TestCase):
     def test_fixed_retention_dry_run_then_delete_without_receipt(self):
         self.publish(self.old, "old-run", "2026-07-01T00:00:00Z")
         self.publish(self.recent, "new-run", "2026-09-07T00:00:00Z")
-        self.relay.write("local-ci-results", {"legacy/results.json": b"historical"})
+        self.relay.write("local-ci-results", {"unmanaged/results.json": b"historical"})
         self.relay.write("local-ci-control", {"tasks/preserve.json": b"{}"})
         self.relay.refresh()
         head = self.relay.ref_sha("local-ci-results")
@@ -53,7 +53,7 @@ class ResultRetentionTests(unittest.TestCase):
         self.assertIsNone(self.relay.read("local-ci-results", self.old + "/result.json"))
         self.assertIsNone(self.relay.read("local-ci-results", self.old + "/evidence/log.txt"))
         self.assertIsNotNone(self.relay.read("local-ci-results", self.recent + "/result.json"))
-        self.assertEqual(b"historical", self.relay.read("local-ci-results", "legacy/results.json"))
+        self.assertEqual(b"historical", self.relay.read("local-ci-results", "unmanaged/results.json"))
         marker = self.relay.read_json("local-ci-results", f"retention/v4/{self.task}/old-run.json")
         self.assertEqual(report["expired"][0], marker)
         self.assertEqual(control, self.relay.ref_sha("local-ci-control"))

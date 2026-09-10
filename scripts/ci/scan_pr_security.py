@@ -182,7 +182,6 @@ PROTECTED_PATH_PREFIXES = (
     # ".github/workflows/",
     # "docker/",
     # "scripts/ci/",
-    # "scripts/dashboard/",
     # "scripts/local_ci/",
 )
 PROTECTED_FILES = {
@@ -193,7 +192,6 @@ TEMP_CI_REVIEW_PATH_PREFIXES = (
     "docker/",
     "docs/",
     "scripts/ci/",
-    "scripts/dashboard/",
     "scripts/local_ci/",
 )
 DEPENDENCY_CONTROL_FILES = {

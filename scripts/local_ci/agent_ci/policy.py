@@ -55,15 +55,13 @@ def category(path: str) -> str:
         return "compiler"
     if p == ".gitmodules" or p.startswith("docker/") or "dockerfile" in p or p.endswith("envsetup.sh"):
         return "environment"
-    if p.startswith(("scripts/local_ci/tools/", "scripts/local_ci/environments/")) or p in {"scripts/local_ci/agent_ci/executor.py", "scripts/local_ci/deploy/config.example.json", "scripts/local_ci/config.example.env"}:
+    if p.startswith(("scripts/local_ci/tools/", "scripts/local_ci/environments/")) or p in {"scripts/local_ci/agent_ci/executor.py", "scripts/local_ci/deploy/config.example.json"}:
         return "environment"
     if p.startswith("scripts/local_ci/deterministic_ci/performance/"):
         return "performance"
     if p.startswith("scripts/local_ci/deterministic_ci/flaggems/"):
         return "environment"
-    if p.startswith("scripts/ci/") and any(v in p for v in ("install", "build_frontend", "prebuilt", "configure_backend")):
-        return "environment"
-    if p.startswith((".github/", "scripts/ci/", "scripts/local_ci/", "scripts/dashboard/", "dashboard/")) or p.endswith(("agents.md", "skill.md", "ai_ci_program.md")):
+    if p.startswith((".github/", "scripts/ci/", "scripts/local_ci/", "dashboard/")) or p.endswith(("agents.md", "skill.md", "ai_ci_program.md")):
         return "control"
     if p.startswith("api_contract/"):
         return "interface"

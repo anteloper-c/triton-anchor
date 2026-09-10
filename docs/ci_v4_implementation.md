@@ -1,6 +1,6 @@
 # Triton Anchor CI v4
 
-实施依据为用户提供的 `new_CI.md`、流程图及已确认调整。当前架构为普通 CI 用户运行 Rootless Harness，每个任务 attempt 使用独立容器，容器内包含 Codex 与构建测试身份。入口见 [Local CI](../scripts/local_ci/README.md)，上线材料见 [部署与回滚](../scripts/local_ci/deploy/README.md)，过程见 [工作记录](ci_refactor_log.md)。以前的常驻环境设计及验收仅作历史参考。
+实施依据为用户提供的 `new_CI.md`、流程图及已确认调整。当前架构为普通 CI 用户运行 Rootless Harness，每个任务 attempt 使用独立容器，容器内包含 Codex 与构建测试身份。入口见 [Local CI](../scripts/local_ci/README.md)，上线材料见 [部署与回滚](../scripts/local_ci/deploy/README.md)。以前的常驻环境设计及验收可从 Git 历史查阅。
 
 ## 从事件到结果
 
@@ -62,11 +62,11 @@ OOM 自动降低并行度重试一次，API/网络重试有上限。显式 `work
 
 Gitee 结果默认按上传 Git 提交时间保留 30 天，独立 retention timer 删除过期 run 并保留过期标记。清理不等待 GitHub 确认，不回退展示更老结果，也不删除本地 outbox。
 
-## 部署、迁移与监控
+## 部署与监控
 
 配置模板故意留空实际公司镜像、模型目录、后端与中转来源；预检要求补齐，不能猜测设备命令、厂商依赖或模型地址。普通 CI 用户、subuid/subgid、Rootless Docker、user systemd、cgroup controller delegation，以及 3.0 的驱动、设备权限和依赖服务由管理员按实际机器准备。安装器只写用户级 unit 并 daemon-reload，不自动启动或启用服务。
 
-部署要求与任务 worker_revision_sha 一致的干净控制 checkout。迁移是独立离线操作：停止旧接单和 worker，处理在途计算，checkpoint 与备份旧 state → 准备 Rootless runtime 和可信镜像 → 用 `agent_ci/migrate_state.py` 将终态、未上传 outbox 及封存证据导入独立新 state → 核对控制版本后切换。旧 rootful 容器、lease 和安装状态不直接导入；未知活动任务必须先确认停止或取消。`deploy/migrate.py` 单独记录迁移材料，不代替实际数据库导入或服务切换。
+部署要求使用与任务 worker_revision_sha 一致的干净控制 checkout。首次上线创建独立的新 state；更新已有 v4 部署时先停止接单、保存 outbox 并完成在途任务，再核对控制版本、镜像与资源预检后切换。旧 rootful 容器、lease 和安装状态不作为 v4 任务状态复用。
 
 回滚必须使用匹配的控制版本、state、会话和工作区备份，先停止新接单并保存新 outbox；不能只恢复旧通过记录后跳过环境重建。详细命令、证明材料及用户级 unit 回退见 [部署与回滚](../scripts/local_ci/deploy/README.md)。
 
@@ -78,12 +78,15 @@ GitHub 侧继续使用 `GITEE_RESULTS_REPO_URL`、`GITEE_USERNAME`、`LOCAL_CI_H
 
 ## 当前验收入口
 
-测试代码和生成入口保留在仓库中，报告与原始日志按需输出到仓库外：
+开发测试按活动模块运行，不生成仓库内报告：
 
 ```bash
-python3 scripts/local_ci/agent_ci/verify.py --output-dir /tmp/local-ci-task-container-verification
+PYTHONPATH=scripts/local_ci python3 -m pytest \
+  scripts/local_ci/agent_ci/tests \
+  scripts/local_ci/environments/tests \
+  scripts/local_ci/tools/tests \
+  scripts/local_ci/maintenance/tests \
+  scripts/local_ci/deploy/tests -q
 ```
-
-输出包含 verification.md、verification.json 和各套测试日志，记录当前源码摘要和外部边界替换范围。历史阶段与提交见 [工作记录](ci_refactor_log.md)；旧报告可从对应 Git 提交读取，当前目录不再保存多轮生成产物。
 
 本机验收不代表公司模型、LLVM/后端真实编译、设备、实际邮件或线上 GitHub/Gitee 已通过验证；部署时仍须执行实际资源和能力预检。历史验证结果只说明对应提交，不能代替当前代码或服务器验收。

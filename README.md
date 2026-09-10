@@ -286,8 +286,14 @@ uv pip install -e ".[dev]"
 # 运行单元测试
 pytest python/triton_anchor/tests/ -v
 
-# 运行 Local CI/Codex 契约测试
-pytest scripts/local_ci/codex_ai/tests scripts/local_ci/tests scripts/local_ci/results/tests -v
+# 运行轻量 GitHub 网关契约测试
+pytest scripts/ci/tests -q
+
+# 按需运行 Local CI 实现测试（普通 GitHub Basic CI 不执行）
+PYTHONPATH=scripts/local_ci pytest \
+  scripts/local_ci/agent_ci/tests scripts/local_ci/environments/tests \
+  scripts/local_ci/tools/tests scripts/local_ci/maintenance/tests \
+  scripts/local_ci/deploy/tests -q
 ```
 
 > 更详细的 Local CI 使用、维护和故障排查说明见 `scripts/local_ci/README.md` 和 `scripts/local_ci/DEVELOPMENT_GUIDE.md`。
@@ -311,12 +317,14 @@ triton-anchor/
 │   └── custom_backend.md        #   自定义硬件后端接入指南
 ├── tests/                       # 产品级和端到端测试
 │   └── test_smoke.py            #   安装后 smoke、binding 和编译链路测试
-├── scripts/local_ci/            # Local CI 控制面及模块内契约测试
+├── scripts/ci/                  # GitHub 网关、安全扫描与轻量契约测试
+├── scripts/local_ci/            # 服务器 Local CI 实现及模块内开发测试
 │   ├── README.md                #   Local CI 使用说明
 │   ├── DEVELOPMENT_GUIDE.md     #   Local CI 长期开发指南
-│   ├── tests/                   #   Local CI 布局测试
-│   ├── codex_ai/tests/          #   Codex prompt、报告和容器 harness
-│   └── results/tests/           #   Gitee/GitHub bridge 测试
+│   ├── agent_ci/                #   Worker、Codex、MCP、任务状态与单向发布
+│   ├── environments/            #   Rootless 镜像与任务容器生命周期
+│   ├── tools/                   #   十项基础检查的确定性工具入口
+│   └── deploy/                  #   部署、预检与用户级 systemd 配置
 ├── .github/                     # GitHub 配置
 │   ├── workflows/ci_basic.yml   #   基础 CI（lint + 单元测试）
 │   └── ISSUE_TEMPLATE/          #   Issue 模板（Feature Request / Bug Report）

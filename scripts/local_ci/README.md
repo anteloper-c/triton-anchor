@@ -4,9 +4,9 @@
 
 ## 当前执行入口
 
-`bash scripts/local_ci/poll_gitee_and_run.sh --config CONFIG`
+`python3 scripts/local_ci/agent_ci/worker.py --config CONFIG`
 
-入口运行 `agent_ci/worker.py`。宿主机普通 CI 用户运行 Harness、Rootless Docker 和用户级 systemd 服务；配置由服务器维护，不能从 PR checkout 读取。部署、预检、可信镜像准备、健康发布与迁移见 [deploy/README.md](deploy/README.md)。旧 `config.env` 不再被执行器自动 source；使用 JSON 配置及实际公司 Codex config.toml/auth.json。
+宿主机普通 CI 用户运行 Harness、Rootless Docker 和用户级 systemd 服务；配置由服务器维护，不能从 PR checkout 读取。部署、预检、可信镜像准备和健康发布见 [deploy/README.md](deploy/README.md)。执行器只使用 JSON 配置及实际公司 Codex config.toml/auth.json。
 
 Harness 验证冻结任务及 merge parents，选择精确 LLVM 对应的可信镜像，为当前 task/run 创建独立任务容器。Codex 与构建、测试在同一任务容器中，通过四个不同的非 root UID 隔离 Codex、candidate、base 和 diagnostic。宿主机 Harness 掌握 journal、调度、权限、容器生命周期和结果发布；只有它能调用 Docker 管理接口执行容器 UID 0 的准备、取证与清理操作。
 
@@ -14,7 +14,7 @@ Codex 的唯一 Skill 入口为 [skills/local-ci/SKILL.md](skills/local-ci/SKILL
 
 容器内 Codex 使用 `danger-full-access`、`approval_policy=never`，新会话与恢复会话均启用原生 Shell、unified exec 和文件编辑。它可以直接分析源码、编写脚本、安装实验依赖和运行定向实验；正式检查及阻断所需的确定性复现仍通过 MCP 执行并由 Harness 核验。
 
-每次启动保存 `TASK_SKILL.md` 快照和 `skill-manifest.json`（入口、各文件 SHA256 及整体摘要）。任务、公司模型配置与 Skill 身份不一致时，在模型启动前失败。缺入口、引用越界或文件缺失不会回退到旧提示词；历史 `codex_ai/` 提示词不参与当前驱动加载。
+每次启动保存 `TASK_SKILL.md` 快照和 `skill-manifest.json`（入口、各文件 SHA256 及整体摘要）。任务、公司模型配置与 Skill 身份不一致时，在模型启动前失败。缺入口、引用越界或文件缺失时直接失败，不回退到其他提示词。
 
 ## 基础工具与诊断
 
@@ -69,16 +69,14 @@ Codex 通过当前任务 MCP 的 `start_check` 调用基础工具，也可使用
 
 结果目录为 `runs/v4/<task_id>/<run_id>/`。`result.json` 封存后不可修改，Codex 到此结束；上传失败只重发原结果，Harness 保留 outbox 并在后续轮询重试，不再调用模型。Docker 故障不应阻断已有 outbox 上传或独立健康发布。
 
-GitHub 独立读取并校验结果，没有 Gitee 回执和本地等待。保持 status → comment → Pages 顺序；发布失败由 Actions 显示并由后续定时接收重试。因此 PR status 成功不单独证明 Dashboard 已更新。旧 schema 仅用于历史读取，不能满足 v4 门禁。
+GitHub 独立读取并校验结果，没有 Gitee 回执和本地等待。保持 status → comment → Pages 顺序；发布失败由 Actions 显示并由后续定时接收重试。因此 PR status 成功不单独证明 Dashboard 已更新。非 v4 schema 不能满足当前门禁。
 
 Gitee v4 结果默认保留 30 天，按结果文件的 Git 上传提交时间计算；独立 retention timer 删除过期 run 并保留身份、摘要与过期标记。周期独立于 GitHub 发布，过期结果显示 expired，不回退发布更老 run。此清理不改写 Git 历史，也不删除服务器任务证据；接收长期中断须在到期前处理或调整 `results_retention_days`。
 
 独立用户级 health timer 汇总服务、Rootless runtime、镜像、task attempts、磁盘及执行状态并发布心跳。Docker 不可达也生成错误快照。GitHub watchdog 读取心跳；SMTP 是可选通道，未配置时仍维护异常、恢复和健康输出，但不积压邮件；已配置时支持去重、失败重试和恢复通知。GitHub PR 评论和状态发布不依赖 SMTP。公开摘要不复制主机路径、配置或凭据。中转不可达与主机离线分别处理。GitHub schedule 有平台延迟，告警窗口须容纳发布和调度间隔；模型 API 仍只在服务器使用。
 
-## 验收与迁移
+## 验收与部署
 
-运行 `python3 scripts/local_ci/agent_ci/verify.py --output-dir /tmp/local-ci-task-container-verification` 将本机报告和日志生成到仓库外；测试代码保留，生成产物不提交。模型、Docker、硬件、GitHub HTTP、SMTP 等外部边界的替换范围以本次报告为准。历史阶段与提交见 [工作记录](../../docs/ci_refactor_log.md)。本机验证不证明实际公司镜像、LLVM/后端、设备、模型、邮件或线上 GitHub/Gitee 已通过验收，上线时须执行部署预检和实际能力验证。
-
-从旧常驻环境迁移是独立离线操作：停旧接单和 worker、处理在途任务、checkpoint 与备份 → 准备普通用户 Rootless runtime 和可信镜像 → 导入终态、未上传 outbox 与封存证据到新 state → 核对 worker SHA 后切换。旧 container ID、lease 和执行通过项不能作为新任务容器状态直接复用；未知活动任务必须先处理。具体导入工具、材料记录、回滚和用户级 unit 操作见 [部署与回滚](deploy/README.md)。
+开发期按模块运行 `agent_ci/tests`、`environments/tests`、`tools/tests`、`maintenance/tests` 和 `deploy/tests`；这些是 Local CI 实现的回归测试，不进入普通 GitHub Basic CI。生成报告和原始日志不得提交。上线前仍须执行 [部署预检](deploy/README.md)，验证实际公司镜像、LLVM/后端、设备、模型、邮件及 Gitee 配置。
 
 旧 deterministic→AI advisory、常驻可写环境及旧 Codex/容器入口均不作为当前执行路径。历史验收材料可从对应 Git 提交读取，不作为当前任务容器部署依据。

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 ENV_HEADER = ROOT / "triton" / "include" / "triton" / "Tools" / "Sys" / "GetEnv.hpp"
 PASS_MANAGER_BINDINGS = (
     ROOT / "csrc" / "lib" / "ttgpu" / "ir.cc",

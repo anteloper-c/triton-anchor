@@ -25,7 +25,7 @@ def load_skill(root: Path = SKILL_ROOT) -> SkillBundle:
     """SKILL.md is the only entry; its ordered references are the load manifest.
 
     This package uses simple relative Markdown links under references/. Never
-    discover sibling prompts, recurse through PR files, or fall back to legacy
+    discover sibling prompts, recurse through PR files, or fall back to implicit
     prompts when an entry/reference is invalid.
     """
     root = Path(root).absolute()

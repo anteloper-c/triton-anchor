@@ -46,7 +46,7 @@ def current_key(task: dict) -> str:
 
 def validate_task(task: dict, repositories: tuple[str, ...] = ("likehupochuan/triton-anchor",)) -> dict:
     if not isinstance(task, dict) or task.get("schema") != TASK_SCHEMA:
-        raise ContractError("Only complete v4 tasks may execute; legacy results are display-only")
+        raise ContractError("Only complete v4 tasks may execute; unsupported schemas cannot satisfy the gate")
     required = {*IDENTITY_FIELDS, "task_id", "task_ref", "base_task_ref", "head_task_ref",
                 "title", "description", "labels", "state", "draft", "captured_at", "llvm_hash"}
     if required - task.keys():

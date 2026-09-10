@@ -59,7 +59,7 @@ class TaskWorkspaces:
     def root(self, task_id, handle):
         attempt = handle.get("attempt_id", "")
         if not re.fullmatch(r"[a-f0-9]{64}", task_id) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}", attempt):
-            raise ContractError("Legacy persistent workspaces require offline migration")
+            raise ContractError("Unsupported task workspace identity; start with fresh v4 state")
         root = self.state_dir / "task-staging" / task_id / attempt
         if root.resolve() != root or any(p.is_symlink() for p in (root, *root.parents)):
             raise ContractError("Task staging path contains a symlink")
@@ -230,7 +230,7 @@ class TaskWorkspaces:
                 continue
             handle = json.loads(row["manifest"])
             if not handle.get("attempt_id"):
-                self.discovery_errors.append("Legacy persistent workspace needs offline migration: " + row["generation"])
+                self.discovery_errors.append("Unsupported task workspace identity: " + row["generation"])
                 continue
             try:
                 root = self.root(row["task_id"], handle)

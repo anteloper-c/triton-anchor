@@ -3,12 +3,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import subprocess
 import tempfile
-import threading
 import unittest
 from unittest.mock import patch
 
@@ -22,17 +20,9 @@ def git(root, *args):
     return subprocess.check_output(["git", *args], cwd=root, stderr=subprocess.DEVNULL).decode().strip()
 
 
-def body(types="docs"):
-    fields = {"types": types, "purpose": "Correct documented behavior", "scope": "README",
-              "validation": "Reviewed the actual implementation", "subject": "Public README",
-              "consistency": "Names match source", "reproduction": "Run the regression case",
-              "expected_actual": "Expected 2, actual 1", "behavior": "New behavior is documented",
-              "compatibility": "Existing callers continue to work", "baseline": "Base commit",
-              "measurement": "Repeat the same inputs five times", "expected_change": "Lower compile time",
-              "versions": "Old and new versions recorded", "sources": "Trusted mirror",
-              "environment": "Frontend dependency changes", "recovery": "Restore known-good generation",
-              "ci_impact": "Triggers and permissions stay scoped", "coverage": "Regression behavior",
-              "execution": "pytest regression case"}
+def body(summary="Correct documented behavior", scope="README",
+         validation="Reviewed the actual implementation"):
+    fields = {"summary": summary, "scope": scope, "validation": validation}
     return "\n".join("<!-- field:" + key + " -->\n" + value for key, value in fields.items())
 
 
@@ -151,15 +141,29 @@ class GatewayBehaviorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             g.load_task(task_file, g.digest(self.task))
 
-    def test_type_specific_information_and_multi_type_union(self):
-        for kind in g.TYPE_FIELDS:
-            with self.subTest(kind=kind):
-                self.assertEqual(g.validate_pr_info({**self.task, "description": body(kind)}), [])
-                missing = body(kind).replace("<!-- field:" + g.TYPE_FIELDS[kind][0] + " -->", "<!-- field:unused -->")
+    def test_three_required_pr_sections_without_type_specific_fields(self):
+        self.assertEqual(g.validate_pr_info(self.task), [])
+        heading_body = """## 变更概述 / Summary
+Document the behavior
+## 影响范围 / Scope
+README only
+## 验证情况 / Validation
+未运行：纯文档变更
+"""
+        self.assertEqual(g.validate_pr_info({**self.task, "description": heading_body}), [])
+        for field in g.FIELD_NAMES:
+            missing = body().replace(f"<!-- field:{field} -->", "<!-- field:unused -->")
+            with self.subTest(field=field):
                 self.assertTrue(g.validate_pr_info({**self.task, "description": missing}))
-        self.assertEqual(g.validate_pr_info({**self.task, "description": body("fix, ci")}), [])
-        self.assertTrue(g.validate_pr_info({**self.task, "description": body().replace("docs", "- [ ] docs", 1)}))
-        self.assertEqual(g.validate_pr_info({**self.task, "description": body().replace("docs", "- [x] docs", 1)}), [])
+        for placeholder in ("TODO", "TBD", "待填写", "..."):
+            with self.subTest(placeholder=placeholder):
+                self.assertTrue(g.validate_pr_info({**self.task, "description": body(summary=placeholder)}))
+        for title in ("WIP", "todo", "TBD"):
+            with self.subTest(title=title):
+                self.assertTrue(g.validate_pr_info({**self.task, "title": title}))
+        for title in ("test", "Update", "更新"):
+            with self.subTest(title=title):
+                self.assertEqual(g.validate_pr_info({**self.task, "title": title}), [])
 
     def test_external_fork_cannot_use_an_unprotected_environment(self):
         g.validate_approval_environment(self.gh)
@@ -183,7 +187,7 @@ class GatewayBehaviorTests(unittest.TestCase):
     def test_lifecycle_cancellation_reaches_gitee(self):
         control = self.store(g.CONTROL_BRANCH)
         g.enqueue(self.task, self.gh, control, self.source)
-        for update in ({"draft": True}, {"state": "closed"}, {"body": body("fix")}):
+        for update in ({"draft": True}, {"state": "closed"}, {"body": body("Different summary")}):
             self.gh.pull.update(update)
             self.assertFalse(g.is_current(self.gh, self.task))
         self.assertEqual(g.cancel_obsolete(self.gh, control, 7), 1)
@@ -391,44 +395,42 @@ class GatewayBehaviorTests(unittest.TestCase):
     def test_http_status_and_idempotent_comment_writeback(self):
         calls, comments, statuses = [], [], {}
 
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_args):
-                pass
+        class Response:
+            def __init__(self, payload):
+                self.payload = json.dumps(payload).encode()
 
-            def do_GET(self):
-                self.send_response(200)
-                self.end_headers()
-                if "/commits/" in self.path:
-                    sha = self.path.split("/commits/", 1)[1].split("/", 1)[0]
-                    response = statuses.get(sha, [])
-                else:
-                    response = comments
-                self.wfile.write(json.dumps(response).encode())
+            def __enter__(self):
+                return self
 
-            def do_POST(self):
-                data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                calls.append(("POST", self.path, data))
-                if self.path.endswith("/comments"):
-                    comments.append({"id": 11, "user": {"type": "Bot"}, **data})
-                elif "/statuses/" in self.path:
-                    statuses.setdefault(self.path.rsplit("/", 1)[1], []).insert(0, data)
-                self.send_response(201)
-                self.end_headers()
-                self.wfile.write(b"{}")
+            def __exit__(self, *_args):
+                return False
 
-            def do_PATCH(self):
-                data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                calls.append(("PATCH", self.path, data))
+            def read(self):
+                return self.payload
+
+        def transport(request, timeout):
+            self.assertEqual(timeout, 30)
+            method = request.get_method()
+            path = request.full_url.split(f"/repos/{g.REPOSITORY}/", 1)[1]
+            if path == "forbidden":
+                raise g.HTTPError(request.full_url, 403, "permission denied", {}, None)
+            if method == "GET":
+                if path.startswith("commits/"):
+                    sha = path.split("commits/", 1)[1].split("/", 1)[0]
+                    return Response(statuses.get(sha, []))
+                return Response(comments)
+            data = json.loads(request.data)
+            calls.append((method, path, data))
+            if method == "POST" and path.endswith("/comments"):
+                comments.append({"id": 11, "user": {"type": "Bot"}, **data})
+            elif method == "POST" and path.startswith("statuses/"):
+                statuses.setdefault(path.rsplit("/", 1)[1], []).insert(0, data)
+            elif method == "PATCH":
                 comments[0].update(data)
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(b"{}")
+            return Response({})
 
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            client = g.GitHub(g.REPOSITORY, f"http://127.0.0.1:{server.server_port}", token="fake-local-token")
+        with patch.object(g, "urlopen", side_effect=transport):
+            client = g.GitHub(g.REPOSITORY, "http://127.0.0.1", token="fake-local-token")
             client.status(self.task, "pending", "Queued")
             client.comment(self.task, "first report")
             client.comment(self.task, "first report")
@@ -436,16 +438,15 @@ class GatewayBehaviorTests(unittest.TestCase):
             self.assertEqual(len(calls), 4)
             self.assertEqual(calls[-1][0], "PATCH")
             self.assertTrue(comments[0]["body"].startswith(g.MARKER))
-            self.assertTrue(client.status_matches(self.task, "pending", "Queued"))
+            self.assertTrue(client.status_matches(self.task, "pending", "Queued"), statuses)
             self.assertFalse(client.status_matches(self.task, "success", "Queued"))
             self.assertFalse(client.status_matches(self.task, "pending", "Different result"))
             self.assertEqual(calls[1][2]["context"], "local-ci/summary")
             statuses[self.head].insert(0, {"context": "local-ci/summary", "state": "error", "description": "Newer failure"})
             self.assertFalse(client.status_matches(self.task, "pending", "Queued"))
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join()
+            with self.assertRaisesRegex(g.GitHubAPIError, "HTTP 403: permission denied") as error:
+                client.request("forbidden")
+            self.assertNotIn("token", str(error.exception))
 
 
 class WorkflowStructureTests(unittest.TestCase):
@@ -463,6 +464,13 @@ class WorkflowStructureTests(unittest.TestCase):
         for name in ("ci_basic.yml", "api-compat.yml", "security-gate.yml"):
             workflow = yaml.load((ROOT / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
             self.assertEqual(set(workflow["on"]), {"workflow_call"})
+        basic_text = (ROOT / ".github/workflows/ci_basic.yml").read_text()
+        self.assertIn("gateway-contracts:", basic_text)
+        self.assertNotIn("control-contracts:", basic_text)
+        self.assertNotIn("scripts/local_ci/agent_ci/tests", basic_text)
+        self.assertEqual(jobs["review-card"]["permissions"]["pull-requests"], "write")
+        self.assertEqual(jobs["review-card"]["permissions"]["issues"], "write")
+        self.assertEqual(jobs["review-card"]["permissions"]["statuses"], "write")
         router = ROOT.parent / "triton-anchor-main/.github/workflows/ci-gateway.yml"
         if router.exists():
             self.assertEqual(router.read_text().rstrip(), worker_text.split("\n  cancel-obsolete:", 1)[0].rstrip())

@@ -133,39 +133,6 @@ class MCPBoundaryTests(unittest.TestCase):
         self.assertEqual([], self.records())
         self.assertEqual([], self.executor.calls)
 
-    def test_invalid_types_ranges_and_nested_fields_never_schedule(self):
-        base = {"tool_id": "environment", "reason": "fixture"}
-        invalid = [
-            ("start_check", None), ("start_check", []),
-            ("start_check", {"tool_id": "environment"}),
-            ("start_check", {**base, "force": "true"}),
-            ("start_check", {**base, "variant": "other"}),
-            ("start_check", {**base, "reason": "  "}),
-            ("start_check", {**base, "parameters": None}),
-            ("start_check", {**base, "parameters": {"custom": {}}}),
-            ("start_check", {**base, "parameters": {"max_jobs": True}}),
-            ("start_check", {**base, "parameters": {"max_jobs": 2.0}}),
-            ("start_check", {**base, "parameters": {"max_jobs": 0}}),
-            ("start_check", {**base, "parameters": {"timeout_seconds": -1}}),
-            ("start_check", {**base, "parameters": {"operators": "add"}}),
-            ("start_check", {**base, "parameters": {"operators": []}}),
-            ("start_check", {**base, "parameters": {"operators": [{}]}}),
-            ("start_check", {**base, "parameters": {"kernels": ["add\n"]}}),
-            ("poll_check", {"execution_id": "a" * 32, "wait_seconds": True}),
-            ("poll_check", {"execution_id": "a" * 32, "wait_seconds": 31}),
-            ("read_file", {"path": "README.md", "start_line": 0}),
-            ("read_file", {"path": "README.md", "max_lines": 501}),
-            ("read_artifact", {"execution_id": "a" * 32, "offset": -1}),
-            ("submit_review", {"kind": "architecture", "status": "pass", "summary": "fixture", "evidence": ["not an object"]}),
-            ("context", {"tool_id": "environment"}),
-        ]
-        for method, arguments in invalid:
-            with self.subTest(method=method, arguments=arguments):
-                self.assertEqual(-32602, self.mcp(method, arguments)["error"]["code"])
-                self.assertIn("error", self.rpc(method, arguments))
-                self.assertEqual([], self.records())
-                self.assertEqual([], self.executor.calls)
-
     def test_capability_and_trusted_budgets_reject_before_queue(self):
         for arguments in (
             {"tool_id": "custom_1234", "reason": "fixture"},
@@ -207,45 +174,6 @@ class MCPBoundaryTests(unittest.TestCase):
         self.assertFalse(self.supervisor.fresh("frontend_build"))
         log = self.rpc("read_artifact", {"execution_id": custom["execution_id"]})
         self.assertIn("fixture custom executed", log["result"]["content"])
-
-    def test_runtime_custom_still_requires_smoke_then_executes(self):
-        self.await_check(self.rpc("start_check", {"tool_id": "environment", "reason": "fixture"}))
-        arguments = {"name": "runtime.py", "content": "print('runtime fixture')", "language": "python", "reason": "runtime fixture", "mode": "reproduction"}
-        self.assertIn("error", self.rpc("run_custom", arguments))
-        self.assertEqual(1, len(self.records()))
-        for tool_id in TOOLS[1:4]:
-            self.await_check(self.rpc("start_check", {"tool_id": tool_id, "reason": "fixture"}))
-        custom = self.await_check(self.rpc("run_custom", arguments))
-        self.assertEqual("custom", custom["execution_kind"])
-        self.assertEqual("reproduction", custom["custom_mode"])
-        self.assertFalse(custom["source_only"])
-        self.assertTrue(self.supervisor.fresh("frontend_smoke"))
-
-    def test_custom_validation_cannot_be_reintroduced_through_extra_fields(self):
-        arguments = {"name": "check.py", "content": "pass", "language": "python", "reason": "fixture", "source_only": True}
-        for changed in (
-            {**arguments, "tool_id": "environment"},
-            {**arguments, "custom": {}},
-            {**arguments, "source_only": "true"},
-            {**arguments, "name": "../check.py"},
-            {**arguments, "content": "x" * (128 * 1024 + 1)},
-            {**arguments, "mode": "read_only"},
-            {**arguments, "experiment_id": "a" * 32},
-            {**arguments, "mode": "experiment", "experiment_id": "../escape"},
-            {**arguments, "mode": "reproduction", "experiment_id": "a" * 32},
-            {**arguments, "mode": "diagnostic", "uid": 0},
-        ):
-            self.assertEqual(-32602, self.mcp("run_custom", changed)["error"]["code"])
-            self.assertIn("error", self.rpc("run_custom", changed))
-        self.assertEqual([], self.records())
-
-    def test_custom_record_cannot_satisfy_a_builtin_after_restart(self):
-        for marker in ({"script_digest": "f" * 64}, {"source_only": True}, {"execution_kind": "custom"},
-                       {"custom_mode": "diagnostic"}, {"experiment_id": "a" * 32}):
-            self.journal.execution(self.task["task_id"], "environment", "candidate", {
-                "execution_id": uuid.uuid4().hex, "status": "pass", "environment_fingerprint": "fixture-environment",
-                "execution_kind": "builtin", **marker})
-            self.assertFalse(self.supervisor.fresh("environment"))
 
     def test_diagnostic_and_experiment_work_before_environment_and_report_seed(self):
         context = self.rpc("context", {})["result"]

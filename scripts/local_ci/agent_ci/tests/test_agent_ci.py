@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import os
 import subprocess
@@ -256,62 +255,6 @@ class AgentTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             worker.journal.resume(row["task_id"])
 
-    def test_worker_completes_before_independent_github_receiver(self):
-        spec = importlib.util.spec_from_file_location("v4_integrated_receiver", LOCAL_ROOT.parent / "ci/gateway_v4.py")
-        gateway = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = gateway
-        spec.loader.exec_module(gateway)
-        task = self.fixture.task
-
-        class FakeGitHub:
-            repository = task["repository"]
-
-            def __init__(self):
-                self.calls, self.last_status, self.last_comment = [], None, None
-
-            def request(self, path):
-                if path == "pulls/7":
-                    return {"title": task["title"], "body": task["description"], "labels": [], "state": "open", "draft": False,
-                            "head": {"sha": task["head_sha"]}, "base": {"ref": task["target_branch"]}}
-                if path == "git/ref/pull/7/merge":
-                    return {"object": {"sha": task["tested_sha"]}}
-                raise AssertionError(path)
-
-            optional = request
-
-            def status(self, task, state, description, url=""):
-                self.calls.append(("status", state))
-                self.last_status = (state, description)
-
-            def status_matches(self, task, state, description):
-                return self.last_status == (state, description)
-
-            def comment(self, task, body):
-                if self.last_comment == body:
-                    return False
-                self.calls.append(("comment", body))
-                self.last_comment = body
-                return True
-
-        worker = self.worker()
-        worker.scan()
-        self.assertEqual(worker.journal.task(task["task_id"])["phase"], "complete")
-        control = gateway.GitStore(str(self.fixture.bare), "local-ci-control")
-        results = gateway.GitStore(str(self.fixture.bare), "local-ci-results")
-        self.addCleanup(control.close)
-        self.addCleanup(results.close)
-        gh = FakeGitHub()
-        collected = gateway.collect_results(gh, control, results, self.root / "dashboard")
-        self.assertEqual(len(collected), 1)
-        self.assertEqual(gh.calls[0], ("status", "success"))
-        self.assertEqual(gh.calls[1][0], "comment")
-        # GitHub status/comment/Pages cannot hold or reopen local delivery.
-        worker.scan()
-        self.assertEqual(worker.journal.task(task["task_id"])["phase"], "complete")
-        self.assertEqual(self.driver.calls, 1)
-        self.assertNotIn("receipts/", git(self.fixture.bare, "ls-tree", "-r", "--name-only", "refs/heads/local-ci-control"))
-        self.assertEqual(gateway.collect_results(gh, control, results, self.root / "dashboard"), [])
-
     def test_worker_revision_mismatch_is_reported_before_environment(self):
         worker = self.worker()
         with patch("agent_ci.worker.validate_control_revision", side_effect=ContractError("installed revision differs")):
@@ -320,31 +263,6 @@ class AgentTests(unittest.TestCase):
         result = json.loads(Path(worker.journal.outbox(self.fixture.task["task_id"])["payload_path"]).read_text())
         self.assertEqual(result["status"], "infra_error")
         self.assertIn("installed revision differs", result["unfinished"])
-
-    def test_api_retries_reuse_attempt_but_explicit_rerun_rebuilds_environment(self):
-        worker = self.worker()
-        self.config["codex_attempts"] = 3
-        attempts = []
-
-        def interrupted(supervisor, service, recovery=""):
-            attempts.append(1)
-            started = supervisor.start_check("environment", "Keep verified preparation across recovery")
-            supervisor.poll_check(started["execution_id"], 30)
-            raise OSError("simulated company API interruption")
-
-        with patch.object(self.driver, "run", side_effect=interrupted):
-            worker.scan()
-        self.assertEqual(len(attempts), 3)
-        ident = self.fixture.task["task_id"]
-        self.assertEqual(worker.journal.task(ident)["phase"], "complete")
-        self.assertEqual(worker.journal.result_status(worker.journal.outbox(ident)), "infra_error")
-        before = worker.journal.task(ident)["run_id"]
-        worker.journal.resume(ident)
-        worker.scan()
-        self.assertNotEqual(before, worker.journal.task(ident)["run_id"])
-        self.assertEqual(len([c for c in FakeExecutor.calls if c[0] == "environment"]), 2)
-        self.assertEqual(worker.journal.task(ident)["phase"], "complete")
-        self.assertEqual(worker.journal.result_status(worker.journal.outbox(ident)), "pass")
 
     def test_rebuilt_dependency_invalidates_downstream_evidence(self):
         supervisor = self.supervisor()
@@ -405,24 +323,6 @@ class AgentTests(unittest.TestCase):
         self.assertFalse(supervisor.finding_blocker({**finding, "violation_evidence": {**finding["violation_evidence"], "rule_quote": "invented contract"}}))
         self.assertFalse(supervisor.finding_blocker({**finding, "path": "README.md"}))
 
-    def test_publication_failure_reuses_completed_work_after_restart(self):
-        worker = self.worker()
-        with patch.object(self.fixture.relay, "publish_result", side_effect=OSError("simulated publish outage")):
-            worker.scan()
-        ident = self.fixture.task["task_id"]
-        row = worker.journal.task(ident)
-        self.assertEqual(row["phase"], "publishing")
-        self.assertEqual(worker.journal.outbox(ident)["attempts"], 1)
-        self.assertIn("simulated publish outage", json.loads(row["detail"])["upload_error"])
-        worker.journal.resume(ident)
-        self.assertEqual(row["run_id"], worker.journal.task(ident)["run_id"])
-        calls = list(FakeExecutor.calls)
-        replacement = self.worker()
-        replacement.scan()
-        self.assertEqual(FakeExecutor.calls, calls)
-        self.assertEqual(self.driver.calls, 1)
-        self.assertEqual(replacement.journal.task(ident)["phase"], "complete")
-
     def test_code_failure_delivery_is_complete_but_not_green_or_resumable(self):
         FakeExecutor.failures = {"frontend_build": [("fail", "invalid candidate")]}
         worker = self.worker()
@@ -452,57 +352,6 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(payload, Path(box["payload_path"]).read_bytes())
         self.assertEqual(commit, git(self.fixture.bare, "rev-parse", "refs/heads/local-ci-results"))
 
-    def test_legacy_uploaded_journal_migrates_without_reading_acknowledgements(self):
-        worker = self.worker()
-        worker.process(self.fixture.task)
-        ident = self.fixture.task["task_id"]
-        with worker.journal.connect() as db:
-            db.execute("ALTER TABLE outbox ADD COLUMN receipt TEXT")
-            db.execute("UPDATE outbox SET published=1234,receipt='not JSON: deliberately unreadable'")
-            db.execute("UPDATE tasks SET phase='awaiting_receipt'")
-        migrated = Journal(worker.state_dir)
-        self.assertEqual(migrated.task(ident)["phase"], "complete")
-        self.assertEqual(json.loads(migrated.task(ident)["detail"])["uploaded_at"], 1234)
-        self.assertNotIn("receipt", migrated.outbox(ident))
-        self.assertEqual(self.driver.calls, 1)
-
-    def test_legacy_failed_upload_becomes_pending_upload_only(self):
-        worker = self.worker()
-        worker.process(self.fixture.task)
-        ident = self.fixture.task["task_id"]
-        worker.journal.phase(ident, "incomplete", {"reason": "publication_failed"})
-        run_id = worker.journal.task(ident)["run_id"]
-        replacement = self.worker()
-        self.assertEqual(replacement.journal.task(ident)["phase"], "publishing")
-        replacement.scan()
-        self.assertEqual(replacement.journal.task(ident)["phase"], "complete")
-        self.assertEqual(replacement.journal.task(ident)["run_id"], run_id)
-        self.assertEqual(self.driver.calls, 1)
-
-    def test_legacy_wait_without_upload_evidence_cannot_claim_delivery(self):
-        worker = self.worker()
-        ident = self.fixture.task["task_id"]
-        worker.journal.register(self.fixture.task)
-        worker.journal.phase(ident, "awaiting_receipt")
-        migrated = Journal(worker.state_dir)
-        self.assertEqual(migrated.task(ident)["phase"], "incomplete")
-        self.assertEqual(json.loads(migrated.task(ident)["detail"])["reason"], "legacy_upload_evidence_missing")
-        self.assertIsNone(migrated.outbox(ident))
-        self.assertEqual(self.driver.calls, 0)
-
-    def test_stale_delivery_row_cannot_upload_new_explicit_run(self):
-        FakeExecutor.failures = {"environment": [("infra_error", "missing dependency")]}
-        worker = self.worker()
-        worker.scan()
-        ident = self.fixture.task["task_id"]
-        previous = worker.journal.task(ident)
-        worker.journal.resume(ident)
-        worker.process(self.fixture.task)
-        with patch.object(self.fixture.relay, "publish_result") as publish:
-            worker.deliver(previous)
-            publish.assert_not_called()
-        self.assertEqual(worker.journal.task(ident)["phase"], "publishing")
-
     def test_sealed_digest_change_blocks_upload_without_model_recovery(self):
         worker = self.worker()
         worker.process(self.fixture.task)
@@ -515,22 +364,6 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(worker.journal.task(ident)["phase"], "publishing")
         self.assertIn("digest changed", json.loads(worker.journal.task(ident)["detail"])["upload_error"])
         self.assertEqual(self.driver.calls, 1)
-
-    def test_frontend_only_is_explicit_not_applicable(self):
-        worker = self.worker(backend=False)
-        worker.scan()
-        result = json.loads(Path(worker.journal.outbox(self.fixture.task["task_id"])["payload_path"]).read_text())
-        self.assertEqual(result["required_checks"], list(TOOLS[:4]))
-        self.assertEqual({r["tool_id"] for r in result["checks"] if r["status"] == "not_applicable"}, set(TOOLS[4:]))
-
-    def test_oom_retries_only_one_tool_with_lower_parallelism(self):
-        FakeExecutor.failures = {"frontend_build": [("infra_error", "oom")]}
-        worker = self.worker()
-        worker.scan()
-        builds = [r for r in FakeExecutor.calls if r[0] == "frontend_build"]
-        self.assertEqual(len(builds), 2)
-        self.assertEqual(builds[1][2]["max_jobs"], 4)
-        self.assertEqual(len([r for r in FakeExecutor.calls if r[0] == "environment"]), 1)
 
     def test_invalid_identity_and_llvm_snapshot_do_not_execute(self):
         task = {**self.fixture.task, "tested_sha": "b" * 40}

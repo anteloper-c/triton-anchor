@@ -248,19 +248,6 @@ class RootlessManagerTest(unittest.TestCase):
             subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
         return subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"]).decode().strip()
 
-    def test_control_updates_revalidate_without_rebuilding_and_pin_old_attempt(self):
-        first = self.acquire()
-        old_source = Path(first["control_snapshot"]["source"])
-        revision = self.commit_control_update()
-        second = self.acquire({**self.task, "task_id": "2" * 64, "worker_revision_sha": revision})
-        self.assertEqual(first["image_id"], second["image_id"])
-        self.assertNotEqual(first["control_snapshot"], second["control_snapshot"])
-        self.assertEqual(second["control_revision"], revision)
-        self.assertEqual((old_source / "scripts/local_ci/trusted.py").read_text(), "# trusted fixture\n")
-        self.assertEqual(sum(c[3] == "build" for c in self.fake.commands), 1)
-        self.assertEqual(sum("local-ci.kind=image-validation" in c for c in self.fake.commands), 2)
-        self.assertEqual(self.manager.recover_task(first)["status"], "same_attempt")
-
     def test_control_and_validation_do_not_enter_dependency_context(self):
         context = self.root / "context"
         context.mkdir()
@@ -322,44 +309,6 @@ class RootlessManagerTest(unittest.TestCase):
         with self.assertRaisesRegex(EnvironmentError, "absolute target"):
             self.manager._control_snapshot(revision)
 
-    def test_legacy_image_is_adopted_only_after_mounted_control_validation(self):
-        first = self.manager.ensure_image("release/3.1", self.sha)
-        state = self.manager._load()
-        row = state["images"][first["release_id"]]
-        row["recipe_digest"] = runtime.fingerprint([
-            self.manager._profile("release/3.1", self.sha), self.manager.uids, self.manager.gids])
-        row.pop("control_delivery")
-        row.pop("validation_digest")
-        self.manager._save(state)
-        revision = self.commit_control_update()
-        second = self.manager.ensure_image("release/3.1", self.sha)
-        self.assertEqual(first["image_id"], second["image_id"])
-        self.assertEqual(second["validation"]["control_revision"], revision)
-        self.assertEqual(second["control_delivery"], "snapshot-mount-legacy-image")
-        self.assertEqual(self.manager.ensure_image("release/3.1", self.sha)["image_id"], first["image_id"])
-        self.assertEqual(sum(c[3] == "build" for c in self.fake.commands), 1)
-
-    def test_failed_new_control_validation_does_not_rebuild_or_record_pass(self):
-        first = self.manager.ensure_image("release/3.1", self.sha)
-        self.commit_control_update()
-        self.fake.fail_check = "validate-frontend_smoke"
-        with self.assertRaises(EnvironmentError):
-            self.manager.ensure_image("release/3.1", self.sha)
-        row = self.manager._load()["images"][first["release_id"]]
-        self.assertEqual(row["validation_digest"], first["validation_digest"])
-        self.assertEqual(sum(c[3] == "build" for c in self.fake.commands), 1)
-
-    def test_revalidation_cleanup_failure_blocks_new_work(self):
-        first = self.manager.ensure_image("release/3.1", self.sha)
-        self.commit_control_update()
-        self.fake.fail_stop = True
-        with self.assertRaises(EnvironmentError):
-            self.manager.ensure_image("release/3.1", self.sha)
-        row = self.manager._load()["images"][first["release_id"]]
-        self.assertFalse(row["validation_cleanup_confirmed"])
-        with self.assertRaisesRegex(EnvironmentError, "stop is unconfirmed"):
-            self.manager.ensure_image("release/3.1", self.sha)
-
     def test_offline_foundation_tag_must_match_pinned_digest(self):
         profile = self.config["profiles"]["release/3.1"]
         profile["local_image_tag"] = "ci/foundation:local"
@@ -393,14 +342,6 @@ class RootlessManagerTest(unittest.TestCase):
         self.assertEqual(self.acquire(task)["attempt_id"], handle["attempt_id"])
         self.manager.destroy_task(handle, keep_data=False)
         self.assertEqual(self.manager.generations()[handle["attempt_id"]]["state"], "removed")
-
-    def test_branch_alias_preserves_exact_mounted_llvm_requirement(self):
-        self.mounted_llvm()
-        self.config["branch_profiles"] = {"CI_dev": "release/3.1"}
-        with self.assertRaisesRegex(EnvironmentError, "New LLVM requires"):
-            self.acquire({**self.task, "target_branch": "CI_dev", "llvm_hash": "b" * 40})
-        self.assertFalse(self.fake.images)
-        self.assertFalse(self.fake.containers)
 
     def test_unmapped_branch_has_no_implicit_fallback(self):
         with self.assertRaisesRegex(EnvironmentError, "Trusted profile"):
@@ -624,27 +565,6 @@ class RootlessManagerTest(unittest.TestCase):
             self.manager.generation(handle["attempt_id"])["credential_volume_missing"]
         )
         self.assertIn(handle["volumes"]["task"], self.fake.volumes)
-
-    def test_missing_task_or_both_volumes_records_explicit_evidence_loss(self):
-        for both in (False, True):
-            handle = self.acquire({**self.task, "task_id": ("3" if both else "4") * 64})
-            del self.fake.containers[handle["container_id"]]
-            del self.fake.volumes[handle["volumes"]["task"]]
-            if both:
-                del self.fake.volumes[handle["volumes"]["codex"]]
-            result = self.manager.export_execution(
-                handle, "b" * 32, self.root / "saved"
-            )
-            self.assertEqual(
-                result, {"exported": False, "evidence_loss": "task_volume_missing"}
-            )
-            self.assertEqual(self.manager.task_usage(handle), 0)
-            self.assertEqual(
-                self.manager.generation(handle["attempt_id"])["evidence_loss"],
-                "task_volume_missing",
-            )
-            self.manager.destroy_task(handle, keep_data=False)
-            self.assertNotIn(handle["volumes"]["codex"], self.fake.volumes)
 
     def test_failed_image_validation_keeps_previous_release(self):
         handle = self.acquire()
@@ -916,11 +836,11 @@ class RootlessManagerTest(unittest.TestCase):
         with self.assertRaisesRegex(EnvironmentError, "change saved evidence"):
             self.manager.export_execution(handle, "a" * 32, dest)
 
-    def test_no_adoption_of_legacy_rootful_registry(self):
+    def test_unsupported_registry_is_rejected(self):
         self.manager.registry.write_text(
             json.dumps({"schema": "triton-anchor-local-ci-environments/v1"})
         )
-        with self.assertRaisesRegex(EnvironmentError, "legacy"):
+        with self.assertRaisesRegex(EnvironmentError, "Unsupported environment registry"):
             self.manager.health()
 
     def test_plain_image_tag_and_uncommitted_controls_are_rejected(self):

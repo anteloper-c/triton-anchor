@@ -75,7 +75,7 @@ jobs:
       github.event_name == 'workflow_dispatch' && inputs.mode == 'run' &&
       github.ref_name == 'CI_dev'
     runs-on: ubuntu-latest
-    permissions: {contents: read, pull-requests: read, issues: write, statuses: write}
+    permissions: {contents: read, pull-requests: write, issues: write, statuses: write}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,7 +94,7 @@ jobs:
     needs: cancel-obsolete
     if: ${{ inputs.action != 'closed' && inputs.action != 'converted_to_draft' }}
     runs-on: ubuntu-latest
-    permissions: {contents: read, pull-requests: read, issues: write, statuses: write}
+    permissions: {contents: read, pull-requests: write, issues: write, statuses: write}
     outputs:
       task_digest: ${{ steps.task.outputs.task_digest }}
       tested_sha: ${{ steps.task.outputs.tested_sha }}
@@ -120,7 +120,7 @@ jobs:
         run: python3 scripts/ci/gateway_v4.py prepare
       - uses: actions/upload-artifact@v4
         with: {name: ci-v4-task, path: task.json}
-      - name: Validate PR fields and type-specific information
+      - name: Validate required PR information
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/ci/gateway_v4.py info
@@ -151,7 +151,7 @@ jobs:
     needs: [prepare, basic, api, security]
     if: ${{ always() && needs.prepare.outputs.tested_sha != '' }}
     runs-on: ubuntu-latest
-    permissions: {contents: read, pull-requests: read, issues: write, statuses: write, actions: read}
+    permissions: {contents: read, pull-requests: write, issues: write, statuses: write, actions: read}
     outputs:
       eligible: ${{ steps.card.outputs.eligible }}
     steps:
@@ -173,7 +173,7 @@ jobs:
     if: ${{ needs.review-card.outputs.eligible == 'true' && needs.prepare.outputs.external_fork == 'true' }}
     environment: local-ci-fork-approval
     runs-on: ubuntu-latest
-    permissions: {contents: read, pull-requests: read, statuses: write, issues: write, actions: read}
+    permissions: {contents: read, pull-requests: read, actions: read}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -195,7 +195,7 @@ jobs:
       always() && needs.review-card.outputs.eligible == 'true' &&
       (needs.prepare.outputs.external_fork != 'true' || needs.approve-external-fork.result == 'success')
     runs-on: ubuntu-latest
-    permissions: {contents: read, pull-requests: read, statuses: write, issues: write}
+    permissions: {contents: read, pull-requests: write, statuses: write, issues: write}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -234,7 +234,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: github-pages
     timeout-minutes: 15
-    permissions: {contents: read, actions: read, pull-requests: read, issues: write, statuses: write, pages: write, id-token: write}
+    permissions: {contents: read, actions: read, pull-requests: write, issues: write, statuses: write, pages: write, id-token: write}
     env:
       GH_TOKEN: ${{ github.token }}
       GITEE_USERNAME: ${{ vars.GITEE_USERNAME || 'likehupochuan' }}

@@ -41,7 +41,7 @@ jobs:
       - name: Pure frontend tests
         env: {PYTHONPATH: python}
         run: python -m pytest python/triton_anchor/tests/ -q
-  control-contracts:
+  gateway-contracts:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,9 +51,8 @@ jobs:
           submodules: false
       - uses: actions/setup-python@v5
         with: {python-version: '3.11'}
-      - run: python -m pip install pytest pyyaml jsonschema
-      - name: CI control contracts when present in this version
-        env: {PYTHONPATH: 'python:scripts/local_ci'}
+      - run: python -m pip install pytest pyyaml
+      - name: GitHub gateway contracts when present in this version
+        env: {PYTHONPATH: python}
         run: |
           if [ -d scripts/ci/tests ]; then python -m pytest scripts/ci/tests -q; fi
-          if [ -d scripts/local_ci/agent_ci/tests ]; then python -m pytest scripts/local_ci/agent_ci/tests -q; fi

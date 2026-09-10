@@ -38,7 +38,6 @@ class Journal:
                   task_id TEXT PRIMARY KEY, payload_path TEXT NOT NULL, digest TEXT NOT NULL,
                   attempts INTEGER NOT NULL DEFAULT 0, published REAL);
             """)
-        self._migrate_delivery()
         self.path.chmod(0o600)
 
     @staticmethod
@@ -52,32 +51,6 @@ class Journal:
             return document.get("status") if isinstance(document, dict) else None
         except (OSError, ValueError):
             return None
-
-    def _migrate_delivery(self) -> None:
-        """Close legacy uploaded runs without inspecting GitHub acknowledgements."""
-        with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            columns = {row[1] for row in db.execute("PRAGMA table_info(outbox)")}
-            if "receipt" in columns:
-                # Rebuild transactionally, including on SQLite before DROP COLUMN.
-                db.execute("CREATE TABLE outbox_delivery (task_id TEXT PRIMARY KEY, payload_path TEXT NOT NULL, digest TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, published REAL)")
-                db.execute("INSERT INTO outbox_delivery SELECT task_id,payload_path,digest,attempts,published FROM outbox")
-                db.execute("DROP TABLE outbox")
-                db.execute("ALTER TABLE outbox_delivery RENAME TO outbox")
-            for row in db.execute("SELECT * FROM tasks WHERE phase NOT IN ('complete','cancelled')").fetchall():
-                box = db.execute("SELECT * FROM outbox WHERE task_id=?", (row["task_id"],)).fetchone()
-                if box and box["published"] is not None:
-                    phase = "complete"
-                    detail = {"completion_boundary": "gitee_upload", "uploaded_at": box["published"],
-                              "result_status": self.result_status(dict(box)), "migrated": True}
-                elif row["phase"] == "awaiting_receipt" or (box and row["phase"] == "incomplete"):
-                    phase = "publishing" if box else "incomplete"
-                    detail = {"reason": "legacy_pending_upload" if box else "legacy_upload_evidence_missing", "migrated": True}
-                else:
-                    continue
-                now = time.time()
-                db.execute("UPDATE tasks SET phase=?,updated=?,detail=? WHERE task_id=?", (phase, now, canonical(detail).decode(), row["task_id"]))
-                db.execute("INSERT INTO events(task_id,at,kind,detail) VALUES(?,?,?,?)", (row["task_id"], now, "delivery_migrated", canonical(detail).decode()))
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=30)

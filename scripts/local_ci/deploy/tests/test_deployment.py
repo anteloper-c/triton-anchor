@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import hashlib
 import json
 import os
 import tempfile
@@ -23,7 +22,6 @@ def load(name, path):
 installer = load("service_installer", DEPLOY / "install.py")
 preflight = load("service_preflight", DEPLOY / "preflight.py")
 health = load("health_publisher", DEPLOY / "health.py")
-migration = load("migration_recorder", DEPLOY / "migrate.py")
 
 
 class DeploymentTests(unittest.TestCase):
@@ -147,126 +145,6 @@ class DeploymentTests(unittest.TestCase):
         self.assertTrue(result["poller"]["heartbeat_stale"])
         self.assertIn("filesystem_free_bytes", result["storage"][0])
 
-    def test_migration_refuses_out_of_order_activation(self):
-        state = migration.plan("a" * 40, "b" * 40)
-        evidence = self.root / "evidence.json"
-        evidence.write_text("{}")
-        with self.assertRaisesRegex(ValueError, "recorded in order"):
-            migration.advance(state, "poller_ready", evidence)
-
-    def test_migration_drains_uploaded_old_tasks_without_github_confirmation(self):
-        evidence = self.root / "old-result.json"
-        evidence.write_text("fixture result")
-        with self.assertRaisesRegex(ValueError, "nonterminal"):
-            migration.drained([{"task_id": "old", "state": "running", "evidence_path": str(evidence)}])
-        with self.assertRaisesRegex(ValueError, "upload"):
-            migration.drained([{"task_id": "old", "state": "complete", "evidence_path": str(evidence)}])
-        record = {"task_id": "old", "state": "complete", "result_uploaded": True,
-                  "result_digest": hashlib.sha256(evidence.read_bytes()).hexdigest(), "evidence_path": str(evidence)}
-        self.assertTrue(migration.drained([record]))
-        self.assertTrue(migration.drained([{**record, "state": "failed"}]))
-        evidence.write_text("changed bytes")
-        with self.assertRaisesRegex(ValueError, "changed"):
-            migration.drained([record])
-
-    def test_migration_cancelled_old_task_needs_reason_and_saved_evidence(self):
-        evidence = self.root / "cancel.json"
-        evidence.write_text('{"reason":"superseded"}')
-        record = {"task_id": "old", "state": "cancelled", "evidence_path": str(evidence)}
-        with self.assertRaisesRegex(ValueError, "reason"):
-            migration.drained([record])
-        self.assertTrue(migration.drained([{**record, "reason": "superseded"}]))
-
-    def test_migration_drains_computation_with_verified_pending_upload(self):
-        evidence = self.root / "sealed-result.json"
-        evidence.write_text(json.dumps({"schema": "triton-anchor-local-ci/v4", "task": {"task_id": "t1"}, "run_id": "r1", "status": "infra_error"}))
-        record = {"task_id": "t1", "state": "publishing", "execution_stopped": True, "result_sealed": True,
-                  "evidence_path": str(evidence), "result_digest": hashlib.sha256(evidence.read_bytes()).hexdigest()}
-        self.assertTrue(migration.drained([record]))
-        for missing in ("execution_stopped", "result_sealed"):
-            with self.assertRaisesRegex(ValueError, "stopped execution"):
-                migration.drained([{**record, missing: False}])
-        with self.assertRaisesRegex(ValueError, "same sealed"):
-            migration.drained([{**record, "task_id": "other"}])
-        evidence.write_text("changed")
-        with self.assertRaisesRegex(ValueError, "changed"):
-            migration.drained([record])
-
-    def test_migration_freezes_worker_identity_and_evidence_digest(self):
-        state = migration.plan("a" * 40, "b" * 40)
-        evidence = self.root / "compatibility.json"
-        evidence.write_text(json.dumps({"receiver_accepts_v4": True, "legacy_results_display_only": True, "worker_preflight_ready": True, "worker_revision_sha": "a" * 40}))
-        result = migration.advance(state, "compatibility_ready", evidence)
-        self.assertEqual(result["next_phase"], "rootless_ready")
-        self.assertEqual(len(result["events"][0]["evidence_sha256"]), 64)
-        self.assertFalse(result["production_actions_executed"])
-
-    def test_migration_verifies_upload_and_github_publication_independently(self):
-        state = migration.plan("a" * 40, "b" * 40)
-        def saved(name, document):
-            path = self.root / name
-            path.write_text(json.dumps(document))
-            return {"evidence_path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-        proof = saved("runtime-proof.json", {"schema": "triton-anchor-rootless-runtime-probe/v1", "status": "pass",
-                      "runtime": {"uid": 1001, "endpoint": "unix:///run/user/1001/docker.sock"}, "config_digest": "f" * 64,
-                      "images": {"main": "sha256:" + "e" * 64}, "resources": {"cpus": 2, "memory_bytes": 100, "pids_limit": 10},
-                      "limits": {"main": {"cpu.max": "200000 100000", "memory.max": "100", "pids.max": "10"}}})
-        archives = []
-        for role in ("control", "state", "workspace", "sessions"):
-            path = self.root / (role + ".backup")
-            path.write_bytes(b"fixture backup " + role.encode())
-            archives.append({"role": role, "path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
-        backup = saved("backup.json", {"schema": "triton-anchor-local-ci-runtime-backup/v1", "old_worker_revision_sha": "c" * 40, "files": archives})
-        phases = {
-            "compatibility_ready": {"receiver_accepts_v4": True, "legacy_results_display_only": True, "worker_preflight_ready": True, "worker_revision_sha": "a" * 40},
-            "rootless_ready": {"ordinary_ci_user": True, "user_manager_ready": True, "rootless_verified": True, "resource_limits_verified": True, "runtime_proof": proof},
-            "image_releases_ready": {"trusted_images_verified": True, "required_backend_verified": True,
-                                     "image_releases": [{"profile": "fixture", "image_id": "sha256:" + "e" * 64, "llvm_hash": "d" * 40, "validated": True}]},
-            "main_ready": {"minimal_main_dispatch_verified": True, "main_revision_sha": "b" * 40},
-            "old_intake_stopped": {"old_intake_stopped": True},
-            "old_tasks_drained": {"inventory_complete": True, "tasks": []},
-            "state_migrated": {"terminal_tasks_preserved": True, "pending_uploads_preserved": True, "old_execution_reuse_disabled": True,
-                               "runtime_state_separated": True, "old_leases_reconciled": True, "rollback_backup_verified": True, "rollback_backup": backup},
-            "poller_ready": {"old_poller_stopped": True, "new_poller_ready": True, "independent_health_ready": True, "external_watchdog_ready": True, "worker_revision_sha": "a" * 40},
-        }
-        evidence = self.root / "phase.json"
-        for phase, payload in phases.items():
-            evidence.write_text(json.dumps(payload))
-            state = migration.advance(state, phase, evidence)
-        result = self.root / "uploaded-result.json"
-        result.write_text(json.dumps({"schema": "triton-anchor-local-ci/v4", "task": {"task_id": "c" * 64, "tested_sha": "d" * 40},
-                                      "run_id": "fixture-run", "status": "pass"}))
-        identity = {"task_id": "c" * 64, "tested_sha": "d" * 40, "run_id": "fixture-run",
-                    "result_digest": hashlib.sha256(result.read_bytes()).hexdigest()}
-        payload = {"one_way_delivery_verified": True, "immutable_upload_verified": True, "github_publication_verified": True,
-                   "cancel_verified": True, "publish_retry_verified": True, "rollback_available": True,
-                   "upload": {**identity, "result_uploaded": True, "evidence_path": str(result)},
-                   "github_publication": {**identity, "pages_published": True, "comment_published": True, "github_status_published": True}}
-        evidence.write_text(json.dumps(payload))
-        complete = migration.advance(state, "verified", evidence)
-        self.assertIsNone(complete["next_phase"])
-        self.assertEqual("one-way", complete["delivery_mode"])
-        self.assertFalse(complete["production_actions_executed"])
-        for field in ("immutable_upload_verified", "github_publication_verified"):
-            evidence.write_text(json.dumps({**payload, field: False}))
-            with self.assertRaisesRegex(ValueError, "Required migration evidence"):
-                migration.advance(state, "verified", evidence)
-        bad_publication = {**payload["github_publication"], "result_digest": "0" * 64}
-        evidence.write_text(json.dumps({**payload, "github_publication": bad_publication}))
-        with self.assertRaisesRegex(ValueError, "different immutable results"):
-            migration.advance(state, "verified", evidence)
-        evidence.write_text(json.dumps({**payload, "github_publication": {**payload["github_publication"], "pages_published": False}}))
-        with self.assertRaisesRegex(ValueError, "Pages, comment and GitHub status"):
-            migration.advance(state, "verified", evidence)
-
-    def test_migration_v1_receipt_plan_cannot_be_silently_reused(self):
-        state = migration.plan("a" * 40, "b" * 40)
-        state["schema"] = "triton-anchor-local-ci-migration/v1"
-        evidence = self.root / "phase.json"
-        evidence.write_text("{}")
-        with self.assertRaisesRegex(ValueError, "recorded in order"):
-            migration.advance(state, "compatibility_ready", evidence)
-
     def test_one_way_configuration_rejects_receipt_timeout_and_checks_retention(self):
         config = json.loads((DEPLOY / "config.example.json").read_text())
         self.assertNotIn("receipt_timeout_seconds", config)
@@ -327,7 +205,7 @@ class DeploymentTests(unittest.TestCase):
         del config["branch_profiles"]
         self.assertEqual("pass", self.configured_checks(config)["branch_profiles"])
 
-    def test_execution_identity_rejects_legacy_shared_user_and_duplicate_roles(self):
+    def test_execution_identity_rejects_shared_user_and_duplicate_roles(self):
         config = json.loads((DEPLOY / "config.example.json").read_text())
         config["runtime"].update(endpoint="unix:///run/user/1001/docker.sock", context="fixture-rootless")
         config["resources"] = {"cpus": 2, "memory_bytes": 100000000, "pids_limit": 64}
