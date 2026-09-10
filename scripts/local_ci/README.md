@@ -10,7 +10,7 @@
 
 Harness 验证冻结任务及 merge parents，选择精确 LLVM 对应的可信镜像，为当前 task/run 创建独立任务容器。Codex 与构建、测试在同一任务容器中，通过四个不同的非 root UID 隔离 Codex、candidate、base 和 diagnostic。宿主机 Harness 掌握 journal、调度、权限、容器生命周期和结果发布；只有它能调用 Docker 管理接口执行容器 UID 0 的准备、取证与清理操作。
 
-Codex 的唯一 Skill 入口为 [skills/local-ci/SKILL.md](skills/local-ci/SKILL.md)。`agent_ci/codex.py` 通过 `agent_ci/skill.py` 显式读取入口和声明的 references，再启动公司配置的 `codex exec`。每任务运行期只有一个 Codex 会话，不启动多 Agent。Skill 规定工作循环，MCP 提供任务接口，`tools/` 执行真实业务检查；最低检查由可信 diff 和 `agent_ci/policy.py` 决定，模型不能减免。
+Codex 的唯一 Skill 入口为 [skills/local-ci/SKILL.md](skills/local-ci/SKILL.md)。`agent_ci/codex.py` 通过 `agent_ci/skill.py` 显式读取入口和声明的 references，再启动公司配置的 `codex exec`。每任务运行期只有一个 Codex 会话，不启动多 Agent。Skill 规定工作循环，MCP 提供任务接口，`tools/` 执行真实业务检查；`agent_ci/policy.py` 依据冻结 base/tested 内容产生 `impact/v5`、不可减免的必检和可由 Codex 按具体风险选择的推荐检查。
 
 容器内 Codex 使用 `danger-full-access`、`approval_policy=never`，新会话与恢复会话均启用原生 Shell、unified exec 和文件编辑。它可以直接分析源码、编写脚本、安装实验依赖和运行定向实验；正式检查及阻断所需的确定性复现仍通过 MCP 执行并由 Harness 核验。
 
@@ -22,7 +22,7 @@ Codex 的唯一 Skill 入口为 [skills/local-ci/SKILL.md](skills/local-ci/SKILL
 
 Triton 3.0 提供环境与依赖、Frontend build、wheel 安装/import、Frontend smoke、Backend rebuild、Backend smoke/JIT、FlagGems、Compile-time performance、Pass profiling、IR serialization。其他已配置版本仅提供前四项及相关源码/控制面检查，后端项显示 not_applicable。3.0 已声明能力损坏属于 infra_error，不能降级为不适用。
 
-产品改动按影响范围取最低检查并集，未知或跨模块改动覆盖全部可用工具。程序 Markdown、prompt、schema 和运行配置不算纯文档。所有 PR 必须完成信息校验和架构审查；性能执行失败阻断，纯耗时变化只报告。
+冻结 diff 中同路径、普通模式的 Python 修改会用包含 type comments 的 AST 比较；只有 AST 等价才按无可执行语义变化处理。新增、删除、重命名、模式变化、解析失败及非 Python 配置继续按路径风险处理。纯文档和可信 Python 注释/空白仅硬性执行 environment；仅测试代码由 Codex 选择定向验证；控制面增加 contract tests；普通 Frontend/API/packaging 强制前端链；pipeline、AnchorIR、adapter、HWCapability、C++/MLIR 再强制后端 rebuild/smoke；LLVM、环境、未知或 full 请求覆盖当前环境支持的完整十项。混合改动取风险并集，不再仅因跨普通目录自动全量。程序 Markdown、prompt、schema 和运行配置不算纯文档。所有 PR 必须完成信息校验和架构审查。
 
 Codex 通过当前任务 MCP 的 `start_check` 调用基础工具，也可使用 `run_custom` 的三种模式：
 

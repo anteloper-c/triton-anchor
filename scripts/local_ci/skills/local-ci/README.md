@@ -4,7 +4,7 @@
 
 原 `scripts/local_ci/ai_ci_program.md`、`architecture_review.md`、`ai_review.md` 分别迁入 `references/AI_CI_PROGRAM.md`、`references/architecture_review.md`、`references/ai_review.md`；旧文件删除，避免维护多个入口。`references/project_conventions.md` 补充实际 README、API 契约、编译配置与 Python 代码中的项目事实。
 
-修改应保持顶层设计与后续确认的调整：GitHub 前置检查串行、每任务单 Codex、每个 PR attempt 使用独立容器、适用最低检查不可减免、Triton 3.0 的后端性能能力边界，以及仅服务器使用公司现有模型配置。Codex 在容器内以 `danger-full-access` 和 `approval_policy=never` 运行，可以通过原生命令和编辑探索独立源码/venv；正式检查及阻断复现仍经 MCP/Harness 核验。原生事件与源码快照是宿主私有调查记录，不能代替正式通过证据。业务决定仅为 `continue/block`；`submit_review` 和检查状态保留。回执及 Codex 发布恢复入口已删除。
+修改应保持顶层设计与后续确认的调整：GitHub 前置检查串行、每任务单 Codex、每个 PR attempt 使用独立容器、`impact/v5` 必检不可减免且推荐项按具体风险选择、Triton 3.0 的后端性能能力边界，以及仅服务器使用公司现有模型配置。Codex 在容器内以 `danger-full-access` 和 `approval_policy=never` 运行，可以通过原生命令和编辑探索独立源码/venv；正式检查及阻断复现仍经 MCP/Harness 核验。原生事件与源码快照是宿主私有调查记录，不能代替正式通过证据。业务决定仅为 `continue/block`；`submit_review` 和检查状态保留。回执及 Codex 发布恢复入口已删除。
 
 架构规则原文、冻结源码位置、高风险问题的两次 candidate 失败和 base 通过证据，以及恢复时复用已完成检查的要求均保留。Skill 内容由可信控制版本固定；候选 PR 不得替换运行中的 Skill。更新后检查入口 frontmatter、四个链接及顺序，并使用 skill-creator 的 `quick_validate.py` 校验结构。
 

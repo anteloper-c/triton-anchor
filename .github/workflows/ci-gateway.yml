@@ -1,5 +1,6 @@
 name: CI Gateway
-run-name: "CI v4 | ${{ inputs.mode || github.event_name }} | PR ${{ inputs.pr_number || github.event.pull_request.number || '0' }}"
+run-name: >-
+  CI v4 | ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'service' && 'service' || github.event_name == 'workflow_dispatch' && inputs.mode == 'run' && (inputs.action == 'closed' || inputs.action == 'converted_to_draft') && 'cancel' || github.event_name == 'workflow_dispatch' && inputs.mode == 'run' && 'run' || 'route' }} | ${{ (inputs.pr_number != '' && inputs.pr_number != '0' && format('PR {0}', inputs.pr_number)) || (github.event.pull_request.number && format('PR {0}', github.event.pull_request.number)) || (inputs.mode == 'service' && 'receiver') || format('branch {0}', inputs.source_branch || github.ref_name) }}
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, edited, closed, converted_to_draft, labeled, unlabeled]
@@ -75,7 +76,7 @@ jobs:
       github.event_name == 'workflow_dispatch' && inputs.mode == 'run' &&
       github.ref_name == 'CI_dev'
     runs-on: ubuntu-latest
-    permissions: {contents: read, pull-requests: write, issues: write, statuses: write}
+    permissions: {contents: read, pull-requests: write, issues: write, statuses: write, checks: write}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -151,7 +152,7 @@ jobs:
     needs: [prepare, basic, api, security]
     if: ${{ always() && needs.prepare.outputs.tested_sha != '' }}
     runs-on: ubuntu-latest
-    permissions: {contents: read, pull-requests: write, issues: write, statuses: write, actions: read}
+    permissions: {contents: read, pull-requests: write, issues: write, statuses: write, checks: write, actions: read}
     outputs:
       eligible: ${{ steps.card.outputs.eligible }}
     steps:
@@ -195,7 +196,7 @@ jobs:
       always() && needs.review-card.outputs.eligible == 'true' &&
       (needs.prepare.outputs.external_fork != 'true' || needs.approve-external-fork.result == 'success')
     runs-on: ubuntu-latest
-    permissions: {contents: read, pull-requests: write, statuses: write, issues: write}
+    permissions: {contents: read, pull-requests: write, statuses: write, checks: write, issues: write}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -234,7 +235,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: github-pages
     timeout-minutes: 15
-    permissions: {contents: read, actions: read, pull-requests: write, issues: write, statuses: write, pages: write, id-token: write}
+    permissions: {contents: read, actions: read, pull-requests: write, issues: write, statuses: write, checks: write, pages: write, id-token: write}
     env:
       GH_TOKEN: ${{ github.token }}
       GITEE_USERNAME: ${{ vars.GITEE_USERNAME || 'likehupochuan' }}
@@ -256,7 +257,8 @@ jobs:
               if (artifact.expired || artifact.workflow_run?.head_branch !== 'CI_dev') continue;
               const {data: run} = await github.rest.actions.getWorkflowRun({...context.repo, run_id:artifact.workflow_run.id});
               if (run.event !== 'workflow_dispatch' || run.path !== '.github/workflows/ci-gateway.yml' ||
-                  !run.display_title.startsWith('CI v4 | service | PR ') ||
+                  (run.display_title !== 'CI v4 | service | receiver' &&
+                   !run.display_title.startsWith('CI v4 | service | PR ')) ||
                   run.head_repository?.full_name !== context.payload.repository.full_name) continue;
               const response = await github.rest.actions.downloadArtifact({...context.repo, artifact_id:artifact.id, archive_format:'zip'});
               fs.writeFileSync('monitor-state.zip', Buffer.from(response.data));

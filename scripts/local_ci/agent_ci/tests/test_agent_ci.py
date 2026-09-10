@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 LOCAL_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(LOCAL_ROOT))
-from agent_ci.policy import TOOLS, minimum_checks
+from agent_ci.policy import TOOLS, changed_files, minimum_checks
 from agent_ci.protocol import TASK_SCHEMA, ContractError, canonical, current_key, metadata_digest, task_id, validate_task
 from agent_ci.relay import GitRelay
 from agent_ci.state import Journal
@@ -431,11 +431,61 @@ class AgentTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             supervisor.run_custom("../bad.py", "pass", "python", "bad")
 
-    def test_policy_cannot_treat_program_or_renamed_code_as_docs(self):
+    def test_policy_uses_frozen_python_semantics_before_path_risk(self):
+        repo = self.fixture.source
+        path = repo / "python/triton_anchor/__init__.py"
+
+        def commit(source, message):
+            path.write_text(source)
+            git(repo, "add", ".")
+            git(repo, "commit", "-qm", message)
+            return git(repo, "rev-parse", "HEAD")
+
+        previous = commit('__version__ = "0.1"  # type: str\n', "policy base")
+        cases = (
+            ("comment", '# explanation only\n\n__version__="0.1"  # type: str\n', True),
+            ("assignment", '__version__ = "0.2"  # type: str\n', False),
+            ("docstring", '"""Runtime docstring."""\n__version__="0.2"  # type: str\n', False),
+            ("type-comment", '"""Runtime docstring."""\n__version__="0.2"  # type: object\n', False),
+            ("whitespace", '"""Runtime docstring."""\n\n__version__ = "0.2"  # type: object\n', True),
+            ("parse-failure", "def broken(:\n", False),
+        )
+        no_op_policy = None
+        for label, source, equivalent in cases:
+            current = commit(source, label)
+            changes = changed_files(repo, previous, current)
+            policy = minimum_checks(changes, backend_enabled=True)
+            with self.subTest(label=label):
+                self.assertEqual(changes[0].get("semantic") == "python_ast_equivalent", equivalent)
+                self.assertEqual(policy["required_checks"], ["environment"] if equivalent else list(TOOLS[:4]))
+            if label == "comment":
+                no_op_policy = policy
+            previous = current
+        self.assertEqual(policy["version"], "impact/v5")
+        self.assertEqual(no_op_policy["impact"]["classification"], "trusted_python_ast_equivalent")
+        self.assertEqual(no_op_policy["recommended_checks"], [])
+
+    def test_policy_cannot_treat_program_or_structural_change_as_docs(self):
+        docs = minimum_checks([{"path": "docs/example.md"}], backend_enabled=True)
+        self.assertEqual(docs["required_checks"], ["environment"])
+        self.assertEqual(docs["impact"]["level"], "non_executable")
         program = minimum_checks([{"path": "scripts/local_ci/skills/local-ci/references/AI_CI_PROGRAM.md"}], backend_enabled=True)
         self.assertIn("contract_tests", program["required_checks"])
         renamed = minimum_checks([{"path": "docs/example.md", "old_path": "csrc/old.cpp", "status": "R100"}], backend_enabled=True)
-        self.assertEqual(renamed["required_checks"], list(TOOLS))
+        self.assertEqual(renamed["required_checks"], list(TOOLS[:6]))
+        tests = minimum_checks([{"path": "python/triton_anchor/tests/test_frontend.py", "status": "M"}], backend_enabled=True)
+        self.assertEqual(tests["required_checks"], ["environment"])
+        self.assertEqual(tests["recommended_checks"], list(TOOLS[1:4]))
+        pipeline = minimum_checks([{"path": "python/triton_anchor/pipeline.py", "status": "M"}], backend_enabled=True)
+        self.assertEqual(pipeline["required_checks"], list(TOOLS[:6]))
+        self.assertEqual(pipeline["recommended_checks"], list(TOOLS[6:]))
+        self.assertEqual(minimum_checks([{"path": "unknown.cfg"}], backend_enabled=True)["required_checks"], list(TOOLS))
+        self.assertEqual(minimum_checks([{"path": "docs/example.md"}], backend_enabled=True, full=True)["required_checks"], list(TOOLS))
+        for status, old_mode, mode, expected in (("A", "000000", "100644", TOOLS[:4]),
+                                                  ("D", "100644", "000000", TOOLS[:4]),
+                                                  ("M", "100644", "100755", TOOLS)):
+            change = {"path": "python/triton_anchor/new.py", "status": status, "old_mode": old_mode, "mode": mode}
+            self.assertEqual(minimum_checks([change], backend_enabled=True)["required_checks"], list(expected))
         with self.assertRaises(ContractError):
             minimum_checks([], backend_enabled=True)
 

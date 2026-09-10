@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-from .protocol import ContractError, atomic_json, within
+from .protocol import ContractError, POLICY_VERSION, atomic_json, within
 from .control import validate_control_revision
 from .policy import TOOLS
 
@@ -273,7 +273,7 @@ class DockerExecutor:
             "LOCAL_CI_ENVIRONMENT_FINGERPRINT": self.generation["environment_fingerprint"],
             "MAX_JOBS": str(jobs), "CMAKE_BUILD_PARALLEL_LEVEL": str(jobs),
             "NINJAFLAGS": f"-j{jobs}", "FRONTEND_BUILD_MODE": "fresh",
-            "FLAGGEMS_RANDOM_SEED": str(int(hashlib.sha256((self.task['task_id'] + self.task['tested_sha'] + 'impact/v4').encode()).hexdigest()[:8], 16)),
+            "FLAGGEMS_RANDOM_SEED": str(int(hashlib.sha256((self.task['task_id'] + self.task['tested_sha'] + POLICY_VERSION).encode()).hexdigest()[:8], 16)),
             "FLAGGEMS_TEST_MODE": "full" if self.task["full"] else "sample",
             "PYTHON_VENV_ACTIVATE": str(variant_root / "venv/bin/activate"),
             "PYTHON_BIN": str(variant_root / "venv/bin/python"),

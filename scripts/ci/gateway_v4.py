@@ -33,6 +33,15 @@ MARKER = "<!-- triton-anchor-ci-v4 -->"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,159}\Z")
+CHECK_NAMES = {
+    "prepare": "CI v4 / Prepare",
+    "basic": "CI v4 / Basic CI",
+    "api": "CI v4 / API compatibility",
+    "security": "CI v4 / Security gate",
+    "local": "CI v4 / Local CI",
+    "codex": "CI v4 / Codex review",
+}
+CHECK_CONCLUSIONS = {"success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required"}
 
 
 class GitHubAPIError(RuntimeError):
@@ -197,6 +206,44 @@ class GitHub:
                     break
             if not latest or latest.get("state") != state or latest.get("description") != description[:140]:
                 return False
+        return True
+
+    def check(self, task: dict, key: str, status: str, conclusion: str | None,
+              title: str, summary: str, url: str = "") -> bool:
+        """Upsert one readable merge-result Check Run owned by CI v4."""
+        if not task["pr_number"]:
+            return False
+        if key not in CHECK_NAMES or status not in {"queued", "in_progress", "completed"}:
+            raise ValueError("Invalid CI Check Run identity or status")
+        if (status == "completed") != (conclusion is not None) or (conclusion and conclusion not in CHECK_CONCLUSIONS):
+            raise ValueError("Invalid CI Check Run conclusion")
+        name = CHECK_NAMES[key]
+        external_id = f"triton-anchor-ci-v4:{key}:{task['task_id']}"
+        response = self.request(
+            f"commits/{task['tested_sha']}/check-runs?check_name={quote(name, safe='')}&filter=latest&per_page=100")
+        runs = response.get("check_runs", []) if isinstance(response, dict) else []
+        owned = [run for run in runs if run.get("name") == name
+                 and str(run.get("external_id", "")).startswith(f"triton-anchor-ci-v4:{key}:")
+                 and (run.get("app") or {}).get("slug") == "github-actions"]
+        existing = max(owned, key=lambda run: int(run.get("id", 0)), default=None)
+        output_data = {"title": str(title)[:255], "summary": str(summary)[:65535]}
+        desired_url = url or ""
+        if existing and all((existing.get("status") == status,
+                             existing.get("conclusion") == conclusion,
+                             (existing.get("details_url") or "") == desired_url,
+                             existing.get("external_id") == external_id,
+                             (existing.get("output") or {}).get("title") == output_data["title"],
+                             (existing.get("output") or {}).get("summary") == output_data["summary"])):
+            return False
+        payload = {"name": name, "status": status, "external_id": external_id, "output": output_data}
+        if desired_url:
+            payload["details_url"] = desired_url
+        if conclusion:
+            payload["conclusion"] = conclusion
+        if existing:
+            self.request(f"check-runs/{existing['id']}", "PATCH", payload)
+        else:
+            self.request("check-runs", "POST", {**payload, "head_sha": task["tested_sha"]})
         return True
 
     def comment(self, task: dict, body: str) -> bool:
@@ -400,6 +447,7 @@ def enqueue(task: dict, gh: GitHub, control: GitStore, source: Path) -> None:
         documents[f"tasks/{task['task_id']}.json"] = old
     control.put(documents, (f"tasks/{task['task_id']}.json",))
     gh.status(task, "pending", "Local CI: task published to Gitee")
+    publish_enqueued_checks(gh, task)
 
 
 def cancel_obsolete(gh: GitHub, control: GitStore, pr_number: int = 0) -> int:
@@ -424,6 +472,10 @@ def cancel_obsolete(gh: GitHub, control: GitStore, pr_number: int = 0) -> int:
             if pointer and pointer["task_id"] == task["task_id"] and not cancellation.get("github_notified"):
                 gh.status(task, "error", "Local CI cancelled: PR/branch changed, closed or became draft")
                 gh.comment(task, f"## Local CI 旧任务已取消\n\n任务 `{task['task_id']}`，被测提交 `{task['tested_sha']}`。\n\nPR/分支的提交、目标、信息或状态已变化，本地 worker 已收到停止通知；此结果不能作为当前通过结果。若 PR 仍需验证，请查看对应新任务或从 Gateway 重新请求。")
+                for key in ("local", "codex"):
+                    gh.check(task, key, "completed", "cancelled", "Local CI task cancelled",
+                             "The PR, target, metadata, or task identity changed before this task completed.",
+                             workflow_url())
                 cancellation["github_notified"] = True
                 control.put({name: cancellation})
     return count
@@ -503,11 +555,85 @@ def result_comment(result: dict) -> str:
 
 
 GITHUB_STATES = {"pass": "success", "fail": "failure", "infra_error": "error", "cancelled": "error"}
+RESULT_CHECK_CONCLUSIONS = {"pass": "success", "fail": "failure", "infra_error": "action_required",
+                            "cancelled": "cancelled"}
+STAGE_CHECK_CONCLUSIONS = {"success": "success", "failure": "failure", "cancelled": "cancelled",
+                           "skipped": "skipped"}
 
 
 def publication_description(status: str, result_digest: str) -> str:
     # The digest binds task, run and all evidence without another delivery record.
     return f"Local CI: {status} (result {result_digest})"
+
+
+def workflow_url() -> str:
+    run_id = os.getenv("GITHUB_RUN_ID", "")
+    repository = os.getenv("GITHUB_REPOSITORY", REPOSITORY)
+    server = os.getenv("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+    return f"{server}/{repository}/actions/runs/{run_id}" if run_id.isdigit() else ""
+
+
+def check_value(value: object, limit: int = 300) -> str:
+    return re.sub(r"\s+", " ", str(value)).strip().replace("@", "＠").replace("|", "/")[:limit] or "—"
+
+
+def publish_preflight_checks(gh: GitHub, task: dict, stages: dict, eligible: bool) -> bool:
+    changed = False
+    url = workflow_url()
+    for key in ("prepare", "basic", "api", "security"):
+        outcome = str(stages.get(key, "skipped"))
+        conclusion = STAGE_CHECK_CONCLUSIONS.get(outcome, "action_required")
+        changed |= gh.check(task, key, "completed", conclusion,
+                            f"{CHECK_NAMES[key]}: {outcome}",
+                            f"Trusted workflow stage result: **{check_value(outcome)}**.", url)
+    local_status, local_conclusion = ("queued", None) if eligible else ("completed", "skipped")
+    title = "Waiting for approval and Local CI" if eligible else "Not dispatched because preflight did not pass"
+    summary = ("The tested merge result passed GitHub preflight and is waiting for approval or Local CI execution."
+               if eligible else "Local CI and Codex review were not started because a GitHub preflight stage did not pass.")
+    for key in ("local", "codex"):
+        changed |= gh.check(task, key, local_status, local_conclusion, title, summary, url)
+    return changed
+
+
+def publish_enqueued_checks(gh: GitHub, task: dict) -> bool:
+    changed = False
+    for key, title in (("local", "Local CI is running"), ("codex", "Codex review is pending")):
+        changed |= gh.check(task, key, "in_progress", None, title,
+                            "The immutable task was published to Gitee and is being processed by the Local CI worker.",
+                            workflow_url())
+    return changed
+
+
+def publish_result_checks(gh: GitHub, task: dict, result: dict) -> bool:
+    status = result["status"]
+    checks = result.get("checks", [])
+    lines = [f"Overall Local CI result: **{check_value(status)}**.", "", "Required and selected checks:"]
+    for check in checks[:50]:
+        reason = f" — {check_value(check.get('reason'))}" if check.get("reason") else ""
+        lines.append(f"- `{check_value(check.get('tool_id'))}`: **{check_value(check.get('status'))}**{reason}")
+    if len(checks) > 50:
+        lines.append(f"- … {len(checks) - 50} additional checks are available in the Local CI result.")
+    changed = gh.check(task, "local", "completed", RESULT_CHECK_CONCLUSIONS[status],
+                       f"Local CI: {status}", "\n".join(lines), workflow_url())
+
+    reviews = result.get("reviews", {})
+    review_lines, review_statuses = [], []
+    for key, label in (("pr_info", "PR intent"), ("architecture", "Architecture")):
+        review = reviews.get(key, {}) if isinstance(reviews, dict) else {}
+        review_status = str(review.get("status", "not_completed"))
+        review_statuses.append(review_status)
+        review_lines.append(f"- {label}: **{check_value(review_status)}** — {check_value(review.get('summary', ''))}")
+    if status == "cancelled":
+        review_conclusion = "cancelled"
+    elif review_statuses and all(value == "pass" for value in review_statuses):
+        review_conclusion = "success"
+    elif any(value == "fail" for value in review_statuses):
+        review_conclusion = "failure"
+    else:
+        review_conclusion = "action_required"
+    changed |= gh.check(task, "codex", "completed", review_conclusion,
+                        f"Codex review: {review_conclusion}", "\n".join(review_lines), workflow_url())
+    return changed
 
 
 def current_task(gh: GitHub, control: GitStore, task: dict) -> bool:
@@ -556,6 +682,11 @@ def publication_error(gh: GitHub, control: GitStore, task: dict) -> None:
         control.refresh()
         if current_task(gh, control, task):
             gh.status(task, "error", "Local CI result validation/publication failed; receiver will retry")
+            for key, title in (("local", "Local CI publication needs attention"),
+                               ("codex", "Codex result publication needs attention")):
+                gh.check(task, key, "completed", "action_required", title,
+                         "The receiver could not validate or publish the Local CI result. It will retry without rerunning the task.",
+                         workflow_url())
     except (ValueError, OSError, RuntimeError):
         pass
 
@@ -590,7 +721,8 @@ def collect_results(gh: GitHub, control: GitStore, results: GitStore, dashboard:
                     # Even if a previous status succeeded, a failed/deleted comment
                     # still needs repair. Identical comment bodies perform no write.
                     comment_changed = gh.comment(task, result_comment(result))
-                    if not unchanged or comment_changed:
+                    checks_changed = publish_result_checks(gh, task, result)
+                    if not unchanged or comment_changed or checks_changed:
                         published.append({"task_id": task["task_id"], "run_id": result["run_id"],
                                           "tested_sha": task["tested_sha"], "result_digest": result_digest, "status": result["status"]})
         except (ValueError, OSError, RuntimeError) as error:
@@ -736,6 +868,7 @@ def main() -> int:
             except (ValueError, OSError) as error:
                 eligible = False
                 approval_error = str(error) if isinstance(error, ValueError) else "Cannot verify required reviewers on local-ci-fork-approval; check repository environment configuration."
+        publish_preflight_checks(gh, task, stages, eligible)
         body = "## Local CI 前置检查与审批\n\n" + "\n".join(f"- {key}: {value}" for key, value in stages.items())
         body += f"\n\n被测提交 `{task['tested_sha']}`；目标 `{html.escape(task['target_branch'])}`。\n"
         body += "\n通过后由服务器 Codex 根据 PR 意图选择任务，并执行最低必检、架构审查和必要验证。\n"

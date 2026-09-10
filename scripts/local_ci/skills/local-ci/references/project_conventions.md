@@ -11,6 +11,6 @@
 | DSL 扩展通过命名空间与 builtins 注册，可声明适用 backend。 | `python/triton_anchor/extensions/base.py` 的 `DSLExtensionPlugin`、`BuiltinSpec`；核对公共接口与默认兼容行为，API 基线位于 `api_contract/public_api.json`，检查器为 `scripts/api_contract/check_public_api.py`。 |
 | Python wheel 使用 setuptools 构建后端，构建依赖含 wheel 与 pybind11；C++ 使用 C++17，构建查找 LLVM/MLIR。 | `pyproject.toml`、根 `CMakeLists.txt`；LLVM 目标修订来自冻结提交的 `triton/cmake/llvm-hash.txt`，由可信环境管理器准备匹配依赖，不能以别的版本冒充。 |
 | 已有前端 smoke 与 Python 行为测试可以复用，但测试用途不同。 | `tests/test_smoke.py`、`python/triton_anchor/tests/`、`scripts/api_contract/tests/`；选择与实际改动相关的现有用例，需要额外验证时通过 `run_custom` 保存定向脚本和执行证据。 |
-| 最低检查由可信 diff 类别与环境能力共同确定。 | `scripts/local_ci/agent_ci/policy.py`；`context` 提供本任务实际集合，Codex 可追加，不能自行删减或把未运行改写为通过。 |
+| 最低检查由冻结 diff 的可信语义影响与环境能力共同确定。 | `scripts/local_ci/agent_ci/policy.py`；`context` 提供 `impact`、必检与推荐集合。Codex 不能删减必检或把未运行改写为通过，只在具体变更风险需要时选择推荐项。 |
 
 本文件不添加格式风格、提交信息格式、新的 API/架构豁免或不存在的硬件能力要求。编译、wheel 来源验证、后端发现、FlagGems 与性能结果以对应真实 tools 和 Harness 记录为准。README 内的示例远端地址不构成访问或贡献授权；CI 只使用冻结可信调度允许的仓库与 Gitee 中转。

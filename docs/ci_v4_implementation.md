@@ -8,7 +8,7 @@
 
 网关冻结 merge/base/head、CI 实现 SHA、PR 元数据与 LLVM SHA。代码 refs 写入后才发布不可变 task manifest 和 current 指针，重复事件保持幂等。PR 提交、状态、目标、描述或标签变化使旧任务失效，Gitee 取消记录供 Poller 消费；审批后和回写前再次核对身份。
 
-Poller 校验任务及已安装控制版本，从已验证镜像创建当前 task/run 的独立 attempt。宿主机 Harness 显式加载 [local-ci/SKILL.md](../scripts/local_ci/skills/local-ci/SKILL.md) 及其 references，再在任务容器内启动公司配置的单一 Codex 会话。`agent_ci/policy.py` 通过真实 diff 决定不可删减的最低检查，Skill 规定工作循环；模型可安排顺序、增补验证，并在构建期间开展只读审查。
+Poller 校验任务及已安装控制版本，从已验证镜像创建当前 task/run 的独立 attempt。宿主机 Harness 显式加载 [local-ci/SKILL.md](../scripts/local_ci/skills/local-ci/SKILL.md) 及其 references，再在任务容器内启动公司配置的单一 Codex 会话。`agent_ci/policy.py` 对冻结 base/tested 内容进行 `impact/v5` 分级：同路径普通 Python 文件以包含 type comments 的 AST 等价判定无语义变化，其余按控制面、测试、普通前端、核心编译链或完整风险取检查并集。Skill 要求模型先看真实 diff，完成不可删减的必检，只在能建立“变更—风险—工具覆盖”关系时选择推荐检查，并在证据足够后立即结束。
 
 Codex 新建与恢复会话均使用 `danger-full-access`、`approval_policy=never`，启用原生 Shell、unified exec 和编辑能力。原生探索目录为 `/codex/workspace/candidate/`，包含独立 checkout、venv、可用时的 backend 和 home/tmp/cache/state；源码副本排除可变 Git 元数据，通过来源清单绑定冻结提交。Codex 可以直接写脚本和运行实验，原生命令事件及源码快照保存在宿主私有记录，不作为最低检查通过或阻断归因，也不自动发布到 Gitee。
 

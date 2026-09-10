@@ -336,9 +336,17 @@ class Supervisor:
                     unfinished.append(tool_id)
             for tool_id in self.policy["not_applicable"]:
                 checks.append({"tool_id": tool_id, "status": "not_applicable", "required": False, "reason": "backend_capability_unavailable"})
+            impact = self.policy.get("impact", {})
+            trusted_noop = impact.get("classification") in {"trusted_python_ast_equivalent", "documentation_only"}
             for tool_id in self.policy["capabilities"]:
                 if (tool_id, "candidate") not in latest and tool_id not in self.policy["required_checks"]:
-                    checks.append({"tool_id": tool_id, "status": "not_selected", "required": False, "reason": "Not required by impact policy and not added by Codex"})
+                    if trusted_noop:
+                        reason = "Trusted frozen diff has no executable semantic change; Codex did not select this optional check"
+                    elif tool_id in self.policy.get("recommended_checks", []):
+                        reason = f"Optional for {impact.get('level', 'assessed')} impact; Codex omitted it after risk assessment"
+                    else:
+                        reason = f"Not required for {impact.get('level', 'assessed')} impact and not selected by Codex"
+                    checks.append({"tool_id": tool_id, "status": "not_selected", "required": False, "reason": reason})
             reviews = self.journal.reviews(self.task["task_id"])
             findings = []
             for kind in self.policy["required_reviews"]:

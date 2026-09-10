@@ -65,6 +65,9 @@ class FakeGitHub:
     def status_matches(self, task, state, description):
         return self.latest_statuses.get(task["task_id"]) == (state, description)
 
+    def check(self, *_args, **_kwargs):
+        return False
+
     def comment(self, task, content):
         if self.comments and self.comments[-1] == content:
             return False
@@ -115,10 +118,11 @@ class GatewayBehaviorTests(unittest.TestCase):
 
     def result(self):
         return {"schema": g.RESULT_SCHEMA, "task": self.task, "run_id": "20260907T120000Z-1", "status": "pass",
-                "required_checks": ["environment", "contract_tests"],
-                "checks": [{"tool_id": key, "status": "pass", "required": True, "reason": "",
-                            "execution_id": key + "-1", "exit_code": 0}
-                           for key in ("environment", "contract_tests")],
+                "required_checks": ["environment"],
+                "checks": [{"tool_id": "environment", "status": "pass", "required": True, "reason": "",
+                            "execution_id": "environment-1", "exit_code": 0},
+                           {"tool_id": "contract_tests", "status": "not_selected", "required": False,
+                            "reason": "Trusted frozen diff has no executable semantic change"}],
                 "reviews": {"pr_info": {"status": "pass", "summary": "clear", "evidence": []},
                             "architecture": {"status": "pass", "summary": "compatible", "evidence": ["README.md"]}},
                 "findings": [], "blockers": [], "unfinished": [], "performance": [],
@@ -196,6 +200,10 @@ README only
         retry = {**self.task, "captured_at": "2099-01-01T00:00:00Z"}
         g.enqueue(retry, self.gh, control, self.source)
         self.assertEqual(control.get("tasks/" + self.task["task_id"] + ".json"), self.task)
+        minimum = g.trusted_minimum(self.task, control)
+        self.assertEqual(minimum["version"], "impact/v5")
+        self.assertEqual(minimum["required_checks"], ["environment"])
+        self.assertEqual(minimum["impact"]["level"], "non_executable")
 
     def test_lifecycle_cancellation_reaches_gitee(self):
         control = self.store(g.CONTROL_BRANCH)
@@ -331,7 +339,7 @@ README only
         self.assertEqual(g.monitor_tasks(control, results)[0]["task_id"], self.task["task_id"])
         result = self.result()
         name = f"runs/v4/{self.task['task_id']}/{result['run_id']}/result.json"
-        result["required_checks"] = ["environment"]
+        result["required_checks"] = []
         results.put({name: result})
         self.assertEqual(len(g.monitor_tasks(control, results)), 1)
         self.assertEqual(g.collect_results(self.gh, control, results, self.root / "dashboard"), [])
