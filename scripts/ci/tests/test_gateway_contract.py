@@ -34,7 +34,8 @@ class FakeGitHub:
         self.pull = {"state": "open", "draft": False, "title": "Document the public behavior",
                      "body": body(), "labels": [{"name": "docs"}],
                      "head": {"sha": head, "ref": "docs-topic", "repo": {"full_name": "anteloper-c/triton-anchor"}},
-                     "base": {"ref": "main"}}
+                     "base": {"ref": "main", "sha": base}, "mergeable": True,
+                     "merge_commit_sha": tested}
         self.statuses, self.comments = [], []
         self.latest_statuses, self.writes = {}, []
         self.environment = {"protection_rules": [{"type": "required_reviewers", "reviewers": [{"type": "User", "reviewer": {"login": "maintainer"}}]}]}
@@ -44,8 +45,6 @@ class FakeGitHub:
             return self.environment
         if path == "pulls/7":
             return copy.deepcopy(self.pull)
-        if path == "git/ref/pull/7/merge":
-            return {"object": {"sha": self.tested}}
         if path == "git/commits/" + self.tested:
             return {"parents": [{"sha": self.base}, {"sha": self.head}]}
         if path == "branches/main":
@@ -140,6 +139,20 @@ class GatewayBehaviorTests(unittest.TestCase):
         task_file.write_bytes(g.canonical(changed))
         with self.assertRaises(ValueError):
             g.load_task(task_file, g.digest(self.task))
+
+    def test_prepare_uses_documented_pr_merge_result_and_checks_its_identity(self):
+        self.assertEqual(self.task["tested_sha"], self.gh.pull["merge_commit_sha"])
+        self.gh.pull["mergeable"] = False
+        with self.assertRaisesRegex(ValueError, "cannot be merged cleanly"):
+            g.prepare_task(self.gh, self.base, 7)
+        self.gh.pull["mergeable"] = True
+        self.gh.pull["merge_commit_sha"] = None
+        with self.assertRaisesRegex(ValueError, "merge result is not ready"):
+            g.prepare_task(self.gh, self.base, 7)
+        self.gh.pull["merge_commit_sha"] = self.tested
+        self.gh.pull["base"]["sha"] = "f" * 40
+        with self.assertRaisesRegex(ValueError, "Merge parents do not match"):
+            g.prepare_task(self.gh, self.base, 7)
 
     def test_three_required_pr_sections_without_type_specific_fields(self):
         self.assertEqual(g.validate_pr_info(self.task), [])

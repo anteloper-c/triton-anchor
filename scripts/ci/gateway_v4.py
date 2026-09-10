@@ -233,9 +233,14 @@ def prepare_task(gh: GitHub, worker_sha: str, pr_number: int = 0, branch: str = 
         head = pull["head"]["sha"]
         if requested_sha and head != requested_sha:
             raise ValueError("PR changed after the routing event")
-        merge = gh.request(f"git/ref/pull/{pr_number}/merge")["object"]["sha"]
+        if pull.get("mergeable") is False:
+            raise ValueError("PR cannot be merged cleanly")
+        merge = pull.get("merge_commit_sha") or ""
+        if not isinstance(merge, str) or not SHA.fullmatch(merge):
+            raise ValueError("PR merge result is not ready; retry after GitHub finishes computing it")
         parents = gh.request(f"git/commits/{merge}")["parents"]
-        if len(parents) != 2 or parents[1]["sha"] != head:
+        if (len(parents) != 2 or parents[0]["sha"] != pull["base"]["sha"]
+                or parents[1]["sha"] != head):
             raise ValueError("Merge parents do not match the PR")
         base = parents[0]["sha"]
         branch = pull["base"]["ref"]
@@ -278,8 +283,9 @@ def is_current(gh: GitHub, task: dict) -> bool:
         if (pull["head"]["sha"] != task["head_sha"] or pull["base"]["ref"] != task["target_branch"]
                 or live["state"] != "open" or live["draft"] or metadata_digest(live) != task["metadata_digest"]):
             return False
-        merge = gh.optional(f"git/ref/pull/{task['pr_number']}/merge")
-        return bool(merge and merge["object"]["sha"] == task["tested_sha"])
+        merge = pull.get("merge_commit_sha") or ""
+        return bool(pull.get("mergeable") is not False and SHA.fullmatch(merge)
+                    and pull["base"].get("sha") == task["base_sha"] and merge == task["tested_sha"])
     return gh.request(f"branches/{quote(task['target_branch'], safe='')}")["commit"]["sha"] == task["head_sha"]
 
 
@@ -781,7 +787,9 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
-        print(f"CI v4 control failed: {type(error).__name__}: {error if isinstance(error, ValueError) else 'inspect the stage logs and transport configuration'}", file=sys.stderr)
+        safe_error = (str(error) if isinstance(error, (ValueError, GitHubAPIError))
+                      else "inspect the stage logs and transport configuration")
+        print(f"CI v4 control failed: {type(error).__name__}: {safe_error}", file=sys.stderr)
         # Errors before task.json exists still need a visible PR response.
         if len(sys.argv) > 1 and sys.argv[1] in {"prepare", "approval", "enqueue"} and os.getenv("GH_TOKEN"):
             try:
@@ -795,7 +803,7 @@ if __name__ == "__main__":
                         client.status(context, "error", "CI preparation/publication failed; see PR comment")
                         run_id = os.getenv("GITHUB_RUN_ID", "")
                         link = f"https://github.com/{client.repository}/actions/runs/{run_id}" if run_id.isdigit() else ""
-                        reason = str(error) if isinstance(error, ValueError) else type(error).__name__
+                        reason = str(error) if isinstance(error, (ValueError, GitHubAPIError)) else type(error).__name__
                         client.comment(context, f"## CI 准备或投递未完成\n\n{html.escape(reason)}\n\n请查看本次工作流证据并修复对应检查或中转配置，然后重试：{link}")
             except (ValueError, OSError, RuntimeError):
                 print("PR failure notification could not be delivered; the workflow remains failed.", file=sys.stderr)
