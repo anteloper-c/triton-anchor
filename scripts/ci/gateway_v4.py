@@ -139,8 +139,6 @@ def validate_task(task: dict) -> dict:
             raise ValueError(f"Invalid task {key}")
     if task["event_kind"] not in {"pull_request", "push", "manual"}:
         raise ValueError("Invalid event kind")
-    if task["target_branch"] == "CI_dev_forPR":
-        raise ValueError("CI_dev_forPR is excluded from this deployment")
     if type(task.get("pr_number")) is not int or task["pr_number"] < 0:
         raise ValueError("Invalid PR number")
     if (task["event_kind"] == "pull_request") != bool(task["pr_number"]):
@@ -485,8 +483,6 @@ def prepare_task(
         ref = f"ci/{'full' if full else 'push'}/{branch}"
         base_ref, head_ref = f"ci/base/push/{branch}", f"ci/head/push/{branch}"
         external = False
-    if branch not in json.loads(os.getenv("LOCAL_CI_TARGET_BRANCHES", '["main"]')):
-        raise ValueError("Unsupported target branch")
     task = dict(
         schema=TASK_SCHEMA,
         repository=gh.repository,

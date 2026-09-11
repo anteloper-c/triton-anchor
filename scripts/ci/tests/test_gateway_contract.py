@@ -288,6 +288,12 @@ class GatewayBehaviorTests(unittest.TestCase):
 
     def test_prepare_uses_documented_pr_merge_result_and_checks_its_identity(self):
         self.assertEqual(self.task["tested_sha"], self.gh.pull["merge_commit_sha"])
+        for branch in ("main", "CI_dev_forPR", "release/next"):
+            with self.subTest(branch=branch):
+                self.gh.pull["base"]["ref"] = branch
+                task = g.prepare_task(self.gh, self.base, 7)
+                self.assertEqual(task["target_branch"], branch)
+        self.gh.pull["base"]["ref"] = "main"
         self.gh.pull["mergeable"] = False
         with self.assertRaisesRegex(ValueError, "cannot be merged cleanly"):
             g.prepare_task(self.gh, self.base, 7)
@@ -822,8 +828,7 @@ class WorkflowStructureTests(unittest.TestCase):
         self.assertEqual(jobs["review-card"]["permissions"]["pull-requests"], "write")
         self.assertEqual(jobs["review-card"]["permissions"]["statuses"], "write")
         self.assertNotIn("schedule", data["on"])
-        self.assertIn("LOCAL_CI_CONTROL_REF", worker_text)
-        self.assertIn("LOCAL_CI_CONTROL_SHA", worker_text)
+        self.assertIn("worker_revision_sha", data["on"]["workflow_dispatch"]["inputs"])
         receiver = yaml.load(
             (ROOT / ".github/workflows/ci-receiver.yml").read_text(),
             Loader=yaml.BaseLoader,

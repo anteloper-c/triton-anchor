@@ -39,7 +39,7 @@ python3 -m pytest scripts/ci/tests scripts/local_ci/agent_ci/tests \
 
 运行测试需 Python 3.10+、pytest、PyYAML、Git；编译测试还需要相应 LLVM、Python 构建依赖、后端及设备/仿真环境。控制程序测试不代替真实工具链验收。
 
-部署先填写 [配置模板](ops_maint/config.example.json)，完成 Gitee 源/子模块镜像、模型凭据、精确镜像与 profile 实测，再按 [部署说明](ops_maint/README.md) 安装。Gateway 的固定控制 ref/SHA、接收工作流和 required checks 配置见 [GitHub 侧配置](../ci/README.md)。实际切换前暂停旧版接单并排空在途任务。
+部署先填写 [配置模板](ops_maint/config.example.json)，完成 Gitee 源/子模块镜像、模型凭据、精确镜像与 profile 实测，再按 [部署说明](ops_maint/README.md) 安装。Gateway 自动解析 local-ci-unified 的控制 SHA，所有 PR 目标分支均可派发；接收工作流和 required checks 配置见 [GitHub 侧配置](../ci/README.md)。实际切换前暂停旧版接单并排空在途任务。
 
 开发时以 `runner.py` 作为工具、参数和依赖的唯一入口，`state.py` 作为文件进度的唯一写入入口；CLI 与 MCP 共用工具计划，正式结论共用 `evidence.py` 的报告判据。修改选测、取消、重启、发布或证据行为时验证相应边界，避免只断言实现细节。
 

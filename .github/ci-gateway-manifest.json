@@ -17,7 +17,7 @@
     "cross-branch-push",
     "merge-result"
   ],
-  "control_version": "pinned-release-ref-and-sha",
+  "control_version": "branch-resolved-sha",
   "required_contexts": [
     "local-ci/basic",
     "local-ci/api",

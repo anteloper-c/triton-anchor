@@ -120,8 +120,6 @@ def validate_task(
             or "\x00" in task[key]
         ):
             raise ContractError(f"Invalid {key}")
-    if task["target_branch"] == "CI_dev_forPR":
-        raise ContractError("CI_dev_forPR is excluded from this deployment")
     for key in ("task_ref", "base_task_ref", "head_task_ref"):
         ref = task[key]
         if (

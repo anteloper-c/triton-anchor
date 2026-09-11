@@ -8,7 +8,7 @@ ops_maint 是环境、部署、健康采集和保留清理的唯一入口。Work
 
 配置参考 config.example.json 与 profiles/config.template.json。保留 B 的镜像 digest、依赖 tree/hash、控制快照、实际工具验证与 cgroup probe。rotate.py 仅在依赖/配方改变时构建和验证候选环境；复用已验证配方，不安排每日强制重建。失败不切换活动镜像。镜像验证阶段分别执行 build/install/smoke，所需 profile 必须在真实工具链上验收。
 
-`branch_profiles` 将实际任务目标分支映射到 `profiles` 的键。模板中的 `CI_dev → triton_v3.0` 是显式示例；`triton_v3.0/3.3/3.6` 同名目标直接选择对应 profile。当前 Gateway 还监听 `main` 的 push，因此启用前必须根据 main 的实际 Triton/LLVM 版本补上其映射；每个允许的 PR 目标分支也须有对应 profile 或显式映射。映射只选择环境，不改变任务 SHA、目标分支或完整 LLVM revision，不能映射被排除的 `CI_dev_forPR`。
+`branch_profiles` 将实际任务目标分支映射到 `profiles` 的键。模板中的 `CI_dev → triton_v3.0` 是显式示例；`triton_v3.0/3.3/3.6` 同名目标直接选择对应 profile。当前 Gateway 还监听 `main` 的 push，因此启用前必须根据 main 的实际 Triton/LLVM 版本补上其映射；所有 PR 目标分支均可使用，包括 `CI_dev_forPR`；执行时仍须有对应 profile 或显式映射。映射只选择环境，不改变任务 SHA、目标分支或完整 LLVM revision，不自动推断环境。
 
 后端测试路径默认是 `tests`。示例环境明确写出 `BACKEND_TEST_PATHS: "tests"`，多个路径按 shell 参数拆分；这是后端测试路径，与 `BACKEND_TEST_COMMAND` 的 smoke 命令分别配置。需要 JSON 数组时可在对应 profile 下设置 `"tools": {"backend_test_paths": ["tests"]}`，Worker 优先使用该数组。
 

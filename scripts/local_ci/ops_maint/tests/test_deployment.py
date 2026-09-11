@@ -243,12 +243,16 @@ class DeploymentTests(unittest.TestCase):
         config = json.loads((DEPLOY / "config.example.json").read_text())
         self.assertEqual(config["branch_profiles"], {"CI_dev": "triton_v3.0"})
         self.assertEqual("pass", self.configured_checks(config)["branch_profiles"])
+        config["branch_profiles"] = {
+            "CI_dev_forPR": "triton_v3.0",
+            "feature/arbitrary": "triton_v3.3",
+        }
+        self.assertEqual("pass", self.configured_checks(config)["branch_profiles"])
         for value in (
             None,
             [],
             {"CI_dev": "missing"},
             {"CI_dev": []},
-            {"CI_dev_forPR": "triton_v3.0"},
             {"CI_dev": "alias", "alias": "triton_v3.0"},
             {"triton_v3.0": "triton_v3.3"},
         ):

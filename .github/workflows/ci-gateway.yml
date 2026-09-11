@@ -29,12 +29,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions: {contents: read, pull-requests: read, actions: write}
     steps:
-      - name: Route to the pinned control release
+      - name: Route to local-ci-unified
         uses: actions/github-script@v7
         env:
-          CONTROL_REF: ${{ vars.LOCAL_CI_CONTROL_REF }}
-          CONTROL_SHA: ${{ vars.LOCAL_CI_CONTROL_SHA }}
-          TARGET_BRANCHES: ${{ vars.LOCAL_CI_TARGET_BRANCHES || '["main"]' }}
           INPUT_PR: ${{ inputs.pr_number }}
           INPUT_BRANCH: ${{ inputs.source_branch }}
           INPUT_SHA: ${{ inputs.requested_sha }}
@@ -46,24 +43,20 @@ jobs:
             if (!pull && Number(process.env.INPUT_PR) > 0) {
               ({data: pull} = await github.rest.pulls.get({owner, repo, pull_number: Number(process.env.INPUT_PR)}));
             }
-            if (pull?.base.ref === 'CI_dev_forPR') return;
             const branch = process.env.INPUT_BRANCH || (pull?.base.ref || context.ref.replace('refs/heads/', ''));
-            if (!JSON.parse(process.env.TARGET_BRANCHES).includes(branch)) throw new Error('Unsupported target branch');
             if (context.eventName === 'push') {
               const {data: pulls} = await github.rest.pulls.list({owner, repo, state:'open', head:owner+':'+branch, per_page:100});
-              if (pulls.some(pr => !pr.draft && pr.head.sha === context.sha && pr.base.ref !== 'CI_dev_forPR')) {
+              if (pulls.some(pr => !pr.draft && pr.head.sha === context.sha)) {
                 core.info('The ready PR event owns this revision; avoid a duplicate branch task.');
                 return;
               }
             }
-            const controlRef = process.env.CONTROL_REF;
-            const revision = process.env.CONTROL_SHA;
-            if (!controlRef || !/^[0-9a-f]{40}$/.test(revision)) throw new Error('Configure LOCAL_CI_CONTROL_REF and LOCAL_CI_CONTROL_SHA');
-            const {data: release} = await github.rest.repos.getCommit({owner, repo, ref: controlRef});
-            if (release.sha !== revision) throw new Error('Control release ref moved; pause dispatch and complete coordinated upgrade');
+            const controlRef = 'local-ci-unified';
+            const {data: release} = await github.rest.repos.getBranch({owner, repo, branch: controlRef});
+            const revision = release.commit.sha;
             const {data: file} = await github.rest.repos.getContent({owner, repo, path: '.github/ci-gateway-manifest.json', ref: revision});
             const manifest = JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'));
-            if (manifest.gateway_contract_version !== '4') throw new Error('Deploy the pinned v4 control release before the router');
+            if (manifest.gateway_contract_version !== '4') throw new Error('Deploy local-ci-unified v4 before the router');
             await github.rest.actions.createWorkflowDispatch({
               owner, repo, workflow_id: 'ci-gateway.yml', ref: controlRef,
               inputs: {
@@ -80,7 +73,7 @@ jobs:
     if: >-
       (github.repository == 'likehupochuan/triton-anchor' || github.repository == 'anteloper-c/triton-anchor') &&
       github.event_name == 'workflow_dispatch' && inputs.mode == 'run' &&
-      github.ref_name == vars.LOCAL_CI_CONTROL_REF
+      github.ref_name == 'local-ci-unified'
     runs-on: ubuntu-latest
     permissions: {contents: read, pull-requests: write, statuses: write, checks: write}
     steps:
@@ -123,7 +116,6 @@ jobs:
           SOURCE_BRANCH: ${{ inputs.source_branch }}
           REQUESTED_SHA: ${{ inputs.requested_sha }}
           FULL: ${{ inputs.full }}
-          LOCAL_CI_TARGET_BRANCHES: ${{ vars.LOCAL_CI_TARGET_BRANCHES || '["main"]' }}
           GITEE_SUBMODULE_MIRRORS: ${{ vars.GITEE_SUBMODULE_MIRRORS || '{}' }}
           EVENT_KIND: ${{ inputs.action == 'manual' && 'manual' || 'push' }}
         run: python3 scripts/ci/gateway_v4.py prepare
@@ -241,11 +233,6 @@ jobs:
       - name: Require the routed trusted worker revision
         env:
           WORKER_SHA: ${{ inputs.worker_revision_sha }}
-          CONTROL_REF: ${{ vars.LOCAL_CI_CONTROL_REF }}
-          CONTROL_SHA: ${{ vars.LOCAL_CI_CONTROL_SHA }}
         run: |
-          test -n "$CONTROL_REF"
-          test "$GITHUB_REF_NAME" = "$CONTROL_REF"
+          test "$GITHUB_REF_NAME" = local-ci-unified
           test "$GITHUB_SHA" = "$WORKER_SHA"
-          test "$WORKER_SHA" = "$CONTROL_SHA"
-          [[ "$CONTROL_SHA" =~ ^[0-9a-f]{40}$ ]]

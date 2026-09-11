@@ -88,15 +88,13 @@ def validate_branch_profiles(config):
         if (
             not isinstance(branch, str)
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,254}", branch)
-            or branch == "CI_dev_forPR"
             or branch in profiles
             or not isinstance(profile, str)
             or profile not in profiles
-            or profile == "CI_dev_forPR"
             or not isinstance(profiles[profile], dict)
         ):
             raise EnvironmentError(
-                "branch_profiles needs explicit non-excluded aliases to existing profiles; "
+                "branch_profiles needs explicit aliases to existing profiles; "
                 "chains and profile overrides are forbidden"
             )
     return dict(mappings)

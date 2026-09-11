@@ -80,10 +80,7 @@
     },
     "target_branch": {
       "type": "string",
-      "minLength": 1,
-      "not": {
-        "const": "CI_dev_forPR"
-      }
+      "minLength": 1
     },
     "title": {
       "type": "string"
