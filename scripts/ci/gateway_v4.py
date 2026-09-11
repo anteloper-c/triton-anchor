@@ -4,6 +4,7 @@
 The pure contract functions and file/Git transports are also used by the offline
 integration suite. Production network operations are restricted to our fork.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -15,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -22,26 +24,51 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "local_ci"))
+from agent_ci.protocol import (
+    scope_covers,
+    validate_artifacts,
+    validate_delivery,
+    validate_execution_summary,
+)
+
 TASK_SCHEMA = "triton-anchor-local-ci-task/v4"
 RESULT_SCHEMA = "triton-anchor-local-ci/v4"
 CONTROL_BRANCH = "local-ci-control"
 RESULTS_BRANCH = "local-ci-results"
-REPOSITORY = "likehupochuan/triton-anchor"
-IDENTITY_FIELDS = ("repository", "event_kind", "pr_number", "target_branch", "tested_sha",
-                   "base_sha", "head_sha", "worker_revision_sha", "metadata_digest", "full")
+REPOSITORY = os.getenv("GITHUB_REPOSITORY", "likehupochuan/triton-anchor")
+REPOSITORIES = {"likehupochuan/triton-anchor", "anteloper-c/triton-anchor"}
+IDENTITY_FIELDS = (
+    "repository",
+    "event_kind",
+    "pr_number",
+    "target_branch",
+    "tested_sha",
+    "base_sha",
+    "head_sha",
+    "worker_revision_sha",
+    "metadata_digest",
+    "full",
+)
 MARKER = "<!-- triton-anchor-ci-v4 -->"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,159}\Z")
 CHECK_NAMES = {
-    "prepare": "CI v4 / Prepare",
-    "basic": "CI v4 / Basic CI",
-    "api": "CI v4 / API compatibility",
-    "security": "CI v4 / Security gate",
-    "local": "CI v4 / Local CI",
-    "codex": "CI v4 / Codex review",
+    "basic": "local-ci/basic",
+    "api": "local-ci/api",
+    "security": "local-ci/security",
 }
-CHECK_CONCLUSIONS = {"success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required"}
+REQUIRED_CONTEXTS = (*CHECK_NAMES.values(), "local-ci/summary")
+CHECK_CONCLUSIONS = {
+    "success",
+    "failure",
+    "neutral",
+    "cancelled",
+    "skipped",
+    "timed_out",
+    "action_required",
+}
 
 
 class GitHubAPIError(RuntimeError):
@@ -51,7 +78,9 @@ class GitHubAPIError(RuntimeError):
         self.code = code
         endpoint = path.split("?", 1)[0].lstrip("/")
         detail = f": {reason}" if reason else ""
-        super().__init__(f"GitHub API {method} {endpoint} failed with HTTP {code}{detail}")
+        super().__init__(
+            f"GitHub API {method} {endpoint} failed with HTTP {code}{detail}"
+        )
 
 
 def now() -> str:
@@ -59,7 +88,9 @@ def now() -> str:
 
 
 def canonical(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
 
 
 def digest(value: object) -> str:
@@ -67,22 +98,43 @@ def digest(value: object) -> str:
 
 
 def metadata_digest(task: dict) -> str:
-    return digest({key: sorted(task[key]) if key == "labels" else task[key]
-                   for key in ("title", "description", "labels", "state", "draft")})
+    return digest(
+        {
+            key: sorted(task[key]) if key == "labels" else task[key]
+            for key in ("title", "description", "labels", "state", "draft")
+        }
+    )
 
 
 def current_key(task: dict) -> str:
-    subject = f"pr:{task['pr_number']}" if task["pr_number"] else f"branch:{task['target_branch']}"
+    subject = (
+        f"pr:{task['pr_number']}"
+        if task["pr_number"]
+        else f"branch:{task['target_branch']}"
+    )
     return hashlib.sha256(f"{task['repository']}:{subject}".encode()).hexdigest()
 
 
 def validate_task(task: dict) -> dict:
     if not isinstance(task, dict) or task.get("schema") != TASK_SCHEMA:
         raise ValueError("Unsupported task schema")
-    for key in ("tested_sha", "base_sha", "head_sha", "worker_revision_sha", "llvm_hash"):
+    for key in (
+        "tested_sha",
+        "base_sha",
+        "head_sha",
+        "worker_revision_sha",
+        "llvm_hash",
+    ):
         if not isinstance(task.get(key), str) or not SHA.fullmatch(task[key]):
             raise ValueError(f"Invalid task {key}")
-    for key in ("repository", "target_branch", "title", "description", "state", "captured_at"):
+    for key in (
+        "repository",
+        "target_branch",
+        "title",
+        "description",
+        "state",
+        "captured_at",
+    ):
         if not isinstance(task.get(key), str):
             raise ValueError(f"Invalid task {key}")
     if task["event_kind"] not in {"pull_request", "push", "manual"}:
@@ -95,18 +147,38 @@ def validate_task(task: dict) -> dict:
         raise ValueError("Event kind and PR number disagree")
     if type(task.get("draft")) is not bool or type(task.get("full")) is not bool:
         raise ValueError("Invalid boolean task field")
-    if not isinstance(task.get("labels"), list) or not all(isinstance(x, str) for x in task["labels"]):
+    if not isinstance(task.get("labels"), list) or not all(
+        isinstance(x, str) for x in task["labels"]
+    ):
         raise ValueError("Invalid labels")
     for key in ("task_ref", "base_task_ref", "head_task_ref"):
         value = task.get(key, "")
-        if not isinstance(value, str) or not value.startswith("ci/") or any(c in value for c in "\n\r\x00"):
+        if (
+            not isinstance(value, str)
+            or not value.startswith("ci/")
+            or any(c in value for c in "\n\r\x00")
+        ):
             raise ValueError(f"Invalid {key}")
-        if subprocess.run(["git", "check-ref-format", f"refs/heads/{value}"], capture_output=True).returncode:
+        if subprocess.run(
+            ["git", "check-ref-format", f"refs/heads/{value}"], capture_output=True
+        ).returncode:
             raise ValueError(f"Invalid {key}")
     if task.get("metadata_digest") != metadata_digest(task):
         raise ValueError("Task metadata digest mismatch")
     if task.get("task_id") != digest({key: task[key] for key in IDENTITY_FIELDS}):
         raise ValueError("Task identity mismatch")
+    prefix = (
+        f"ci/pr-{task['pr_number']}/{task['task_id']}"
+        if task["pr_number"]
+        else f"ci/branch/{task['task_id']}"
+    )
+    for key, suffix in (
+        ("task_ref", "tested"),
+        ("base_task_ref", "base"),
+        ("head_task_ref", "head"),
+    ):
+        if task[key] != f"{prefix}/{suffix}":
+            raise ValueError("Source refs must be immutable and specific to this task")
     return task
 
 
@@ -131,8 +203,10 @@ def pr_fields(description: str) -> dict[str, str]:
             current = next((aliases[p] for p in pieces if p in aliases), "")
         elif current:
             fields.setdefault(current, []).append(line)
-    return {key: re.sub(r"<!--.*?-->", "", "\n".join(lines), flags=re.S).strip()
-            for key, lines in fields.items()}
+    return {
+        key: re.sub(r"<!--.*?-->", "", "\n".join(lines), flags=re.S).strip()
+        for key, lines in fields.items()
+    }
 
 
 def validate_pr_info(task: dict) -> list[str]:
@@ -140,9 +214,15 @@ def validate_pr_info(task: dict) -> list[str]:
         return []
     fields = pr_fields(task["description"])
     errors = []
-    if not task["title"].strip() or task["title"].strip().lower() in {"wip", "todo", "tbd"}:
+    if not task["title"].strip() or task["title"].strip().lower() in {
+        "wip",
+        "todo",
+        "tbd",
+    }:
         errors.append("请填写能描述改动目的的 PR 标题。")
-    placeholders = re.compile(r"^(?:todo|tbd|wip|待填写|待补充|请填写.*|\.\.\.|<.*>)$", re.I | re.S)
+    placeholders = re.compile(
+        r"^(?:todo|tbd|wip|待填写|待补充|请填写.*|\.\.\.|<.*>)$", re.I | re.S
+    )
     for key in ("summary", "scope", "validation"):
         value = fields.get(key, "").strip()
         if not value or placeholders.fullmatch(value):
@@ -151,20 +231,36 @@ def validate_pr_info(task: dict) -> list[str]:
 
 
 class GitHub:
-    def __init__(self, repository: str, api_url: str | None = None, token: str | None = None):
+    def __init__(
+        self, repository: str, api_url: str | None = None, token: str | None = None
+    ):
         self.repository = repository
-        self.api_url = (api_url or os.getenv("GITHUB_API_URL", "https://api.github.com")).rstrip("/")
+        self.api_url = (
+            api_url or os.getenv("GITHUB_API_URL", "https://api.github.com")
+        ).rstrip("/")
         parsed = urlparse(self.api_url)
         if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-            if self.api_url != "https://api.github.com" or repository != REPOSITORY:
-                raise ValueError("Production GitHub repository/API is outside the allowlist")
+            if (
+                self.api_url != "https://api.github.com"
+                or repository not in REPOSITORIES
+            ):
+                raise ValueError(
+                    "Production GitHub repository/API is outside the allowlist"
+                )
         self.token = token if token is not None else os.getenv("GH_TOKEN", "")
 
     def request(self, path: str, method: str = "GET", data: dict | None = None):
-        req = Request(f"{self.api_url}/repos/{self.repository}/{path.lstrip('/')}",
-                      data=canonical(data) if data is not None else None, method=method,
-                      headers={"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json",
-                               "Content-Type": "application/json", "User-Agent": "triton-anchor-ci-v4"})
+        req = Request(
+            f"{self.api_url}/repos/{self.repository}/{path.lstrip('/')}",
+            data=canonical(data) if data is not None else None,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Accept": "application/vnd.github+json",
+                "Content-Type": "application/json",
+                "User-Agent": "triton-anchor-ci-v4",
+            },
+        )
         try:
             with urlopen(req, timeout=30) as response:
                 body = response.read()
@@ -182,60 +278,117 @@ class GitHub:
             raise
 
     def content(self, path: str, ref: str) -> bytes:
-        data = self.request(f"contents/{quote(path, safe='/')}?ref={quote(ref, safe='')}")
-        if not isinstance(data, dict) or data.get("type") != "file" or data.get("encoding") != "base64":
-            raise ValueError(f"Expected a vendored file at {path}; configure its trusted mirror before dispatch")
+        data = self.request(
+            f"contents/{quote(path, safe='/')}?ref={quote(ref, safe='')}"
+        )
+        if (
+            not isinstance(data, dict)
+            or data.get("type") != "file"
+            or data.get("encoding") != "base64"
+        ):
+            raise ValueError(
+                f"Expected a vendored file at {path}; configure its trusted mirror before dispatch"
+            )
         return base64.b64decode(data["content"], validate=False)
+
+    def gitlinks(self, ref: str) -> list[dict]:
+        tree = self.request(f"git/trees/{ref}?recursive=1")
+        if tree.get("truncated"):
+            raise ValueError("Cannot freeze submodules from an incomplete GitHub tree")
+        return [row for row in tree["tree"] if row.get("mode") == "160000"]
 
     def status(self, task: dict, state: str, description: str, url: str = "") -> None:
         # The PR-head summary is the last write, after the tested-merge status.
-        for sha, context in ((task["tested_sha"], "local-ci/sophgo-cmodel"),
-                             (task["head_sha"], "local-ci/summary")):
-            self.request(f"statuses/{sha}", "POST", {"state": state, "context": context,
-                         "description": description[:140], "target_url": url})
+        for sha in dict.fromkeys((task["tested_sha"], task["head_sha"])):
+            self.request(
+                f"statuses/{sha}",
+                "POST",
+                {
+                    "state": state,
+                    "context": "local-ci/summary",
+                    "description": description[:140],
+                    "target_url": url,
+                },
+            )
 
     def status_matches(self, task: dict, state: str, description: str) -> bool:
         """Read the latest status for both contexts; no relay delivery records."""
-        for sha, context in ((task["tested_sha"], "local-ci/sophgo-cmodel"),
-                             (task["head_sha"], "local-ci/summary")):
+        for sha in dict.fromkeys((task["tested_sha"], task["head_sha"])):
             latest = None
             for page in range(1, 21):
                 rows = self.request(f"commits/{sha}/statuses?per_page=100&page={page}")
-                latest = next((row for row in rows if row.get("context") == context), None)
+                latest = next(
+                    (row for row in rows if row.get("context") == "local-ci/summary"),
+                    None,
+                )
                 if latest or len(rows) < 100:
                     break
-            if not latest or latest.get("state") != state or latest.get("description") != description[:140]:
+            if (
+                not latest
+                or latest.get("state") != state
+                or latest.get("description") != description[:140]
+            ):
                 return False
         return True
 
-    def check(self, task: dict, key: str, status: str, conclusion: str | None,
-              title: str, summary: str, url: str = "") -> bool:
+    def check(
+        self,
+        task: dict,
+        key: str,
+        status: str,
+        conclusion: str | None,
+        title: str,
+        summary: str,
+        url: str = "",
+    ) -> bool:
         """Upsert one readable merge-result Check Run owned by CI v4."""
         if not task["pr_number"]:
             return False
-        if key not in CHECK_NAMES or status not in {"queued", "in_progress", "completed"}:
+        if key not in CHECK_NAMES or status not in {
+            "queued",
+            "in_progress",
+            "completed",
+        }:
             raise ValueError("Invalid CI Check Run identity or status")
-        if (status == "completed") != (conclusion is not None) or (conclusion and conclusion not in CHECK_CONCLUSIONS):
+        if (status == "completed") != (conclusion is not None) or (
+            conclusion and conclusion not in CHECK_CONCLUSIONS
+        ):
             raise ValueError("Invalid CI Check Run conclusion")
         name = CHECK_NAMES[key]
         external_id = f"triton-anchor-ci-v4:{key}:{task['task_id']}"
         response = self.request(
-            f"commits/{task['tested_sha']}/check-runs?check_name={quote(name, safe='')}&filter=latest&per_page=100")
+            f"commits/{task['head_sha']}/check-runs?check_name={quote(name, safe='')}&filter=latest&per_page=100"
+        )
         runs = response.get("check_runs", []) if isinstance(response, dict) else []
-        owned = [run for run in runs if run.get("name") == name
-                 and str(run.get("external_id", "")).startswith(f"triton-anchor-ci-v4:{key}:")
-                 and (run.get("app") or {}).get("slug") == "github-actions"]
+        owned = [
+            run
+            for run in runs
+            if run.get("name") == name
+            and str(run.get("external_id", "")).startswith(
+                f"triton-anchor-ci-v4:{key}:"
+            )
+            and (run.get("app") or {}).get("slug") == "github-actions"
+        ]
         existing = max(owned, key=lambda run: int(run.get("id", 0)), default=None)
         output_data = {"title": str(title)[:255], "summary": str(summary)[:65535]}
         desired_url = url or ""
-        if existing and all((existing.get("status") == status,
-                             existing.get("conclusion") == conclusion,
-                             (existing.get("details_url") or "") == desired_url,
-                             existing.get("external_id") == external_id,
-                             (existing.get("output") or {}).get("title") == output_data["title"],
-                             (existing.get("output") or {}).get("summary") == output_data["summary"])):
+        if existing and all(
+            (
+                existing.get("status") == status,
+                existing.get("conclusion") == conclusion,
+                (existing.get("details_url") or "") == desired_url,
+                existing.get("external_id") == external_id,
+                (existing.get("output") or {}).get("title") == output_data["title"],
+                (existing.get("output") or {}).get("summary") == output_data["summary"],
+            )
+        ):
             return False
-        payload = {"name": name, "status": status, "external_id": external_id, "output": output_data}
+        payload = {
+            "name": name,
+            "status": status,
+            "external_id": external_id,
+            "output": output_data,
+        }
         if desired_url:
             payload["details_url"] = desired_url
         if conclusion:
@@ -243,7 +396,9 @@ class GitHub:
         if existing:
             self.request(f"check-runs/{existing['id']}", "PATCH", payload)
         else:
-            self.request("check-runs", "POST", {**payload, "head_sha": task["tested_sha"]})
+            self.request(
+                "check-runs", "POST", {**payload, "head_sha": task["head_sha"]}
+            )
         return True
 
     def comment(self, task: dict, body: str) -> bool:
@@ -256,8 +411,15 @@ class GitHub:
             comments.extend(rows)
             if len(rows) < 100:
                 break
-        existing = next((row for row in comments if row.get("user", {}).get("type") == "Bot"
-                         and str(row.get("body", "")).startswith(MARKER)), None)
+        existing = next(
+            (
+                row
+                for row in comments
+                if row.get("user", {}).get("type") == "Bot"
+                and str(row.get("body", "")).startswith(MARKER)
+            ),
+            None,
+        )
         content = {"body": f"{MARKER}\n{body}"[:60000]}
         if existing:
             if existing.get("body") != content["body"]:
@@ -269,8 +431,15 @@ class GitHub:
         return False
 
 
-def prepare_task(gh: GitHub, worker_sha: str, pr_number: int = 0, branch: str = "",
-                 requested_sha: str = "", full: bool = False, event_kind: str = "push") -> dict:
+def prepare_task(
+    gh: GitHub,
+    worker_sha: str,
+    pr_number: int = 0,
+    branch: str = "",
+    requested_sha: str = "",
+    full: bool = False,
+    event_kind: str = "push",
+) -> dict:
     if not SHA.fullmatch(worker_sha):
         raise ValueError("Invalid trusted worker revision")
     if pr_number:
@@ -284,10 +453,15 @@ def prepare_task(gh: GitHub, worker_sha: str, pr_number: int = 0, branch: str = 
             raise ValueError("PR cannot be merged cleanly")
         merge = pull.get("merge_commit_sha") or ""
         if not isinstance(merge, str) or not SHA.fullmatch(merge):
-            raise ValueError("PR merge result is not ready; retry after GitHub finishes computing it")
+            raise ValueError(
+                "PR merge result is not ready; retry after GitHub finishes computing it"
+            )
         parents = gh.request(f"git/commits/{merge}")["parents"]
-        if (len(parents) != 2 or parents[0]["sha"] != pull["base"]["sha"]
-                or parents[1]["sha"] != head):
+        if (
+            len(parents) != 2
+            or parents[0]["sha"] != pull["base"]["sha"]
+            or parents[1]["sha"] != head
+        ):
             raise ValueError("Merge parents do not match the PR")
         base = parents[0]["sha"]
         branch = pull["base"]["ref"]
@@ -295,7 +469,10 @@ def prepare_task(gh: GitHub, worker_sha: str, pr_number: int = 0, branch: str = 
         labels = sorted(row["name"] for row in pull.get("labels", []))
         event_kind = "pull_request"
         ref = f"ci/pr-{pr_number}/{pull['head']['ref']}"
-        base_ref, head_ref = f"ci/base/pr-{pr_number}/{pull['head']['ref']}", f"ci/head/pr-{pr_number}/{pull['head']['ref']}"
+        base_ref, head_ref = (
+            f"ci/base/pr-{pr_number}/{pull['head']['ref']}",
+            f"ci/head/pr-{pr_number}/{pull['head']['ref']}",
+        )
         external = pull["head"]["repo"]["full_name"] != gh.repository
     else:
         head = gh.request(f"branches/{quote(branch, safe='')}")["commit"]["sha"]
@@ -308,14 +485,70 @@ def prepare_task(gh: GitHub, worker_sha: str, pr_number: int = 0, branch: str = 
         ref = f"ci/{'full' if full else 'push'}/{branch}"
         base_ref, head_ref = f"ci/base/push/{branch}", f"ci/head/push/{branch}"
         external = False
-    task = dict(schema=TASK_SCHEMA, repository=gh.repository, event_kind=event_kind, pr_number=pr_number,
-                task_ref=ref, base_task_ref=base_ref, head_task_ref=head_ref, tested_sha=merge,
-                base_sha=base, head_sha=head, worker_revision_sha=worker_sha, target_branch=branch,
-                title=title, description=description, labels=labels, state="open", draft=False,
-                captured_at=now(), llvm_hash=gh.content("triton/cmake/llvm-hash.txt", merge).decode().strip(),
-                full=full, external_fork=external)
+    if branch not in json.loads(os.getenv("LOCAL_CI_TARGET_BRANCHES", '["main"]')):
+        raise ValueError("Unsupported target branch")
+    task = dict(
+        schema=TASK_SCHEMA,
+        repository=gh.repository,
+        event_kind=event_kind,
+        pr_number=pr_number,
+        task_ref=ref,
+        base_task_ref=base_ref,
+        head_task_ref=head_ref,
+        tested_sha=merge,
+        base_sha=base,
+        head_sha=head,
+        worker_revision_sha=worker_sha,
+        target_branch=branch,
+        title=title,
+        description=description,
+        labels=labels,
+        state="open",
+        draft=False,
+        captured_at=now(),
+        llvm_hash=gh.content("triton/cmake/llvm-hash.txt", merge).decode().strip(),
+        full=full,
+        external_fork=external,
+    )
     task["metadata_digest"] = metadata_digest(task)
     task["task_id"] = digest({key: task[key] for key in IDENTITY_FIELDS})
+    # Different tasks never move one another's source refs; the manifest is last.
+    prefix = (
+        f"ci/pr-{pr_number}/{task['task_id']}"
+        if pr_number
+        else f"ci/branch/{task['task_id']}"
+    )
+    for field, suffix in (
+        ("task_ref", "tested"),
+        ("base_task_ref", "base"),
+        ("head_task_ref", "head"),
+    ):
+        task[field] = f"{prefix}/{suffix}"
+    mirrors = json.loads(os.getenv("GITEE_SUBMODULE_MIRRORS", "{}"))
+    task["submodules"] = []
+    # Mirror both variants so an optional base comparison cannot escape to GitHub.
+    for variant, sha in (("candidate", merge), ("base", base)):
+        for link in gh.gitlinks(sha):
+            url = mirrors.get(link["path"], "")
+            parsed = urlparse(url)
+            if (
+                parsed.scheme != "https"
+                or parsed.hostname != "gitee.com"
+                or parsed.username
+                or parsed.password
+            ):
+                raise ValueError(
+                    f"Configure the Gitee submodule mirror for {link['path']}"
+                )
+            task["submodules"].append(
+                {
+                    "path": link["path"],
+                    "sha": link["sha"],
+                    "variant": variant,
+                    "repository_url": url,
+                    "task_ref": f"{prefix}/submodule/{variant}/{hashlib.sha256(link['path'].encode()).hexdigest()}",
+                }
+            )
     return validate_task(task)
 
 
@@ -324,42 +557,78 @@ def is_current(gh: GitHub, task: dict) -> bool:
         raise ValueError("Task repository differs from the receiver repository")
     if task["pr_number"]:
         pull = gh.request(f"pulls/{task['pr_number']}")
-        live = {"title": pull["title"], "description": pull.get("body") or "",
-                "labels": [row["name"] for row in pull.get("labels", [])],
-                "state": pull["state"], "draft": pull["draft"]}
-        if (pull["head"]["sha"] != task["head_sha"] or pull["base"]["ref"] != task["target_branch"]
-                or live["state"] != "open" or live["draft"] or metadata_digest(live) != task["metadata_digest"]):
+        live = {
+            "title": pull["title"],
+            "description": pull.get("body") or "",
+            "labels": [row["name"] for row in pull.get("labels", [])],
+            "state": pull["state"],
+            "draft": pull["draft"],
+        }
+        if (
+            pull["head"]["sha"] != task["head_sha"]
+            or pull["base"]["ref"] != task["target_branch"]
+            or live["state"] != "open"
+            or live["draft"]
+            or metadata_digest(live) != task["metadata_digest"]
+        ):
             return False
         merge = pull.get("merge_commit_sha") or ""
-        return bool(pull.get("mergeable") is not False and SHA.fullmatch(merge)
-                    and pull["base"].get("sha") == task["base_sha"] and merge == task["tested_sha"])
-    return gh.request(f"branches/{quote(task['target_branch'], safe='')}")["commit"]["sha"] == task["head_sha"]
+        return bool(
+            pull.get("mergeable") is not False
+            and SHA.fullmatch(merge)
+            and pull["base"].get("sha") == task["base_sha"]
+            and merge == task["tested_sha"]
+        )
+    return (
+        gh.request(f"branches/{quote(task['target_branch'], safe='')}")["commit"]["sha"]
+        == task["head_sha"]
+    )
 
 
 def validate_approval_environment(gh: GitHub) -> None:
     environment = gh.request("environments/local-ci-fork-approval")
     if not isinstance(environment, dict) or not any(
-        rule.get("type") == "required_reviewers" and isinstance(rule.get("reviewers"), list) and rule["reviewers"]
-        for rule in environment.get("protection_rules", []) if isinstance(rule, dict)
+        rule.get("type") == "required_reviewers"
+        and isinstance(rule.get("reviewers"), list)
+        and rule["reviewers"]
+        for rule in environment.get("protection_rules", [])
+        if isinstance(rule, dict)
     ):
-        raise ValueError("local-ci-fork-approval must have non-empty required reviewers; configure the existing environment before allowing external fork Local CI")
+        raise ValueError(
+            "local-ci-fork-approval must have non-empty required reviewers; configure the existing environment before allowing external fork Local CI"
+        )
 
 
 class GitStore:
     """A temporary clone with optimistic non-force commits, never a user checkout."""
+
     def __init__(self, url: str, branch: str):
         parsed = urlparse(url)
         if not parsed.scheme and not Path(url).exists():
-            raise ValueError("An unqualified transport must be an existing local test repository")
-        if parsed.scheme and parsed.scheme != "file" and (parsed.scheme != "https" or parsed.hostname != "gitee.com"
-                                                        or parsed.username or parsed.password):
-            raise ValueError("Gitee transport accepts HTTPS gitee.com or local test repositories")
+            raise ValueError(
+                "An unqualified transport must be an existing local test repository"
+            )
+        if (
+            parsed.scheme
+            and parsed.scheme != "file"
+            and (
+                parsed.scheme != "https"
+                or parsed.hostname != "gitee.com"
+                or parsed.username
+                or parsed.password
+            )
+        ):
+            raise ValueError(
+                "Gitee transport accepts HTTPS gitee.com or local test repositories"
+            )
         self.temporary = tempfile.TemporaryDirectory(prefix="ci-v4-transport-")
         self.root = Path(self.temporary.name) / "repo"
         self.branch = branch
         self.env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
         askpass = Path(self.temporary.name) / "askpass.sh"
-        askpass.write_text('#!/bin/sh\ncase "$1" in *Username*) printf "%s\\n" "$GITEE_USERNAME" ;; *) printf "%s\\n" "$GITEE_TOKEN" ;; esac\n')
+        askpass.write_text(
+            '#!/bin/sh\ncase "$1" in *Username*) printf "%s\\n" "$GITEE_USERNAME" ;; *) printf "%s\\n" "$GITEE_TOKEN" ;; esac\n'
+        )
         askpass.chmod(0o700)
         self.env["GIT_ASKPASS"] = str(askpass)
         self.root.mkdir()
@@ -370,16 +639,30 @@ class GitStore:
         self.refresh()
 
     def run(self, *args: str, cwd: Path | None = None, check: bool = True) -> str:
-        result = subprocess.run(["git", *args], cwd=cwd or self.root, env=self.env,
-                                text=True, capture_output=True)
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd or self.root,
+            env=self.env,
+            text=True,
+            capture_output=True,
+        )
         if check and result.returncode:
-            raise RuntimeError(f"Git {args[0]} failed (exit {result.returncode}); check transport/authentication")
+            raise RuntimeError(
+                f"Git {args[0]} failed (exit {result.returncode}); check transport/authentication"
+            )
         return result.stdout.strip()
 
     def refresh(self) -> None:
         if self.run("ls-remote", "--heads", "origin", f"refs/heads/{self.branch}"):
-            self.run("fetch", "--depth=1", "origin", f"+refs/heads/{self.branch}:refs/remotes/origin/{self.branch}")
-            self.run("checkout", "-B", self.branch, f"refs/remotes/origin/{self.branch}")
+            self.run(
+                "fetch",
+                "--depth=1",
+                "origin",
+                f"+refs/heads/{self.branch}:refs/remotes/origin/{self.branch}",
+            )
+            self.run(
+                "checkout", "-B", self.branch, f"refs/remotes/origin/{self.branch}"
+            )
         elif self.run("rev-parse", "--verify", "HEAD", check=False):
             self.run("checkout", "--orphan", f"init-{self.branch}-{time.time_ns()}")
             self.run("rm", "-rf", "--ignore-unmatch", ".")
@@ -407,8 +690,12 @@ class GitStore:
             if not self.run("diff", "--cached", "--name-only"):
                 return
             self.run("commit", "-m", "ci: update v4 control records")
-            push = subprocess.run(["git", "push", "origin", f"HEAD:refs/heads/{self.branch}"], cwd=self.root,
-                                  env=self.env, capture_output=True)
+            push = subprocess.run(
+                ["git", "push", "origin", f"HEAD:refs/heads/{self.branch}"],
+                cwd=self.root,
+                env=self.env,
+                capture_output=True,
+            )
             if push.returncode == 0:
                 return
         raise RuntimeError("Gitee control publication failed after three attempts")
@@ -421,25 +708,84 @@ def enqueue(task: dict, gh: GitHub, control: GitStore, source: Path) -> None:
     validate_task(task)
     if validate_pr_info(task) or not is_current(gh, task):
         raise ValueError("PR information or task freshness no longer permits dispatch")
-    checked_out = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source).decode().strip()
+    checked_out = (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source)
+        .decode()
+        .strip()
+    )
     if checked_out != task["tested_sha"]:
         raise ValueError("Dispatcher did not check out the frozen tested SHA")
     # All git operations are against the already fetched likehupochuan checkout.
-    refs = [("tested_sha", "task_ref"), ("base_sha", "base_task_ref"), ("head_sha", "head_task_ref")]
+    refs = [
+        ("tested_sha", "task_ref"),
+        ("base_sha", "base_task_ref"),
+        ("head_sha", "head_task_ref"),
+    ]
     remote = control.run("remote", "get-url", "origin")
     for sha_key, ref_key in refs:
-        subprocess.run(["git", "push", "--force", remote, f"{task[sha_key]}:refs/heads/{task[ref_key]}"],
-                       cwd=source, env=control.env, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "push", remote, f"{task[sha_key]}:refs/heads/{task[ref_key]}"],
+            cwd=source,
+            env=control.env,
+            check=True,
+            capture_output=True,
+        )
+    for module in task.get("submodules", []):
+        with tempfile.TemporaryDirectory(prefix="ci-submodule-") as temporary:
+            subprocess.run(
+                ["git", "init", "--bare", "--quiet", temporary],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    temporary,
+                    "fetch",
+                    "--no-tags",
+                    module["repository_url"],
+                    module["sha"],
+                ],
+                env=control.env,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    temporary,
+                    "push",
+                    remote,
+                    f"{module['sha']}:refs/heads/{module['task_ref']}",
+                ],
+                env=control.env,
+                check=True,
+                capture_output=True,
+            )
     if not is_current(gh, task):
         raise ValueError("Task changed while publishing code refs")
     key = f"current/{current_key(task)}.json"
     previous = control.get(key)
-    documents = {f"tasks/{task['task_id']}.json": task, key: {
-        "task_id": task["task_id"], "repository": task["repository"], "pr_number": task["pr_number"],
-        "target_branch": task["target_branch"], "tested_sha": task["tested_sha"], "updated_at": now()}}
+    documents = {
+        f"tasks/{task['task_id']}.json": task,
+        key: {
+            "task_id": task["task_id"],
+            "repository": task["repository"],
+            "pr_number": task["pr_number"],
+            "target_branch": task["target_branch"],
+            "tested_sha": task["tested_sha"],
+            "updated_at": now(),
+        },
+    }
     if previous and previous["task_id"] != task["task_id"]:
         documents[f"cancel/{previous['task_id']}.json"] = {
-            "task_id": previous["task_id"], "reason": "superseded", "superseded_by": task["task_id"], "created_at": now()}
+            "task_id": previous["task_id"],
+            "reason": "superseded",
+            "superseded_by": task["task_id"],
+            "created_at": now(),
+        }
     # On an identical retry preserve the original immutable capture timestamp.
     old = control.get(f"tasks/{task['task_id']}.json")
     if old:
@@ -462,20 +808,31 @@ def cancel_obsolete(gh: GitHub, control: GitStore, pr_number: int = 0) -> int:
             name = f"cancel/{task['task_id']}.json"
             cancellation = control.get(name)
             if not cancellation:
-                cancellation = {"task_id": task["task_id"], "reason": "PR/branch lifecycle or metadata changed", "created_at": now()}
+                cancellation = {
+                    "task_id": task["task_id"],
+                    "reason": "PR/branch lifecycle or metadata changed",
+                    "created_at": now(),
+                }
                 control.put({name: cancellation})
                 count += 1
             # A newer dispatched task owns the current status/comment. Never let
             # an old cancellation overwrite its result (including same-head edits).
             control.refresh()
             pointer = control.get(f"current/{current_key(task)}.json")
-            if pointer and pointer["task_id"] == task["task_id"] and not cancellation.get("github_notified"):
-                gh.status(task, "error", "Local CI cancelled: PR/branch changed, closed or became draft")
-                gh.comment(task, f"## Local CI 旧任务已取消\n\n任务 `{task['task_id']}`，被测提交 `{task['tested_sha']}`。\n\nPR/分支的提交、目标、信息或状态已变化，本地 worker 已收到停止通知；此结果不能作为当前通过结果。若 PR 仍需验证，请查看对应新任务或从 Gateway 重新请求。")
-                for key in ("local", "codex"):
-                    gh.check(task, key, "completed", "cancelled", "Local CI task cancelled",
-                             "The PR, target, metadata, or task identity changed before this task completed.",
-                             workflow_url())
+            if (
+                pointer
+                and pointer["task_id"] == task["task_id"]
+                and not cancellation.get("github_notified")
+            ):
+                gh.status(
+                    task,
+                    "error",
+                    "Local CI cancelled: PR/branch changed, closed or became draft",
+                )
+                gh.comment(
+                    task,
+                    f"## Local CI 旧任务已取消\n\n任务 `{task['task_id']}`，被测提交 `{task['tested_sha']}`。\n\nPR/分支的提交、目标、信息或状态已变化，本地 worker 已收到停止通知；此结果不能作为当前通过结果。若 PR 仍需验证，请查看对应新任务或从 Gateway 重新请求。",
+                )
                 cancellation["github_notified"] = True
                 control.put({name: cancellation})
     return count
@@ -488,11 +845,16 @@ def validate_result(result: dict, expected_task: dict) -> dict:
     task = validate_task(result.get("task"))
     if task != expected_task:
         raise ValueError("Result task differs from immutable dispatched task")
-    if not isinstance(result.get("run_id"), str) or not RUN_ID.fullmatch(result["run_id"]):
+    if not isinstance(result.get("run_id"), str) or not RUN_ID.fullmatch(
+        result["run_id"]
+    ):
         raise ValueError("Invalid run id")
     if result.get("status") not in {"pass", "fail", "infra_error", "cancelled"}:
         raise ValueError("Invalid result status")
-    if not isinstance(result.get("checks"), list) or not isinstance(result.get("required_checks"), list):
+    validate_artifacts(result)
+    if not isinstance(result.get("checks"), list) or not isinstance(
+        result.get("required_checks"), list
+    ):
         raise ValueError("Missing check selection/evidence")
     checks = {}
     executions = set()
@@ -505,7 +867,15 @@ def validate_result(result: dict, expected_task: dict) -> dict:
         executions.add(identity)
         if identity[1] == "candidate":
             checks[check["tool_id"]] = check
-        if check.get("status") not in {"pass", "fail", "infra_error", "cancelled", "not_applicable", "not_selected", "blocked_dependency"}:
+        if check.get("status") not in {
+            "pass",
+            "fail",
+            "infra_error",
+            "cancelled",
+            "not_applicable",
+            "not_selected",
+            "blocked_dependency",
+        }:
             raise ValueError("Invalid check status")
         if check["status"] != "pass" and not check.get("reason"):
             raise ValueError("Non-passing check requires a reason")
@@ -517,48 +887,87 @@ def validate_result(result: dict, expected_task: dict) -> dict:
                 raise ValueError(f"Required check did not pass: {key}")
         for name in ("pr_info", "architecture"):
             review = result.get("reviews", {}).get(name, {})
-            if review.get("status") != "pass" or (name == "architecture" and not review.get("evidence")):
+            if review.get("status") != "pass" or (
+                name == "architecture" and not review.get("evidence")
+            ):
                 raise ValueError(f"Mandatory review has no passing evidence: {name}")
-        if "environment" not in result["required_checks"]:
-            raise ValueError("Environment check is mandatory for every task")
+        if not result["required_checks"]:
+            raise ValueError("Passing result must cover the trusted minimum")
     return result
 
 
 def trusted_minimum(task: dict, source: GitStore) -> dict:
     import sys
+
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "local_ci"))
     from agent_ci.policy import changed_files, minimum_checks
+
     for sha in {task["base_sha"], task["tested_sha"]}:
         source.run("fetch", "--depth=1", "origin", sha)
     changes = changed_files(source.root, task["base_sha"], task["tested_sha"])
     if not changes:
         changes = [{"path": "<branch-validation>", "status": "M"}]
-    versions = [source.run("show", f"{sha}:triton/python/triton/__init__.py", check=False)
-                for sha in (task["base_sha"], task["tested_sha"])]
+    versions = [
+        source.run("show", f"{sha}:triton/python/triton/__init__.py", check=False)
+        for sha in (task["base_sha"], task["tested_sha"])
+    ]
     if not all(versions):
         raise ValueError("Cannot verify Triton version for the result minimum")
-    backend = any(re.search(r"__version__\s*=\s*['\"]3\.0(?:\.|['\"])", text) for text in versions)
+    backend = any(
+        re.search(r"__version__\s*=\s*['\"]3\.0(?:\.|['\"])", text) for text in versions
+    )
     return minimum_checks(changes, backend_enabled=backend, full=task["full"])
 
 
 def result_comment(result: dict) -> str:
     task = result["task"]
     safe = lambda value: html.escape(str(value)).replace("@", "＠").replace("`", "'")
-    lines = [f"## Local CI · {safe(result['status'])}",
-             f"被测提交：`{task['tested_sha']}` · task `{task['task_id'][:12]}` · run `{result['run_id']}`", "",
-             "| 检查 | 结果 | 原因 |", "| --- | --- | --- |"]
+    lines = [
+        f"## Local CI · {safe(result['status'])}",
+        f"被测提交：`{task['tested_sha']}` · task `{task['task_id'][:12]}` · run `{result['run_id']}`",
+        "",
+        "| 检查 | 结果 | 原因 |",
+        "| --- | --- | --- |",
+    ]
     for check in result["checks"]:
-        lines.append(f"| {safe(check['tool_id'])} | {safe(check['status'])} | {safe(check.get('reason', '')).replace('|', '/')} |")
-    for key, title in (("blockers", "阻塞与下一步"), ("findings", "审查证据"), ("performance", "性能变化"), ("unfinished", "未完成")):
-        lines.extend(["", f"### {title}", "", safe(json.dumps(result.get(key, []), ensure_ascii=False))[:9000]])
+        lines.append(
+            f"| {safe(check['tool_id'])} | {safe(check['status'])} | {safe(check.get('reason', '')).replace('|', '/')} |"
+        )
+    for key, title in (
+        ("blockers", "阻塞与下一步"),
+        ("findings", "审查证据"),
+        ("performance", "性能变化"),
+        ("unfinished", "未完成"),
+    ):
+        lines.extend(
+            [
+                "",
+                f"### {title}",
+                "",
+                safe(json.dumps(result.get(key, []), ensure_ascii=False))[:9000],
+            ]
+        )
     return "\n".join(lines)
 
 
-GITHUB_STATES = {"pass": "success", "fail": "failure", "infra_error": "error", "cancelled": "error"}
-RESULT_CHECK_CONCLUSIONS = {"pass": "success", "fail": "failure", "infra_error": "action_required",
-                            "cancelled": "cancelled"}
-STAGE_CHECK_CONCLUSIONS = {"success": "success", "failure": "failure", "cancelled": "cancelled",
-                           "skipped": "skipped"}
+GITHUB_STATES = {
+    "pass": "success",
+    "fail": "failure",
+    "infra_error": "error",
+    "cancelled": "error",
+}
+RESULT_CHECK_CONCLUSIONS = {
+    "pass": "success",
+    "fail": "failure",
+    "infra_error": "action_required",
+    "cancelled": "cancelled",
+}
+STAGE_CHECK_CONCLUSIONS = {
+    "success": "success",
+    "failure": "failure",
+    "cancelled": "cancelled",
+    "skipped": "skipped",
+}
 
 
 def publication_description(status: str, result_digest: str) -> str:
@@ -574,87 +983,77 @@ def workflow_url() -> str:
 
 
 def check_value(value: object, limit: int = 300) -> str:
-    return re.sub(r"\s+", " ", str(value)).strip().replace("@", "＠").replace("|", "/")[:limit] or "—"
+    return (
+        re.sub(r"\s+", " ", str(value))
+        .strip()
+        .replace("@", "＠")
+        .replace("|", "/")[:limit]
+        or "—"
+    )
 
 
-def publish_preflight_checks(gh: GitHub, task: dict, stages: dict, eligible: bool) -> bool:
+def publish_preflight_checks(
+    gh: GitHub, task: dict, stages: dict, eligible: bool
+) -> bool:
     changed = False
-    url = workflow_url()
-    for key in ("prepare", "basic", "api", "security"):
+    for key in CHECK_NAMES:
         outcome = str(stages.get(key, "skipped"))
-        conclusion = STAGE_CHECK_CONCLUSIONS.get(outcome, "action_required")
-        changed |= gh.check(task, key, "completed", conclusion,
-                            f"{CHECK_NAMES[key]}: {outcome}",
-                            f"Trusted workflow stage result: **{check_value(outcome)}**.", url)
-    local_status, local_conclusion = ("queued", None) if eligible else ("completed", "skipped")
-    title = "Waiting for approval and Local CI" if eligible else "Not dispatched because preflight did not pass"
-    summary = ("The tested merge result passed GitHub preflight and is waiting for approval or Local CI execution."
-               if eligible else "Local CI and Codex review were not started because a GitHub preflight stage did not pass.")
-    for key in ("local", "codex"):
-        changed |= gh.check(task, key, local_status, local_conclusion, title, summary, url)
+        conclusion = "success" if outcome == "success" else "failure"
+        changed |= gh.check(
+            task,
+            key,
+            "completed",
+            conclusion,
+            f"{CHECK_NAMES[key]}: {outcome}",
+            f"Trusted workflow stage: **{check_value(outcome)}**.",
+            workflow_url(),
+        )
     return changed
 
 
 def publish_enqueued_checks(gh: GitHub, task: dict) -> bool:
-    changed = False
-    for key, title in (("local", "Local CI is running"), ("codex", "Codex review is pending")):
-        changed |= gh.check(task, key, "in_progress", None, title,
-                            "The immutable task was published to Gitee and is being processed by the Local CI worker.",
-                            workflow_url())
-    return changed
+    # The summary status is already pending; details live in one PR comment.
+    return False
 
 
 def publish_result_checks(gh: GitHub, task: dict, result: dict) -> bool:
-    status = result["status"]
-    checks = result.get("checks", [])
-    lines = [f"Overall Local CI result: **{check_value(status)}**.", "", "Required and selected checks:"]
-    for check in checks[:50]:
-        reason = f" — {check_value(check.get('reason'))}" if check.get("reason") else ""
-        lines.append(f"- `{check_value(check.get('tool_id'))}`: **{check_value(check.get('status'))}**{reason}")
-    if len(checks) > 50:
-        lines.append(f"- … {len(checks) - 50} additional checks are available in the Local CI result.")
-    changed = gh.check(task, "local", "completed", RESULT_CHECK_CONCLUSIONS[status],
-                       f"Local CI: {status}", "\n".join(lines), workflow_url())
-
-    reviews = result.get("reviews", {})
-    review_lines, review_statuses = [], []
-    for key, label in (("pr_info", "PR intent"), ("architecture", "Architecture")):
-        review = reviews.get(key, {}) if isinstance(reviews, dict) else {}
-        review_status = str(review.get("status", "not_completed"))
-        review_statuses.append(review_status)
-        review_lines.append(f"- {label}: **{check_value(review_status)}** — {check_value(review.get('summary', ''))}")
-    if status == "cancelled":
-        review_conclusion = "cancelled"
-    elif review_statuses and all(value == "pass" for value in review_statuses):
-        review_conclusion = "success"
-    elif any(value == "fail" for value in review_statuses):
-        review_conclusion = "failure"
-    else:
-        review_conclusion = "action_required"
-    changed |= gh.check(task, "codex", "completed", review_conclusion,
-                        f"Codex review: {review_conclusion}", "\n".join(review_lines), workflow_url())
-    return changed
+    # Reviews, minimum verification and delivery share the summary status.
+    return False
 
 
 def current_task(gh: GitHub, control: GitStore, task: dict) -> bool:
     pointer = control.get(f"current/{current_key(task)}.json")
-    return bool(pointer and pointer.get("task_id") == task["task_id"]
-                and not control.get(f"cancel/{task['task_id']}.json") and is_current(gh, task))
+    return bool(
+        pointer
+        and pointer.get("task_id") == task["task_id"]
+        and not control.get(f"cancel/{task['task_id']}.json")
+        and is_current(gh, task)
+    )
 
 
 def retention_marker(path: Path, task: dict) -> dict:
     marker = json.loads(path.read_text())
-    if (not RUN_ID.fullmatch(path.stem) or marker.get("task_id") != task["task_id"]
-            or marker.get("run_id") != path.stem or marker.get("reason") != "retention_expired"
-            or not DIGEST.fullmatch(str(marker.get("result_digest", "")))):
+    if (
+        not RUN_ID.fullmatch(path.stem)
+        or marker.get("task_id") != task["task_id"]
+        or marker.get("run_id") != path.stem
+        or marker.get("reason") != "retention_expired"
+        or not DIGEST.fullmatch(str(marker.get("result_digest", "")))
+    ):
         raise ValueError("Invalid result retention marker")
     return marker
 
 
 def latest_result(task: dict, results: GitStore) -> tuple[Path | None, dict | None]:
     """Expired latest runs never fall back to an older surviving result."""
-    live = {path.parent.name: path for path in (results.root / "runs/v4" / task["task_id"]).glob("*/result.json")}
-    expired = {path.stem: path for path in (results.root / "retention/v4" / task["task_id"]).glob("*.json")}
+    live = {
+        path.parent.name: path
+        for path in (results.root / "runs/v4" / task["task_id"]).glob("*/result.json")
+    }
+    expired = {
+        path.stem: path
+        for path in (results.root / "retention/v4" / task["task_id"]).glob("*.json")
+    }
     names = sorted(set(live) | set(expired), reverse=True)
     if not names:
         return None, None
@@ -666,13 +1065,41 @@ def latest_result(task: dict, results: GitStore) -> tuple[Path | None, dict | No
 
 def read_result(path: Path, task: dict, results: GitStore) -> tuple[dict, str]:
     raw = path.read_bytes()
+    if len(raw) > 2 * 1024 * 1024:
+        raise ValueError("Result exceeds the small Git document budget")
     result = validate_result(json.loads(raw), task)
     if path.parent.name != result["run_id"]:
         raise ValueError("Result path/run id mismatch")
+    summary_raw = path.with_name("execution-summary.json").read_bytes()
+    if (
+        len(summary_raw) > 2 * 1024 * 1024
+        or hashlib.sha256(summary_raw).hexdigest() != result["execution_summary_sha256"]
+    ):
+        raise ValueError("Execution summary differs from sealed result")
+    summary = json.loads(summary_raw)
+    validate_execution_summary(result, summary)
     if result["status"] == "pass":
         minimum = trusted_minimum(task, results)
         if not set(minimum["required_checks"]) <= set(result["required_checks"]):
             raise ValueError("Result omitted trusted minimum checks")
+        records = {record["execution_id"]: record for record in summary["executions"]}
+        selected = {
+            check["tool_id"]: check
+            for check in result["checks"]
+            if check.get("variant", "candidate") == "candidate"
+        }
+        for tool_id, required in minimum.get("required_parameters", {}).items():
+            check = selected.get(tool_id, {})
+            identities = check.get("execution_ids") or [check.get("execution_id")]
+            # Coverage is read from observed execution/report records, never
+            # from an Agent's requested parameters or prose about its intent.
+            if not any(
+                scope_covers(records.get(identity, {}).get("scope") or {}, required)
+                for identity in identities
+            ):
+                raise ValueError(
+                    f"Observed execution omitted required coverage: {tool_id}"
+                )
     return result, hashlib.sha256(raw).hexdigest()
 
 
@@ -681,17 +1108,18 @@ def publication_error(gh: GitHub, control: GitStore, task: dict) -> None:
     try:
         control.refresh()
         if current_task(gh, control, task):
-            gh.status(task, "error", "Local CI result validation/publication failed; receiver will retry")
-            for key, title in (("local", "Local CI publication needs attention"),
-                               ("codex", "Codex result publication needs attention")):
-                gh.check(task, key, "completed", "action_required", title,
-                         "The receiver could not validate or publish the Local CI result. It will retry without rerunning the task.",
-                         workflow_url())
+            gh.status(
+                task,
+                "error",
+                "Local CI result validation/publication failed; receiver will retry",
+            )
     except (ValueError, OSError, RuntimeError):
         pass
 
 
-def collect_results(gh: GitHub, control: GitStore, results: GitStore, dashboard: Path) -> list[dict]:
+def collect_results(
+    gh: GitHub, control: GitStore, results: GitStore, dashboard: Path
+) -> list[dict]:
     """Write current status/comment and stage the dashboard, without a return channel."""
     rows, published = [], []
     for current in sorted((control.root / "current").glob("*.json")):
@@ -699,17 +1127,46 @@ def collect_results(gh: GitHub, control: GitStore, results: GitStore, dashboard:
         task = control.get(f"tasks/{pointer['task_id']}.json")
         validate_task(task)
         active = current_task(gh, control, task)
-        row = {"task": task, "status": "pending" if active else "cancelled", "result": None}
+        row = {
+            "task": task,
+            "status": "pending" if active else "cancelled",
+            "result": None,
+        }
         try:
             path, expired = latest_result(task, results)
             if expired:
-                row.update(status="expired" if active else "cancelled", retention=expired)
+                row.update(
+                    status="expired" if active else "cancelled", retention=expired
+                )
             elif path:
                 result, result_digest = read_result(path, task, results)
-                row.update(status=result["status"] if active else "cancelled", result=result)
+                delivery_file = path.with_name("delivery-index.json")
+                delivery = (
+                    json.loads(delivery_file.read_bytes())
+                    if delivery_file.exists()
+                    else None
+                )
+                delivery_status = validate_delivery(result, result_digest, delivery)
+                row.update(
+                    status=result["status"] if active else "cancelled",
+                    result=result,
+                    delivery_status=delivery_status,
+                    delivery=delivery,
+                )
+                control.refresh()
                 if active and current_task(gh, control, task):
-                    state = GITHUB_STATES[result["status"]]
-                    description = publication_description(result["status"], result_digest)
+                    state = (
+                        GITHUB_STATES[result["status"]]
+                        if delivery_status == "ready"
+                        else "pending"
+                        if delivery_status == "pending"
+                        else "error"
+                    )
+                    description = (
+                        publication_description(result["status"], result_digest)
+                        if delivery_status == "ready"
+                        else f"Local CI: {result['status']}; evidence delivery {delivery_status}"
+                    )
                     unchanged = gh.status_matches(task, state, description)
                     if not unchanged:
                         gh.status(task, state, description)
@@ -720,50 +1177,57 @@ def collect_results(gh: GitHub, control: GitStore, results: GitStore, dashboard:
                         continue
                     # Even if a previous status succeeded, a failed/deleted comment
                     # still needs repair. Identical comment bodies perform no write.
-                    comment_changed = gh.comment(task, result_comment(result))
+                    comment_changed = gh.comment(
+                        task,
+                        result_comment(result)
+                        + f"\n\n证据交付：{delivery_status}。"
+                        + (
+                            "完整日志保留在 CI 主机；附件位置见 Dashboard。"
+                            if delivery_status == "ready"
+                            else "测试结论已封存，必要证据交付完成前 summary 不通过。"
+                        ),
+                    )
                     checks_changed = publish_result_checks(gh, task, result)
                     if not unchanged or comment_changed or checks_changed:
-                        published.append({"task_id": task["task_id"], "run_id": result["run_id"],
-                                          "tested_sha": task["tested_sha"], "result_digest": result_digest, "status": result["status"]})
+                        published.append(
+                            {
+                                "task_id": task["task_id"],
+                                "run_id": result["run_id"],
+                                "tested_sha": task["tested_sha"],
+                                "result_digest": result_digest,
+                                "status": result["status"],
+                            }
+                        )
         except (ValueError, OSError, RuntimeError) as error:
-            row.update(status="infra_error", receiver_error=type(error).__name__,
-                       receiver_message="结果校验或 GitHub 发布未完成；保留证据并重试接收，不重跑构建。")
+            row.update(
+                receiver_error=type(error).__name__,
+                delivery_status="pending",
+                receiver_message="结果校验或 GitHub 发布未完成；保留证据并重试接收，不重跑构建。",
+            )
             if active:
                 publication_error(gh, control, task)
         rows.append(row)
     dashboard.mkdir(parents=True, exist_ok=True)
-    (dashboard / "v4-tasks.json").write_bytes(canonical({"schema": "triton-anchor-dashboard/v4", "generated_at": now(), "tasks": rows}) + b"\n")
+    (dashboard / "v4-tasks.json").write_bytes(
+        canonical(
+            {
+                "schema": "triton-anchor-dashboard/v4",
+                "generated_at": now(),
+                "tasks": rows,
+            }
+        )
+        + b"\n"
+    )
     output("receiver_errors", sum(bool(row.get("receiver_error")) for row in rows))
     return published
-
-
-def monitor_tasks(control: GitStore, results: GitStore) -> list[dict]:
-    """Only tasks without uploaded valid results can be overdue in the queue."""
-    records = []
-    for current in sorted((control.root / "current").glob("*.json")):
-        task = control.get(f"tasks/{json.loads(current.read_text())['task_id']}.json")
-        validate_task(task)
-        if control.get(f"cancel/{task['task_id']}.json"):
-            continue
-        if any(retention_marker(path, task) for path in (results.root / "retention/v4" / task["task_id"]).glob("*.json")):
-            continue
-        uploaded = False
-        for path in (results.root / "runs/v4" / task["task_id"]).glob("*/result.json"):
-            try:
-                read_result(path, task, results)
-                uploaded = True
-                break
-            except (ValueError, OSError, RuntimeError):
-                continue
-        if not uploaded:
-            records.append({"task_id": task["task_id"], "worker_id": "receiver", "status": "queued", "created_at": task["captured_at"]})
-    return records
 
 
 def output(key: str, value: object) -> None:
     if "GITHUB_OUTPUT" in os.environ:
         with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
-            stream.write(f"{key}={str(value).lower() if isinstance(value, bool) else value}\n")
+            stream.write(
+                f"{key}={str(value).lower() if isinstance(value, bool) else value}\n"
+            )
 
 
 def load_task(path: Path, expected_digest: str = "") -> dict:
@@ -777,24 +1241,59 @@ def security_diff(source: Path, base: str, tested: str) -> int:
     import importlib.util
     from dataclasses import asdict
     import sys
-    spec = importlib.util.spec_from_file_location("trusted_security", Path(__file__).with_name("scan_pr_security.py"))
+
+    spec = importlib.util.spec_from_file_location(
+        "trusted_security", Path(__file__).with_name("scan_pr_security.py")
+    )
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    command = ["git", "-C", str(source), "diff", "--no-ext-diff", "--no-textconv", "--no-renames"]
-    names = subprocess.check_output([*command, "--name-only", "-z", base, tested, "--"]).decode().split("\0")
+    command = [
+        "git",
+        "-C",
+        str(source),
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+    ]
+    names = (
+        subprocess.check_output([*command, "--name-only", "-z", base, tested, "--"])
+        .decode()
+        .split("\0")
+    )
     files = []
     for name in filter(None, names):
-        patch = subprocess.check_output([*command, "--unified=3", base, tested, "--", name]).decode("utf-8", "replace")
-        exists = subprocess.run(["git", "-C", str(source), "cat-file", "-e", f"{tested}:{name}"], capture_output=True).returncode == 0
-        files.append({"filename": name, "status": "modified" if exists else "removed",
-                      "patch": None if "Binary files " in patch else patch})
+        patch = subprocess.check_output(
+            [*command, "--unified=3", base, tested, "--", name]
+        ).decode("utf-8", "replace")
+        exists = (
+            subprocess.run(
+                ["git", "-C", str(source), "cat-file", "-e", f"{tested}:{name}"],
+                capture_output=True,
+            ).returncode
+            == 0
+        )
+        files.append(
+            {
+                "filename": name,
+                "status": "modified" if exists else "removed",
+                "patch": None if "Binary files " in patch else patch,
+            }
+        )
     blocking, warnings = module.scan(files)
     module.print_findings(blocking + warnings)
     module.append_summary("block", blocking)
     module.append_summary("warn", warnings)
-    Path("security-result.json").write_bytes(canonical({"blocking": [asdict(x) for x in blocking],
-                                                       "warnings": [asdict(x) for x in warnings]}) + b"\n")
+    Path("security-result.json").write_bytes(
+        canonical(
+            {
+                "blocking": [asdict(x) for x in blocking],
+                "warnings": [asdict(x) for x in warnings],
+            }
+        )
+        + b"\n"
+    )
     return int(bool(blocking))
 
 
@@ -806,26 +1305,53 @@ def sarif_failures(root: Path) -> list[dict]:
     for path in files:
         document = json.loads(path.read_text())
         for run in document.get("runs", []):
-            rules = {row["id"]: row for row in run.get("tool", {}).get("driver", {}).get("rules", [])}
+            rules = {
+                row["id"]: row
+                for row in run.get("tool", {}).get("driver", {}).get("rules", [])
+            }
             for result in run.get("results", []):
                 rule = rules.get(result.get("ruleId"), {})
                 severity = rule.get("properties", {}).get("security-severity")
-                if (severity is not None and float(severity) >= 7) or result.get("level") == "error":
+                if (severity is not None and float(severity) >= 7) or result.get(
+                    "level"
+                ) == "error":
                     findings.append(result)
     return findings
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "info", "card", "approval", "enqueue", "cancel", "collect", "api", "security", "sarif"))
+    parser.add_argument(
+        "command",
+        choices=(
+            "prepare",
+            "info",
+            "card",
+            "approval",
+            "enqueue",
+            "cancel",
+            "collect",
+            "api",
+            "security",
+            "sarif",
+        ),
+    )
     parser.add_argument("--task", type=Path, default=Path("task.json"))
-    parser.add_argument("--repository", default=os.getenv("GITHUB_REPOSITORY", REPOSITORY))
+    parser.add_argument(
+        "--repository", default=os.getenv("GITHUB_REPOSITORY", REPOSITORY)
+    )
     parser.add_argument("--worker-sha", default=os.getenv("WORKER_SHA", ""))
     parser.add_argument("--pr", type=int, default=int(os.getenv("PR_NUMBER") or 0))
     parser.add_argument("--branch", default=os.getenv("SOURCE_BRANCH", ""))
     parser.add_argument("--sha", default=os.getenv("REQUESTED_SHA", ""))
-    parser.add_argument("--full", action="store_true", default=os.getenv("FULL", "false") == "true")
-    parser.add_argument("--event-kind", choices=("push", "manual"), default=os.getenv("EVENT_KIND", "push"))
+    parser.add_argument(
+        "--full", action="store_true", default=os.getenv("FULL", "false") == "true"
+    )
+    parser.add_argument(
+        "--event-kind",
+        choices=("push", "manual"),
+        default=os.getenv("EVENT_KIND", "push"),
+    )
     parser.add_argument("--source", type=Path, default=Path("candidate"))
     parser.add_argument("--base", type=Path, default=Path("base"))
     parser.add_argument("--stages", default=os.getenv("STAGES", "{}"))
@@ -833,7 +1359,15 @@ def main() -> int:
     args = parser.parse_args()
     gh = GitHub(args.repository)
     if args.command == "prepare":
-        task = prepare_task(gh, args.worker_sha, args.pr, args.branch, args.sha, args.full, args.event_kind)
+        task = prepare_task(
+            gh,
+            args.worker_sha,
+            args.pr,
+            args.branch,
+            args.sha,
+            args.full,
+            args.event_kind,
+        )
         args.task.write_bytes(canonical(task) + b"\n")
         for key in ("task_id", "tested_sha", "head_sha", "base_sha", "external_fork"):
             output(key, task[key])
@@ -856,45 +1390,81 @@ def main() -> int:
         errors = validate_pr_info(task)
         if errors:
             gh.status(task, "failure", "PR information is incomplete; see PR comment")
-            gh.comment(task, "## PR 信息需要补充\n\n" + "\n".join(f"- {x}" for x in errors))
+            gh.comment(
+                task, "## PR 信息需要补充\n\n" + "\n".join(f"- {x}" for x in errors)
+            )
         return int(bool(errors))
     if args.command == "card":
         stages = json.loads(args.stages)
-        eligible = all(stages.get(key) == "success" for key in ("prepare", "basic", "api", "security"))
+        eligible = all(
+            stages.get(key) == "success"
+            for key in ("prepare", "basic", "api", "security")
+        )
         approval_error = ""
         if eligible and task.get("external_fork"):
             try:
                 validate_approval_environment(gh)
             except (ValueError, OSError) as error:
                 eligible = False
-                approval_error = str(error) if isinstance(error, ValueError) else "Cannot verify required reviewers on local-ci-fork-approval; check repository environment configuration."
+                approval_error = (
+                    str(error)
+                    if isinstance(error, ValueError)
+                    else "Cannot verify required reviewers on local-ci-fork-approval; check repository environment configuration."
+                )
         publish_preflight_checks(gh, task, stages, eligible)
-        body = "## Local CI 前置检查与审批\n\n" + "\n".join(f"- {key}: {value}" for key, value in stages.items())
+        body = "## Local CI 前置检查与审批\n\n" + "\n".join(
+            f"- {key}: {value}" for key, value in stages.items()
+        )
         body += f"\n\n被测提交 `{task['tested_sha']}`；目标 `{html.escape(task['target_branch'])}`。\n"
         body += "\n通过后由服务器 Codex 根据 PR 意图选择任务，并执行最低必检、架构审查和必要验证。\n"
         if approval_error:
             body += "\n人工审批配置未通过：" + html.escape(approval_error) + "\n"
-        body += "\n外部 fork：请在本次 workflow 的 local-ci-fork-approval environment 审批。" if task.get("external_fork") and eligible else "\n请修复失败检查后更新 PR。" if not eligible else "\n前置检查通过，准备进入 Local CI。"
+        body += (
+            "\n外部 fork：请在本次 workflow 的 local-ci-fork-approval environment 审批。"
+            if task.get("external_fork") and eligible
+            else "\n请修复失败检查后更新 PR。"
+            if not eligible
+            else "\n前置检查通过，准备进入 Local CI。"
+        )
         gh.comment(task, body)
-        gh.status(task, "pending" if eligible else "failure", "Awaiting Local CI/approval" if eligible else "Preflight failed; see PR comment")
+        gh.status(
+            task,
+            "pending" if eligible else "failure",
+            "Awaiting Local CI/approval"
+            if eligible
+            else "Preflight failed; see PR comment",
+        )
         output("eligible", eligible)
         return 0
     if args.command == "api":
         import importlib.util
-        checker = Path(__file__).resolve().parents[1] / "api_contract/check_public_api.py"
+
+        checker = (
+            Path(__file__).resolve().parents[1] / "api_contract/check_public_api.py"
+        )
         spec = importlib.util.spec_from_file_location("api_checker", checker)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         base_scope = args.base / "api_contract/public_api.json"
-        scope = base_scope if base_scope.is_file() else Path(__file__).resolve().parents[2] / "api_contract/public_api.json"
-        candidate_scope = args.source / "api_contract/public_api.json" if base_scope.is_file() else None
+        scope = (
+            base_scope
+            if base_scope.is_file()
+            else Path(__file__).resolve().parents[2] / "api_contract/public_api.json"
+        )
+        candidate_scope = (
+            args.source / "api_contract/public_api.json"
+            if base_scope.is_file()
+            else None
+        )
         result = module.run_check(args.base, args.source, scope, candidate_scope)
         Path("api-result.json").write_bytes(canonical(result) + b"\n")
         Path("api-report.md").write_text(module._markdown(result))
         return int(result["status"] != "compatible")
     url = os.getenv("GITEE_RESULTS_REPO_URL", "")
     if not url.startswith("https://gitee.com/"):
-        raise ValueError("Configure GITEE_RESULTS_REPO_URL with the actual HTTPS Gitee repository")
+        raise ValueError(
+            "Configure GITEE_RESULTS_REPO_URL with the actual HTTPS Gitee repository"
+        )
     control = GitStore(url, CONTROL_BRANCH)
     try:
         if args.command == "cancel":
@@ -906,7 +1476,6 @@ def main() -> int:
             try:
                 if args.command == "collect":
                     cancel_obsolete(gh, control)
-                    Path("monitor-tasks.json").write_bytes(canonical(monitor_tasks(control, results)) + b"\n")
                     collect_results(gh, control, results, args.dashboard)
             finally:
                 results.close()
@@ -917,27 +1486,64 @@ def main() -> int:
 
 if __name__ == "__main__":
     import sys
+
     try:
         raise SystemExit(main())
     except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
-        safe_error = (str(error) if isinstance(error, (ValueError, GitHubAPIError))
-                      else "inspect the stage logs and transport configuration")
-        print(f"CI v4 control failed: {type(error).__name__}: {safe_error}", file=sys.stderr)
+        safe_error = (
+            str(error)
+            if isinstance(error, (ValueError, GitHubAPIError))
+            else "inspect the stage logs and transport configuration"
+        )
+        print(
+            f"CI v4 control failed: {type(error).__name__}: {safe_error}",
+            file=sys.stderr,
+        )
         # Errors before task.json exists still need a visible PR response.
-        if len(sys.argv) > 1 and sys.argv[1] in {"prepare", "approval", "enqueue"} and os.getenv("GH_TOKEN"):
+        if (
+            len(sys.argv) > 1
+            and sys.argv[1] in {"prepare", "approval", "enqueue"}
+            and os.getenv("GH_TOKEN")
+        ):
             try:
                 pr = int(os.getenv("PR_NUMBER") or 0)
                 client = GitHub(os.getenv("GITHUB_REPOSITORY", REPOSITORY))
                 if pr:
                     pull = client.request(f"pulls/{pr}")
                     expected = os.getenv("REQUESTED_SHA") or pull["head"]["sha"]
-                    if pull["state"] == "open" and not pull["draft"] and expected == pull["head"]["sha"]:
-                        context = {"head_sha": expected, "tested_sha": expected, "pr_number": pr}
-                        client.status(context, "error", "CI preparation/publication failed; see PR comment")
+                    if (
+                        pull["state"] == "open"
+                        and not pull["draft"]
+                        and expected == pull["head"]["sha"]
+                    ):
+                        context = {
+                            "head_sha": expected,
+                            "tested_sha": expected,
+                            "pr_number": pr,
+                        }
+                        client.status(
+                            context,
+                            "error",
+                            "CI preparation/publication failed; see PR comment",
+                        )
                         run_id = os.getenv("GITHUB_RUN_ID", "")
-                        link = f"https://github.com/{client.repository}/actions/runs/{run_id}" if run_id.isdigit() else ""
-                        reason = str(error) if isinstance(error, (ValueError, GitHubAPIError)) else type(error).__name__
-                        client.comment(context, f"## CI 准备或投递未完成\n\n{html.escape(reason)}\n\n请查看本次工作流证据并修复对应检查或中转配置，然后重试：{link}")
+                        link = (
+                            f"https://github.com/{client.repository}/actions/runs/{run_id}"
+                            if run_id.isdigit()
+                            else ""
+                        )
+                        reason = (
+                            str(error)
+                            if isinstance(error, (ValueError, GitHubAPIError))
+                            else type(error).__name__
+                        )
+                        client.comment(
+                            context,
+                            f"## CI 准备或投递未完成\n\n{html.escape(reason)}\n\n请查看本次工作流证据并修复对应检查或中转配置，然后重试：{link}",
+                        )
             except (ValueError, OSError, RuntimeError):
-                print("PR failure notification could not be delivered; the workflow remains failed.", file=sys.stderr)
+                print(
+                    "PR failure notification could not be delivered; the workflow remains failed.",
+                    file=sys.stderr,
+                )
         raise SystemExit(1)

@@ -1,0 +1,21 @@
+[Unit]
+Description=Triton Anchor task-container Local CI worker
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/triton-anchor-local-ci/credentials.env
+WorkingDirectory=/opt/local-ci/control/triton-anchor
+UMask=0077
+NoNewPrivileges=yes
+Environment="DOCKER_HOST="
+UnsetEnvironment=DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+ExecStart="/usr/bin/python3" "/opt/local-ci/control/triton-anchor/scripts/local_ci/agent_ci/worker.py" --config "/etc/triton-anchor-local-ci/config.json"
+Restart=always
+RestartSec=15
+TimeoutStopSec=60
+KillMode=mixed
+
+[Install]
+WantedBy=default.target

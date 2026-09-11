@@ -1,0 +1,45 @@
+name: Local CI receiver
+on:
+  schedule:
+    - cron: '2-57/5 * * * *'
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: local-ci-receiver
+  cancel-in-progress: false
+jobs:
+  receive:
+    if: github.repository == 'likehupochuan/triton-anchor' || github.repository == 'anteloper-c/triton-anchor'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: github-pages
+    permissions: {contents: read, pull-requests: write, statuses: write, checks: write, pages: write, id-token: write}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CONTROL_SHA: ${{ vars.LOCAL_CI_CONTROL_SHA }}
+      GITEE_USERNAME: ${{ vars.GITEE_USERNAME }}
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      GITEE_RESULTS_REPO_URL: ${{ vars.GITEE_RESULTS_REPO_URL }}
+    steps:
+      - name: Require a pinned control release
+        run: '[[ "$CONTROL_SHA" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.LOCAL_CI_CONTROL_SHA }}
+          persist-credentials: false
+          submodules: false
+      - name: Prepare business dashboard
+        run: |
+          test "$(git rev-parse HEAD)" = "$CONTROL_SHA"
+          mkdir -p _site
+          cp -R dashboard/. _site/
+      - name: Receive Gitee results and reconcile current task identity
+        id: collect
+        run: python3 scripts/ci/gateway_v4.py collect
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with: {path: _site}
+      - uses: actions/deploy-pages@v4
+      - name: Surface incomplete receiver operations
+        if: steps.collect.outputs.receiver_errors != '0'
+        run: exit 1

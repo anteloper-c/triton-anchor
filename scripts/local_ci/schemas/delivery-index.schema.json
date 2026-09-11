@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "triton-anchor-delivery/v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "task_id",
+    "run_id",
+    "result_digest",
+    "status",
+    "artifacts"
+  ],
+  "properties": {
+    "schema": {
+      "const": "triton-anchor-delivery/v1"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "result_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "ready",
+        "expired"
+      ]
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "artifact_id",
+          "required",
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "pending",
+              "ready",
+              "omitted",
+              "expired"
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "release_id": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "attachment_id": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

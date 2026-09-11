@@ -1,95 +1,68 @@
-# Local CI callable tools
+# Local CI tools
 
-For a PR task, Codex calls `start_check` through MCP; the trusted supervisor
-invokes `bash scripts/local_ci/tools/run_tool.sh TOOL_ID` inside the current
-attempt's independent container, bound to its validated image and frozen commit.
-Trusted image preparation also invokes these tools during image validation.
-Each invocation executes one tool. There is no checkout, network relay, model
-call, or pipeline dispatch here.
+工具以 ci_repo 的三类目录为基础，统一通过 `basic_tools/runner.py` 的 `plan(tool_id, context, parameters)` 生成计划。
+`actions.py` 共用构建、安装、真实 import 检查与报告处理；`evidence.py` 对内置工具与原生命令使用同一套报告判据。
+执行服务记录实际命令和执行身份，MCP 与 CLI 只负责调用，不维护第二份工具或依赖表。
 
-Codex may use native commands in its separate writable exploration workspace.
-Those commands and their private audit records cannot replace formal tool
-records or satisfy minimum checks. The supervisor selects execution identity,
-parameters and paths; native experiments do not modify the formal candidate/base
-installations. See [Local CI](../README.md) for the execution boundaries.
+| 工具 | 依赖 | 行为 |
+| --- | --- | --- |
+| environment | 无 | 检查依赖、完整 LLVM revision 与环境指纹 |
+| control_plane | 无 | 冻结 diff 的语法/格式检查，代码控制面改动运行实际回归测试 |
+| frontend_build | environment | 构建 wheel，记录摘要和被测提交 |
+| frontend_install | frontend_build | 安装 wheel 并核对实际 import 来源及文件摘要 |
+| frontend_tests / frontend_smoke | frontend_install | pytest 选测 / 前端 smoke，相互独立 |
+| backend_build | environment | 独立后端 wheel 构建 |
+| backend_install | backend_build、frontend_install | 安装并验证后端发现 |
+| backend_tests / backend_smoke | frontend_install、backend_install | 后端 pytest / 真实 JIT smoke |
+| flaggems | backend_smoke | 按影响或全量清单执行算子，保留逐算子证据 |
+| compile_time / pass_profile / ir_serialization | backend_smoke | 正确性及有效测量检查，再按同条件基线比较 |
 
-| ID | Operation / dependency |
-| --- | --- |
-| `environment` | Validate Python/build dependencies, exact LLVM profile, available backend paths and free space. |
-| `frontend_build` | Build one frontend wheel; save its absolute path and SHA256 in task state. |
-| `wheel_install_import` | Verify saved wheel, install it, check that both Python packages come from that wheel. |
-| `frontend_smoke` | Run the checkout's real frontend smoke against the installed wheel. |
-| `backend_rebuild` | Build/install the configured backend wheel and verify discovery. |
-| `backend_smoke_jit` | Execute the trusted profile's backend smoke/JIT command. |
-| `flaggems` | Reproducible category sample plus affected operators, or requested full/single run. |
-| `compile_time` | Run real compilation benchmark, validate candidate measurements, compare compatible baseline. |
-| `pass_profile` | Run real MLIR pass profiling; missing pass events are failures. |
-| `ir_serialization` | Generate TTIR, serialize/parse, verify canonical content and MLIR validity, measure timings. |
-| `contract_tests` | Verify the frozen Git diff, documentation/control syntax and workflow shape; run existing candidate CI pytest suites when present. |
+后端适用性来自 profile 声明。声明支持却缺少工具链是环境错误。
+`backend_build_requires_frontend` 仅供确实需要候选前端的配方增加依赖。
+每次执行使用独立产物目录，`context.dependency_artifacts` 指向实际依赖执行的产物；重建不覆盖历史。
+测试或 smoke 前重新核对已安装模块的实际文件摘要。
 
-The supervisor enforces the minimum policy and dependency closure:
-`environment -> frontend_build -> wheel_install_import -> frontend_smoke ->
-backend_rebuild -> backend_smoke_jit -> {flaggems, compile_time, pass_profile,
-ir_serialization}`. Performance tools use deployed FlagGems sources but do not
-require a preceding FlagGems test run. They do not repair missing capabilities or
-turn unavailable backend tools into success. Installation and builds are serial.
+## 调用
 
-Required inputs are absolute `ANCHOR_DIR`, `LOCAL_CI_TASK_ROOT`, and a unique
-`LOCAL_CI_ARTIFACT_DIR` per invocation. `LOCAL_CI_TOOL_RESULT` defaults to
-`LOCAL_CI_ARTIFACT_DIR/result.json` and must remain directly inside that directory.
-`LOCAL_CI_TESTED_SHA` (aliases `LOCAL_CI_TARGET_SHA`, `GITHUB_SHA`) must match HEAD.
-The supervisor owns task identity and paths; candidates cannot set these inputs.
-State survives invocations under `LOCAL_CI_TASK_ROOT/state`; artifacts and logs
-are retained outside temporary benchmark workdirs. No shared caches are deleted.
+```python
+from tools.basic_tools.runner import plan
 
-The trusted profile supplies `LLVM_BUILD_DIR`, `LOCAL_CI_LLVM_HASH`, optional
-`PYTHON_VENV_ACTIVATE`/`TRUSTED_ANCHOR_ENVSETUP`, `PYTHON_BIN`, and `PACKAGE_TOOL`
-(`auto`, `pip`, `uv`). Candidate `envsetup.sh` is never sourced implicitly.
-Backend tools additionally require `RUN_BACKEND_STAGES=true`, `BACKEND_PATH`,
-`EXPECTED_TRITON_BACKEND`, `BACKEND_WHEEL_PATTERN`, `BACKEND_TEST_COMMAND`, and
-the deployed `FLAGGEMS_CLONE_DIR`/`PPL_ROOT`; optional `BACKEND_ENVSETUP` and
-`BACKEND_ENVSETUP_ARGS` come from that same trusted profile.
-Environment setup preserves the executor's task venv, source/backend paths,
-artifact identity, caches and concurrency budget. Seed Python must include
-PyYAML for YAML contracts and pytest for candidate CI suites.
-
-`contract_tests` requires `LOCAL_CI_BASE_SHA` and writes `contracts.json` with
-the actual changed paths, hashes and checks. Main-like repositories without a
-`scripts/` directory receive real diff/UTF-8/conflict and workflow contracts;
-missing CI test directories are recorded. Invalid YAML, empty workflows,
-unsupported empty validation, or an existing pytest suite collecting no tests
-are failures. Candidate Python is parsed without importing it during syntax checks.
-
-Defaults: fresh frontend build, `MAX_JOBS=8`, minimum free space 5 GiB,
-`LOCAL_CI_TOOL_TIMEOUT_SECONDS=7200`. The supervisor may reduce concurrency after
-an observed OOM. `FRONTEND_BUILD_MODE=incremental` is an explicit supported
-override; it preserves only frontend `build/`. All destructive output cleanup is
-restricted to direct build/dist/egg-info children and rejects symlink/mount roots.
-
-FlagGems requires a supervisor-provided `FLAGGEMS_RANDOM_SEED`; supports
-`FLAGGEMS_AFFECTED_OPS` (comma-separated), `FLAGGEMS_TEST_MODE`,
-`FLAGGEMS_SAMPLE_SIZE`, `FLAGGEMS_TEST_OP`, trusted whitelist/full-list paths,
-and existing pytest/timeout settings. Selection, mappings, seed and actual
-commands are artifacts. An unknown required operator or empty test selection
-fails. `full` authorization belongs to the supervisor.
-
-Performance uses existing `COMPILE_BENCHMARK_*`, `PASS_PROFILE_*`, and
-`IR_SERIALIZATION_*` kernel/repeat/warmup/threshold inputs. `BASELINE_JSON` is
-optional. Comparisons require matching `LOCAL_CI_ENVIRONMENT_FINGERPRINT` and
-`LOCAL_CI_BASE_SHA`; absent/invalid/incompatible baselines report
-`not_comparable`. A valid slowdown reports a warning without failing the tool;
-invalid candidate measurements, no pass events, or invalid roundtrips fail.
-When no explicit fingerprint is supplied, the environment tool derives one from
-the toolchain, profile, installed build dependencies and deployed backend refs.
-
-Exit code is authoritative. Enhanced `result.json` includes tool ID, tested SHA,
-fingerprint, command argv/cwd/log/exit, artifacts and performance details.
-Command failure codes are preserved; timeout is 124, cancellation 130/143, and
-configuration/preparation failure normally 2. A supervisor must still validate
-its own execution records rather than trust candidate-writable result files.
-
-Boundary verification (no backend/model required):
-
-```sh
-python3 -m unittest discover -s scripts/local_ci/tools/tests -v
+spec = plan(
+    "frontend_tests",
+    context,
+    {"paths": ["tests/test_unit.py::test_add"], "keyword": "not slow"},
+)
+# spec.commands: [{argv, cwd, env, timeout}], spec.dependencies, spec.artifacts
 ```
+
+`context` 必须包含 `source_dir`、`artifact_dir`、`task_id`、`target_sha`、`triton_version`；
+可包含 `python_bin`、`trusted_python_bin`、`tools_dir`、`task_venv`、`environment_fingerprint`、
+`task_root`、`base_sha`、`dependency_artifacts` 和 `completed_tools`。
+产物写入 `artifact_dir/<tool_id>`，跨阶段产物从 `dependency_artifacts[tool_id]` 获取。
+
+```bash
+python3 /opt/control/scripts/local_ci/tools/basic_tools/runner.py frontend_build \
+  --context /task/context.json --parameters '{"jobs":2,"build_mode":"incremental"}' --execute
+```
+
+不带 `--execute` 仅输出计划。CLI 与原生命令均须由任务执行服务记录，才能关联正式结果。
+每任务一个容器、一个非 root 用户；各类工具共享同一执行身份和预算。
+
+`profile.tools` 配置 `llvm_dir`、`required_commands`、`required_modules`、可选 `required_source_files`、
+`env`、`env_scripts: [{path,args}]`；后端另配 `backend_dir`、`backend_wheel_pattern`、
+`expected_backend`、`backend_test_paths`、`backend_smoke_argv`、`backend_env_scripts`、`flaggems_dir`。
+源码、子模块及额外依赖来源由任务外 ops_maint 配置，生产链路经 Gitee。
+
+build 参数：`jobs`（1–64）、`build_mode`（fresh/incremental）。
+pytest 参数：`paths`（相对测试路径或 node ID）、`keyword`。
+FlagGems 参数：`mode`（impact/full）、`ops`、`categories`；full 策略要求完整算子清单。
+性能参数：`kernels`、`repeat`、`warmup`。基线由 `performance_baselines[tool_id]` 提供
+`{path,sha256,base_sha,profile_id,llvm_revision,environment_fingerprint}`，并核对后端、算子及采样条件。
+无基线或条件不一致记录 `not_comparable`；有效性能回退仅报告，测量无效或执行失败阻塞。
+
+JUnit 缺失、没有实际用例、全部跳过或存在错误都不通过。
+`evidence.evaluate(tool_id, artifact_dir, exit_code, context, parameters)` 返回 status/details/subject/scope；
+原生命令可在 `parameters.reports` 指定产物目录内的报告名。报告不能单靠自报覆盖或退出 0 抵扣必检。
+
+`ai_review_tools/` 保存架构和专项审查要求；`ai_custom_tools/` 用于任务内复现、选测与分析。
+不维持独立 deterministic_ci 目录、旧工具 ID 或第二套执行入口。

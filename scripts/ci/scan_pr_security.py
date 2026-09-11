@@ -108,9 +108,7 @@ EXECUTION_BLOCKING_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "dynamic shell evaluation is not allowed",
-        re.compile(
-            r"(?:\beval\s+|\bshell\s*=\s*True\b|\bos\.system\s*\()"
-        ),
+        re.compile(r"(?:\beval\s+|\bshell\s*=\s*True\b|\bos\.system\s*\()"),
     ),
     (
         "workflow requests sudo privileges",
@@ -125,9 +123,7 @@ EXECUTION_BLOCKING_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 WARNING_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "local subprocess execution should be reviewed",
-        re.compile(
-            r"\bsubprocess\.(?:call|check_call|check_output|Popen|run)\s*\("
-        ),
+        re.compile(r"\bsubprocess\.(?:call|check_call|check_output|Popen|run)\s*\("),
     ),
 )
 
@@ -274,9 +270,7 @@ def fetch_pr_files(
     return [item for item in payload if isinstance(item, dict)]
 
 
-def fetch_pr_head_sha(
-    api_url: str, repository: str, pr_number: str, token: str
-) -> str:
+def fetch_pr_head_sha(api_url: str, repository: str, pr_number: str, token: str) -> str:
     url = f"{api_url}/repos/{repository}/pulls/{pr_number}"
     payload = github_api_get(url, token)
     if not isinstance(payload, dict):
@@ -383,11 +377,13 @@ def restore_missing_patches(
     if checked_out_sha != tested_sha:
         raise RuntimeError("diff fallback did not check out the frozen merge result")
 
-    parents = git_output(
-        repository, "show", "-s", "--format=%P", tested_sha
-    ).strip().split()
+    parents = (
+        git_output(repository, "show", "-s", "--format=%P", tested_sha).strip().split()
+    )
     if parents != [comparison_base_sha, expected_head_sha]:
-        raise RuntimeError("diff fallback merge parents do not match the authorized base/head")
+        raise RuntimeError(
+            "diff fallback merge parents do not match the authorized base/head"
+        )
 
     restored: list[dict[str, object]] = []
     for original in files:
@@ -468,11 +464,9 @@ def scan(files: list[dict[str, object]]) -> tuple[list[Finding], list[Finding]]:
                         )
 
             for message, pattern in EXECUTION_BLOCKING_PATTERNS:
-                if (
-                    message == "dynamic shell evaluation is not allowed"
-                    and Path(filename).suffix.lower()
-                    in {".md", ".markdown", ".rst"}
-                ):
+                if message == "dynamic shell evaluation is not allowed" and Path(
+                    filename
+                ).suffix.lower() in {".md", ".markdown", ".rst"}:
                     continue
                 if pattern.search(line):
                     blocking.append(Finding("error", filename, line_number, message))
@@ -510,9 +504,7 @@ def append_summary(mode: str, findings: list[Finding]) -> None:
     if not summary_path:
         return
     title = (
-        "Blocking security findings"
-        if mode == "block"
-        else "Security review warnings"
+        "Blocking security findings" if mode == "block" else "Security review warnings"
     )
     with open(summary_path, "a", encoding="utf-8") as summary:
         summary.write(f"## {title}\n\n")

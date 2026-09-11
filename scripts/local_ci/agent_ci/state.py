@@ -1,189 +1,303 @@
-"""Durable task journal. Only the trusted worker writes this database."""
+"""Single-writer file state and completed command records for Local CI runs."""
+
 from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
+import os
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .protocol import ContractError, canonical, current_key
+from .protocol import ContractError, atomic_json, canonical, current_key
 
 
 class Journal:
+    """Host-only state. One worker process owns the lock; its threads serialize here."""
+
     def __init__(self, root: Path):
         self.root = Path(root)
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.path = self.root / "journal.sqlite3"
-        with self.connect() as db:
-            db.executescript("""
-                PRAGMA journal_mode=WAL;
-                CREATE TABLE IF NOT EXISTS tasks (
-                  task_id TEXT PRIMARY KEY, subject TEXT NOT NULL, manifest TEXT NOT NULL,
-                  run_id TEXT NOT NULL, phase TEXT NOT NULL, updated REAL NOT NULL,
-                  detail TEXT NOT NULL DEFAULT '{}');
-                CREATE TABLE IF NOT EXISTS executions (
-                  execution_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, tool_id TEXT NOT NULL,
-                  variant TEXT NOT NULL, status TEXT NOT NULL, record TEXT NOT NULL,
-                  created REAL NOT NULL, updated REAL NOT NULL);
-                CREATE TABLE IF NOT EXISTS reviews (
-                  task_id TEXT NOT NULL, kind TEXT NOT NULL, record TEXT NOT NULL,
-                  PRIMARY KEY(task_id,kind));
-                CREATE TABLE IF NOT EXISTS events (
-                  id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, at REAL NOT NULL,
-                  kind TEXT NOT NULL, detail TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS outbox (
-                  task_id TEXT PRIMARY KEY, payload_path TEXT NOT NULL, digest TEXT NOT NULL,
-                  attempts INTEGER NOT NULL DEFAULT 0, published REAL);
-            """)
-        self.path.chmod(0o600)
+        self.runs = self.root / "runs"
+        self.runs.mkdir(parents=True, exist_ok=True)
+        self.guard = threading.RLock()
 
     @staticmethod
-    def result_status(box: dict) -> str | None:
-        """Read the sealed outcome; delivery completion is not a green result."""
-        try:
-            data = Path(box["payload_path"]).read_bytes()
-            if hashlib.sha256(data).hexdigest() != box["digest"]:
-                return None
-            document = json.loads(data)
-            return document.get("status") if isinstance(document, dict) else None
-        except (OSError, ValueError):
-            return None
+    def _component(value):
+        if (
+            not isinstance(value, str)
+            or not value
+            or Path(value).name != value
+            or value in {".", ".."}
+        ):
+            raise ContractError("Invalid task/run path component")
+        return value
 
-    def connect(self):
-        db = sqlite3.connect(self.path, timeout=30)
-        db.row_factory = sqlite3.Row
-        return db
+    def run_dir(self, task_id, run_id=None):
+        parent = self.runs / self._component(task_id)
+        if run_id:
+            return parent / self._component(run_id)
+        candidates = sorted(parent.glob("*/state.json"))
+        if not candidates:
+            raise ContractError("Unknown task")
+        return candidates[-1].parent
 
-    def register(self, task: dict) -> dict:
-        with self.connect() as db:
-            existing = db.execute("SELECT * FROM tasks WHERE task_id=?", (task["task_id"],)).fetchone()
-            if existing:
-                if json.loads(existing["manifest"]) != task:
-                    raise ContractError("Immutable task manifest changed")
-                return dict(existing)
-            run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "-" + uuid.uuid4().hex[:8]
-            db.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?)", (
-                task["task_id"], current_key(task), canonical(task).decode(), run_id,
-                "queued", time.time(), "{}"))
-        self.event(task["task_id"], "registered", {"run_id": run_id})
+    def _state(self, task_id):
+        return json.loads((self.run_dir(task_id) / "state.json").read_text())
+
+    def _write(self, task_id, state):
+        state["updated"] = time.time()
+        atomic_json(self.run_dir(task_id, state["run_id"]) / "state.json", state)
+
+    def _new(self, task):
+        run_id = (
+            datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            + "-"
+            + uuid.uuid4().hex[:8]
+        )
+        directory = self.run_dir(task["task_id"], run_id)
+        for name in ("logs", "artifacts"):
+            (directory / name).mkdir(parents=True, exist_ok=True)
+        atomic_json(directory / "task.json", task)
+        atomic_json(
+            directory / "state.json",
+            {
+                "task_id": task["task_id"],
+                "run_id": run_id,
+                "phase": "preparing",
+                "updated": time.time(),
+                "detail": {},
+                "reviews": {},
+                "current_commands": {},
+                "events": [],
+                "invalidated": {},
+                "delivery": None,
+            },
+        )
         return self.task(task["task_id"])
 
-    def task(self, task_id: str) -> dict:
-        with self.connect() as db:
-            row = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-        if not row:
-            raise ContractError("Unknown task")
-        return dict(row)
+    def register(self, task):
+        with self.guard:
+            parent = self.runs / self._component(task["task_id"])
+            if any(parent.glob("*/state.json")):
+                row = self.task(task["task_id"])
+                if json.loads(row["manifest"]) != task:
+                    raise ContractError("Immutable task manifest changed")
+                return row
+            return self._new(task)
 
-    def tasks(self, *, active: bool = True) -> list[dict]:
-        with self.connect() as db:
-            query = "SELECT * FROM tasks"
-            if active:
-                query += " WHERE phase NOT IN ('complete','cancelled','incomplete')"
-            return [dict(row) for row in db.execute(query + " ORDER BY updated")]
+    def task(self, task_id):
+        with self.guard:
+            state = self._state(task_id)
+            task = json.loads((self.run_dir(task_id) / "task.json").read_text())
+            return {
+                "task_id": task_id,
+                "subject": current_key(task),
+                "manifest": canonical(task).decode(),
+                "run_id": state["run_id"],
+                "phase": state["phase"],
+                "updated": state["updated"],
+                "detail": canonical(state.get("detail", {})).decode(),
+            }
 
-    def phase(self, task_id: str, phase: str, detail: dict | None = None) -> None:
-        with self.connect() as db:
-            db.execute("UPDATE tasks SET phase=?, updated=?, detail=? WHERE task_id=?",
-                       (phase, time.time(), canonical(detail or {}).decode(), task_id))
-        self.event(task_id, "phase:" + phase, detail or {})
+    def tasks(self, *, active=True):
+        with self.guard:
+            rows = [
+                self.task(path.name)
+                for path in self.runs.iterdir()
+                if path.is_dir() and any(path.glob("*/state.json"))
+            ]
+            return sorted(
+                [r for r in rows if not active or r["phase"] != "published"],
+                key=lambda r: r["updated"],
+            )
 
-    def event(self, task_id: str, kind: str, detail: dict) -> None:
-        with self.connect() as db:
-            db.execute("INSERT INTO events(task_id,at,kind,detail) VALUES(?,?,?,?)",
-                       (task_id, time.time(), kind, canonical(detail).decode()))
+    def phase(self, task_id, phase, detail=None):
+        if phase not in {
+            "preparing",
+            "running",
+            "sealing",
+            "publish_pending",
+            "published",
+        }:
+            raise ContractError("Unknown run phase: " + phase)
+        with self.guard:
+            state = self._state(task_id)
+            state.update(phase=phase, detail=detail or {})
+            self._write(task_id, state)
 
-    def execution(self, task_id: str, tool_id: str, variant: str, record: dict) -> str:
-        ident = record.get("execution_id") or uuid.uuid4().hex
-        record = {**record, "execution_id": ident, "tool_id": tool_id, "variant": variant}
-        now = time.time()
-        with self.connect() as db:
-            db.execute("INSERT INTO executions VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(execution_id) DO UPDATE SET status=excluded.status,record=excluded.record,updated=excluded.updated",
-                       (ident, task_id, tool_id, variant, record["status"], canonical(record).decode(), now, now))
-        return ident
+    def event(self, task_id, kind, detail):
+        with self.guard:
+            try:
+                state = self._state(task_id)
+            except ContractError:
+                return  # Invalid/unregistered remote input has no task state.
+            state["events"] = (
+                state.get("events", [])
+                + [{"at": time.time(), "kind": kind, "detail": detail}]
+            )[-100:]
+            self._write(task_id, state)
 
-    def executions(self, task_id: str) -> list[dict]:
-        with self.connect() as db:
-            return [json.loads(row[0]) for row in db.execute(
-                "SELECT record FROM executions WHERE task_id=? ORDER BY created", (task_id,))]
+    def execution(self, task_id, tool_id, variant, record):
+        with self.guard:
+            state = self._state(task_id)
+            ident = record.get("execution_id") or uuid.uuid4().hex
+            value = {
+                **record,
+                "execution_id": ident,
+                "tool_id": tool_id,
+                "variant": variant,
+                "run_id": state["run_id"],
+            }
+            if value["status"] in {"queued", "running"}:
+                state["current_commands"][ident] = value
+            else:
+                path = self.run_dir(task_id) / "commands.jsonl"
+                # A crash may leave a partial final line. Remove only that suffix.
+                with path.open("a+b") as stream:
+                    stream.seek(0)
+                    data = stream.read()
+                    if data and not data.endswith(b"\n"):
+                        stream.truncate(data.rfind(b"\n") + 1)
+                    stream.seek(0, 2)
+                    stream.write(canonical(value) + b"\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                state["current_commands"].pop(ident, None)
+            self._write(task_id, state)
+            return ident
 
-    def latest(self, task_id: str, tool_id: str, variant: str = "candidate") -> dict | None:
-        with self.connect() as db:
-            row = db.execute("SELECT record FROM executions WHERE task_id=? AND tool_id=? AND variant=? ORDER BY created DESC LIMIT 1",
-                             (task_id, tool_id, variant)).fetchone()
-        return json.loads(row[0]) if row else None
+    def executions(self, task_id):
+        with self.guard:
+            state = self._state(task_id)
+            path = self.run_dir(task_id) / "commands.jsonl"
+            records = {}
+            if path.exists():
+                with path.open("rb") as stream:
+                    for line in stream:
+                        if not line.endswith(b"\n"):
+                            break
+                        item = json.loads(line)
+                        records[item["execution_id"]] = item
+            for ident, record in state.get("current_commands", {}).items():
+                if ident not in records:
+                    records[ident] = record
+            for ident, reason in state.get("invalidated", {}).items():
+                if ident in records:
+                    records[ident]["reuse_invalidated"] = reason
+            return list(records.values())
 
-    def invalidate_workspace(self, task_id: str, reason: str, *, generation: str | None = None) -> None:
-        """Retain execution facts, but forbid reusing removed installation state."""
-        with self.connect() as db:
-            for row in db.execute("SELECT execution_id,record FROM executions WHERE task_id=?", (task_id,)).fetchall():
-                record = json.loads(row["record"])
-                if generation is not None and record.get("workspace_generation", generation) != generation:
-                    continue
-                record["reuse_invalidated"] = reason
-                db.execute("UPDATE executions SET record=?,updated=? WHERE execution_id=?",
-                           (canonical(record).decode(), time.time(), row["execution_id"]))
-        self.event(task_id, "workspace:checks_invalidated", {"reason": reason, "generation": generation})
+    def latest(self, task_id, tool_id, variant="candidate"):
+        return next(
+            (
+                r
+                for r in reversed(self.executions(task_id))
+                if r["tool_id"] == tool_id and r["variant"] == variant
+            ),
+            None,
+        )
 
-    def review(self, task_id: str, kind: str, record: dict) -> None:
-        with self.connect() as db:
-            db.execute("INSERT OR REPLACE INTO reviews VALUES(?,?,?)", (task_id, kind, canonical(record).decode()))
-        self.event(task_id, "review:" + kind, record)
+    def invalidate_workspace(self, task_id, reason, *, generation=None):
+        with self.guard:
+            state = self._state(task_id)
+            state["invalidated"].update(
+                {
+                    r["execution_id"]: reason
+                    for r in self.executions(task_id)
+                    if generation is None
+                    or r.get("workspace_generation", generation) == generation
+                }
+            )
+            self._write(task_id, state)
 
-    def reviews(self, task_id: str) -> dict:
-        with self.connect() as db:
-            return {row[0]: json.loads(row[1]) for row in db.execute("SELECT kind,record FROM reviews WHERE task_id=?", (task_id,))}
+    def review(self, task_id, kind, record):
+        with self.guard:
+            state = self._state(task_id)
+            state["reviews"][kind] = record
+            self._write(task_id, state)
 
-    def queue_result(self, task_id: str, path: Path, result_digest: str) -> None:
-        with self.connect() as db:
-            row = db.execute("SELECT digest,published FROM outbox WHERE task_id=?", (task_id,)).fetchone()
-            if row and row["digest"] != result_digest:
-                raise ContractError("A sealed result cannot be rewritten; resume explicitly before republishing")
-            if row and row["published"] is not None:
+    def reviews(self, task_id):
+        with self.guard:
+            return self._state(task_id).get("reviews", {})
+
+    def queue_result(self, task_id, path, result_digest):
+        with self.guard:
+            state = self._state(task_id)
+            saved = state.get("delivery")
+            if saved and saved["digest"] != result_digest:
+                raise ContractError("A sealed result cannot be rewritten")
+            state["delivery"] = saved or {
+                "payload_path": str(path),
+                "digest": result_digest,
+                "attempts": 0,
+                "published": None,
+            }
+            state["phase"] = (
+                "published" if state["delivery"]["published"] else "publish_pending"
+            )
+            self._write(task_id, state)
+
+    def delivery(self, task_id):
+        with self.guard:
+            return self._state(task_id).get("delivery")
+
+    @staticmethod
+    def result_status(delivery):
+        try:
+            data = Path(delivery["payload_path"]).read_bytes()
+            return (
+                json.loads(data).get("status")
+                if hashlib.sha256(data).hexdigest() == delivery["digest"]
+                else None
+            )
+        except (OSError, ValueError, TypeError):
+            return None
+
+    def published(self, task_id):
+        with self.guard:
+            state = self._state(task_id)
+            if not state.get("delivery"):
+                raise ContractError("Cannot complete delivery without a sealed result")
+            state["delivery"]["published"] = (
+                state["delivery"].get("published") or time.time()
+            )
+            state.update(
+                phase="published",
+                detail={
+                    "completion_boundary": "gitee_upload",
+                    "result_status": self.result_status(state["delivery"]),
+                },
+            )
+            self._write(task_id, state)
+
+    def publication_failure(self, task_id):
+        with self.guard:
+            state = self._state(task_id)
+            state["delivery"]["attempts"] += 1
+            self._write(task_id, state)
+            return state["delivery"]["attempts"]
+
+    def restart(self, task_id):
+        """Abandon an unsealed environment after Worker restart; never reuse its installs."""
+        with self.guard:
+            state = self._state(task_id)
+            if state.get("delivery"):
+                return self.task(task_id)
+            state["abandoned"] = True
+            state["detail"] = {"reason": "worker_restart", "verification": "incomplete"}
+            self._write(task_id, state)
+            return self._new(json.loads(self.task(task_id)["manifest"]))
+
+    def resume(self, task_id):
+        with self.guard:
+            state = self._state(task_id)
+            delivery = state.get("delivery")
+            if delivery and delivery["published"] is None:
+                self.phase(task_id, "publish_pending", {"reason": "retry_saved_upload"})
                 return
-            db.execute("INSERT OR IGNORE INTO outbox(task_id,payload_path,digest) VALUES(?,?,?)",
-                       (task_id, str(path), result_digest))
-            db.execute("UPDATE tasks SET phase='publishing',updated=?,detail='{}' WHERE task_id=?", (time.time(), task_id))
-        self.event(task_id, "phase:publishing", {})
-
-    def outbox(self, task_id: str) -> dict | None:
-        with self.connect() as db:
-            row = db.execute("SELECT * FROM outbox WHERE task_id=?", (task_id,)).fetchone()
-        return dict(row) if row else None
-
-    def published(self, task_id: str) -> None:
-        with self.connect() as db:
-            box = db.execute("SELECT * FROM outbox WHERE task_id=?", (task_id,)).fetchone()
-            if not box:
-                raise ContractError("Cannot complete delivery without a sealed outbox")
-            now = time.time()
-            uploaded_at = box["published"] if box["published"] is not None else now
-            detail = {"completion_boundary": "gitee_upload", "uploaded_at": uploaded_at,
-                      "result_status": self.result_status(dict(box))}
-            if box["published"] is None:
-                db.execute("UPDATE outbox SET attempts=attempts+1,published=? WHERE task_id=?", (uploaded_at, task_id))
-            db.execute("UPDATE tasks SET phase='complete',updated=?,detail=? WHERE task_id=?", (now, canonical(detail).decode(), task_id))
-            db.execute("INSERT INTO events(task_id,at,kind,detail) VALUES(?,?,?,?)", (task_id, now, "gitee_upload_complete", canonical(detail).decode()))
-
-    def publication_failure(self, task_id: str) -> int:
-        with self.connect() as db:
-            db.execute("UPDATE outbox SET attempts=attempts+1 WHERE task_id=?", (task_id,))
-            return db.execute("SELECT attempts FROM outbox WHERE task_id=?", (task_id,)).fetchone()[0]
-
-    def resume(self, task_id: str) -> None:
-        row = self.task(task_id)
-        box = self.outbox(task_id)
-        if box and box["published"] is None and row["phase"] in {"publishing", "incomplete"}:
-            self.phase(task_id, "publishing", {"resumed": True, "reason": "retry_saved_upload"})
-            return
-        if row["phase"] not in {"incomplete", "complete"} or (row["phase"] == "complete" and (not box or self.result_status(box) != "infra_error")):
-            raise ContractError("Only unfinished infrastructure results or pending uploads can be explicitly resumed")
-        with self.connect() as db:
-            # Preserve evidence; resumed tests use a new immutable run identity.
-            run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "-" + uuid.uuid4().hex[:8]
-            db.execute("UPDATE tasks SET run_id=?,phase='queued',updated=?,detail='{}' WHERE task_id=?", (run_id, time.time(), task_id))
-            db.execute("DELETE FROM outbox WHERE task_id=?", (task_id,))
-        self.event(task_id, "explicit_resume", {"previous_run_id": row["run_id"], "run_id": run_id})
+            if delivery and self.result_status(delivery) != "infra_error":
+                raise ContractError(
+                    "Only infrastructure results may be explicitly rerun"
+                )
+            self._new(json.loads(self.task(task_id)["manifest"]))

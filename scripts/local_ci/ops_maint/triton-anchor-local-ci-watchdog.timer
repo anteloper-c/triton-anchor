@@ -1,0 +1,10 @@
+[Unit]
+Description=Independent same-host watchdog
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Local CI health independently of poller
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+RandomizedDelaySec=15
+Persistent=true
+
+[Install]
+WantedBy=timers.target

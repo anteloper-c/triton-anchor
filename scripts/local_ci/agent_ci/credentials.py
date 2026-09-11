@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate the dedicated company Codex configuration used by Local CI."""
+
 from __future__ import annotations
 
 import json

@@ -13,9 +13,15 @@
     "receive",
     "pages",
     "cancel",
-    "watchdog",
     "cross-branch-pr",
     "cross-branch-push",
     "merge-result"
+  ],
+  "control_version": "pinned-release-ref-and-sha",
+  "required_contexts": [
+    "local-ci/basic",
+    "local-ci/api",
+    "local-ci/security",
+    "local-ci/summary"
   ]
 }

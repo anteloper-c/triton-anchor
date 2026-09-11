@@ -1,82 +1,44 @@
-# Local CI v4：Codex 主导构建、测试与审查
+# Local CI 统一版本
 
-本目录执行 new_CI.md 顶层设计与已确认的任务容器方案。GitHub 前置检查及接收实现位于 CI_dev，main 保留必要事件路由。服务器通过 Gitee 中转收发任务与结果，模型沿用公司实际服务。
+本目录整合 `ci_repo` 的分阶段 tools 与业务展示、`CI_dev` 的任务冻结与环境准备。唯一业务链是 **GitHub → Gitee → Local CI → Gitee → GitHub**。
 
-## 当前执行入口
+## 运行模型
 
-`python3 scripts/local_ci/agent_ci/worker.py --config CONFIG`
+Gateway 顺序执行 Basic/API/Security、按需审批，冻结 PR 合并结果与 base/head，并在源码及子模块对象到达 Gitee 后发布 task manifest。Worker 使用相同固定控制版本，按受信 diff policy 计算最低范围。纯文档走轻量 control_plane；仅改测试必须执行对应测试；AST 等价不自动免测；full 在支持的环境包含全量 FlagGems。
 
-宿主机普通 CI 用户运行 Harness、Rootless Docker 和用户级 systemd 服务；配置由服务器维护，不能从 PR checkout 读取。部署、预检、可信镜像准备和健康发布见 [deploy/README.md](deploy/README.md)。执行器只使用 JSON 配置及实际公司 Codex config.toml/auth.json。
+Worker 从 [AI_CI_PROGRAM.md](AI_CI_PROGRAM.md) 直接启动一个 Agent，每任务一个 Rootless 容器、一个非 root 执行用户。Agent、构建、安装和测试使用同一任务环境。base 与 experiment 按需准备，表示数据版本。生产配置、状态文件、命令日志与封存包由宿主管理。
 
-Harness 验证冻结任务及 merge parents，选择精确 LLVM 对应的可信镜像，为当前 task/run 创建独立任务容器。Codex 与构建、测试在同一任务容器中，通过四个不同的非 root UID 隔离 Codex、candidate、base 和 diagnostic。宿主机 Harness 掌握 journal、调度、权限、容器生命周期和结果发布；只有它能调用 Docker 管理接口执行容器 UID 0 的准备、取证与清理操作。
+[tools](tools/README.md) 的 `runner.plan(tool_id, context, parameters)` 是工具目录、参数与依赖的唯一来源。MCP 仅提供任务接口。前后端 build/install/tests/smoke 分开；后端 build 默认只依赖 environment，安装才依赖前端安装。原生命令可通过 `record_check` 关联实际报告，使用与内置工具相同的检查判据；既有有效执行可以复用。零用例、全部跳过、缺少报告、被 shell 掩盖的失败均不能变绿。相关测试还检查实际测试进程的 wheel import 来源。
 
-Codex 的唯一 Skill 入口为 [skills/local-ci/SKILL.md](skills/local-ci/SKILL.md)。`agent_ci/codex.py` 通过 `agent_ci/skill.py` 显式读取入口和声明的 references，再启动公司配置的 `codex exec`。每任务运行期只有一个 Codex 会话，不启动多 Agent。Skill 规定工作循环，MCP 提供任务接口，`tools/` 执行真实业务检查；`agent_ci/policy.py` 依据冻结 base/tested 内容产生 `impact/v5`、不可减免的必检和可由 Codex 按具体风险选择的推荐检查。
+## 状态、证据与发布
 
-容器内 Codex 使用 `danger-full-access`、`approval_policy=never`，新会话与恢复会话均启用原生 Shell、unified exec 和文件编辑。它可以直接分析源码、编写脚本、安装实验依赖和运行定向实验；正式检查及阻断所需的确定性复现仍通过 MCP 执行并由 Harness 核验。
+```text
+state_dir/
+  runs/<task>/<run>/
+    task.json, state.json, commands.jsonl
+    logs/, artifacts/, sealed/
+  work/<task>/<run>/
+```
 
-每次启动保存 `TASK_SKILL.md` 快照和 `skill-manifest.json`（入口、各文件 SHA256 及整体摘要）。任务、公司模型配置与 Skill 身份不一致时，在模型启动前失败。缺入口、引用越界或文件缺失时直接失败，不回退到其他提示词。
+`state.json` 串行、原子更新；`commands.jsonl` 仅接纳完整完成记录。阶段为 `preparing/running/sealing/publish_pending/published`，与 `pass/fail/infra_error/cancelled` 结论分开。没有 SQLite 或独立 outbox 状态机。
 
-## 基础工具与诊断
+Agent 会话中断且 Worker/容器仍完整时可复用该 run 的有效记录。Worker 重启时，未封存任务停止旧容器、保留证据并创建新 run；不接管半安装环境。已封存任务只补清理/上传，网络故障不重编。单命令取消只针对该进程组，任务结束才停止整个容器。
 
-`tools/run_tool.sh TOOL_ID` 一次执行一项基础工具；参数、依赖和产物见 [tools/README.md](tools/README.md)。
+Git 保存小 result、execution-summary 与 delivery-index；压缩日志、JUnit、复现与必要测量走 Gitee CI Release 附件。摘要验证通过但必要附件未交付时，GitHub summary 仍 pending。可选大工件不阻塞完整结论。默认保留 30 天，必要 pending 受保护；容量不足暂停新任务。
 
-Triton 3.0 提供环境与依赖、Frontend build、wheel 安装/import、Frontend smoke、Backend rebuild、Backend smoke/JIT、FlagGems、Compile-time performance、Pass profiling、IR serialization。其他已配置版本仅提供前四项及相关源码/控制面检查，后端项显示 not_applicable。3.0 已声明能力损坏属于 infra_error，不能降级为不适用。
+Dashboard 保留任务与证据、全量算子、后端与性能三个业务模块。[ops_maint](ops_maint/README.md) 统一环境、配置、部署、健康与清理。公开 health 的采集及 watchdog 均在同一 CI 主机独立运行；上传前裁剪私有字段，不保留 SMTP/运维 Issue 通知。整机停机时，页面根据最后快照显示过期，同机 watchdog 无法继续主动观察。
 
-冻结 diff 中同路径、普通模式的 Python 修改会用包含 type comments 的 AST 比较；只有 AST 等价才按无可执行语义变化处理。新增、删除、重命名、模式变化、解析失败及非 Python 配置继续按路径风险处理。纯文档和可信 Python 注释/空白仅硬性执行 environment；仅测试代码由 Codex 选择定向验证；控制面增加 contract tests；普通 Frontend/API/packaging 强制前端链；pipeline、AnchorIR、adapter、HWCapability、C++/MLIR 再强制后端 rebuild/smoke；LLVM、环境、未知或 full 请求覆盖当前环境支持的完整十项。混合改动取风险并集，不再仅因跨普通目录自动全量。程序 Markdown、prompt、schema 和运行配置不算纯文档。所有 PR 必须完成信息校验和架构审查。
+## 开发与部署
 
-Codex 通过当前任务 MCP 的 `start_check` 调用基础工具，也可使用 `run_custom` 的三种模式：
+本地回归：
 
-| 模式 | 用途与证据边界 |
-| --- | --- |
-| diagnostic（默认） | 在正式检查通过前诊断环境、源码和失败原因；读取正式 candidate/base 环境，在独立临时目录执行，不满足最低检查或原始 SHA 归因 |
-| reproduction | 在已验证的正式依赖上复现问题；源码复现使用受限 source-only 路径，证据绑定 candidate/base 和同一复现脚本 |
-| experiment | 在单独副本中尝试修改和验证假设，可继续同一 experiment；不改写正式安装状态，不满足最低检查或原始 SHA 归因 |
+```bash
+python3 -m pytest scripts/ci/tests scripts/local_ci/agent_ci/tests \
+  scripts/local_ci/tools/tests scripts/local_ci/ops_maint/tests -q
+```
 
-通用诊断允许任务内 Python/Bash，不是宿主机 shell、任意 Docker 参数或凭据访问接口。额外 AI 高风险阻断仍要求相同复现在 candidate 两次失败、base 通过。生成代码、命令、退出状态及归因证据由执行器保存，模型文字不能代替执行记录。业务决定只有 continue/block，映射见 [Skill 说明](skills/local-ci/README.md)。
+运行测试需 Python 3.10+、pytest、PyYAML、Git；编译测试还需要相应 LLVM、Python 构建依赖、后端及设备/仿真环境。控制程序测试不代替真实工具链验收。
 
-原生实验使用 `/codex/workspace/candidate/` 下独立的 `checkout`、`venv`、可用时的 `backend` 及 `home/tmp/cache/state`。源码从冻结候选版本复制，排除可变 Git 元数据，用来源清单绑定提交；修改此副本不会改变正式 candidate/base 环境。原生命令事件和源码快照保存在宿主私有任务记录中，不直接充当正式通过证据，也不自动上传 Gitee。需要形成可发布的确定性证据时，把实验整理为 MCP 的检查或复现。
+部署先填写 [配置模板](ops_maint/config.example.json)，完成 Gitee 源/子模块镜像、模型凭据、精确镜像与 profile 实测，再按 [部署说明](ops_maint/README.md) 安装。Gateway 的固定控制 ref/SHA、接收工作流和 required checks 配置见 [GitHub 侧配置](../ci/README.md)。实际切换前暂停旧版接单并排空在途任务。
 
-## 镜像、任务容器与权限
-
-长期保留的是按版本、精确 LLVM 和可信配方构建并验证的镜像及可信依赖缓存。每日错峰更新镜像，验证成功后供新任务使用；已运行任务固定原镜像 ID。PR 使用的新 LLVM 不能自动晋升正式镜像。来源必须是公司可达可信镜像、源码或本地缓存，并验证摘要；3.0 后端准备失败仍阻断。
-
-任务容器根文件系统、可信控制代码和依赖底座只读。candidate/base 分别拥有任务私有 checkout、venv、构建产物和可写缓存；诊断及实验使用各自目录。任务不能把修改写回可信镜像或缓存，也不通过提交运行中的 PR 容器生成镜像。每个 attempt 拥有独立容器和数据卷，不跨 PR 复用可写环境。
-
-公司模型配置、认证和 MCP token 只进入任务的 Codex 私有目录；另外三个 UID 不可读取。任务容器不挂载 Docker socket、完整宿主机 state、Gitee/GitHub 凭据或整个 home。自动执行不使用 sudo，任务进程设置 no_new_privs。默认全局一个构建测试任务，MAX_JOBS=8；CPU、内存和进程数量限额由可信部署配置决定，Rootless endpoint 固定且禁止回退系统 Docker。
-
-四个 UID 是容器内的权限和进程清理边界，不需要四个宿主账号，也不因 UID 数量增加常驻内存：Codex 持有会话，candidate/base 保护彼此的正式安装状态，diagnostic 执行不能修改正式状态的生成脚本。原生命令与 Codex 使用同一身份，能够访问它的模型认证和任务 RPC；四身份隔离不保护凭据免受 Codex 自己启动的程序读取。正式测试和复现仍使用隔离的执行身份。
-
-`danger-full-access` 解除 Codex 自身沙箱，不授予容器 root 权限。任务根文件系统仍只读，不能直接运行 apt 安装系统包或修改全局驱动；可在原生实验 venv 和任务目录安装本地依赖。基础镜像的系统依赖通过可信镜像配方更新，再创建新任务环境。
-
-收尾先确认任务进程已终止、保存执行证据并封存结果，再删除私有认证、停止任务容器，按保留策略清理数据。进程清理失败记录 `environment_cleanup`，不能生成整体通过；未确认停止或数据清理失败进入健康异常。任务容器不执行旧常驻环境的设备复用检查；3.0 的后端能力仍通过可信镜像验证和正式任务检查确认。
-
-## 状态、证据与恢复
-
-宿主机 `state_dir` 保存 SQLite journal、task/policy、工具记录、会话身份、镜像/attempt registry、lease 和 outbox。模型凭据和私有会话资料不发布到结果仓库。
-
-任务状态：queued → preparing → running → publishing → complete。`publishing` 表示封存结果待上传 Gitee；上传成功即本地 complete。完成表示本地交付完成，pass/fail/infra_error 分别表示通过、失败和未完成。取消和 supersede 保存 cancelled。
-
-执行证据绑定 task/run、被测 SHA、镜像与 attempt 身份、环境指纹、依赖 execution ID、命令、退出码和 artifacts。恢复时分两种情况：
-
-- 原容器、镜像、数据卷及归属均能验证，才恢复同一 attempt；依赖和证据仍有效的成功项可复用，原 Codex 会话也须满足任务、模型和 Skill 身份检查。
-- 容器丢失、数据已回收或必须更换 attempt 时，保留已归档证据和历史事实，使依赖原环境的通过记录失效，在新任务容器重新安装和检查。新 attempt 启动新 Codex 会话，读取已有上下文，不冒用旧会话或旧安装状态。
-
-服务重启自动接续未封存任务；启动恢复先确认旧任务进程和 lease 的状态。显式续跑须先停止 worker，再执行 `python3 scripts/local_ci/agent_ci/worker.py --config CONFIG --resume TASK_ID`，随后启动 worker。`--resume` 与接单、回收共用 poll.lock。已上传 infra_error 可创建新 run；待上传任务继续原 outbox，不重新构建。
-
-成功任务封存后清理可回收任务数据；失败/待恢复数据默认保留 24 小时，scratch 逻辑容量预算默认 100 GiB。活动或未确认停止的任务不能为满足预算而删除。工具日志与证据在回收前归档到宿主机；容器丢失不删除已有归档记录，但尚未导出的容器内容不能伪造为完整证据。持久证据与 outbox 不计入 scratch 预算；state 空闲不足时告警、阻止新构建并继续已有上传。
-
-## 单向结果发布与监控
-
-结果目录为 `runs/v4/<task_id>/<run_id>/`。`result.json` 封存后不可修改，Codex 到此结束；上传失败只重发原结果，Harness 保留 outbox 并在后续轮询重试，不再调用模型。Docker 故障不应阻断已有 outbox 上传或独立健康发布。
-
-GitHub 独立读取并校验结果，没有 Gitee 回执和本地等待。保持 status → comment → Pages 顺序；发布失败由 Actions 显示并由后续定时接收重试。因此 PR status 成功不单独证明 Dashboard 已更新。非 v4 schema 不能满足当前门禁。
-
-Gitee v4 结果默认保留 30 天，按结果文件的 Git 上传提交时间计算；独立 retention timer 删除过期 run 并保留身份、摘要与过期标记。周期独立于 GitHub 发布，过期结果显示 expired，不回退发布更老 run。此清理不改写 Git 历史，也不删除服务器任务证据；接收长期中断须在到期前处理或调整 `results_retention_days`。
-
-独立用户级 health timer 汇总服务、Rootless runtime、镜像、task attempts、磁盘及执行状态并发布心跳。Docker 不可达也生成错误快照。GitHub watchdog 读取心跳；SMTP 是可选通道，未配置时仍维护异常、恢复和健康输出，但不积压邮件；已配置时支持去重、失败重试和恢复通知。GitHub PR 评论和状态发布不依赖 SMTP。公开摘要不复制主机路径、配置或凭据。中转不可达与主机离线分别处理。GitHub schedule 有平台延迟，告警窗口须容纳发布和调度间隔；模型 API 仍只在服务器使用。
-
-## 验收与部署
-
-开发期按模块运行 `agent_ci/tests`、`environments/tests`、`tools/tests`、`maintenance/tests` 和 `deploy/tests`；这些是 Local CI 实现的回归测试，不进入普通 GitHub Basic CI。生成报告和原始日志不得提交。上线前仍须执行 [部署预检](deploy/README.md)，验证实际公司镜像、LLVM/后端、设备、模型、邮件及 Gitee 配置。
-
-旧 deterministic→AI advisory、常驻可写环境及旧 Codex/容器入口均不作为当前执行路径。历史验收材料可从对应 Git 提交读取，不作为当前任务容器部署依据。
+合并来源、取舍和验证边界见 [合并记录](../../docs/local_ci_merge.md)。

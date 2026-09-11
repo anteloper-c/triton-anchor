@@ -1,9 +1,10 @@
-"""Private index of Codex CLI native exploration events, never CI check facts.
+"""Index of observed native events; formal coverage is established by the shared report parser.
 
 The CLI JSON stream describes commands and file changes it reports. This is an
 execution aid, not an exhaustive operating-system audit or proof that a formal
 check ran. The unindexed stream remains in the separate private event log.
 """
+
 from __future__ import annotations
 
 import copy
@@ -21,16 +22,27 @@ ITEM_TYPES = {"command_execution", "file_change"}
 
 
 class NativeAudit:
-    def __init__(self, path: Path, identity: dict, event_log: Path,
-                 secrets: Iterable[str] = ()):
+    def __init__(
+        self, path: Path, identity: dict, event_log: Path, secrets: Iterable[str] = ()
+    ):
         self.path = Path(path)
-        self.identity = {name: copy.deepcopy(identity[name]) for name in IDENTITY_FIELDS}
+        self.identity = {
+            name: copy.deepcopy(identity[name]) for name in IDENTITY_FIELDS
+        }
         self.event_log = str(event_log)
-        self.secrets = sorted({value for value in secrets if isinstance(value, str) and value},
-                              key=len, reverse=True)
+        self.secrets = sorted(
+            {value for value in secrets if isinstance(value, str) and value},
+            key=len,
+            reverse=True,
+        )
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        flags = (os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
-                 | getattr(os, "O_NONBLOCK", 0))
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_APPEND
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
         descriptor = os.open(self.path, flags, 0o600)
         try:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
@@ -41,24 +53,30 @@ class NativeAudit:
             os.close(descriptor)
             raise
 
-    def _redact(self, value):
+    def redact(self, value):
         if isinstance(value, str):
             for secret in self.secrets:
                 value = value.replace(secret, "[REDACTED]")
             return value
         if isinstance(value, list):
-            return [self._redact(item) for item in value]
+            return [self.redact(item) for item in value]
         if isinstance(value, dict):
-            return {self._redact(key): self._redact(item) for key, item in value.items()}
+            return {self.redact(key): self.redact(item) for key, item in value.items()}
         return value
 
     def ingest(self, event: dict) -> None:
-        if (not isinstance(event, dict) or not isinstance(event.get("type"), str)
-                or event["type"] not in EVENT_TYPES):
+        if (
+            not isinstance(event, dict)
+            or not isinstance(event.get("type"), str)
+            or event["type"] not in EVENT_TYPES
+        ):
             return
         item = event.get("item")
-        if (not isinstance(item, dict) or not isinstance(item.get("type"), str)
-                or item["type"] not in ITEM_TYPES):
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("type"), str)
+            or item["type"] not in ITEM_TYPES
+        ):
             return
         if not isinstance(item.get("id"), str) or not item["id"]:
             return
@@ -83,18 +101,32 @@ class NativeAudit:
                 return
             native["changes"] = []
             for change in changes:
-                if (not isinstance(change, dict) or not isinstance(change.get("path"), str)
-                        or not isinstance(change.get("kind"), str)):
+                if (
+                    not isinstance(change, dict)
+                    or not isinstance(change.get("path"), str)
+                    or not isinstance(change.get("kind"), str)
+                ):
                     return
-                native["changes"].append({key: change[key] for key in ("path", "kind", "diff", "old_path")
-                                          if isinstance(change.get(key), str)})
-        record = {"schema": "triton-anchor-native-exploration/v1",
-                  **self.identity, "source_event_log": self.event_log,
-                  "recorded_at": datetime.now(timezone.utc).isoformat(),
-                  "evidence_kind": "exploration", "counts_as_check": False,
-                  "event_type": event["type"], **native}
-        self.stream.write(json.dumps(self._redact(record), ensure_ascii=True,
-                                     separators=(",", ":")) + "\n")
+                native["changes"].append(
+                    {
+                        key: change[key]
+                        for key in ("path", "kind", "diff", "old_path")
+                        if isinstance(change.get(key), str)
+                    }
+                )
+        record = {
+            "schema": "triton-anchor-native-exploration/v1",
+            **self.identity,
+            "source_event_log": self.event_log,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "evidence_kind": "native_observation",
+            "event_type": event["type"],
+            **native,
+        }
+        self.stream.write(
+            json.dumps(self.redact(record), ensure_ascii=True, separators=(",", ":"))
+            + "\n"
+        )
         self.stream.flush()
         if event["type"] == "item.completed":
             os.fsync(self.stream.fileno())

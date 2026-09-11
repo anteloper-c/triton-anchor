@@ -291,9 +291,8 @@ pytest scripts/ci/tests -q
 
 # 按需运行 Local CI 实现测试（普通 GitHub Basic CI 不执行）
 PYTHONPATH=scripts/local_ci pytest \
-  scripts/local_ci/agent_ci/tests scripts/local_ci/environments/tests \
-  scripts/local_ci/tools/tests scripts/local_ci/maintenance/tests \
-  scripts/local_ci/deploy/tests -q
+  scripts/local_ci/agent_ci/tests scripts/local_ci/tools/tests \
+  scripts/local_ci/ops_maint/tests -q
 ```
 
 > 更详细的 Local CI 使用、维护和故障排查说明见 `scripts/local_ci/README.md` 和 `scripts/local_ci/DEVELOPMENT_GUIDE.md`。
@@ -322,7 +321,7 @@ triton-anchor/
 │   ├── README.md                #   Local CI 使用说明
 │   ├── DEVELOPMENT_GUIDE.md     #   Local CI 长期开发指南
 │   ├── agent_ci/                #   Worker、Codex、MCP、任务状态与单向发布
-│   ├── environments/            #   Rootless 镜像与任务容器生命周期
+│   ├── ops_maint/               #   Rootless 环境、部署、健康与证据保留
 │   ├── tools/                   #   十项基础检查的确定性工具入口
 │   └── deploy/                  #   部署、预检与用户级 systemd 配置
 ├── .github/                     # GitHub 配置

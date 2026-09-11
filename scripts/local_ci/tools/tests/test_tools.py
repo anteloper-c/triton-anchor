@@ -1,401 +1,407 @@
-"""Tool boundary tests; subprocess fakes replace expensive builds, never the dispatcher."""
+"""Essential behavior checks for related CI responsibilities."""
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
+
 import json
+
 import os
-from shlex import join as shlex_join
+
 import subprocess
+
 import sys
+
 import tempfile
-import types
+
 import unittest
+
+import venv
+
 from pathlib import Path
-from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 
+sys.path.insert(0, str(ROOT))
 
-def load(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools.basic_tools import actions, runner  # noqa: E402
 
 
-tool = load("local_ci_independent_tools", ROOT / "tools/run_tool.py")
-selector = load("local_ci_tool_flaggems_selector", ROOT / "deterministic_ci/flaggems/select_flaggems_tests.py")
-sys.modules["select_flaggems_tests"] = selector
-batch = load("local_ci_tool_flaggems_batch", ROOT / "deterministic_ci/flaggems/batch_test_flaggems.py")
-ir_benchmark = load("local_ci_tool_ir_benchmark", ROOT / "deterministic_ci/performance/ir_serialization_benchmark.py")
-profile_compare = load("local_ci_tool_profile_compare", ROOT / "deterministic_ci/performance/compare_pass_profile.py")
-profile_benchmark = load("local_ci_tool_profile_benchmark", ROOT / "deterministic_ci/performance/pass_profile_benchmark.py")
-compile_benchmark = load("local_ci_tool_compile_benchmark", ROOT / "deterministic_ci/performance/compile_benchmark.py")
+FG_ROOT = ROOT / "tools" / "basic_tools" / "flaggems"
 
-FAKE_PYTHON = """#!/usr/bin/env python3
-import json,os,pathlib,sys
-args=sys.argv[1:]
-with open(os.environ['FAKE_CALLS'],'a') as f: f.write(json.dumps(args)+'\\n')
-if args[:2]==['-m','build']:
- p=pathlib.Path('dist'); p.mkdir(exist_ok=True); (p/os.environ.get('FAKE_WHEEL_NAME','triton_anchor-0.0.0-py3-none-any.whl')).write_bytes(b'fake wheel boundary')
-elif args[:3]==['-m','pip','install']:
- sys.exit(int(os.environ.get('FAKE_INSTALL_EXIT','0')))
-elif args[:2]==['-I','-c']:
- print(json.dumps({'distribution_version':'0.0.0','imports':{'triton':'/fake/site-packages/triton/__init__.py','triton_anchor':'/fake/site-packages/triton_anchor/__init__.py'}}))
-elif args and pathlib.Path(args[0]).name=='batch_test_flaggems.py':
- p=pathlib.Path(args[args.index('--artifact-dir')+1]); (p/'flaggems-summary.json').write_text(json.dumps({'summary':{'status':'pass','total':1,'passed':1}}))
- pathlib.Path(args[args.index('--selected-output')+1]).write_text('fixture-selected')
-elif args and pathlib.Path(args[0]).name in ('compile_benchmark.py','pass_profile_benchmark.py','ir_serialization_benchmark.py'):
- name=pathlib.Path(args[0]).name; m={'count':1,'median_ms':1.0}
- if name=='compile_benchmark.py': summary={'all_correct':True,'compile_est':m}
- elif name=='pass_profile_benchmark.py': summary={'passes':{'canonicalize':{'wall_ms':m}}}
- else: summary={'module_count':1,'metrics':{k:m for k in ('serialize','deserialize','roundtrip')}}
- d={'summary':{'add':summary},'metadata':{},'events':[{'kernel':'add','kind':'pass'}],'raw':[{'kernel':'add','roundtrip_verified':True}]}
- pathlib.Path(args[args.index('--output-json')+1]).write_text(json.dumps(d))
-else:
- sys.exit(0)
-"""
+sys.path.insert(0, str(FG_ROOT))
+
+from select_flaggems_tests import select_entries  # noqa: E402
 
 
-class ToolBoundaryTests(unittest.TestCase):
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="independent-ci-tools-")
-        self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
-        self.checkout = self.root / "checkout"
-        self.checkout.mkdir()
-        (self.checkout / "placeholder").write_text("fixture")
-        for args in (["init", "-q"], ["add", "."], ["-c", "user.name=Tool Tests", "-c", "user.email=tests@example.invalid", "commit", "-qm", "fixture"]):
-            subprocess.run(["git", "-C", str(self.checkout), *args], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.sha = subprocess.check_output(["git", "-C", str(self.checkout), "rev-parse", "HEAD"], text=True).strip()
-        self.python = self.root / "fixture-python"
-        self.python.write_text(FAKE_PYTHON)
-        self.python.chmod(0o755)
-        self.calls = self.root / "calls.jsonl"
-        self.env = {**os.environ, "ANCHOR_DIR": str(self.checkout), "LOCAL_CI_TASK_ROOT": str(self.root / "task"),
-                    "LOCAL_CI_ARTIFACT_DIR": str(self.root / "artifacts/build"), "LOCAL_CI_TESTED_SHA": self.sha,
-                    "PYTHON_BIN": str(self.python), "LOCAL_CI_TOOL_PYTHON": sys.executable, "PACKAGE_TOOL": "pip",
-                    "FRONTEND_BUILD_MODE": "fresh", "FAKE_CALLS": str(self.calls), "RUN_BACKEND_STAGES": "false"}
-        for key in ("PYTHON_VENV_ACTIVATE", "TRUSTED_ANCHOR_ENVSETUP", "LOCAL_CI_TOOL_RESULT"):
-            self.env.pop(key, None)
+def context() -> dict:
+    return {
+        "source_dir": "/workspace/tasks/test/source",
+        "artifact_dir": "/workspace/tasks/test/artifacts",
+        "task_id": "test",
+        "target_sha": "a" * 40,
+        "base_sha": "b" * 40,
+        "triton_version": "3.0",
+        "tools_dir": "/opt/anchor-ci/tools",
+        "completed_tools": list(runner.TOOL_IDS),
+        "profile": {
+            "id": "triton-3.0",
+            "llvm_revision": "c" * 40,
+            "tools": {
+                "backend_dir": "/workspace/backend",
+                "backend_wheel_pattern": "triton_sophgo-*.whl",
+                "expected_backend": "sophgo",
+                "backend_smoke_argv": ["python3", "tests/jit.py"],
+                "backend_test_paths": ["tests"],
+                "flaggems_dir": "/workspace/FlagGems",
+            },
+        },
+    }
 
-    def invoke(self, name, **changes):
-        env = {**self.env, "LOCAL_CI_ARTIFACT_DIR": str(self.root / "artifacts" / name), **changes}
-        completed = subprocess.run(["bash", str(ROOT / "tools/run_tool.sh"), name], env=env, text=True, capture_output=True)
-        result_path = Path(env["LOCAL_CI_ARTIFACT_DIR"]) / "result.json"
-        return completed, json.loads(result_path.read_text()) if result_path.exists() else None
 
-    def test_frontend_build_does_not_install_or_invoke_other_stages(self):
-        completed, result = self.invoke("frontend_build")
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
-        self.assertEqual(calls, [["-m", "build", "--wheel", "--no-isolation"]])
-        self.assertEqual(result["tool_id"], "frontend_build")
-        state = json.loads((self.root / "task/state/frontend-wheel.json").read_text())
-        self.assertEqual(state["tested_sha"], self.sha)
-        self.assertEqual(state["sha256"], tool.digest(Path(state["path"])))
+class ToolPlanningTests(unittest.TestCase):
+    def test_all_tools_plan_without_local_container_paths(self):
+        for name in runner.TOOL_IDS:
+            with self.subTest(name=name):
+                result = runner.plan(name, context())
+                self.assertEqual(result["status"], "ready")
+                self.assertTrue(result["commands"])
+                self.assertTrue(
+                    all(
+                        cmd["argv"] and cmd["cwd"] and cmd["timeout"] > 0
+                        for cmd in result["commands"]
+                    )
+                )
 
-    def test_trusted_envsetup_preserves_task_venv_and_concurrency(self):
-        setup = self.root / "trusted-envsetup.sh"
-        setup.write_text('export MAX_JOBS=64 CMAKE_BUILD_PARALLEL_LEVEL=64 NINJAFLAGS=-j64\n'
-                         'export PYTHON_BIN=/shared/python HOME=/shared/home ANCHOR_DIR=/shared/checkout\n'
-                         'export LOCAL_CI_TASK_ROOT=/shared/task PATH=/usr/bin:/bin\n')
-        with patch.dict(os.environ, {**self.env, "MAX_JOBS": "3", "CMAKE_BUILD_PARALLEL_LEVEL": "3", "NINJAFLAGS": "-j3"}, clear=True):
-            ctx = tool.Context("frontend_build")
-            ctx.source(setup)
-        self.assertEqual(str(self.python), ctx.python)
-        self.assertEqual(str(self.checkout), ctx.env["ANCHOR_DIR"])
-        self.assertEqual(str(self.root / "task"), ctx.env["LOCAL_CI_TASK_ROOT"])
-        self.assertEqual(("3", "3", "-j3"), tuple(ctx.env[key] for key in ("MAX_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "NINJAFLAGS")))
-        self.assertTrue(ctx.env["PATH"].startswith(str(self.python.parent) + os.pathsep))
+    def test_missing_backend_on_three_zero_is_configuration_error(self):
+        ctx = context()
+        ctx["profile"]["tools"].pop("backend_smoke_argv")
+        with self.assertRaisesRegex(ValueError, "real backend JIT"):
+            runner.plan("backend_smoke", ctx)
+        ctx = context()
+        ctx["profile"]["tools"].pop("backend_test_paths")
+        with self.assertRaisesRegex(ValueError, "backend_test_paths"):
+            runner.plan("backend_tests", ctx)
 
-    def test_install_is_independent_and_validates_wheel_hash(self):
-        self.assertEqual(self.invoke("frontend_build")[0].returncode, 0)
-        completed, result = self.invoke("wheel_install_import")
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("installation", result["details"])
-        wheel = next((self.checkout / "dist").glob("*.whl"))
-        wheel.write_bytes(b"tampered")
-        previous = self.calls.read_text()
-        completed, result = self.invoke("wheel_install_import")
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("hash", result["error"])
-        self.assertEqual(self.calls.read_text(), previous)
+    def test_builds_and_suites_have_independent_dependencies(self):
+        ctx = context()
+        ctx["completed_tools"] = ["environment"]
+        for tool in ("frontend_build", "backend_build"):
+            spec = runner.plan(tool, ctx)
+            self.assertEqual(spec["dependencies"], ["environment"])
+            actions_used = [
+                command["argv"][-2]
+                for command in spec["commands"]
+                if "actions.py" in " ".join(command["argv"])
+            ]
+            self.assertNotIn("install_wheel", actions_used)
+            self.assertNotIn("backend_discovery", actions_used)
+        ctx["completed_tools"] = ["backend_build"]
+        with self.assertRaisesRegex(ValueError, "frontend_install"):
+            runner.plan("backend_install", ctx)
+        ctx["completed_tools"].append("frontend_install")
+        self.assertEqual(
+            runner.plan("backend_install", ctx)["dependencies"],
+            ["backend_build", "frontend_install"],
+        )
+        ctx["completed_tools"] = ["frontend_install", "backend_install"]
+        for tool in (
+            "frontend_tests",
+            "backend_tests",
+            "frontend_smoke",
+            "backend_smoke",
+        ):
+            self.assertEqual(runner.plan(tool, ctx)["status"], "ready")
 
-    def test_real_command_exit_code_is_preserved(self):
-        self.assertEqual(self.invoke("frontend_build")[0].returncode, 0)
-        completed, result = self.invoke("wheel_install_import", FAKE_INSTALL_EXIT="17")
-        self.assertEqual(completed.returncode, 17)
-        self.assertEqual(result["exit_code"], 17)
-        self.assertEqual(result["commands"][-1]["exit_code"], 17)
-
-    def test_install_json_is_not_corrupted_by_python_or_native_import_output(self):
-        self.assertEqual(self.invoke("frontend_build")[0].returncode, 0)
-        site = self.root / "site"
-        site.mkdir()
-        for name in ("triton", "triton_anchor"):
-            package = site / name
-            package.mkdir()
-            (package / "__init__.py").write_text(
-                "import os\nprint('python import diagnostic')\nos.write(1,b'native import diagnostic\\n')\n"
+    def test_missing_backend_sdk_does_not_wrap_frontend_commands(self):
+        ctx = context()
+        ctx["profile"]["tools"]["backend_env_scripts"] = [
+            {"path": "/unavailable/backend/envsetup.sh", "args": ["PIO_CMODEL"]}
+        ]
+        for tool in (
+            "environment",
+            "frontend_build",
+            "frontend_install",
+            "frontend_tests",
+            "frontend_smoke",
+        ):
+            self.assertTrue(
+                all(
+                    command["argv"][0] != "bash"
+                    for command in runner.plan(tool, ctx)["commands"]
+                )
             )
-        metadata = site / "triton_anchor-0.0.0.dist-info"
-        metadata.mkdir()
-        (metadata / "METADATA").write_text("Name: triton-anchor\nVersion: 0.0.0\n")
-        (metadata / "RECORD").write_text("triton/__init__.py,,\ntriton_anchor/__init__.py,,\n")
-        ctx = tool.Context("wheel_install_import", self.env)
-        ctx.sha = self.sha
-        def run(args, **kwargs):
-            if args[1:3] != ["-I", "-c"]:
-                return ""
-            code = "import sys;sys.path.insert(0," + repr(str(site)) + ")\n" + args[3]
-            result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True)
-            self.assertIn("python import diagnostic", result.stderr)
-            self.assertIn("native import diagnostic", result.stderr)
-            return result.stdout
-        with patch.object(ctx, "run", side_effect=run):
-            tool.wheel_install_import(ctx)
-        self.assertEqual(ctx.details["installation"]["distribution_version"], "0.0.0")
+        for tool in runner.BACKEND_TOOLS:
+            self.assertTrue(
+                all(
+                    command["argv"][:2]
+                    == ["bash", "/opt/anchor-ci/tools/basic_tools/env_exec.sh"]
+                    for command in runner.plan(tool, ctx)["commands"]
+                )
+            )
 
-    def backend_env(self):
-        backend = self.root / "backend"
-        backend.mkdir(exist_ok=True)
-        return {"RUN_BACKEND_STAGES": "true", "BACKEND_PATH": str(backend), "BACKEND_ENVSETUP": "",
-                "BACKEND_WHEEL_PATTERN": "triton_fixture_backend-*.whl", "EXPECTED_TRITON_BACKEND": "fixture",
-                "BACKEND_TEST_COMMAND": shlex_join([sys.executable, "-c", "print('backend smoke and JIT fixture')"]),
-                "FLAGGEMS_CLONE_DIR": str(self.root), "FLAGGEMS_RANDOM_SEED": "task-seed", "FLAGGEMS_AFFECTED_OPS": "abs"}
+    def test_selected_suite_nodes_stay_within_trusted_test_roots(self):
+        ctx = context()
+        ctx["python_bin"] = "/opt/anchor-ci/runtime/task_python"
+        selected = "tests/test_math.py::test_add"
+        spec = runner.plan(
+            "backend_tests", ctx, {"paths": [selected], "keyword": "add and not slow"}
+        )
+        command = spec["commands"][-2]
+        self.assertEqual(
+            command["argv"][:3],
+            [
+                ctx["python_bin"],
+                "-I",
+                "/opt/anchor-ci/tools/basic_tools/pytest_exec.py",
+            ],
+        )
+        self.assertIn("/workspace/backend/" + selected, command["argv"])
+        self.assertIn("add and not slow", command["argv"])
+        self.assertEqual(
+            command["cwd"], "/workspace/tasks/test/artifacts/backend_tests"
+        )
+        for paths in (
+            [],
+            ["../outside.py"],
+            ["/tmp/test.py"],
+            ["tests/../../escape.py"],
+            ["setup.py"],
+            ["C:/outside.py"],
+        ):
+            with self.subTest(paths=paths), self.assertRaises(ValueError):
+                runner.plan("backend_tests", ctx, {"paths": paths})
 
-    def test_backend_build_and_jit_are_separate_commands(self):
-        env = self.backend_env()
-        completed, result = self.invoke("backend_rebuild", **env, FAKE_WHEEL_NAME="triton_fixture_backend-0.0-py3-none-any.whl")
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        before = self.calls.read_text()
-        calls = [json.loads(line) for line in before.splitlines()]
-        self.assertEqual(sum(call[:2] == ["-m", "build"] for call in calls), 1)
-        self.assertNotIn("tests/test_jit.py", before)
-        completed, result = self.invoke("backend_smoke_jit", **env)
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(result["commands"][-1]["argv"][0], "bash")
-        self.assertEqual(before, self.calls.read_text())
+    def test_backend_tools_not_applicable_on_other_versions(self):
+        ctx = context()
+        ctx["triton_version"] = "3.2"
+        for name in runner.BACKEND_TOOLS:
+            result = runner.plan(name, ctx)
+            self.assertEqual(result["status"], "not_applicable")
+            self.assertEqual(result["commands"], [])
 
-    def test_flaggems_and_performance_dispatch_only_selected_stage(self):
-        env = self.backend_env()
-        for name, variable in (("flaggems", ""), ("compile_time", "COMPILE_BENCHMARK_KERNELS"),
-                               ("pass_profile", "PASS_PROFILE_KERNELS"), ("ir_serialization", "IR_SERIALIZATION_KERNELS")):
-            with self.subTest(tool=name):
-                self.calls.unlink(missing_ok=True)
-                changes = {**env, **({variable: "add"} if variable else {})}
-                completed, result = self.invoke(name, **changes)
-                self.assertEqual(completed.returncode, 0, completed.stderr)
-                calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
-                self.assertEqual(len(calls), 1)
-                if name == "flaggems":
-                    self.assertEqual(calls[0][calls[0].index("--seed") + 1], "task-seed")
-                    self.assertEqual(calls[0][calls[0].index("--affected-ops") + 1], "abs")
-                else:
-                    self.assertEqual(result["details"]["performance"]["status"], "not_comparable")
+    def test_full_operator_selection_is_available_to_policy(self):
+        self.assertEqual(
+            runner.plan("flaggems", context(), {"mode": "full"})["status"], "ready"
+        )
+        ctx = context()
+        ctx["manual_full"] = True
+        self.assertEqual(
+            runner.plan("flaggems", ctx, {"mode": "full"})["status"], "ready"
+        )
 
-    def test_wrong_sha_and_missing_backend_capability_fail(self):
-        completed, result = self.invoke("frontend_build", LOCAL_CI_TESTED_SHA="0" * 40)
-        self.assertEqual(completed.returncode, 2)
-        self.assertIn("SHA", result["error"])
-        completed, result = self.invoke("backend_rebuild")
-        self.assertEqual(completed.returncode, 2)
-        self.assertIn("capability", result["error"])
-        self.assertFalse(self.calls.exists())
-
-    def test_environment_fingerprint_survives_tool_receipt(self):
-        llvm = self.root / "llvm"
-        for relative in ("bin", "include/llvm", "include/mlir", "lib"):
-            (llvm / relative).mkdir(parents=True, exist_ok=True)
-        (llvm / "bin/llvm-config").write_text("fixture")
-        hashfile = self.checkout / "triton/cmake/llvm-hash.txt"
-        hashfile.parent.mkdir(parents=True)
-        hashfile.write_text("a" * 40)
-        ctx = tool.Context("environment", {**self.env, "LLVM_BUILD_DIR": str(llvm), "LOCAL_CI_LLVM_HASH": "a" * 40,
-                                           "LOCAL_CI_MIN_FREE_BYTES": "0"})
-        ctx.sha = self.sha
-        def probe(args, **kwargs):
-            if args[1:2] == ["-c"]:
-                return json.dumps({"executable": str(self.python), "version": "fixture", "packages": {}})
-            return "fixture-version\n"
-        with patch.object(ctx, "run", side_effect=probe):
-            tool.environment(ctx)
-        self.assertTrue(ctx.fingerprint)
-        ctx.finish(0)
-        later = tool.Context("frontend_build", self.env)
-        later.prepare()
-        self.assertEqual(later.fingerprint, ctx.fingerprint)
-
-    def test_symlinked_build_output_never_deletes_external_directory(self):
-        external = self.root / "keep"
-        external.mkdir()
-        (external / "valuable").write_text("preserve")
-        (self.checkout / "build").symlink_to(external, target_is_directory=True)
-        completed, result = self.invoke("frontend_build")
-        self.assertEqual(completed.returncode, 2)
-        self.assertEqual((external / "valuable").read_text(), "preserve")
-        self.assertFalse(self.calls.exists())
-
-    def test_timeout_terminates_command_and_is_not_success(self):
-        ctx = tool.Context("contract_tests", {**self.env, "LOCAL_CI_TOOL_TIMEOUT_SECONDS": "1"})
-        with self.assertRaises(tool.ToolError) as raised:
-            ctx.run([sys.executable, "-c", "import time; time.sleep(30)"])
-        self.assertEqual(raised.exception.code, 124)
-        self.assertEqual(ctx.commands[-1]["exit_code"], 124)
-
-
-class MeasurementTests(unittest.TestCase):
-    def candidate(self, tool_id, median):
-        measurement = {"count": 1, "median_ms": median}
-        if tool_id == "compile_time":
-            summary = {"all_correct": True, "compile_est": measurement}
-        elif tool_id == "pass_profile":
-            summary = {"passes": {"canonicalize": {"wall_ms": measurement}}}
-        else:
-            summary = {"module_count": 1, "metrics": {key: measurement for key in ("serialize", "deserialize", "roundtrip")}}
-        return {"metadata": {"environment_fingerprint": "fixture-env", "commit_sha": "b" * 40},
-                "summary": {"add": summary}, "events": [{"kernel": "add", "kind": "pass"}],
-                "raw": [{"kernel": "add", "roundtrip_verified": True}]}
-
-    def exercise_performance(self, tool_id, baseline, *, malformed=False):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            checkout = root / "checkout"
-            checkout.mkdir()
-            env = {**os.environ, "ANCHOR_DIR": str(checkout), "LOCAL_CI_TASK_ROOT": str(root / "task"),
-                   "LOCAL_CI_ARTIFACT_DIR": str(root / "artifacts"), "PYTHON_BIN": sys.executable,
-                   "EXPECTED_TRITON_BACKEND": "fixture", "FLAGGEMS_CLONE_DIR": directory,
-                   "COMPILE_BENCHMARK_KERNELS": "add", "PASS_PROFILE_KERNELS": "add", "IR_SERIALIZATION_KERNELS": "add",
-                   "LOCAL_CI_BASE_SHA": "b" * 40, "LOCAL_CI_ENVIRONMENT_FINGERPRINT": "fixture-env"}
-            if baseline is not None:
-                path = root / "baseline.json"
-                path.write_text(json.dumps(baseline))
-                env["BASELINE_JSON"] = str(path)
-            else:
-                env.pop("BASELINE_JSON", None)
-            ctx = tool.Context(tool_id, env)
-            ctx.backend, ctx.sha = checkout, "c" * 40
-            candidate = self.candidate(tool_id, 200)
-            if malformed:
-                candidate["summary"] = {}
-            original_run = ctx.run
-
-            def boundary(args, **kwargs):
-                if args[1].endswith("_benchmark.py"):
-                    destination = Path(args[args.index("--output-json") + 1])
-                    destination.write_text(json.dumps(candidate))
-                    return ""
-                return original_run(args, **kwargs)
-
-            with patch.object(ctx, "run", side_effect=boundary):
-                tool.performance(ctx)
-            return ctx.details["performance"]
-
-    def test_missing_or_incompatible_baselines_are_not_comparable(self):
-        for name in ("compile_time", "pass_profile", "ir_serialization"):
-            with self.subTest(tool=name):
-                self.assertEqual(self.exercise_performance(name, None)["status"], "not_comparable")
-                baseline = self.candidate(name, 100)
-                baseline["metadata"]["environment_fingerprint"] = "other-env"
-                self.assertEqual(self.exercise_performance(name, baseline)["reason"], "environment_fingerprint_mismatch")
-
-    def test_slowdowns_use_real_comparators_and_do_not_fail_tools(self):
-        for name in ("compile_time", "pass_profile", "ir_serialization"):
-            with self.subTest(tool=name):
-                result = self.exercise_performance(name, self.candidate(name, 100))
-                self.assertEqual(result["status"], "warning")
-
-    def test_malformed_candidates_fail_even_without_baseline(self):
-        for name in ("compile_time", "pass_profile", "ir_serialization"):
-            with self.subTest(tool=name), self.assertRaises(tool.ToolError):
-                self.exercise_performance(name, None, malformed=True)
-
-    def test_invalid_candidate_measurements_fail(self):
-        for median in (None, float("nan"), float("inf"), -1, True):
-            value = {"summary": {"add": {"all_correct": True, "compile_est": {"count": 1, "median_ms": median}}}}
-            with self.assertRaises(tool.ToolError):
-                tool.validate_measurements("compile_time", value, ["add"])
-        with self.assertRaises(tool.ToolError):
-            tool.validate_measurements("pass_profile", {"summary": {"add": {"passes": {}}}, "events": []}, ["add"])
-
-    def test_profile_compare_rejects_missing_candidate_passes(self):
-        with self.assertRaises(ValueError):
-            profile_compare.compare(None, {"summary": {"add": {"passes": {}}}}, ["add"], .2, 1, 1, 10, "slowdown", "base", "head")
-
-    def test_compile_benchmark_rejects_empty_or_zero_sample(self):
-        for kernels, repeat in (("", 1), ("add", 0)):
+    def test_agent_cannot_override_commands_profile_or_dependencies(self):
+        for params in (
+            {"argv": ["true"]},
+            {"profile": {}},
+            {"completed_tools": ["frontend_build"]},
+        ):
             with self.assertRaises(ValueError):
-                compile_benchmark.run_parent(argparse.Namespace(kernels=kernels, repeat=repeat, warmup=0))
+                runner.plan("frontend_install", context(), params)
+        ctx = context()
+        ctx["completed_tools"] = []
+        with self.assertRaisesRegex(ValueError, "successful tool receipts"):
+            runner.plan("frontend_install", ctx)
 
-    def test_pass_profile_no_events_is_an_execution_failure(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "src").mkdir()
-            args = argparse.Namespace(kernels="add", repeat=1, warmup=0, top_n=10,
-                                      flaggems_root=directory, cache_root=str(root / "benchmark/cache"), backend="fixture",
-                                      keep_workdirs=False)
-            with patch.object(profile_benchmark, "run_child", return_value=({"compile_est_ms": 1}, [])):
-                with self.assertRaisesRegex(RuntimeError, "No MLIR pass timing"):
-                    profile_benchmark.run_parent(args)
+    def test_build_recovery_parallelism_is_bounded(self):
+        for jobs in (0, 65, True, "1"):
+            with self.assertRaises(ValueError):
+                runner.plan("frontend_build", context(), {"jobs": jobs})
+        spec = runner.plan("frontend_build", context(), {"jobs": 1})
+        self.assertTrue(
+            all(
+                cmd["env"]["CMAKE_BUILD_PARALLEL_LEVEL"] == "1"
+                for cmd in spec["commands"]
+            )
+        )
 
-    def test_roundtrip_checks_canonical_content_and_verifier(self):
-        class Module:
-            def __init__(self, text, valid=True):
-                self.text, self.valid = text, valid
-            def __str__(self):
-                return self.text
-            def verify(self):
-                return self.valid
+    def test_environment_script_arguments_are_data(self):
+        ctx = context()
+        ctx["profile"]["tools"]["env_scripts"] = [
+            {"path": "/opt/sdk/env.sh", "args": ["x; touch /tmp/injected"]}
+        ]
+        spec = runner.plan("environment", ctx)
+        argv = spec["commands"][0]["argv"]
+        self.assertIn("x; touch /tmp/injected", argv)
+        self.assertEqual(
+            argv[:3],
+            ["bash", "/opt/anchor-ci/tools/basic_tools/env_exec.sh", "/opt/sdk/env.sh"],
+        )
 
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "module.ttir"
-            ir = types.SimpleNamespace(parse_mlir_module=lambda p, c: Module(Path(p).read_text()))
-            binding = types.ModuleType("triton._C.libtriton")
-            binding.ir = ir
-            with patch.dict(sys.modules, {"triton._C.libtriton": binding}):
-                row = ir_benchmark.measure_once([Module("module {}\n")], None, [path], "add", "repeat", 0)
-                self.assertTrue(row["roundtrip_verified"])
-                ir.parse_mlir_module = lambda p, c: Module("module { changed }\n")
-                with self.assertRaisesRegex(RuntimeError, "canonical"):
-                    ir_benchmark.measure_once([Module("module {}\n")], None, [path], "add", "repeat", 0)
-                ir.parse_mlir_module = lambda p, c: Module("module {}\n", False)
-                with self.assertRaisesRegex(RuntimeError, "invalid MLIR"):
-                    ir_benchmark.measure_once([Module("module {}\n")], None, [path], "add", "repeat", 0)
+    def test_backend_jit_uses_the_same_task_python_as_frontend_installation(self):
+        ctx = context()
+        ctx["python_bin"] = "/workspace/tasks/test/venv/bin/python3"
+        spec = runner.plan("backend_smoke", ctx)
+        self.assertEqual(spec["commands"][-2]["argv"][0], ctx["python_bin"])
+        self.assertEqual(spec["commands"][-2]["env"]["PYTHON_BIN"], ctx["python_bin"])
+
+    def test_trusted_actions_skip_task_startup_and_pass_candidate_wrapper_explicitly(
+        self,
+    ):
+        ctx = context()
+        ctx.update(
+            python_bin="/opt/anchor-ci/runtime/task_python",
+            task_venv="/workspace/tasks/test/run/venv",
+        )
+        spec = runner.plan("frontend_build", ctx)
+        helper = spec["commands"][0]
+        self.assertEqual(helper["argv"][:3], ["/usr/bin/python3", "-I", "-S"])
+        payload = json.loads(helper["argv"][-1])
+        self.assertEqual(payload["context"]["python_bin"], ctx["python_bin"])
+        self.assertEqual(helper["env"]["LOCAL_CI_TASK_VENV"], ctx["task_venv"])
+        self.assertEqual(spec["commands"][2]["argv"][0], ctx["python_bin"])
 
 
-class FlagGemsSelectionTests(unittest.TestCase):
-    def test_task_cache_cleanup_cannot_touch_shared_home(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            cache, dump = root / "cache", root / "dump"
-            with patch.dict(os.environ, {"LOCAL_CI_TASK_ROOT": directory, "TRITON_CACHE_DIR": str(cache)}):
-                self.assertEqual(batch.task_cache_paths(dump), [cache, dump])
-                with self.assertRaises(ValueError):
-                    batch.task_cache_paths(root.parent / "shared-cache")
+class ArtifactAndSelectionTests(unittest.TestCase):
+    def test_junit_requires_real_passing_cases(self):
+        reports = {
+            "<testsuites><testsuite tests='5'/></testsuites>": False,
+            "<testsuite><testcase><skipped/></testcase></testsuite>": False,
+            "<testsuite><testcase/><testcase><failure/></testcase></testsuite>": False,
+            "<testsuite><testcase/><testcase><skipped/></testcase></testsuite>": True,
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            ctx = context()
+            ctx["artifact_dir"] = folder
+            out = Path(folder) / "frontend_tests"
+            out.mkdir()
+            payload = {
+                "context": ctx,
+                "tool_id": "frontend_tests",
+                "parameters": {},
+                "test_source": ctx["source_dir"],
+                "test_paths": ["tests"],
+            }
+            for xml, accepted in reports.items():
+                with self.subTest(xml=xml):
+                    (out / "tests.xml").write_text(xml)
+                    if accepted:
+                        actions.test_results(payload)
+                        summary = actions.read_json(out / "tests.json")
+                        self.assertEqual(summary["passed"], 1)
+                        self.assertEqual(
+                            summary["junit_sha256"], actions.digest(out / "tests.xml")
+                        )
+                    else:
+                        with self.assertRaisesRegex(ValueError, "passing cases"):
+                            actions.test_results(payload)
 
-    def test_sample_reproducibility_and_affected_operator_union(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+    def test_contaminated_task_startup_cannot_skip_trusted_preflight(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            venv.EnvBuilder(with_pip=False).create(root / "venv")
+            executable = (
+                root
+                / "venv"
+                / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            )
+            site = Path(
+                subprocess.check_output(
+                    [
+                        str(executable),
+                        "-c",
+                        "import sysconfig; print(sysconfig.get_path('purelib'))",
+                    ],
+                    text=True,
+                ).strip()
+            )
+            site.mkdir(parents=True, exist_ok=True)
+            (site / "sitecustomize.py").write_text("import os\nos._exit(0)\n")
+            (root / "source").mkdir()
+            ctx = context()
+            ctx.update(
+                source_dir=str(root / "source"),
+                artifact_dir=str(root / "artifacts"),
+                python_bin=str(executable),
+                trusted_python_bin=sys.executable,
+                tools_dir=str(ROOT / "tools"),
+            )
+            result = runner.execute("frontend_build", ctx)
+            self.assertEqual(result["status"], "fail")
+            self.assertEqual(len(result["execution"]), 1)
+            self.assertNotEqual(result["execution"][0]["returncode"], 0)
+
+    def test_wheel_hash_and_task_identity_are_checked_before_install(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ctx = context()
+            ctx["artifact_dir"] = folder
+            out = Path(folder) / "frontend_build"
+            (out / "wheels").mkdir(parents=True)
+            wheel = out / "wheels" / "triton_anchor-test.whl"
+            wheel.write_bytes(b"original-wheel")
+            manifest = {
+                "task_id": ctx["task_id"],
+                "target_sha": ctx["target_sha"],
+                "wheel": str(wheel),
+                "sha256": actions.digest(wheel),
+            }
+            actions.write_json(out / "wheel.json", manifest)
+            self.assertEqual(actions.wheel_manifest(ctx, "frontend_build")[1], wheel)
+            wheel.write_bytes(b"modified-wheel")
+            with self.assertRaisesRegex(ValueError, "hash mismatch"):
+                actions.wheel_manifest(ctx, "frontend_build")
+            manifest["task_id"] = "older-task"
+            actions.write_json(out / "wheel.json", manifest)
+            with self.assertRaisesRegex(ValueError, "different tested commit/task"):
+                actions.wheel_manifest(ctx, "frontend_build")
+
+    def test_build_cleanup_refuses_outside_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "source"
+            root.mkdir()
+            sentinel = Path(folder) / "keep.txt"
+            sentinel.write_text("keep")
+            with self.assertRaises(ValueError):
+                actions.remove_child(root, sentinel)
+            self.assertEqual(sentinel.read_text(), "keep")
+
+    def test_rebuilt_wheel_invalidates_previous_installation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ctx = context()
+            ctx["artifact_dir"] = folder
+            out = Path(folder) / "frontend_build"
+            (out / "wheels").mkdir(parents=True)
+            wheel = out / "wheels" / "triton_anchor-test.whl"
+            wheel.write_bytes(b"old")
+            manifest = {
+                "task_id": ctx["task_id"],
+                "target_sha": ctx["target_sha"],
+                "wheel": str(wheel),
+                "sha256": actions.digest(wheel),
+            }
+            actions.write_json(out / "wheel.json", manifest)
+            actions.write_json(
+                Path(folder) / "frontend_install" / "installation.json",
+                {**manifest, "python_executable": sys.executable},
+            )
+            actions.require_installation(ctx, "frontend_build", "frontend_install")
+            wheel.write_bytes(b"new")
+            actions.write_json(
+                out / "wheel.json", {**manifest, "sha256": actions.digest(wheel)}
+            )
+            with self.assertRaisesRegex(ValueError, "reinstall"):
+                actions.require_installation(ctx, "frontend_build", "frontend_install")
+
+    def test_impact_includes_explicit_operator_outside_pass_whitelist(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
             (root / "tests").mkdir()
-            (root / "tests/test_ops.py").write_text("\n".join("@pytest.mark." + op for op in ("add", "abs", "mm", "softmax")))
-            whitelist = root / "pass.tsv"
-            whitelist.write_text("pointwise add add\npointwise abs abs\nmatrix mm mm\n")
-            full = root / "full.tsv"
-            full.write_text(whitelist.read_text() + "reduction softmax softmax\n")
-            args = argparse.Namespace(mode="sample", sample_size=2, seed="trusted-task-seed", op="",
-                                      affected_ops="softmax", whitelist=str(whitelist), full_list=str(full), flaggems_dir=directory)
-            first = selector.select_entries(args)
-            self.assertEqual(first, selector.select_entries(args))
-            self.assertEqual({e.category for e in first}, {"pointwise", "matrix", "reduction"})
-            self.assertIn("softmax", [e.op for e in first])
-            args.affected_ops = "does_not_exist"
-            with self.assertRaisesRegex(ValueError, "trusted test mapping"):
-                selector.select_entries(args)
-
-
-if __name__ == "__main__":
-    unittest.main()
+            (root / "tests" / "test_ops.py").write_text(
+                "@pytest.mark.abs\ndef test_abs(): pass\n@pytest.mark.gelu\ndef test_gelu(): pass\n"
+            )
+            (root / "pass.tsv").write_text("unary abs abs\n")
+            (root / "all.tsv").write_text("unary abs abs\nunary gelu gelu\n")
+            args = argparse.Namespace(
+                mode="impact",
+                ops="gelu",
+                categories="",
+                flaggems_dir=str(root),
+                whitelist=str(root / "pass.tsv"),
+                full_list=str(root / "all.tsv"),
+            )
+            self.assertEqual([entry.op for entry in select_entries(args)], ["gelu"])
+            args.ops = "not_an_operator"
+            with self.assertRaisesRegex(ValueError, "Unknown FlagGems"):
+                select_entries(args)
+            args.ops = ""
+            self.assertEqual([entry.op for entry in select_entries(args)], ["abs"])

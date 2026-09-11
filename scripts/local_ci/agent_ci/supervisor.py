@@ -1,4 +1,5 @@
-"""Task-scoped tool service and evidence-based final gate."""
+"""Task scheduling and coverage over a single runner and observed execution log."""
+
 from __future__ import annotations
 
 import concurrent.futures
@@ -9,12 +10,21 @@ import secrets
 import shutil
 import socketserver
 import threading
+import time
 import uuid
 from pathlib import Path
 
 from .mcp_server import SCHEMAS, schema, validate_arguments, validate_value
-from .policy import DEPENDENCIES, TOOLS
-from .protocol import ContractError, RESULT_SCHEMA, atomic_json, within
+from .policy import TOOLS
+from .protocol import ContractError, RESULT_SCHEMA, atomic_json, within, scope_covers
+from .delivery import seal_artifacts, EXECUTIONS_SCHEMA
+from tools.basic_tools.runner import (
+    dependencies as tool_dependencies,
+    parameter_names,
+    DEFAULT_BUILD_JOBS,
+    plan,
+)
+from tools.basic_tools.evidence import evaluate
 
 ARCHITECTURE_RULES = {
     "abi-isolation": "python/triton_anchor/adapters/base.py",
@@ -25,376 +35,991 @@ ARCHITECTURE_RULES = {
 
 
 class Supervisor:
-    def __init__(self, task: dict, policy: dict, journal, executor, run_dir: Path, *, changes: list[dict] | None = None, before_seal=None):
-        self.task, self.policy, self.journal, self.executor = task, policy, journal, executor
+    def __init__(
+        self,
+        task,
+        policy,
+        journal,
+        executor,
+        run_dir,
+        *,
+        changes=None,
+        before_seal=None,
+    ):
+        self.task, self.policy, self.journal, self.executor = (
+            task,
+            policy,
+            journal,
+            executor,
+        )
+        self.executor.journal = journal
+        self.redact = lambda value: value
         self.run_dir = Path(run_dir)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.changes = changes or []
         self.cancelled = threading.Event()
+        self.control_available = threading.Event()
+        self.control_available.set()
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        self.futures: dict[str, concurrent.futures.Future] = {}
-        self.closed = False
+        self.futures = {}
         self.guard = threading.RLock()
-        self.before_seal = before_seal
+        self.closed = False
         self.sealing_started = False
+        self.before_seal = before_seal
+        self.native = {}
 
-    def recover(self) -> None:
-        for record in self.journal.executions(self.task["task_id"]):
-            if record["status"] in {"running", "queued"}:
-                self.executor.stop(record["execution_id"])
-                record.update(status="infra_error", reason="worker_interrupted")
-                self.journal.execution(self.task["task_id"], record["tool_id"], record["variant"], record)
+    def recover(self):
+        # Only an Agent restart in the same live Worker may reuse this run.
+        for r in self.journal.executions(self.task["task_id"]):
+            if r["status"] in {"running", "queued"}:
+                self.executor.stop(r["execution_id"])
+                r.update(status="infra_error", reason="interrupted_execution")
+                self.journal.execution(
+                    self.task["task_id"], r["tool_id"], r["variant"], r
+                )
 
-    def fresh(self, tool_id: str, variant: str = "candidate") -> bool:
-        record = self.journal.latest(self.task["task_id"], tool_id, variant)
-        if not record or record["status"] != "pass" or record.get("environment_fingerprint") != self.executor.generation["environment_fingerprint"]:
+    def dependencies(self, tool_id, custom=None):
+        if custom:
+            return []
+        config = (
+            self.executor.config.get("profiles", {})
+            .get(
+                self.executor.generation.get(
+                    "profile_branch", self.task.get("target_branch")
+                ),
+                {},
+            )
+            .get("tools", {})
+        )
+        return tool_dependencies(tool_id, config)
+
+    def fresh(self, tool_id, variant="candidate", seen=None):
+        seen = set(seen or ())
+        if tool_id in seen:
             return False
-        if record.get("reuse_invalidated") or record.get("workspace_generation", self.executor.generation["generation"]) != self.executor.generation["generation"]:
+        seen.add(tool_id)
+        r = self.journal.latest(self.task["task_id"], tool_id, variant)
+        if (
+            not r
+            or r["status"] != "pass"
+            or r.get("reuse_invalidated")
+            or not r.get("original_subject", False)
+        ):
             return False
-        if tool_id in (*TOOLS, "contract_tests") and (record.get("execution_kind") != "builtin" or
-                any(key in record for key in ("script_digest", "script_name", "script_language", "source_only", "custom_mode", "experiment_id"))):
+        if (
+            r.get("environment_fingerprint")
+            != self.executor.generation["environment_fingerprint"]
+        ):
             return False
-        for dependency in DEPENDENCIES.get(tool_id, ["environment"]):
-            latest = self.journal.latest(self.task["task_id"], dependency, variant)
-            if not self.fresh(dependency, variant) or record.get("dependency_executions", {}).get(dependency) != latest["execution_id"]:
+        if r.get("workspace_generation") != self.executor.generation["generation"]:
+            return False
+        for dep in self.dependencies(tool_id):
+            latest = self.journal.latest(self.task["task_id"], dep, variant)
+            if (
+                not self.fresh(dep, variant, seen)
+                or r.get("dependency_executions", {}).get(dep) != latest["execution_id"]
+            ):
+                return False
+        required = (
+            self.policy.get("required_parameters", {}).get(tool_id, {})
+            if variant == "candidate"
+            else {}
+        )
+        if not scope_covers(r.get("scope", {}), required):
+            return False
+        # Changes after verification invalidate current combination, but remain history.
+        if tool_id in {
+            "frontend_tests",
+            "frontend_smoke",
+            "backend_tests",
+            "backend_smoke",
+            "flaggems",
+            "compile_time",
+            "pass_profile",
+            "ir_serialization",
+        } and hasattr(self.executor, "current_identity"):
+            current = self.executor.current_identity(variant)
+            if not current.get("original") or r.get(
+                "installation_identity"
+            ) != current.get("installation_identity"):
                 return False
         return True
 
-    def context(self) -> dict:
-        diagnostics = self.executor.diagnostic_context()
-        for variant in ("candidate", "base"):
-            runtime = "backend_smoke_jit" if self.executor.generation["backend_enabled"] else "frontend_smoke"
-            diagnostics.setdefault(variant, {}).update(
-                strict_reproduction_ready=self.fresh(runtime, variant),
-                strict_reproduction_requires=runtime,
-                source_reproduction_ready=self.fresh("environment", variant),
-                diagnostic_requires=[], experiment_requires=[])
-        return {"task": self.task, "policy": self.policy, "changes": self.changes,
-                "checks": [self.public_record(r) for r in self.journal.executions(self.task["task_id"])],
-                "reviews": self.journal.reviews(self.task["task_id"]), "architecture_rules": ARCHITECTURE_RULES,
-                "diagnostics": diagnostics, "cancelled": self.cancelled.is_set(), "closed": self.closed}
-
     @staticmethod
-    def public_record(record: dict) -> dict:
-        return {k: v for k, v in record.items() if k != "artifact_dir"}
+    def public_record(record):
+        return {
+            k: v
+            for k, v in record.items()
+            if k not in {"artifact_dir", "log_path", "private_event_log"}
+        }
 
-    def start_check(self, tool_id: str, reason: str, *, parameters: dict | None = None,
-                    variant: str = "candidate", force: bool = False) -> dict:
-        """Public built-in check entry; custom execution is never accepted here."""
-        arguments = {"tool_id": tool_id, "reason": reason, "variant": variant, "force": force}
-        if parameters is not None:
-            arguments["parameters"] = parameters
-        validate_arguments("start_check", arguments)
-        return self._start_check(tool_id, reason, parameters=parameters, variant=variant, force=force)
+    def context(self):
+        return {
+            "task": self.task,
+            "policy": self.policy,
+            "changes": self.changes,
+            "checks": [
+                self.public_record(r)
+                for r in self.journal.executions(self.task["task_id"])
+            ],
+            "native_executions": [self.public_record(r) for r in self.native.values()],
+            "reviews": self.journal.reviews(self.task["task_id"]),
+            "architecture_rules": ARCHITECTURE_RULES,
+            "tools": list(TOOLS),
+            "diagnostics": self.executor.diagnostic_context(),
+            "cancelled": self.cancelled.is_set(),
+            "control_channel_available": self.control_available.is_set(),
+            "closed": self.closed,
+        }
 
-    def dependencies(self, tool_id: str, custom: dict | None = None) -> list[str]:
-        if custom is None:
-            return DEPENDENCIES.get(tool_id, ["environment"])
-        if custom["mode"] != "reproduction":
-            return []
-        if custom.get("source_only"):
-            return ["environment"]
-        return ["backend_smoke_jit" if self.executor.generation["backend_enabled"] else "frontend_smoke"]
+    def start_check(
+        self, tool_id, reason, *, parameters=None, variant="candidate", force=False
+    ):
+        validate_arguments(
+            "start_check",
+            {
+                "tool_id": tool_id,
+                "reason": reason,
+                "parameters": parameters or {},
+                "variant": variant,
+                "force": force,
+            },
+        )
+        parameters = {
+            **self.policy.get("required_parameters", {}).get(tool_id, {}),
+            **(parameters or {}),
+        }
+        # Runner owns validation and parameter catalogue; MCP has no duplicate copy.
+        plan(
+            tool_id,
+            self.executor.plan_context("0" * 32, variant, parameters),
+            parameters,
+        )
+        return self._start(tool_id, reason, parameters, variant, force)
 
-    def _start_check(self, tool_id: str, reason: str, *, parameters: dict | None = None,
-                     variant: str = "candidate", force: bool = False, custom: dict | None = None) -> dict:
-        """Internal queue shared by built-ins and the validated run_custom path."""
+    def _start(self, tool_id, reason, parameters, variant, force=False, custom=None):
         with self.guard:
-            if self.closed or self.cancelled.is_set() or self.sealing_started:
-                raise ContractError("Task has finished or was cancelled")
-            if not isinstance(reason, str) or not reason.strip():
-                raise ContractError("Each check needs a selection reason")
-            if variant not in {"candidate", "base"}:
-                raise ContractError("Unknown variant")
-            if custom is None and tool_id not in self.policy["capabilities"]:
-                raise ContractError("Tool unavailable in this version environment")
-            if custom is not None and tool_id != "custom_" + hashlib.sha256(custom["content"].encode()).hexdigest()[:16]:
-                raise ContractError("Custom execution cannot use a built-in tool identity")
-            config = getattr(self.executor, "config", {})
-            parameters = parameters or {}
-            if parameters.get("max_jobs", 1) > config.get("max_jobs", 8):
-                raise ContractError("Parallelism exceeds the trusted budget")
-            if parameters.get("timeout_seconds", 1) > config.get("tool_timeouts", {}).get(tool_id, 3600):
-                raise ContractError("Tool deadline exceeds the trusted budget")
+            if self.closed or self.sealing_started or self.cancelled.is_set():
+                raise ContractError("Task has ended")
+            if not self.control_available.is_set():
+                raise ContractError("Gitee current state unavailable; pause new stages")
+            if not custom and tool_id not in self.policy["capabilities"]:
+                raise ContractError("Capability not deployed in this profile")
             previous = self.journal.latest(self.task["task_id"], tool_id, variant)
-            if previous and (previous["status"] in {"running", "queued"} or self.fresh(tool_id, variant)) and not force and custom is None:
-                return self.public_record(previous)
-            dependencies = self.dependencies(tool_id, custom)
-            for required in dependencies:
-                result = self.journal.latest(self.task["task_id"], required, variant)
-                if not result or not self.fresh(required, variant):
-                    raise ContractError(f"Dependency {required} must pass first for {variant}")
+            if previous and not force and previous.get("parameters", {}) == parameters:
+                if previous["status"] in {"queued", "running"} or self.fresh(
+                    tool_id, variant
+                ):
+                    return self.public_record(previous)
+            for dep in self.dependencies(tool_id, custom):
+                if not self.fresh(dep, variant):
+                    raise ContractError("Dependency " + dep + " must pass first")
             ident = uuid.uuid4().hex
-            record = {"execution_id": ident, "status": "queued", "reason": reason,
-                      "parameters": parameters, "execution_kind": "custom" if custom is not None else "builtin",
-                      "required": tool_id in self.policy["required_checks"] and variant == "candidate"}
-            if custom:
-                record["custom_mode"] = custom["mode"]
-                if custom.get("experiment_id"):
-                    record["experiment_id"] = custom["experiment_id"]
+            record = {
+                "execution_id": ident,
+                "status": "queued",
+                "reason": reason,
+                "parameters": parameters,
+                "execution_kind": "custom" if custom else "builtin",
+                "tool_id": tool_id,
+                "variant": variant,
+            }
             self.journal.execution(self.task["task_id"], tool_id, variant, record)
-            self.futures[ident] = self.pool.submit(self._run, tool_id, ident, variant, parameters or {}, reason, custom)
-            return {**record, "tool_id": tool_id, "variant": variant}
+            self.futures[ident] = self.pool.submit(
+                self._run, tool_id, ident, variant, parameters, reason, custom
+            )
+            return record
 
-    def _run(self, tool_id: str, ident: str, variant: str, parameters: dict, reason: str, custom: dict | None):
-        dependency_names = self.dependencies(tool_id, custom)
-        dependencies = {key: self.journal.latest(self.task["task_id"], key, variant)["execution_id"] for key in dependency_names}
-        self.journal.execution(self.task["task_id"], tool_id, variant, {"execution_id": ident, "status": "running", "reason": reason})
-        result = self._invoke(tool_id, ident, variant, parameters, custom)
-        result["selection_reason"] = reason
-        result["dependency_executions"] = dependencies
-        result["execution_kind"] = "custom" if custom is not None else "builtin"
-        if custom:
-            result["source_only"] = custom.get("source_only", False)
-            result["custom_mode"] = custom["mode"]
-            result["script_language"] = custom["language"]
-        result["required"] = tool_id in self.policy["required_checks"] and variant == "candidate"
-        result["workspace_generation"] = self.executor.generation["generation"]
+    def _run(self, tool_id, ident, variant, parameters, reason, custom):
+        deps = self.dependencies(tool_id, custom)
+        with self.guard:
+            valid = all(self.fresh(dep, variant) for dep in deps)
+            dependency_executions = {
+                dep: self.journal.latest(self.task["task_id"], dep, variant)[
+                    "execution_id"
+                ]
+                for dep in deps
+            }
+        if not valid or not self.control_available.is_set():
+            result = {
+                "execution_id": ident,
+                "status": "infra_error",
+                "reason": "Dependencies or Gitee validity changed while queued",
+            }
+        else:
+            self.journal.execution(
+                self.task["task_id"],
+                tool_id,
+                variant,
+                {"execution_id": ident, "status": "running", "parameters": parameters},
+            )
+            try:
+                result = self.executor.run(
+                    tool_id, ident, variant, parameters, self.cancelled, custom
+                )
+            except Exception as exc:
+                result = {
+                    "execution_id": ident,
+                    "status": "infra_error",
+                    "reason": str(exc),
+                    "exit_code": None,
+                }
+        result.update(
+            selection_reason=reason,
+            parameters=parameters,
+            dependency_executions=dependency_executions,
+            execution_kind="custom" if custom else "builtin",
+            required=variant == "candidate"
+            and tool_id in self.policy["required_checks"],
+        )
         self.journal.execution(self.task["task_id"], tool_id, variant, result)
-        if result.get("reason") == "oom" and not self.cancelled.is_set():
+        if (
+            result.get("reason") == "oom"
+            and not custom
+            and "jobs" in parameter_names(tool_id)
+            and not self.cancelled.is_set()
+            and self.control_available.is_set()
+        ):
             retry = uuid.uuid4().hex
-            params = {**parameters, "max_jobs": max(1, int(parameters.get("max_jobs", 8)) // 2)}
-            self.journal.event(self.task["task_id"], "oom_retry", {"previous_execution_id": ident, "execution_id": retry, "parameters": params})
-            self.journal.execution(self.task["task_id"], tool_id, variant, {"execution_id": retry, "status": "running", "retry_of": ident})
-            result = self._invoke(tool_id, retry, variant, params, custom)
-            result.update(retry_of=ident, selection_reason=reason, dependency_executions=dependencies, required=tool_id in self.policy["required_checks"] and variant == "candidate")
-            result["workspace_generation"] = self.executor.generation["generation"]
-            result["execution_kind"] = "custom" if custom is not None else "builtin"
-            if custom:
-                result["source_only"] = custom.get("source_only", False)
-                result["custom_mode"] = custom["mode"]
-                result["script_language"] = custom["language"]
-            self.journal.execution(self.task["task_id"], tool_id, variant, result)
+            retry_params = {
+                **parameters,
+                "jobs": max(
+                    1,
+                    parameters.get("jobs", DEFAULT_BUILD_JOBS) // 2,
+                ),
+            }
+            rerun = self.executor.run(
+                tool_id, retry, variant, retry_params, self.cancelled, custom
+            )
+            rerun.update(
+                retry_of=ident,
+                parameters=retry_params,
+                dependency_executions=dependency_executions,
+                execution_kind=result["execution_kind"],
+                required=result["required"],
+                selection_reason="Retry once with fewer build jobs after OOM",
+            )
+            self.journal.execution(self.task["task_id"], tool_id, variant, rerun)
+            result = rerun
         return result
 
-    def _invoke(self, tool_id, ident, variant, parameters, custom):
-        try:
-            return self.executor.run(tool_id, ident, variant, parameters, self.cancelled, custom)
-        except Exception as exc:
-            # Directory/process setup can fail before an executor creates its log.
-            # Persist a terminal fact instead of leaving a completed future "running".
-            return {"execution_id": ident, "tool_id": tool_id, "variant": variant,
-                    "status": "infra_error", "exit_code": None, "reason": str(exc),
-                    "environment_fingerprint": self.executor.generation["environment_fingerprint"],
-                    "parameters": parameters}
-
-    def poll_check(self, execution_id: str, wait_seconds: int = 0) -> dict:
-        if type(wait_seconds) is not int or not 0 <= wait_seconds <= 30:
-            raise ContractError("Poll waits must be between 0 and 30 seconds")
+    def poll_check(self, execution_id, wait_seconds=0):
         future = self.futures.get(execution_id)
         if future:
             try:
-                return self.public_record(future.result(timeout=wait_seconds))
+                return self.public_record(future.result(timeout=min(30, wait_seconds)))
             except concurrent.futures.TimeoutError:
                 pass
-        for record in self.journal.executions(self.task["task_id"]):
-            if record["execution_id"] == execution_id:
-                return self.public_record(record)
-        raise ContractError("Execution does not belong to this task")
+        for r in self.journal.executions(self.task["task_id"]):
+            if r["execution_id"] == execution_id:
+                return self.public_record(r)
+        raise ContractError("Execution does not belong to this run")
 
-    def read_file(self, path: str, variant: str = "candidate", start_line: int = 1, max_lines: int = 200) -> dict:
-        if type(start_line) is not int or type(max_lines) is not int or start_line < 1 or not 1 <= max_lines <= 500:
-            raise ContractError("Invalid line range")
-        checkout = self.executor.prepare(variant)
-        file = within(checkout, path, must_exist=True)
-        if ".git" in Path(path).parts or file.stat().st_size > 2 * 1024 * 1024:
-            raise ContractError("File cannot be read through this interface")
+    def cancel_check(self, execution_id):
+        self.poll_check(execution_id)
+        return self.executor.stop(execution_id)
+
+    def read_file(self, path, variant="candidate", start_line=1, max_lines=200):
+        file = within(self.executor.prepare(variant), path, must_exist=True)
+        if ".git" in Path(path).parts or file.stat().st_size > 2 * 1024**2:
+            raise ContractError("File too large or private metadata")
         lines = file.read_text(errors="replace").splitlines()
-        return {"path": path, "variant": variant, "start_line": start_line,
-                "content": "\n".join(f"{i + 1}: {line}" for i, line in enumerate(lines) if start_line - 1 <= i < start_line - 1 + max_lines)}
+        return {
+            "path": path,
+            "variant": variant,
+            "start_line": start_line,
+            "content": "\n".join(
+                f"{i + 1}: {line}"
+                for i, line in enumerate(lines)
+                if start_line - 1 <= i < start_line - 1 + max_lines
+            ),
+        }
 
-    def read_artifact(self, execution_id: str, path: str = "execution.log", offset: int = 0) -> dict:
-        for record in self.journal.executions(self.task["task_id"]):
-            if record["execution_id"] == execution_id and record.get("artifact_dir"):
-                artifact = within(Path(record["artifact_dir"]), path, must_exist=True)
-                if type(offset) is not int or offset < 0:
-                    raise ContractError("Invalid artifact offset")
-                with artifact.open("rb") as stream:
-                    stream.seek(offset)
-                    data = stream.read(32768)
-                return {"execution_id": execution_id, "path": path, "offset": offset,
-                        "next_offset": offset + len(data), "content": data.decode(errors="replace")}
-        raise ContractError("Unknown artifact")
+    def read_artifact(self, execution_id, path="command.log", offset=0):
+        for r in self.journal.executions(self.task["task_id"]):
+            if r["execution_id"] != execution_id:
+                continue
+            target = (
+                Path(r["log_path"])
+                if path == "command.log"
+                else within(Path(r["artifact_dir"]), path, must_exist=True)
+            )
+            with target.open("rb") as stream:
+                stream.seek(offset)
+                data = stream.read(32768)
+            return {
+                "content": data.decode(errors="replace"),
+                "next_offset": offset + len(data),
+            }
+        raise ContractError("Unknown execution artifact")
 
-    def run_custom(self, name: str, content: str, language: str, reason: str, variant: str = "candidate",
-                   source_only: bool = False, mode: str = "diagnostic", experiment_id: str | None = None) -> dict:
-        arguments = {"name": name, "content": content, "language": language, "reason": reason,
-                     "variant": variant, "source_only": source_only, "mode": mode}
-        if experiment_id is not None:
-            arguments["experiment_id"] = experiment_id
-        validate_arguments("run_custom", arguments)
-        if language not in {"python", "bash"} or not isinstance(content, str) or not 1 <= len(content.encode()) <= 128 * 1024:
-            raise ContractError("Invalid task-local script")
-        if Path(name).name != name or not name.endswith(".py" if language == "python" else ".sh"):
-            raise ContractError("Generated scripts require a plain filename and matching extension")
-        if type(source_only) is not bool or (source_only and language != "python"):
-            raise ContractError("Source-only reproduction must be Python without site packages")
-        key = "custom_" + hashlib.sha256(content.encode()).hexdigest()[:16]
-        custom = {"name": name, "content": content, "language": language, "source_only": source_only, "mode": mode}
-        if experiment_id is not None:
-            custom["experiment_id"] = experiment_id
-        return self._start_check(key, reason, variant=variant, force=True,
-                                 custom=custom)
+    def run_custom(
+        self,
+        name,
+        content,
+        language,
+        reason,
+        variant="candidate",
+        source_only=False,
+        mode="diagnostic",
+        experiment_id=None,
+    ):
+        args = dict(
+            name=name,
+            content=content,
+            language=language,
+            reason=reason,
+            variant=variant,
+            source_only=source_only,
+            mode=mode,
+        )
+        if experiment_id:
+            args["experiment_id"] = experiment_id
+        validate_arguments("run_custom", args)
+        if Path(name).name != name or not name.endswith(
+            ".py" if language == "python" else ".sh"
+        ):
+            raise ContractError("Use a plain script filename")
+        custom = {k: v for k, v in args.items() if k not in {"reason", "variant"}}
+        return self._start(
+            "custom_" + hashlib.sha256(content.encode()).hexdigest()[:16],
+            reason,
+            {},
+            variant,
+            True,
+            custom,
+        )
 
-    def submit_review(self, kind: str, status: str, summary: str, evidence: list, findings: list | None = None) -> dict:
-        if self.closed or self.cancelled.is_set():
-            raise ContractError("Task closed")
-        if kind not in {"pr_info", "architecture", "specialized"} or status not in {"pass", "fail", "incomplete"}:
-            raise ContractError("Invalid review")
-        if not isinstance(summary, str) or not summary.strip() or not isinstance(evidence, list):
-            raise ContractError("Review needs a summary and evidence list")
+    @staticmethod
+    def _artifact_signature(path):
+        info = path.stat()
+        return [info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_ino]
+
+    def _artifact_signatures(self, directory=None):
+        root = self.run_dir / "artifacts"
+        directory = Path(directory or root)
+        values = {}
+        for path in directory.rglob("*"):
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                values[path.relative_to(root).as_posix()] = self._artifact_signature(
+                    path
+                )
+            except FileNotFoundError:
+                continue
+        return values
+
+    def _changed_artifacts(self, before, directory=None):
+        root = self.run_dir / "artifacts"
+        result = {}
+        for name, signature in self._artifact_signatures(directory).items():
+            if before.get(name) == signature:
+                continue
+            path = root / name
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                if self._artifact_signature(path) != signature:
+                    continue
+            except FileNotFoundError:
+                continue
+            result[name] = {
+                "signature": signature,
+                "sha256": digest,
+                "size": signature[0],
+            }
+        return result
+
+    def observe_native(self, event):
+        item = event.get("item", {}) if isinstance(event, dict) else {}
+        if item.get("type") != "command_execution" or not item.get("id"):
+            return
+        ident = hashlib.sha256(
+            (str(self.run_dir) + str(item["id"])).encode()
+        ).hexdigest()[:32]
+        with self.guard:
+            if self.closed or self.sealing_started:
+                return
+            if not hasattr(self, "_native_event_ids"):
+                self._native_event_ids = {}
+            ident = self._native_event_ids.get(item["id"], ident)
+            record = self.native.get(ident)
+            if (
+                event.get("type") == "item.started"
+                and record is not None
+                and record["status"] != "running"
+            ):
+                ident = uuid.uuid4().hex
+                record = None
+            if event.get("type") == "item.started":
+                self._native_event_ids[item["id"]] = ident
+            if event.get("type") == "item.started" and record is None:
+                identity = self.executor.current_identity("candidate")
+                record = {
+                    "execution_id": ident,
+                    "tool_id": "native_command",
+                    "variant": "candidate",
+                    "execution_kind": "native",
+                    "status": "running",
+                    "started_at": time.time(),
+                    "command": item.get("command", ""),
+                    "cwd": "/task/candidate/checkout",
+                    "subject_before": identity,
+                    "environment_fingerprint": self.executor.generation[
+                        "environment_fingerprint"
+                    ],
+                    "workspace_generation": self.executor.generation["generation"],
+                }
+                if not hasattr(self, "_native_artifacts_before"):
+                    self._native_artifacts_before = {}
+                self._native_artifacts_before[ident] = self._artifact_signatures()
+                self.native[ident] = record
+            if event.get("type") == "item.completed":
+                if record is None or record["status"] != "running":
+                    return  # Ignore duplicate completion or missing launch.
+                code = item.get("exit_code")
+                if type(code) is not int:
+                    return
+                log = self.run_dir / "logs" / (ident + ".log")
+                log.write_text(item.get("aggregated_output", ""), encoding="utf-8")
+                identity = self.executor.current_identity("candidate")
+                before = self._native_artifacts_before.pop(ident, {})
+                record.update(
+                    exit_code=code,
+                    finished_at=time.time(),
+                    status="pass" if code == 0 else "fail",
+                    log_path=str(log),
+                    subject=identity,
+                    installation_identity=identity["installation_identity"],
+                    original_subject=identity["original"]
+                    and record["subject_before"]["original"],
+                    tested_sha=self.task["tested_sha"],
+                    observed_artifacts=self._changed_artifacts(before),
+                )
+                self.native[ident] = record
+                self.journal.execution(
+                    self.task["task_id"], "native_command", "candidate", record
+                )
+
+    def interrupt_native(self, reason):
+        """Close incomplete observations after the driver has stopped its commands."""
+        with self.guard:
+            for ident, record in self.native.items():
+                if record["status"] != "running":
+                    continue
+                log = self.run_dir / "logs" / (ident + ".log")
+                log.write_text(
+                    "Native execution interrupted: " + reason + "\n", encoding="utf-8"
+                )
+                record.update(
+                    status="cancelled" if "cancel" in reason.lower() else "infra_error",
+                    finished_at=time.time(),
+                    exit_code=None,
+                    reason=reason,
+                    log_path=str(log),
+                    original_subject=False,
+                    observed_artifacts={},
+                )
+                getattr(self, "_native_artifacts_before", {}).pop(ident, None)
+                self.journal.execution(
+                    self.task["task_id"], "native_command", "candidate", record
+                )
+
+    def record_check(
+        self,
+        execution_id,
+        tool_id,
+        artifact_path,
+        reason,
+        parameters=None,
+        reports=None,
+    ):
+        with self.guard:
+            if self.closed or self.sealing_started:
+                raise ContractError("Task is sealed")
+            original = next(
+                (
+                    r
+                    for r in self.journal.executions(self.task["task_id"])
+                    if r["execution_id"] == execution_id
+                ),
+                None,
+            )
+            if (
+                not original
+                or original.get("execution_kind") not in {"native", "custom"}
+                or type(original.get("exit_code")) is not int
+            ):
+                raise ContractError("Link a completed observed native/custom execution")
+            if tool_id not in self.policy["capabilities"]:
+                raise ContractError("Unsupported capability")
+            prefix = "/task/artifacts/"
+            if not artifact_path.startswith(prefix):
+                raise ContractError("Reports must be in task artifacts")
+            directory = within(self.run_dir / "artifacts", artifact_path[len(prefix) :])
+            if not directory.is_dir():
+                raise ContractError("Expected report directory")
+            parameters = parameters or {}
+            context = self.executor.plan_context(
+                execution_id, original["variant"], parameters
+            )
+            outcome = evaluate(
+                tool_id,
+                directory,
+                original["exit_code"],
+                context,
+                {**parameters, "reports": reports or {}},
+            )
+            observed = original.get("observed_artifacts", {})
+            if original.get("execution_kind") == "custom" and not observed:
+                # The executor creates an empty per-execution directory and stops
+                # its process group before export. Only that bounded output can
+                # supply custom evidence; late files cannot gain credit.
+                owned = Path(original.get("artifact_dir", "")).resolve()
+                if not directory.resolve().is_relative_to(owned):
+                    raise ContractError(
+                        "Custom reports must belong to their execution output"
+                    )
+                observed = self._changed_artifacts({}, directory)
+                lower = int(original.get("started_at", 0) * 1_000_000_000)
+                upper = int(original.get("finished_at", 0) * 1_000_000_000)
+                observed = {
+                    name: value
+                    for name, value in observed.items()
+                    if lower <= value["signature"][1] <= upper
+                }
+            expected = {}
+            for relative in outcome.get("evidence_files", []):
+                file = within(directory, relative, must_exist=True)
+                key = file.relative_to(self.run_dir / "artifacts").as_posix()
+                proof = observed.get(key)
+                if not proof or self._artifact_signature(file) != proof["signature"]:
+                    raise ContractError(
+                        "Report was not produced by the observed execution or changed afterward: "
+                        + relative
+                    )
+                expected[relative] = proof
+            deps = {}
+            for dep in self.dependencies(tool_id):
+                if not self.fresh(dep, original["variant"]):
+                    raise ContractError("Dependency " + dep + " lacks current evidence")
+                deps[dep] = self.journal.latest(
+                    self.task["task_id"], dep, original["variant"]
+                )["execution_id"]
+            if (
+                tool_id in {"frontend_install", "backend_install"}
+                and outcome["status"] == "pass"
+            ):
+                build_tool = (
+                    "frontend_build"
+                    if tool_id == "frontend_install"
+                    else "backend_build"
+                )
+                build = self.journal.latest(
+                    self.task["task_id"], build_tool, original["variant"]
+                )
+                if outcome["details"]["installation"]["sha256"] != build.get(
+                    "details", {}
+                ).get("wheel", {}).get("sha256"):
+                    raise ContractError(
+                        "Native installation does not match its current build wheel"
+                    )
+            association_id = uuid.uuid4().hex
+            snapshot = self.run_dir / "artifacts" / association_id / tool_id
+            for file in directory.rglob("*"):
+                if file.is_symlink():
+                    raise ContractError(
+                        "Native report snapshot cannot contain symlinks"
+                    )
+            shutil.copytree(directory, snapshot)
+            # Evaluate the fixed copy and verify the exact report contents that
+            # were observed at command completion, including the wheel bytes.
+            for relative, proof in expected.items():
+                file = snapshot / relative
+                if (
+                    file.stat().st_size != proof["size"]
+                    or hashlib.sha256(file.read_bytes()).hexdigest() != proof["sha256"]
+                ):
+                    raise ContractError(
+                        "Report content changed after observed completion: " + relative
+                    )
+            outcome = evaluate(
+                tool_id,
+                snapshot,
+                original["exit_code"],
+                context,
+                {**parameters, "reports": reports or {}},
+            )
+            if set(outcome.get("evidence_files", [])) - set(expected):
+                raise ContractError(
+                    "Report set changed while snapshotting observed evidence"
+                )
+            if (
+                tool_id in {"frontend_build", "backend_build"}
+                and outcome["status"] == "pass"
+            ):
+                wheel_manifest = snapshot / (reports or {}).get("wheel", "wheel.json")
+                value = json.loads(wheel_manifest.read_text())
+                relative = (reports or {}).get(
+                    "wheel_file", "wheels/" + Path(value["wheel"]).name
+                )
+                value["wheel"] = (
+                    f"/task/artifacts/{association_id}/{tool_id}/" + relative
+                )
+                atomic_json(snapshot / "wheel.json", value)
+                outcome.setdefault("details", {})["wheel"] = value
+            if outcome["status"] == "pass":
+                # Native report names are selectable, while later A stages read
+                # the same canonical manifests as builtin executions.
+                for name in ("environment", "installation", "backend_discovery"):
+                    value = outcome.get("details", {}).get(name)
+                    if value is not None:
+                        atomic_json(snapshot / (name + ".json"), value)
+            record = {
+                **original,
+                **outcome,
+                "execution_id": association_id,
+                "source_execution_id": original.get(
+                    "source_execution_id", execution_id
+                ),
+                "record_type": "check_association",
+                "tool_id": tool_id,
+                "artifact_dir": str(snapshot),
+                "parameters": parameters,
+                "dependency_executions": deps,
+                "selection_reason": reason,
+                "subject": original.get("subject"),
+                "original_subject": original.get("original_subject", False),
+            }
+            self.journal.execution(
+                self.task["task_id"], tool_id, original["variant"], record
+            )
+            return self.public_record(record)
+
+    def submit_review(self, kind, status, summary, evidence, findings=None):
+        if self.closed or self.sealing_started:
+            raise ContractError("Task is sealed")
+        validate_arguments(
+            "submit_review",
+            dict(
+                kind=kind,
+                status=status,
+                summary=summary,
+                evidence=evidence,
+                findings=findings or [],
+            ),
+        )
         if kind == "architecture" and status == "pass" and not evidence:
-            raise ContractError("Architecture review requires explicit contract references, including no-impact reviews")
+            raise ContractError("Architecture review requires contract evidence")
         for item in evidence:
-            if not isinstance(item, dict):
-                raise ContractError("Invalid review evidence")
-            if item.get("rule_id") and item["rule_id"] not in ARCHITECTURE_RULES:
-                raise ContractError("Unknown architecture rule")
             if item.get("path"):
-                self.read_file(item["path"], item.get("variant", "candidate"), item.get("line", 1), 1)
-        record = {"status": status, "summary": summary, "evidence": evidence, "findings": findings or []}
+                self.read_file(
+                    item["path"],
+                    item.get("variant", "candidate"),
+                    item.get("line", 1),
+                    1,
+                )
+        record = {
+            "status": status,
+            "summary": summary,
+            "evidence": evidence,
+            "findings": findings or [],
+        }
         self.journal.review(self.task["task_id"], kind, record)
         return record
 
-    def finding_blocker(self, finding: dict) -> bool:
-        if not isinstance(finding, dict) or not finding.get("summary") or not finding.get("path"):
+    def finding_blocker(self, finding):
+        if (
+            not isinstance(finding, dict)
+            or not finding.get("summary")
+            or not finding.get("path")
+        ):
             return False
-        try:
-            self.read_file(finding["path"], "candidate", finding.get("line", 1), 1)
-        except (ContractError, OSError):
-            return False
-        changed = {item["path"] for item in self.changes} | {item.get("old_path") for item in self.changes}
+        changed = {c["path"] for c in self.changes} | {
+            c.get("old_path") for c in self.changes
+        }
         if finding["path"] not in changed:
             return False
-        if finding.get("category") == "architecture":
-            rule_path = ARCHITECTURE_RULES.get(finding.get("rule_id"))
-            proof = finding.get("violation_evidence")
-            if not rule_path or not isinstance(proof, dict):
+        try:
+            candidate = self.read_file(
+                finding["path"], "candidate", finding.get("line", 1), 30
+            )["content"]
+            if finding.get("category") == "architecture":
+                proof = finding.get("violation_evidence", {})
+                rule_path = ARCHITECTURE_RULES.get(finding.get("rule_id"))
+                if not rule_path:
+                    return False
+                rule = self.read_file(rule_path, "base", proof.get("rule_line", 1), 30)[
+                    "content"
+                ]
+                return (
+                    bool(proof.get("explanation"))
+                    and bool(proof.get("rule_quote"))
+                    and proof["rule_quote"] in rule
+                    and bool(proof.get("code_quote"))
+                    and proof["code_quote"] in candidate
+                )
+            if finding.get("severity", "").lower() not in {"high", "critical"}:
                 return False
-            try:
-                contract = self.read_file(rule_path, "base", proof.get("rule_line", 1), 30)["content"]
-                candidate = self.read_file(finding["path"], "candidate", finding.get("line", 1), 30)["content"]
-                return (isinstance(proof.get("rule_quote"), str) and len(proof["rule_quote"].strip()) >= 8
-                        and proof["rule_quote"] in contract and isinstance(proof.get("code_quote"), str)
-                        and len(proof["code_quote"].strip()) >= 4 and proof["code_quote"] in candidate
-                        and bool(proof.get("explanation")))
-            except (ContractError, OSError):
-                return False
-        if finding.get("severity", "").lower() not in {"high", "critical"}:
+            records = [
+                r
+                for r in self.journal.executions(self.task["task_id"])
+                if r["execution_id"] in finding.get("execution_ids", [])
+            ]
+            failed = [
+                r
+                for r in records
+                if r["variant"] == "candidate"
+                and r["status"] == "fail"
+                and r.get("original_subject")
+            ]
+            base = [
+                r for r in records if r["variant"] == "base" and r["status"] == "pass"
+            ]
+            if any(
+                c.get("script_digest")
+                and c["script_digest"] == b.get("script_digest")
+                and c.get("environment_fingerprint") == b.get("environment_fingerprint")
+                for c in failed
+                for b in base
+            ):
+                return True
+            proof = finding.get("invariant_evidence", {})
+            if (
+                failed
+                and proof.get("reason_base_not_applicable")
+                and proof.get("explanation")
+                and proof.get("reference_path")
+                and proof.get("quote")
+            ):
+                reference = self.read_file(
+                    proof["reference_path"], "base", proof.get("line", 1), 40
+                )["content"]
+                return proof["quote"] in reference
+        except (ContractError, OSError):
             return False
-        ids = finding.get("execution_ids", [])
-        selected = [r for r in self.journal.executions(self.task["task_id"])
-                    if r["execution_id"] in ids and r.get("execution_kind") == "custom"
-                    and r.get("custom_mode") == "reproduction" and not r.get("experiment_id")
-                    and not r.get("reuse_invalidated")
-                    and r.get("tested_sha") == self.task.get("base_sha" if r.get("variant") == "base" else "tested_sha")
-                    and r.get("tested_sha") is not None]
-        failed = [r for r in selected if r.get("variant") == "candidate" and r["status"] == "fail" and r.get("script_digest")]
-        base = [r for r in selected if r.get("variant") == "base" and r["status"] == "pass" and r.get("script_digest")]
-        # Two candidate failures, a passing base, identical script and environment.
-        return any(sum(r["script_digest"] == b["script_digest"] and r["environment_fingerprint"] == b["environment_fingerprint"]
-                       and r.get("source_only", False) == b.get("source_only", False)
-                       and r.get("script_language") == b.get("script_language")
-                       and r.get("script_name") == b.get("script_name")
-                       and r.get("parameters", {}) == b.get("parameters", {})
-                       for r in failed) >= 2 for b in base)
+        return False
 
-    def finish(self, summary: str = "") -> dict:
+    def finish(self, summary=""):
         with self.guard:
             if self.closed:
-                return json.loads((self.run_dir / "published/result.json").read_text())
-            if any(not future.done() for future in self.futures.values()):
-                raise ContractError("Wait for running checks before sealing results")
-            # If evidence storage fails after the environment check, retries
-            # may finish sealing but must not launch new candidate work against
-            # an already validated/released installation.
+                return json.loads((self.run_dir / "sealed/result.json").read_text())
+            if any(not f.done() for f in self.futures.values()) or any(
+                r["status"] == "running" for r in self.native.values()
+            ):
+                raise ContractError("Wait for commands to finish before sealing")
             self.sealing_started = True
-            cleanup = self.before_seal() if self.before_seal is not None else None
-            checks, unfinished, blockers, performance = [], [], [], []
-            if cleanup is not None and cleanup.get("status") != "pass":
-                unfinished.append("environment cleanup: " + cleanup.get("reason", "reuse validation failed"))
-            for tool_id in self.policy["required_checks"]:
-                record = self.journal.latest(self.task["task_id"], tool_id)
-                if not record or not self.fresh(tool_id):
-                    unfinished.append(tool_id)
-                    if not record:
-                        checks.append({"tool_id": tool_id, "variant": "candidate", "status": "blocked_dependency",
-                                       "required": True, "reason": "Required check has no execution evidence; inspect prerequisites and resume"})
-                    if record and record["status"] == "fail":
-                        blockers.append({"kind": "check_failure", "tool_id": tool_id, "execution_id": record["execution_id"], "reason": record.get("reason", "failed")})
+            self.journal.phase(self.task["task_id"], "sealing")
+            cleanup = self.before_seal() if self.before_seal else {"status": "pass"}
             records = self.journal.executions(self.task["task_id"])
+            checks = []
+            unfinished = []
+            blockers = []
+            performance = []
             latest = {(r["tool_id"], r["variant"]): r for r in records}
-            for (tool_id, variant), record in latest.items():
-                public = self.public_record(record)
-                public["required"] = variant == "candidate" and tool_id in self.policy["required_checks"]
-                checks.append(public)
-                if variant == "candidate" and tool_id in {"compile_time", "pass_profile", "ir_serialization"}:
-                    performance.append({"tool_id": tool_id, "execution_id": record["execution_id"], "details": record.get("details", {})})
-                if variant == "candidate" and tool_id in TOOLS and record["status"] == "fail" and not public["required"]:
-                    blockers.append({"kind": "selected_check_failure", "tool_id": tool_id, "execution_id": record["execution_id"]})
-                if variant == "candidate" and tool_id in (*TOOLS, "contract_tests") and record["status"] in {"infra_error", "cancelled", "running", "queued"} and tool_id not in unfinished:
+            if cleanup.get("status") != "pass":
+                unfinished.append("cleanup: " + cleanup.get("reason", "unknown"))
+            for tool_id in self.policy["required_checks"]:
+                r = latest.get((tool_id, "candidate"))
+                if not self.fresh(tool_id):
                     unfinished.append(tool_id)
-            for tool_id in self.policy["not_applicable"]:
-                checks.append({"tool_id": tool_id, "status": "not_applicable", "required": False, "reason": "backend_capability_unavailable"})
-            impact = self.policy.get("impact", {})
-            trusted_noop = impact.get("classification") in {"trusted_python_ast_equivalent", "documentation_only"}
+                    if not r:
+                        checks.append(
+                            {
+                                "tool_id": tool_id,
+                                "variant": "candidate",
+                                "status": "blocked_dependency",
+                                "required": True,
+                                "reason": "No completed evidence",
+                            }
+                        )
+                    elif r["status"] == "fail" and r.get("original_subject"):
+                        blockers.append(
+                            {
+                                "kind": "check_failure",
+                                "tool_id": tool_id,
+                                "execution_id": r["execution_id"],
+                                "reason": r.get("reason", "failed"),
+                            }
+                        )
+            for (tool_id, variant), r in latest.items():
+                if tool_id not in TOOLS:
+                    continue
+                public = self.public_record(r)
+                public["required"] = (
+                    variant == "candidate" and tool_id in self.policy["required_checks"]
+                )
+                checks.append(public)
+                if (
+                    variant == "candidate"
+                    and r["status"] == "fail"
+                    and r.get("original_subject")
+                    and not public["required"]
+                ):
+                    blockers.append(
+                        {
+                            "kind": "selected_check_failure",
+                            "tool_id": tool_id,
+                            "execution_id": r["execution_id"],
+                        }
+                    )
+                if variant == "candidate" and r["status"] == "infra_error":
+                    unfinished.append(tool_id)
+                if tool_id in {"compile_time", "pass_profile", "ir_serialization"}:
+                    performance.append(
+                        {
+                            "tool_id": tool_id,
+                            "execution_id": r["execution_id"],
+                            "details": r.get("details", {}),
+                        }
+                    )
             for tool_id in self.policy["capabilities"]:
-                if (tool_id, "candidate") not in latest and tool_id not in self.policy["required_checks"]:
-                    if trusted_noop:
-                        reason = "Trusted frozen diff has no executable semantic change; Codex did not select this optional check"
-                    elif tool_id in self.policy.get("recommended_checks", []):
-                        reason = f"Optional for {impact.get('level', 'assessed')} impact; Codex omitted it after risk assessment"
-                    else:
-                        reason = f"Not required for {impact.get('level', 'assessed')} impact and not selected by Codex"
-                    checks.append({"tool_id": tool_id, "status": "not_selected", "required": False, "reason": reason})
+                if (tool_id, "candidate") not in latest and tool_id not in self.policy[
+                    "required_checks"
+                ]:
+                    checks.append(
+                        {
+                            "tool_id": tool_id,
+                            "status": "not_selected",
+                            "required": False,
+                            "reason": "Not selected for this change",
+                        }
+                    )
+            for tool_id in self.policy["not_applicable"]:
+                checks.append(
+                    {
+                        "tool_id": tool_id,
+                        "status": "not_applicable",
+                        "required": False,
+                        "reason": "Capability not deployed for profile",
+                    }
+                )
             reviews = self.journal.reviews(self.task["task_id"])
             findings = []
             for kind in self.policy["required_reviews"]:
-                if kind not in reviews or reviews[kind]["status"] != "pass":
+                review = reviews.get(kind, {})
+                if review.get("status") != "pass":
                     unfinished.append("review:" + kind)
-                if kind == "pr_info" and reviews.get(kind, {}).get("status") == "fail":
-                    blockers.append({"kind": "pr_information", "reason": reviews[kind]["summary"]})
+                if kind == "pr_info" and review.get("status") == "fail":
+                    blockers.append(
+                        {"kind": "pr_information", "reason": review["summary"]}
+                    )
             for review in reviews.values():
                 for item in review.get("findings", []):
                     blocking = self.finding_blocker(item)
                     findings.append({**item, "blocking": blocking})
                     if blocking:
-                        blockers.append({"kind": item.get("category", "verified_high_risk"), "finding": item})
-            status = "cancelled" if self.cancelled.is_set() else "fail" if blockers else "infra_error" if unfinished else "pass"
-            run_id = self.journal.task(self.task["task_id"])["run_id"]
-            result = {"schema": RESULT_SCHEMA, "task": self.task, "run_id": run_id,
-                      "status": status, "summary": summary, "policy_version": self.policy["version"],
-                      "required_checks": self.policy["required_checks"], "checks": checks,
-                      "policy": self.policy, "changes": self.changes,
-                      "reviews": reviews, "findings": findings, "blockers": blockers,
-                      "performance": performance, "unfinished": unfinished,
-                      "environment": {k: self.executor.generation[k] for k in ("profile", "generation", "environment_fingerprint", "backend_enabled")},
-                      "publication": {"status": "pending_upload", "completion_requires": ["gitee_upload"]}}
-            if cleanup is not None:
-                result["environment_cleanup"] = cleanup
-            published = self.run_dir / "published"
-            published.mkdir(exist_ok=True)
-            for record in records:
-                source = Path(record.get("artifact_dir", ""))
-                if not record.get("artifact_dir") or not source.is_dir():
-                    continue
-                target = published / "evidence" / record["execution_id"]
-                for file in source.rglob("*"):
-                    if file.is_file() and not file.is_symlink() and file.resolve().is_relative_to(source.resolve()):
-                        dest = target / file.relative_to(source)
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copyfile(file, dest)
-            atomic_json(published / "result.json", result)
-            self.journal.queue_result(self.task["task_id"], published / "result.json", hashlib.sha256((published / "result.json").read_bytes()).hexdigest())
+                        blockers.append(
+                            {
+                                "kind": item.get("category", "verified_high_risk"),
+                                "finding": item,
+                            }
+                        )
+            status = (
+                "cancelled"
+                if self.cancelled.is_set()
+                else "fail"
+                if blockers
+                else "infra_error"
+                if unfinished
+                else "pass"
+            )
+            result = {
+                "schema": RESULT_SCHEMA,
+                "task": self.task,
+                "run_id": self.journal.task(self.task["task_id"])["run_id"],
+                "status": status,
+                "summary": summary,
+                "policy_version": self.policy["version"],
+                "required_checks": self.policy["required_checks"],
+                "policy": self.policy,
+                "changes": self.changes,
+                "checks": checks,
+                "reviews": reviews,
+                "findings": findings,
+                "blockers": blockers,
+                "performance": performance,
+                "unfinished": sorted(set(unfinished)),
+                "environment": {
+                    k: self.executor.generation.get(k)
+                    for k in (
+                        "profile",
+                        "generation",
+                        "environment_fingerprint",
+                        "backend_enabled",
+                        "image_id",
+                    )
+                },
+                "environment_cleanup": cleanup,
+            }
+            staged = self.run_dir / (".sealing-" + uuid.uuid4().hex)
+            staged.mkdir()
+            result["artifacts"] = seal_artifacts(staged, records, redact=self.redact)
+            executions = []
+            for r in records:
+                executions.append(
+                    {
+                        **{
+                            k: r.get(k)
+                            for k in (
+                                "execution_id",
+                                "source_execution_id",
+                                "record_type",
+                                "tool_id",
+                                "variant",
+                                "status",
+                                "exit_code",
+                                "execution_kind",
+                                "original_subject",
+                                "started_at",
+                                "finished_at",
+                                "tested_sha",
+                                "environment_fingerprint",
+                                "scope",
+                            )
+                        },
+                        "artifact_ids": [
+                            a["artifact_id"]
+                            for a in result["artifacts"]
+                            if a["execution_id"] == r["execution_id"]
+                        ],
+                    }
+                )
+            atomic_json(
+                staged / "execution-summary.json",
+                {
+                    "schema": EXECUTIONS_SCHEMA,
+                    "task_id": self.task["task_id"],
+                    "run_id": result["run_id"],
+                    "executions": self.redact(executions),
+                },
+            )
+            result["execution_summary_sha256"] = hashlib.sha256(
+                (staged / "execution-summary.json").read_bytes()
+            ).hexdigest()
+            result = self.redact(result)
+            atomic_json(staged / "result.json", result)
+            sealed = self.run_dir / "sealed"
+            os.replace(staged, sealed)
+            descriptor = os.open(self.run_dir, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            self.journal.queue_result(
+                self.task["task_id"],
+                sealed / "result.json",
+                hashlib.sha256((sealed / "result.json").read_bytes()).hexdigest(),
+            )
             self.closed = True
             return result
 
-    def cancel(self, reason: str) -> None:
+    def cancel(self, reason):
         self.cancelled.set()
         self.journal.event(self.task["task_id"], "cancel_requested", {"reason": reason})
-        for record in self.journal.executions(self.task["task_id"]):
-            if record["status"] == "running":
-                self.executor.stop(record["execution_id"])
+        for r in self.journal.executions(self.task["task_id"]):
+            if r["status"] in {"running", "queued"}:
+                self.executor.stop(r["execution_id"])
 
     def close(self):
         self.pool.shutdown(wait=True)
@@ -402,16 +1027,24 @@ class Supervisor:
 
 class ToolService:
     """A bearer-scoped local socket; the MCP process has no journal write access."""
+
     METHODS = frozenset(SCHEMAS)
 
     def __init__(self, supervisor: Supervisor, socket_path: Path):
         self.supervisor = supervisor
         self.path, self.token = socket_path, secrets.token_hex(32)
-        if not socket_path.is_absolute() or socket_path.parent.resolve() != socket_path.parent:
-            raise ContractError("RPC socket must use an absolute trusted directory without symlinks")
+        if (
+            not socket_path.is_absolute()
+            or socket_path.parent.resolve() != socket_path.parent
+        ):
+            raise ContractError(
+                "RPC socket must use an absolute trusted directory without symlinks"
+            )
         socket_path.parent.mkdir(parents=True, exist_ok=True)
         if socket_path.parent.stat().st_uid != os.geteuid():
-            raise ContractError("RPC socket directory must belong to the worker account")
+            raise ContractError(
+                "RPC socket directory must belong to the worker account"
+            )
         socket_path.parent.chmod(0o711)
         if socket_path.exists():
             socket_path.unlink()
@@ -424,9 +1057,21 @@ class ToolService:
                     if len(raw) > 1024 * 1024:
                         raise ContractError("Request too large")
                     request = json.loads(raw)
-                    validate_value(request, schema({"token": {"type": "string"}, "method": {"type": "string"},
-                                                    "arguments": {"type": "object"}}, ["token", "method", "arguments"]), "RPC request")
-                    if not secrets.compare_digest(str(request.get("token", "")), service.token):
+                    validate_value(
+                        request,
+                        schema(
+                            {
+                                "token": {"type": "string"},
+                                "method": {"type": "string"},
+                                "arguments": {"type": "object"},
+                            },
+                            ["token", "method", "arguments"],
+                        ),
+                        "RPC request",
+                    )
+                    if not secrets.compare_digest(
+                        str(request.get("token", "")), service.token
+                    ):
                         raise ContractError("Invalid task capability")
                     method = request.get("method")
                     if method not in ToolService.METHODS:
@@ -437,11 +1082,22 @@ class ToolService:
                     response = {"result": result}
                 except Exception as exc:
                     response = {"error": str(exc)}
-                self.wfile.write(json.dumps(response, ensure_ascii=False).encode() + b"\n")
+                self.wfile.write(
+                    json.dumps(response, ensure_ascii=False).encode() + b"\n"
+                )
 
-        self.server = socketserver.ThreadingUnixStreamServer(str(socket_path), Handler)
+        self.socket_dir_fd = None
+        bind_path = str(socket_path)
+        if len(os.fsencode(bind_path)) >= 104:
+            self.socket_dir_fd = os.open(
+                socket_path.parent, os.O_RDONLY | os.O_DIRECTORY
+            )
+            bind_path = f"/proc/self/fd/{self.socket_dir_fd}/{socket_path.name}"
+        self.server = socketserver.ThreadingUnixStreamServer(bind_path, Handler)
         self.server.daemon_threads = True
-        socket_path.chmod(0o666)  # Authentication is the per-task unguessable token, not ambient uid.
+        socket_path.chmod(
+            0o666
+        )  # Authentication is the per-task unguessable token, not ambient uid.
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def __enter__(self):
@@ -453,3 +1109,5 @@ class ToolService:
         self.server.server_close()
         self.thread.join()
         self.path.unlink(missing_ok=True)
+        if self.socket_dir_fd is not None:
+            os.close(self.socket_dir_fd)

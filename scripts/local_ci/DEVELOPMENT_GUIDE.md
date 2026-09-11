@@ -1,19 +1,15 @@
-# Local CI v4 开发约定
+# Local CI 开发约定
 
-当前架构和运行入口见 README.md；最高指导是 new_CI.md 及用户确认的实施计划。旧固定流水线、一次性 Codex 容器与“AI 永远非阻塞”的说明已被替换。
+当前架构与运行方式统一见 [README](README.md)。
 
-- agent_ci：任务身份、可信最低策略、持久 journal、MCP 服务、Docker 执行器、Codex 会话与 Gitee 单向结果发布。
-- tools：一个入口对应一个真实检查，不能转调旧整条 runner。命令失败、空测例、缺必要数据必须准确反映在退出码中。
-- environments：可信版本配方、LLVM provenance、镜像发布、任务容器 attempt、lease、轮换与回退。
-- deploy/maintenance：部署预检、systemd、独立健康发布、外部 watchdog 与 SMTP outbox。
-- GitHub：CI_dev 的 gateway_v4 负责 PR 信息检查、顺序前置检查、审批、投递、取消、结果接收和页面发布；main 保持小路由。
+- `agent_ci` 管理一个任务的生命周期、执行记录、原生命令证据与封存；`state.py` 是文件进度的单一写入入口。
+- `tools/basic_tools/runner.py` 定义工具 ID、参数、真实依赖和 plan；CLI 与 MCP 共用它，报告判据在同目录 `evidence.py`。
+- `tools/ai_review_tools` 保存架构及专项审查说明；`ai_custom_tools` 说明临时分析用途，生成文件写任务 artifacts。
+- `ops_maint` 保存精确依赖、Rootless 容器、配置、预检、部署、健康与保留；不引入第二套常驻运行框架。
+- `schemas`、`agent_ci/protocol.py` 和 `scripts/ci/gateway_v4.py` 共用身份、最低范围、执行/工件与交付判据。
 
-任务与结果的身份必须一致。变更任意 SHA、PR 元数据或执行策略须有明确新任务/新执行身份。结果是否通过由真实执行记录与必检检查计算，不能把模型 summary 当作退出状态。
+先验证具体行为再扩大回归：测试选取、失败归类、重装失效、取消、重启与发布需覆盖实际边界。不要用断言实现细节的测试维持已被设计删除的四 UID、Skill 层级或 SQLite 表结构。新结果只有一份当前格式，旧结果只作历史查看。
 
-PR 路径先识别控制程序与运行规则，再识别纯文档。重命名、删除、symlink、gitlink 和 vendored Triton 都参与分类。新增工具应声明依赖、能力、参数限制、失败语义、产物，以及相应行为测试。
+原生命令正式选测可直接执行 `tools/basic_tools/pytest_exec.py --installation <已记录的 installation.json> --import-report <产物目录>/import-origin.json -- <pytest 参数>`，同时输出 JUnit，并通过 `record_check` 关联已观察到的执行。判据比较实际测试进程的 import 来源，不能仅声明覆盖某个 tool ID。
 
-架构阻断需具体可信规则和原文/代码证据；额外高风险问题需同环境同脚本的重复 candidate 失败和 base 通过。source_only Python 复现禁用 site packages；运行时复现先验证对应版本安装，防止导入 seed wheel。
-
-测试使用真实控制逻辑，仅替换外部边界。不得把模拟编译或模拟模型结果标为真实测试通过。修改阶段依赖、身份、恢复、发布或轮换时，应增加能够发现行为回归的测试，而不是只断言脚本包含某个字符串。
-
-受管目录操作必须验证绝对路径和边界。候选代码及其输出均不可信；不能读取其配置来获得宿主机、Docker、模型或发布权限。生成脚本仅在任务目录使用，改进建议只作为证据供维护者采纳。
+代码提交不代表生产验收；服务器模型/LLVM/后端、Rootless 限额、Gitee 附件权限与 required checks 都需要真实目标环境验证。配置示例不含真实凭据，不自动启动服务。

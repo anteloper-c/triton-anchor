@@ -1,0 +1,13 @@
+[Unit]
+Description=Observe public health on the CI host
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/triton-anchor-local-ci/credentials.env
+WorkingDirectory=/opt/local-ci/control/triton-anchor
+UMask=0077
+NoNewPrivileges=yes
+Environment="DOCKER_HOST="
+UnsetEnvironment=DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+ExecStart="/usr/bin/python3" "/opt/local-ci/control/triton-anchor/scripts/local_ci/ops_maint/watchdog.py" --config "/etc/triton-anchor-local-ci/config.json" --publish
+TimeoutStartSec=5min

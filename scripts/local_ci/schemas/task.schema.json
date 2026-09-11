@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "triton-anchor-local-ci-task/v4",
+  "type": "object",
+  "required": [
+    "schema",
+    "task_id",
+    "repository",
+    "event_kind",
+    "pr_number",
+    "task_ref",
+    "base_task_ref",
+    "head_task_ref",
+    "tested_sha",
+    "base_sha",
+    "head_sha",
+    "worker_revision_sha",
+    "target_branch",
+    "title",
+    "description",
+    "labels",
+    "state",
+    "draft",
+    "metadata_digest",
+    "captured_at",
+    "llvm_hash",
+    "full"
+  ],
+  "properties": {
+    "schema": {
+      "const": "triton-anchor-local-ci-task/v4"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "repository": {
+      "enum": [
+        "likehupochuan/triton-anchor",
+        "anteloper-c/triton-anchor"
+      ]
+    },
+    "event_kind": {
+      "enum": [
+        "pull_request",
+        "push",
+        "manual"
+      ]
+    },
+    "pr_number": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "task_ref": {
+      "type": "string",
+      "pattern": "^ci/"
+    },
+    "base_task_ref": {
+      "type": "string",
+      "pattern": "^ci/"
+    },
+    "head_task_ref": {
+      "type": "string",
+      "pattern": "^ci/"
+    },
+    "tested_sha": {
+      "$ref": "#/$defs/sha"
+    },
+    "base_sha": {
+      "$ref": "#/$defs/sha"
+    },
+    "head_sha": {
+      "$ref": "#/$defs/sha"
+    },
+    "worker_revision_sha": {
+      "$ref": "#/$defs/sha"
+    },
+    "llvm_hash": {
+      "$ref": "#/$defs/sha"
+    },
+    "target_branch": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "const": "CI_dev_forPR"
+      }
+    },
+    "title": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "state": {
+      "const": "open"
+    },
+    "draft": {
+      "const": false
+    },
+    "full": {
+      "type": "boolean"
+    },
+    "metadata_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "captured_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "submodules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "sha",
+          "variant",
+          "repository_url",
+          "task_ref"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha": {
+            "$ref": "#/$defs/sha"
+          },
+          "variant": {
+            "enum": [
+              "candidate",
+              "base"
+            ]
+          },
+          "repository_url": {
+            "type": "string",
+            "pattern": "^https://gitee[.]com/"
+          },
+          "task_ref": {
+            "type": "string",
+            "pattern": "^ci/"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    }
+  }
+}

@@ -1,6 +1,10 @@
+# 历史 CI 重构索引
+
+> 下文仅记录合并前历史；当前状态以 [统一版合并记录](local_ci_merge.md) 为准。历史测试数字不代表当前版本或生产验收。
+
 # CI 重构工作记录
 
-依据：new_CI.md、配套流程图及用户后续确认。当前方案见 [架构说明](ci_v4_implementation.md)，服务器步骤见 [部署与调试手册](../scripts/local_ci/deploy/jiwang_ci/HANDOFF.md)。本文件只保留变更与验证摘要，详细差异和当时的报告查对应 Git 提交。
+依据：new_CI.md、配套流程图及用户后续确认。当前方案见 [架构说明](ci_v4_implementation.md)，服务器步骤见 [部署与调试手册](../scripts/local_ci/ops_maint/profiles/HANDOFF.md)。本文件只保留变更与验证摘要，详细差异和当时的报告查对应 Git 提交。
 
 初始基线：CI_dev `2d4728a18f11f7fd918b03e1cd15c7701c8dbb0c`，main `ae8596a28c8287508f0492c23905e7281a111d34`。实施范围仅本地允许分支，未执行远端推送、服务器部署、真实模型调用或邮件发送。
 

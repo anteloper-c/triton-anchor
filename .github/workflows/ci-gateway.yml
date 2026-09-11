@@ -1,18 +1,15 @@
 name: CI Gateway
-run-name: >-
-  CI v4 | ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'service' && 'service' || github.event_name == 'workflow_dispatch' && inputs.mode == 'run' && (inputs.action == 'closed' || inputs.action == 'converted_to_draft') && 'cancel' || github.event_name == 'workflow_dispatch' && inputs.mode == 'run' && 'run' || 'route' }} | ${{ (inputs.pr_number != '' && inputs.pr_number != '0' && format('PR {0}', inputs.pr_number)) || (github.event.pull_request.number && format('PR {0}', github.event.pull_request.number)) || (inputs.mode == 'service' && 'receiver') || format('branch {0}', inputs.source_branch || github.ref_name) }}
+run-name: Local CI gateway | ${{ inputs.pr_number || github.event.pull_request.number || github.ref_name }}
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, edited, closed, converted_to_draft, labeled, unlabeled]
   push:
-    branches: [main, CI_dev]
-  schedule:
-    - cron: '2-57/5 * * * *'
+    branches: [main]
   workflow_dispatch:
     inputs:
       mode:
         type: choice
-        options: [request, run, service]
+        options: [request, run]
         default: request
       pr_number: {type: string, default: '0'}
       source_branch: {type: string, default: ''}
@@ -23,18 +20,21 @@ on:
 permissions: {}
 concurrency:
   group: ci-v4-${{ inputs.mode || github.event_name }}-${{ inputs.pr_number != '0' && inputs.pr_number || github.event.pull_request.number || inputs.source_branch || github.ref_name }}
-  cancel-in-progress: ${{ inputs.mode != 'service' }}
+  cancel-in-progress: true
 jobs:
   route:
     if: >-
-      github.repository == 'likehupochuan/triton-anchor' &&
+      (github.repository == 'likehupochuan/triton-anchor' || github.repository == 'anteloper-c/triton-anchor') &&
       (github.event_name != 'workflow_dispatch' || inputs.mode == 'request')
     runs-on: ubuntu-latest
     permissions: {contents: read, pull-requests: read, actions: write}
     steps:
-      - name: Route to the trusted CI_dev implementation
+      - name: Route to the pinned control release
         uses: actions/github-script@v7
         env:
+          CONTROL_REF: ${{ vars.LOCAL_CI_CONTROL_REF }}
+          CONTROL_SHA: ${{ vars.LOCAL_CI_CONTROL_SHA }}
+          TARGET_BRANCHES: ${{ vars.LOCAL_CI_TARGET_BRANCHES || '["main"]' }}
           INPUT_PR: ${{ inputs.pr_number }}
           INPUT_BRANCH: ${{ inputs.source_branch }}
           INPUT_SHA: ${{ inputs.requested_sha }}
@@ -42,10 +42,13 @@ jobs:
         with:
           script: |
             const {owner, repo} = context.repo;
-            const pull = context.payload.pull_request;
+            let pull = context.payload.pull_request;
+            if (!pull && Number(process.env.INPUT_PR) > 0) {
+              ({data: pull} = await github.rest.pulls.get({owner, repo, pull_number: Number(process.env.INPUT_PR)}));
+            }
             if (pull?.base.ref === 'CI_dev_forPR') return;
             const branch = process.env.INPUT_BRANCH || (pull?.base.ref || context.ref.replace('refs/heads/', ''));
-            if (branch === 'CI_dev_forPR') throw new Error('Excluded target branch');
+            if (!JSON.parse(process.env.TARGET_BRANCHES).includes(branch)) throw new Error('Unsupported target branch');
             if (context.eventName === 'push') {
               const {data: pulls} = await github.rest.pulls.list({owner, repo, state:'open', head:owner+':'+branch, per_page:100});
               if (pulls.some(pr => !pr.draft && pr.head.sha === context.sha && pr.base.ref !== 'CI_dev_forPR')) {
@@ -53,15 +56,18 @@ jobs:
                 return;
               }
             }
-            const {data: worker} = await github.rest.repos.getBranch({owner, repo, branch: 'CI_dev'});
-            const revision = worker.commit.sha;
+            const controlRef = process.env.CONTROL_REF;
+            const revision = process.env.CONTROL_SHA;
+            if (!controlRef || !/^[0-9a-f]{40}$/.test(revision)) throw new Error('Configure LOCAL_CI_CONTROL_REF and LOCAL_CI_CONTROL_SHA');
+            const {data: release} = await github.rest.repos.getCommit({owner, repo, ref: controlRef});
+            if (release.sha !== revision) throw new Error('Control release ref moved; pause dispatch and complete coordinated upgrade');
             const {data: file} = await github.rest.repos.getContent({owner, repo, path: '.github/ci-gateway-manifest.json', ref: revision});
             const manifest = JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'));
-            if (manifest.gateway_contract_version !== '4') throw new Error('Deploy CI_dev v4 before the router');
+            if (manifest.gateway_contract_version !== '4') throw new Error('Deploy the pinned v4 control release before the router');
             await github.rest.actions.createWorkflowDispatch({
-              owner, repo, workflow_id: 'ci-gateway.yml', ref: 'CI_dev',
+              owner, repo, workflow_id: 'ci-gateway.yml', ref: controlRef,
               inputs: {
-                mode: context.eventName === 'schedule' ? 'service' : 'run',
+                mode: 'run',
                 pr_number: String(pull?.number || process.env.INPUT_PR || '0'),
                 source_branch: branch,
                 requested_sha: pull?.head.sha || process.env.INPUT_SHA || (context.eventName === 'push' ? context.sha : ''),
@@ -72,11 +78,11 @@ jobs:
   cancel-obsolete:
     needs: validate-worker
     if: >-
-      github.repository == 'likehupochuan/triton-anchor' &&
+      (github.repository == 'likehupochuan/triton-anchor' || github.repository == 'anteloper-c/triton-anchor') &&
       github.event_name == 'workflow_dispatch' && inputs.mode == 'run' &&
-      github.ref_name == 'CI_dev'
+      github.ref_name == vars.LOCAL_CI_CONTROL_REF
     runs-on: ubuntu-latest
-    permissions: {contents: read, pull-requests: write, issues: write, statuses: write, checks: write}
+    permissions: {contents: read, pull-requests: write, statuses: write, checks: write}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -95,7 +101,7 @@ jobs:
     needs: cancel-obsolete
     if: ${{ inputs.action != 'closed' && inputs.action != 'converted_to_draft' }}
     runs-on: ubuntu-latest
-    permissions: {contents: read, pull-requests: write, issues: write, statuses: write}
+    permissions: {contents: read, pull-requests: write, statuses: write}
     outputs:
       task_digest: ${{ steps.task.outputs.task_digest }}
       tested_sha: ${{ steps.task.outputs.tested_sha }}
@@ -117,6 +123,8 @@ jobs:
           SOURCE_BRANCH: ${{ inputs.source_branch }}
           REQUESTED_SHA: ${{ inputs.requested_sha }}
           FULL: ${{ inputs.full }}
+          LOCAL_CI_TARGET_BRANCHES: ${{ vars.LOCAL_CI_TARGET_BRANCHES || '["main"]' }}
+          GITEE_SUBMODULE_MIRRORS: ${{ vars.GITEE_SUBMODULE_MIRRORS || '{}' }}
           EVENT_KIND: ${{ inputs.action == 'manual' && 'manual' || 'push' }}
         run: python3 scripts/ci/gateway_v4.py prepare
       - uses: actions/upload-artifact@v4
@@ -152,7 +160,7 @@ jobs:
     needs: [prepare, basic, api, security]
     if: ${{ always() && needs.prepare.outputs.tested_sha != '' }}
     runs-on: ubuntu-latest
-    permissions: {contents: read, pull-requests: write, issues: write, statuses: write, checks: write, actions: read}
+    permissions: {contents: read, pull-requests: write, statuses: write, checks: write, actions: read}
     outputs:
       eligible: ${{ steps.card.outputs.eligible }}
     steps:
@@ -196,7 +204,7 @@ jobs:
       always() && needs.review-card.outputs.eligible == 'true' &&
       (needs.prepare.outputs.external_fork != 'true' || needs.approve-external-fork.result == 'success')
     runs-on: ubuntu-latest
-    permissions: {contents: read, pull-requests: write, statuses: write, checks: write, issues: write}
+    permissions: {contents: read, pull-requests: write, statuses: write, checks: write}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -223,99 +231,9 @@ jobs:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITEE_RESULTS_REPO_URL: ${{ vars.GITEE_RESULTS_REPO_URL }}
         run: python3 trusted/scripts/ci/gateway_v4.py enqueue
-  service:
-    needs: validate-worker
-    concurrency:
-      group: ci-v4-service
-      cancel-in-progress: false
-    if: >-
-      github.repository == 'likehupochuan/triton-anchor' &&
-      github.event_name == 'workflow_dispatch' && inputs.mode == 'service' &&
-      github.ref_name == 'CI_dev'
-    runs-on: ubuntu-latest
-    environment: github-pages
-    timeout-minutes: 15
-    permissions: {contents: read, actions: read, pull-requests: write, issues: write, statuses: write, checks: write, pages: write, id-token: write}
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GITEE_USERNAME: ${{ vars.GITEE_USERNAME || 'likehupochuan' }}
-      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-      GITEE_RESULTS_REPO_URL: ${{ vars.GITEE_RESULTS_REPO_URL }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.worker_revision_sha }}
-          persist-credentials: false
-          submodules: false
-      - name: Restore durable monitor incidents
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const {data} = await github.rest.actions.listArtifactsForRepo({...context.repo, name:'ci-v4-monitor-state', per_page:100});
-            for (const artifact of data.artifacts) {
-              if (artifact.expired || artifact.workflow_run?.head_branch !== 'CI_dev') continue;
-              const {data: run} = await github.rest.actions.getWorkflowRun({...context.repo, run_id:artifact.workflow_run.id});
-              if (run.event !== 'workflow_dispatch' || run.path !== '.github/workflows/ci-gateway.yml' ||
-                  (run.display_title !== 'CI v4 | service | receiver' &&
-                   !run.display_title.startsWith('CI v4 | service | PR ')) ||
-                  run.head_repository?.full_name !== context.payload.repository.full_name) continue;
-              const response = await github.rest.actions.downloadArtifact({...context.repo, artifact_id:artifact.id, archive_format:'zip'});
-              fs.writeFileSync('monitor-state.zip', Buffer.from(response.data));
-              break;
-            }
-      - name: Prepare dashboard and monitor state
-        run: |
-          mkdir -p _site monitor-state
-          cp -R dashboard/. _site/
-          if [ -f monitor-state.zip ]; then unzip -o monitor-state.zip -d monitor-state; fi
-      - name: Receive valid results and reconcile cancellations
-        id: collect
-        continue-on-error: true
-        run: python3 scripts/ci/gateway_v4.py collect
-      - name: Check worker health independently of the server
-        id: monitor
-        continue-on-error: true
-        env:
-          HEALTH_URL: ${{ vars.LOCAL_CI_HEALTH_URL }}
-          EXPECTED_WORKER: ${{ vars.LOCAL_CI_WORKER_ID }}
-          GITEE_HEALTH_TOKEN: ${{ secrets.GITEE_HEALTH_TOKEN }}
-          LOCAL_CI_SMTP_HOST: ${{ secrets.LOCAL_CI_SMTP_HOST }}
-          LOCAL_CI_SMTP_PORT: ${{ secrets.LOCAL_CI_SMTP_PORT }}
-          LOCAL_CI_SMTP_USERNAME: ${{ secrets.LOCAL_CI_SMTP_USERNAME }}
-          LOCAL_CI_SMTP_PASSWORD: ${{ secrets.LOCAL_CI_SMTP_PASSWORD }}
-          LOCAL_CI_SMTP_FROM: ${{ secrets.LOCAL_CI_SMTP_FROM }}
-          LOCAL_CI_SMTP_TO: ${{ secrets.LOCAL_CI_SMTP_TO }}
-          LOCAL_CI_SMTP_STARTTLS: ${{ vars.LOCAL_CI_SMTP_STARTTLS || 'true' }}
-        run: |
-          test -n "$HEALTH_URL" && test -n "$EXPECTED_WORKER" || { echo '::error::Configure LOCAL_CI_HEALTH_URL and LOCAL_CI_WORKER_ID'; exit 2; }
-          python3 scripts/local_ci/maintenance/watchdog.py \
-          --url "$HEALTH_URL" --expected-worker "$EXPECTED_WORKER" \
-          --state monitor-state/incidents.json --output _site/data/v4-incidents.json \
-          --tasks-file monitor-tasks.json
-      - name: Preserve incidents and undelivered notifications
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-v4-monitor-state
-          path: monitor-state/
-          retention-days: 30
-      - uses: actions/configure-pages@v5
-        if: ${{ steps.collect.outcome == 'success' }}
-      - uses: actions/upload-pages-artifact@v3
-        if: ${{ steps.collect.outcome == 'success' }}
-        with: {path: _site}
-      - name: Publish dashboard
-        if: ${{ steps.collect.outcome == 'success' }}
-        id: pages
-        uses: actions/deploy-pages@v4
-      - name: Surface monitor or receiver failures
-        if: ${{ always() && (steps.monitor.outcome == 'failure' || steps.collect.outcome == 'failure' || steps.collect.outputs.receiver_errors != '0') }}
-        run: exit 1
-
   validate-worker:
     if: >-
-      github.repository == 'likehupochuan/triton-anchor' &&
+      (github.repository == 'likehupochuan/triton-anchor' || github.repository == 'anteloper-c/triton-anchor') &&
       github.event_name == 'workflow_dispatch' && inputs.mode != 'request'
     runs-on: ubuntu-latest
     permissions: {}
@@ -323,6 +241,11 @@ jobs:
       - name: Require the routed trusted worker revision
         env:
           WORKER_SHA: ${{ inputs.worker_revision_sha }}
+          CONTROL_REF: ${{ vars.LOCAL_CI_CONTROL_REF }}
+          CONTROL_SHA: ${{ vars.LOCAL_CI_CONTROL_SHA }}
         run: |
-          test "$GITHUB_REF_NAME" = CI_dev
+          test -n "$CONTROL_REF"
+          test "$GITHUB_REF_NAME" = "$CONTROL_REF"
           test "$GITHUB_SHA" = "$WORKER_SHA"
+          test "$WORKER_SHA" = "$CONTROL_SHA"
+          [[ "$CONTROL_SHA" =~ ^[0-9a-f]{40}$ ]]
