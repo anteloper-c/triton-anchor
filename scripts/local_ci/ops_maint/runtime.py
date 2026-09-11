@@ -1020,7 +1020,7 @@ class EnvironmentManager:
                         "--security-opt",
                         "no-new-privileges=true",
                         "--tmpfs",
-                        "/tmp:rw,nosuid,nodev,mode=1777",
+                        "/tmp:rw,nosuid,nodev,exec,mode=1777",
                         *self._limits(),
                         "--label",
                         "local-ci.owner=" + self.owner,
