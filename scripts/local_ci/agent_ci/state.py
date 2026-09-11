@@ -1,10 +1,9 @@
-"""Single-writer file state and completed command records for Local CI runs."""
+"""Task lifecycle and retryable result publication state."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 import threading
 import time
 import uuid
@@ -68,10 +67,7 @@ class Journal:
                 "phase": "preparing",
                 "updated": time.time(),
                 "detail": {},
-                "reviews": {},
-                "current_commands": {},
                 "events": [],
-                "invalidated": {},
                 "delivery": None,
             },
         )
@@ -138,88 +134,6 @@ class Journal:
                 + [{"at": time.time(), "kind": kind, "detail": detail}]
             )[-100:]
             self._write(task_id, state)
-
-    def execution(self, task_id, tool_id, variant, record):
-        with self.guard:
-            state = self._state(task_id)
-            ident = record.get("execution_id") or uuid.uuid4().hex
-            value = {
-                **record,
-                "execution_id": ident,
-                "tool_id": tool_id,
-                "variant": variant,
-                "run_id": state["run_id"],
-            }
-            if value["status"] in {"queued", "running"}:
-                state["current_commands"][ident] = value
-            else:
-                path = self.run_dir(task_id) / "commands.jsonl"
-                # A crash may leave a partial final line. Remove only that suffix.
-                with path.open("a+b") as stream:
-                    stream.seek(0)
-                    data = stream.read()
-                    if data and not data.endswith(b"\n"):
-                        stream.truncate(data.rfind(b"\n") + 1)
-                    stream.seek(0, 2)
-                    stream.write(canonical(value) + b"\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                state["current_commands"].pop(ident, None)
-            self._write(task_id, state)
-            return ident
-
-    def executions(self, task_id):
-        with self.guard:
-            state = self._state(task_id)
-            path = self.run_dir(task_id) / "commands.jsonl"
-            records = {}
-            if path.exists():
-                with path.open("rb") as stream:
-                    for line in stream:
-                        if not line.endswith(b"\n"):
-                            break
-                        item = json.loads(line)
-                        records[item["execution_id"]] = item
-            for ident, record in state.get("current_commands", {}).items():
-                if ident not in records:
-                    records[ident] = record
-            for ident, reason in state.get("invalidated", {}).items():
-                if ident in records:
-                    records[ident]["reuse_invalidated"] = reason
-            return list(records.values())
-
-    def latest(self, task_id, tool_id, variant="candidate"):
-        return next(
-            (
-                r
-                for r in reversed(self.executions(task_id))
-                if r["tool_id"] == tool_id and r["variant"] == variant
-            ),
-            None,
-        )
-
-    def invalidate_workspace(self, task_id, reason, *, generation=None):
-        with self.guard:
-            state = self._state(task_id)
-            state["invalidated"].update(
-                {
-                    r["execution_id"]: reason
-                    for r in self.executions(task_id)
-                    if generation is None
-                    or r.get("workspace_generation", generation) == generation
-                }
-            )
-            self._write(task_id, state)
-
-    def review(self, task_id, kind, record):
-        with self.guard:
-            state = self._state(task_id)
-            state["reviews"][kind] = record
-            self._write(task_id, state)
-
-    def reviews(self, task_id):
-        with self.guard:
-            return self._state(task_id).get("reviews", {})
 
     def queue_result(self, task_id, path, result_digest):
         with self.guard:

@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import ast
-import io
 import subprocess
-import tokenize
 from pathlib import Path
 
-from .protocol import ContractError, POLICY_VERSION
+from .protocol import ContractError
 
 # The runner owns the tool catalogue and dependency graph. Policy only selects
 # required behaviour; it must never introduce a parallel execution registry.
@@ -33,63 +30,6 @@ BACKEND = {
     "ir_serialization",
 }
 CHECK_ORDER = TOOLS
-
-MAX_AST_BYTES = 2 * 1024 * 1024
-
-
-def _git_blob(repo: Path, revision: str, path: str) -> bytes:
-    command = [
-        "git",
-        "-c",
-        f"safe.directory={repo.resolve()}",
-        "-c",
-        "core.fsmonitor=false",
-    ]
-    spec = f"{revision}:{path}"
-    size = int(
-        subprocess.check_output(
-            [*command, "cat-file", "-s", spec], cwd=repo, stderr=subprocess.DEVNULL
-        )
-    )
-    if size > MAX_AST_BYTES:
-        raise ValueError("Python source is too large for trusted AST classification")
-    return subprocess.check_output(
-        [*command, "cat-file", "blob", spec], cwd=repo, stderr=subprocess.DEVNULL
-    )
-
-
-def _python_ast(blob: bytes, path: str) -> str:
-    encoding, _ = tokenize.detect_encoding(io.BytesIO(blob).readline)
-    tree = ast.parse(blob.decode(encoding), filename=path, type_comments=True)
-    return ast.dump(tree, annotate_fields=True, include_attributes=False)
-
-
-def _annotate_semantics(repo: Path, base: str, tested: str, change: dict) -> dict:
-    """Mark only same-path, regular Python edits whose parsed program is identical."""
-    path = change["path"]
-    if (
-        change["status"] != "M"
-        or change["old_path"] != path
-        or not path.lower().endswith(".py")
-        or change["old_mode"] != "100644"
-        or change["mode"] != "100644"
-    ):
-        return change
-    try:
-        before = _python_ast(_git_blob(repo, base, path), path)
-        after = _python_ast(_git_blob(repo, tested, path), path)
-    except (
-        LookupError,
-        OSError,
-        subprocess.CalledProcessError,
-        SyntaxError,
-        UnicodeError,
-        ValueError,
-    ):
-        return change
-    if before == after:
-        return {**change, "semantic": "python_ast_equivalent"}
-    return change
 
 
 def changed_files(repo: Path, base: str, tested: str) -> list[dict]:
@@ -133,7 +73,7 @@ def changed_files(repo: Path, base: str, tested: str) -> list[dict]:
             "old_mode": old_mode[1:],
             "mode": new_mode,
         }
-        result.append(_annotate_semantics(repo, base, tested, change))
+        result.append(change)
     return result
 
 
@@ -160,7 +100,7 @@ def category(path: str) -> str:
             "scripts/api_contract/",
         )
     ):
-        if p.startswith("scripts/local_ci/ops_maint/") and (
+        if p.startswith("scripts/local_ci/prepare/") and (
             "/profiles/" in p
             or Path(p).name
             in {"runtime.py", "image_prepare.py", "dockerfile", "config.example.json"}
@@ -242,7 +182,6 @@ def minimum_checks(
             "Empty diff needs an explicit branch validation task; it is not documentation"
         )
     groups: set[str] = set()
-    equivalent_python: list[str] = []
     test_paths: list[str] = []
     deleted_test = False
     for item in changes:
@@ -263,16 +202,12 @@ def minimum_checks(
         }:
             item_groups.add("environment")
         groups |= item_groups
-        if item.get("semantic") == "python_ast_equivalent":
-            equivalent_python.append(item["path"])
         if "test" in item_groups:
             if item.get("status", "").startswith("D"):
                 deleted_test = True
             else:
                 test_paths.append(item["path"])
 
-    # AST equality ignores line numbers and source text used by JIT/cache logic.
-    # Keep the annotation for selection/review, never use it to waive execution.
     runtime_groups = groups - {"docs"}
     checks = {"control_plane"} if not runtime_groups else {"environment"}
     recommended: set[str] = set()
@@ -327,7 +262,6 @@ def minimum_checks(
     recommended_with_dependencies = closure(recommended)
     available_recommended = recommended_with_dependencies - all_required - unavailable
     return {
-        "version": POLICY_VERSION,
         "categories": sorted(groups),
         "impact": {
             "level": level,
@@ -335,7 +269,6 @@ def minimum_checks(
             if runtime_groups
             else "documentation_only",
             "active_categories": sorted(runtime_groups),
-            "python_ast_equivalent": sorted(equivalent_python),
         },
         "required_checks": ordered(all_required - unavailable),
         "required_parameters": required_parameters,
@@ -347,6 +280,6 @@ def minimum_checks(
         "required_reviews": ["pr_info", "architecture"],
         "reason": (
             "The frozen diff defines a coverage floor. Changed tests execute with their dependencies; "
-            "AST equality does not waive code tests. Full includes all supported FlagGems operators."
+            "Codex chooses task order and additional validation. Full includes all supported FlagGems operators."
         ),
     }

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from actions import candidate_python, run, test_results, write_json
+from actions import candidate_python, run, write_json
 from contract_checks import check
 
 
@@ -24,12 +24,19 @@ def execute(payload: dict) -> None:
         selected = [
             name
             for name in (
-                "scripts/local_ci",
-                "scripts/ci/tests",
+                "scripts/local_ci/tests",
                 "scripts/api_contract/tests",
             )
             if (root / name).is_dir() and any((root / name).rglob("test_*.py"))
         ]
+    dashboard_tests = []
+    if any(
+        path.startswith("dashboard/") or path.endswith((".js", ".mjs", ".cjs"))
+        for path in changed
+    ):
+        dashboard_tests = sorted((root / "scripts/local_ci/tests").glob("*.test.cjs"))
+        if dashboard_tests:
+            run(["node", "--test", *map(str, dashboard_tests)], cwd=root)
     if selected:
         for value in selected:
             path = (root / value.split("::", 1)[0]).resolve(strict=True)
@@ -39,26 +46,27 @@ def execute(payload: dict) -> None:
                 )
         command = [
             candidate_python(context),
-            "-m",
-            "pytest",
+            "-I",
+            str(Path(__file__).with_name("pytest_exec.py")),
+            "--output",
+            str(out / "tests.json"),
+            "--",
             "-q",
             "--import-mode=importlib",
             "-o",
             "addopts=",
-            "--junitxml",
-            str(out / "tests.xml"),
         ]
         if payload["parameters"].get("keyword"):
             command += ["-k", payload["parameters"]["keyword"]]
         command += [str(root / path) for path in selected]
         run(command, cwd=out)
-        test_results({**payload, "test_source": str(root), "test_paths": selected})
-    elif regression_required:
+    elif regression_required and not dashboard_tests:
         raise ValueError("Control change has no runnable regression suite")
     result.update(
         task_id=context["task_id"],
         target_sha=context["target_sha"],
         regression_required=regression_required,
-        regression_paths=selected or [],
+        regression_paths=(selected or [])
+        + [str(path.relative_to(root)) for path in dashboard_tests],
     )
     write_json(out / "control_plane.json", result)

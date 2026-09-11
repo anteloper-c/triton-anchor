@@ -123,7 +123,6 @@ def compare(
             )
 
     return {
-        "schema": "triton-anchor-ir-serialization-comparison/v1",
         "status": "warning" if warnings else "pass",
         "base_sha": base_sha,
         "candidate_sha": candidate_sha,

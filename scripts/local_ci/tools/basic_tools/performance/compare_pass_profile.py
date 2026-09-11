@@ -179,7 +179,6 @@ def compare(
     hotspots.sort(key=lambda item: item["candidate_median_ms"] or 0.0, reverse=True)
     status = "warning" if warnings else "pass"
     return {
-        "schema": "triton-anchor-pass-profile-comparison/v1",
         "status": status,
         "base_sha": base_sha,
         "candidate_sha": candidate_sha,

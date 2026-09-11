@@ -1,39 +1,53 @@
 #!/usr/bin/env python3
-"""Invoke pytest with an import-origin observer, for builtin or native execution."""
+"""Run pytest and record counts; empty or entirely skipped suites do not pass."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from pytest_origin import ImportOrigin
+
+class Counts:
+    def __init__(self):
+        self.passed = self.failed = self.skipped = self.errors = 0
+
+    def pytest_runtest_logreport(self, report):
+        if report.failed:
+            if report.when == "call":
+                self.failed += 1
+            else:
+                self.errors += 1
+        elif report.skipped:
+            self.skipped += 1
+        elif report.when == "call" and report.passed:
+            self.passed += 1
+
+    def pytest_collectreport(self, report):
+        if report.failed:
+            self.errors += 1
+
+
+def execute(arguments: list[str], output: Path) -> int:
+    import pytest
+
+    counts = Counts()
+    code = int(pytest.main(arguments, plugins=[counts]))
+    if not code and (not counts.passed or counts.failed or counts.errors):
+        code = 1
+    result = {**vars(counts), "exit_code": code, "status": "pass" if code == 0 else "fail"}
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(result, indent=2) + "\n")
+    return code
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--installation", default=os.environ.get("LOCAL_CI_INSTALLATION_MANIFEST")
-    )
-    parser.add_argument(
-        "--import-report", default=os.environ.get("LOCAL_CI_IMPORT_REPORT")
-    )
+    parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    if not args.installation or not args.import_report:
-        parser.error("--installation and --import-report are required")
-    installation = json.loads(Path(args.installation).read_text())
-    arguments = (
-        args.pytest_args[1:] if args.pytest_args[:1] == ["--"] else args.pytest_args
-    )
-    import pytest
-
-    return int(
-        pytest.main(arguments, plugins=[ImportOrigin(args.import_report, installation)])
-    )
+    arguments = args.pytest_args[1:] if args.pytest_args[:1] == ["--"] else args.pytest_args
+    return execute(arguments, args.output)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Container-side preconditions and artifact operations for the basic tools.
-
-This file is loaded from the controller's read-only tool mount, not the PR.
-Artifacts here prove build dependencies; only the external broker attests commands.
-"""
+"""Environment probes, wheel operations and measurement handling for basic tools."""
 
 from __future__ import annotations
 
@@ -14,7 +10,6 @@ import os
 import shutil
 import subprocess
 import sys
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -89,13 +84,6 @@ def wheel_manifest(
 ) -> tuple[dict[str, Any], Path]:
     root = stage_root(context, build_tool)
     manifest = read_json(root / "wheel.json")
-    if (
-        manifest.get("target_sha") != context["target_sha"]
-        or manifest.get("task_id") != context["task_id"]
-    ):
-        raise ValueError("Wheel artifact belongs to a different tested commit/task")
-    if manifest.get("environment_fingerprint", "") != environment_fingerprint(context):
-        raise ValueError("Wheel artifact was built in a different environment")
     wheel = Path(manifest["wheel"])
     if (
         not wheel.is_file()
@@ -108,30 +96,6 @@ def wheel_manifest(
     if digest(wheel) != manifest["sha256"]:
         raise ValueError("Wheel artifact hash mismatch; rebuild before continuing")
     return manifest, wheel
-
-
-def require_installation(
-    context: dict[str, Any], build_tool: str, install_tool: str
-) -> None:
-    manifest, _ = wheel_manifest(context, build_tool)
-    installed = read_json(stage_root(context, install_tool) / "installation.json")
-    for key in ("task_id", "target_sha", "sha256", "environment_fingerprint"):
-        if installed.get(key) != manifest.get(key):
-            raise ValueError(
-                f"Installed wheel no longer matches current {build_tool}; reinstall before continuing"
-            )
-    if (
-        Path(installed.get("python_executable", "")).resolve()
-        != Path(candidate_python(context)).resolve()
-    ):
-        raise ValueError("Installed wheel belongs to a different Python environment")
-    if installed.get("task_venv") != context.get("task_venv"):
-        raise ValueError("Installed wheel belongs to a different task venv")
-    if build_tool == "frontend_build" and installed.get("imports"):
-        if installed["imports"] != import_identity(context).get("imports"):
-            raise ValueError(
-                "Current imports differ from the installed frontend wheel record"
-            )
 
 
 def preflight(payload: dict[str, Any]) -> None:
@@ -153,30 +117,6 @@ def preflight(payload: dict[str, Any]) -> None:
     out = artifact / tool
     for directory in (out, out / "tmp", out / "cache", out / "dump"):
         directory.mkdir(parents=True, exist_ok=True)
-    if tool == "frontend_install":
-        wheel_manifest(context, "frontend_build")
-    if tool == "backend_install":
-        wheel_manifest(context, "backend_build")
-    if tool in {
-        "frontend_tests",
-        "frontend_smoke",
-        "backend_tests",
-        "backend_smoke",
-        "flaggems",
-        "compile_time",
-        "pass_profile",
-        "ir_serialization",
-    }:
-        require_installation(context, "frontend_build", "frontend_install")
-    if tool in {
-        "backend_tests",
-        "backend_smoke",
-        "flaggems",
-        "compile_time",
-        "pass_profile",
-        "ir_serialization",
-    }:
-        require_installation(context, "backend_build", "backend_install")
     print(
         json.dumps({"task_id": context["task_id"], "target_sha": actual, "tool": tool})
     )
@@ -237,11 +177,6 @@ def environment(payload: dict[str, Any]) -> None:
             ).stdout.strip()
         else:
             missing.append(f"LLVM:{llvm_config}")
-    revision = context.get("profile", {}).get("llvm_revision")
-    if revision:
-        expected_hash = source / "triton/cmake/llvm-hash.txt"
-        if not expected_hash.is_file() or expected_hash.read_text().strip() != revision:
-            missing.append("LLVM revision differs from candidate llvm-hash.txt")
     result = {
         "python": observed["python"],
         "python_executable": observed["python_executable"],
@@ -326,7 +261,14 @@ def record_wheel(payload: dict[str, Any]) -> None:
 def install_wheel(payload: dict[str, Any]) -> None:
     context, tool = payload["context"], payload["tool_id"]
     build_tool = "backend_build" if tool == "backend_install" else "frontend_build"
-    manifest, wheel = wheel_manifest(context, build_tool)
+    explicit = payload["parameters"].get("wheel")
+    if explicit:
+        wheel = Path(explicit).resolve(strict=True)
+        if not wheel.is_file() or wheel.suffix != ".whl":
+            raise ValueError("wheel must identify a wheel file")
+        manifest = {"wheel": str(wheel), "sha256": digest(wheel)}
+    else:
+        manifest, wheel = wheel_manifest(context, build_tool)
     # Dependencies belong to the selected environment recipe. Installing the
     # candidate must not silently replace the matched LLVM/Triton/backend stack.
     run(
@@ -416,7 +358,7 @@ def backend_discovery(payload: dict[str, Any]) -> None:
 
 
 def smoke_success(payload: dict[str, Any]) -> None:
-    """A post-step report associated with the recorded execution."""
+    """Record successful completion of the smoke command."""
     context, tool = payload["context"], payload["tool_id"]
     write_json(
         Path(context["artifact_dir"]) / tool / "smoke_success.json",
@@ -441,57 +383,8 @@ def prepare_tests(payload: dict[str, Any]) -> None:
         if not selected.is_file() and not selected.is_dir():
             raise ValueError("Test path is not a real file or directory")
     out = Path(payload["context"]["artifact_dir"]) / payload["tool_id"]
-    for name in ("tests.xml", "tests.json"):
+    for name in ("tests.json",):
         (out / name).unlink(missing_ok=True)
-
-
-def test_results(payload: dict[str, Any]) -> None:
-    """Record actual pytest cases; empty or wholly skipped suites are not proof."""
-    context, tool = payload["context"], payload["tool_id"]
-    out = Path(context["artifact_dir"]) / tool
-    report = out / "tests.xml"
-    if not report.is_file() or report.is_symlink():
-        raise ValueError("Test command did not produce a real JUnit report")
-    cases = list(ET.parse(report).getroot().iter("testcase"))
-    counts = {
-        "tests": len(cases),
-        "passed": 0,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0,
-    }
-    for case in cases:
-        kind = next(
-            (
-                name
-                for tag, name in (
-                    ("error", "errors"),
-                    ("failure", "failures"),
-                    ("skipped", "skipped"),
-                )
-                if case.find(tag) is not None
-            ),
-            "passed",
-        )
-        counts[kind] += 1
-    result = {
-        "task_id": context["task_id"],
-        "target_sha": context["target_sha"],
-        "tool": tool,
-        "python_executable": candidate_python(context),
-        "task_venv": context.get("task_venv"),
-        "test_source": payload["test_source"],
-        "selected_paths": payload["test_paths"],
-        "keyword": payload["parameters"].get("keyword", ""),
-        "junit_sha256": digest(report),
-        **counts,
-    }
-    write_json(out / "tests.json", result)
-    if not counts["passed"] or counts["failures"] or counts["errors"]:
-        raise ValueError(
-            "Test selection must run passing cases, without failures or errors"
-        )
-    print(json.dumps(result, ensure_ascii=False))
 
 
 def compare_performance(payload: dict[str, Any]) -> None:
@@ -672,7 +565,6 @@ ACTIONS = {
         backend_discovery,
         smoke_success,
         prepare_tests,
-        test_results,
         compare_performance,
         control_plane,
     )

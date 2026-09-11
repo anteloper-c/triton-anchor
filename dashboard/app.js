@@ -110,7 +110,7 @@ async function fetchJson(path) {
 
 async function loadData() {
   const requested = new URLSearchParams(location.search).get("data");
-  const source = requested && /^data\/[A-Za-z0-9_.-]+\.json$/.test(requested) ? requested : "data/v4-tasks.json";
+  const source = requested && /^data\/[A-Za-z0-9_.-]+\.json$/.test(requested) ? requested : "data/tasks.json";
   const data = LocalCIData.normalize(await fetchJson(source));
   Object.assign(state, LocalCIData.business(data));
 }
@@ -225,7 +225,7 @@ function renderBackends() {
         <tr>
           <td><strong>${escapeHtml(backend.name)}</strong><br><small>${escapeHtml(backend.profile)}</small></td>
           <td>${statusBadge(backend.state)}</td>
-          <td>${statusBadge(tests.delivery)}</td>
+          <td>${statusBadge(tests.backend)}</td>
           <td>${statusBadge(tests.compile_time)}</td>
           <td>${statusBadge(tests.pass_profile)}</td>
           <td>${statusBadge(tests.ir_serialization)}</td>

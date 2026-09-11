@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import subprocess
 import tempfile
 import threading
@@ -14,20 +13,12 @@ from pathlib import Path
 
 from .protocol import (
     PREINSTALLED_SUBMODULES,
-    RESULT_SCHEMA,
     ContractError,
-    atomic_json,
-    canonical,
     current_key,
     within,
+    validate_result,
 )
-from .delivery import (
-    DeliveryPending,
-    GiteeReleaseClient,
-    MAX_SMALL_JSON,
-    delivery_lock,
-    publish_evidence,
-)
+from .delivery import MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_RESULT_BYTES
 
 
 class GitRelay:
@@ -39,7 +30,6 @@ class GitRelay:
         allow_local: bool = False,
         control_branch: str = "local-ci-control",
         results_branch: str = "local-ci-results",
-        attachment_client=None,
     ):
         parsed = urllib.parse.urlsplit(url)
         if parsed.scheme == "https":
@@ -55,9 +45,6 @@ class GitRelay:
         self.root.mkdir(parents=True, exist_ok=True)
         self.control_branch, self.results_branch = control_branch, results_branch
         self.control_snapshot = None
-        self.attachment_client = attachment_client or (
-            GiteeReleaseClient(url) if parsed.scheme == "https" else None
-        )
         self.cache = self.root / "cache"
         self.lock = threading.RLock()
         self.env = {
@@ -316,15 +303,7 @@ class GitRelay:
                             self.git(
                                 ["checkout", "--quiet", "--orphan", branch], cwd=work
                             )
-                        # Retention and uploads share this fetched Git snapshot. A
-                        # competing push retries the whole decision against new HEAD.
-                        pending = (
-                            self._unexpired_files(work, files)
-                            if immutable and branch == self.results_branch
-                            else files
-                        )
-                        if not pending:
-                            return
+                        pending = files
                         for relative, content in pending.items():
                             path = within(work, relative)
                             if (
@@ -369,121 +348,29 @@ class GitRelay:
                 "Relay publish failed after three attempts"
             ) from last_error
 
-    @staticmethod
-    def _unexpired_files(work: Path, files: dict[str, bytes]) -> dict[str, bytes]:
-        """A matching expiry marker proves this sealed result was uploaded earlier."""
-        work = work.resolve()
-        runs: dict[tuple[str, str], list[str]] = {}
-        for relative in files:
-            normalized = within(work, relative).relative_to(work).as_posix()
-            match = re.fullmatch(
-                r"runs/v4/([0-9a-f]{64})/([A-Za-z0-9][A-Za-z0-9_.-]{0,119})/(.+)",
-                normalized,
-            )
-            if match:
-                runs.setdefault((match[1], match[2]), []).append(relative)
-        skipped = set()
-        for (task_id, run_id), relatives in runs.items():
-            marker = work / "retention/v4" / task_id / (run_id + ".json")
-            if marker.is_symlink() or any(
-                p.is_symlink()
-                for p in marker.parents
-                if p != work and p.is_relative_to(work)
-            ):
-                raise ContractError("Retention marker path contains a symlink")
-            if not marker.exists():
+    def publish_result(self, task: dict, run_id: str, directory: Path) -> str:
+        """Publish one sealed result and its selected files in the same Git commit."""
+        directory = Path(directory)
+        raw = (directory / "result.json").read_bytes()
+        if len(raw) > MAX_RESULT_BYTES:
+            raise ContractError("Sealed result exceeds the Git document budget")
+        result = validate_result(json.loads(raw), task)
+        if result["run_id"] != run_id:
+            raise ContractError("Sealed result run differs from publication request")
+        prefix = f"runs/{task['task_id']}/{run_id}"
+        files = {f"{prefix}/result.json": raw}
+        total = 0
+        for artifact in result["artifacts"]:
+            if artifact.get("omitted"):
                 continue
-            prefix = f"runs/v4/{task_id}/{run_id}"
-            if not marker.is_file() or (work / prefix).exists():
-                raise ContractError(
-                    "Invalid retention marker or expired result tree exists"
-                )
-            raw = files.get(prefix + "/result.json")
-            try:
-                saved = json.loads(marker.read_bytes())
-                result = json.loads(raw) if raw is not None else None
-                valid = (
-                    isinstance(saved, dict)
-                    and saved.get("schema") == "triton-anchor-result-retention/v1"
-                    and saved.get("task_id") == task_id
-                    and saved.get("run_id") == run_id
-                    and saved.get("reason") == "retention_expired"
-                    and raw is not None
-                    and saved.get("result_digest") == hashlib.sha256(raw).hexdigest()
-                    and isinstance(result, dict)
-                    and result.get("schema") == RESULT_SCHEMA
-                    and isinstance(result.get("task"), dict)
-                    and result["task"].get("task_id") == task_id
-                    and result.get("run_id") == run_id
-                )
-            except (ValueError, TypeError, UnicodeError):
-                valid = False
-            if not valid:
-                raise ContractError(
-                    "Expired result replay does not match its immutable retention marker"
-                )
-            skipped.update(relatives)
-        return {
-            relative: content
-            for relative, content in files.items()
-            if relative not in skipped
-        }
-
-    def publish_result(
-        self, task: dict, run_id: str, directory: Path, *, optional_only: bool = False
-    ) -> str:
-        with delivery_lock(directory.parent):
-            return self._publish_result(
-                task, run_id, directory, optional_only=optional_only
-            )
-
-    def _publish_result(
-        self, task: dict, run_id: str, directory: Path, *, optional_only: bool = False
-    ) -> str:
-        prefix = f"runs/v4/{task['task_id']}/{run_id}"
-        files = {}
-        for name in ("result.json", "execution-summary.json"):
-            source = directory / name
-            if source.is_symlink():
-                raise ContractError("Symlinks cannot be published as evidence")
-            if not source.is_file() or source.stat().st_size > MAX_SMALL_JSON:
-                raise ContractError(
-                    f"Missing or oversized sealed control document: {name}"
-                )
-            files[f"{prefix}/{name}"] = source.read_bytes()
-        result_raw = files[f"{prefix}/result.json"]
-        result = json.loads(result_raw)
-        if result.get("task") != task or result.get("run_id") != run_id:
-            raise ContractError(
-                "Sealed result task/run differs from publication request"
-            )
-        if (
-            result.get("execution_summary_sha256")
-            != hashlib.sha256(files[f"{prefix}/execution-summary.json"]).hexdigest()
-        ):
-            raise ContractError("Execution summary differs from sealed result")
-        result_digest = hashlib.sha256(result_raw).hexdigest()
-        # Git never receives logs, reports, wheels or an archive of the run.
+            path = within(directory / "artifacts", artifact["path"], must_exist=True)
+            content = path.read_bytes()
+            total += len(content)
+            if len(content) != artifact.get("size") or len(content) > MAX_FILE_BYTES:
+                raise ContractError("Selected artifact differs from sealed result")
+            if total > MAX_TOTAL_BYTES:
+                raise ContractError("Selected artifacts exceed the Git budget")
+            files[f"{prefix}/artifacts/{artifact['path']}"] = content
+        # Retrying after a lost push response finds identical files and makes no commit.
         self.write(self.results_branch, files, immutable=True)
-        local_index = directory.parent / "delivery-index.json"
-        saved = json.loads(local_index.read_bytes()) if local_index.exists() else None
-        index = publish_evidence(
-            self.attachment_client,
-            task,
-            run_id,
-            directory,
-            result,
-            result_digest,
-            saved,
-            optional_only=optional_only,
-        )
-        atomic_json(local_index, index)
-        self.write(
-            self.results_branch,
-            {f"{prefix}/delivery-index.json": canonical(index) + b"\n"},
-        )
-        if index["status"] != "ready" and not optional_only:
-            raise DeliveryPending(
-                "Required Gitee evidence remains pending; sealed test outcome is unchanged"
-            )
-        return result_digest
+        return hashlib.sha256(raw).hexdigest()

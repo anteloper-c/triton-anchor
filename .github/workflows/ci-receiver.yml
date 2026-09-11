@@ -38,7 +38,7 @@ jobs:
           cp -R dashboard/. _site/
       - name: Receive Gitee results and reconcile current task identity
         id: collect
-        run: python3 scripts/ci/gateway_v4.py collect
+        run: python3 scripts/ci/gateway.py collect
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with: {path: _site}

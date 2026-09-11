@@ -435,7 +435,6 @@ def run_parent(args: argparse.Namespace) -> int:
 
         summary = build_summary(kernels, run_results, repeat_events, args.top_n)
         document = {
-            "schema": "triton-anchor-pass-profile/v1",
             "metadata": {
                 "backend": args.backend,
                 "vendor": args.vendor or args.backend,

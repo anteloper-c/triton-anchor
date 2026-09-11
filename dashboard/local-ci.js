@@ -58,37 +58,39 @@ function renderDetail(run) {
   if(!run) { empty(root,'选择一个任务以查看检查范围、审查结论和执行证据。尚无数据时不会显示通过状态。'); return; }
   const head=el('div','ci-detail-head'); const heading=el('div'); heading.append(el('p','eyebrow','验证与审查'),el('h2','',title(run))); head.append(heading,badge(run.conclusion));root.append(head);
   const identity=el('div','ci-identity'); identity.append(el('code','',run.tested_sha),el('span','',date(run.completed_at))); root.append(identity);
-  facts(root,[['本地验证',labels[run.local_conclusion]||run.local_conclusion],['证据交付',labels[run.delivery_status]||run.delivery_status],['控制版本',run.worker_revision_sha],['环境',run.environment.profile||'未记录']]);
+  facts(root,[['本地验证',labels[run.local_conclusion]||run.local_conclusion],['控制版本',run.worker_revision_sha],['环境',run.environment.profile||'未记录']]);
   if(run.receiver_message)root.append(el('p','ci-notice',run.receiver_message));
   const links=el('div','ci-links'); for(const [label,url] of [['查看完整结果',run.result_url],['查看执行产物',run.artifacts_url]]) { const a=link(label,url); if(a)links.append(a); }root.append(links);
-  const metrics=el('div','ci-metrics'); const checks=arr(run.checks); const values=[[checks.filter(c=>c.required).length,'最低必检项'],[checks.filter(c=>c.status==='passed').length,'已通过检查'],[checks.filter(c=>['skipped','not_applicable'].includes(c.status)).length,'未执行 / 不适用'],[arr(run.evidence).length,'命令执行记录']];
+  const metrics=el('div','ci-metrics'); const checks=arr(run.checks); const values=[[checks.filter(c=>c.required).length,'最低必检项'],[checks.filter(c=>c.status==='passed').length,'已通过检查'],[checks.filter(c=>['skipped','not_applicable'].includes(c.status)).length,'未执行 / 不适用'],[arr(run.artifacts).filter(artifact=>!artifact.omitted).length,'所选证据文件']];
   for(const [value,label] of values){const box=el('div','ci-metric');box.append(el('strong','',value),el('span','',label));metrics.append(box);}root.append(metrics);
   const blockers=blockingSummary(run);
   if(blockers.length){const box=el('div','ci-blockers');box.append(el('h3','','阻塞原因'));const list=el('ul');for(const reason of blockers)list.append(el('li','',publicText(reason)));box.append(list);root.append(box);}
   const scope=section(root,'检查选择与执行结果');
   const policy=run.policy||{};scope.append(el('p','ci-muted',policy.docs_only?'文档变更：依规则免构建；架构审查仍需提供证据。':policy.manual_full?'维护者手动触发全量测试。':'按改动影响选择检查，并满足主机控制面规定的最低要求。'));
-  const wrap=el('div','ci-table-shell'),table=el('table','ci-table'),thead=el('thead'),header=el('tr'); for(const s of ['检查','要求','结果','选择 / 未执行原因'])header.append(el('th','',s));thead.append(header);table.append(thead);const tbody=el('tbody');
+  const wrap=el('div','ci-table-shell'),table=el('table','ci-table'),thead=el('thead'),header=el('tr'); for(const s of ['检查','要求','结果','结果说明'])header.append(el('th','',s));thead.append(header);table.append(thead);const tbody=el('tbody');
   for(const check of checks){const tr=el('tr'); const name=el('td','',names[check.id]||'补充检查');const requirement=el('td','',check.required?'必检':'按影响选择');const result=el('td');result.append(badge(check.status));const explanation=el('td','',publicText(reason(check.reason)));if(policy.reasons?.[check.id])explanation.append(el('small','','选择依据：'+publicText(reason(policy.reasons[check.id]))));tr.append(name,requirement,result,explanation);tbody.append(tr);}table.append(tbody);wrap.append(table);scope.append(wrap);
-  const review=run.ai_review||{};const ai=section(root,'AI 辅助审查与定向验证');const summary=el('div','ci-review');summary.append(el('p','',publicText(review.summary)||'未收到完整审查结论。'));ai.append(summary);
-  const architecture=review.architecture||{};const arch=el('div','ci-review');arch.append(el('strong','','架构契约 '),badge(architecture.status||'unknown'),el('p','',publicText(architecture.summary)||'没有架构审查证据。'));evidenceList(arch,architecture.evidence);ai.append(arch);
+  const review=run.ai_review||{};const ai=section(root,'Codex 审查与定向验证');const summary=el('div','ci-review');summary.append(el('p','',publicText(review.summary)||'未收到完整审查结论。'));ai.append(summary);
+  for(const [kind,label] of [['pr_info','PR 信息'],['architecture','架构契约'],['intent','变更意图']]){
+    const item=review[kind];if(!item&&kind==='intent')continue;
+    const card=el('div','ci-review');
+    card.append(el('strong','',label+' '),badge(item?.status||'unknown'),el('p','',publicText(item?.summary)||'尚未收到此项审查结果。'));
+    evidenceList(card,item?.evidence);ai.append(card);
+  }
   for(const finding of arr(review.findings)){const card=el('div','ci-review');card.append(el('strong','',finding.blocking?'合入阻塞':'需要人工判断'),el('p','',publicText(finding.summary||finding.title)||'发现'));if(finding.qualification)card.append(el('p','ci-muted',publicText(finding.qualification)));evidenceList(card,finding.code_evidence);ai.append(card);}
   const performance=section(root,'性能变化');performance.append(el('p','ci-muted','性能回退或纯耗时变化仅报告；基准执行失败仍会阻塞。适用能力以该任务的环境声明为准。'));
   if(!arr(run.performance).length)performance.append(el('p','ci-muted','本次没有可展示的性能测量或基线对比。请结合上方检查状态判断是否适用。'));
   for(const item of arr(run.performance)){const card=el('div','ci-performance');card.append(el('strong','',names[item.tool]||'性能记录'),el('p','ci-muted',item.summary||item.reason||'已记录性能结果，详细数据见完整结果。'));performance.append(card);}
-  const delivery=section(root,'证据与交付');
-  if(!arr(run.artifacts).length)empty(delivery,'尚无已封存的执行产物。');
-  const delivered=el('ul','ci-evidence');
+  const files=section(root,'所选日志与报告');
+  if(!arr(run.artifacts).length)empty(files,'本次未选择需要发布的文件。完整运行记录保留在 CI 主机。');
+  const list=el('ul','ci-evidence');
   for(const artifact of arr(run.artifacts)){
-    const row=el('li');const label=artifact.source_path||artifact.path||artifact.artifact_id;
-    const target=link(label,artifact.url);row.append(target||el('span','',label),el('span','ci-muted',' · '+(artifact.required?'必要证据':'附加证据')+' · '),badge(artifact.status));
-    if(artifact.omitted_bytes)row.append(el('span','ci-muted',' · 省略 '+artifact.omitted_bytes+' bytes'));
-    delivered.append(row);
+    const row=el('li');const label=artifact.label||artifact.path;
+    row.append(link(label,artifact.url)||el('span','',label));
+    if(artifact.omitted)row.append(el('span','ci-muted',' · '+artifact.omitted));
+    else row.append(el('span','ci-muted',' · '+artifact.size+' bytes'));
+    list.append(row);
   }
-  delivery.append(delivered);
-  const receipts=section(root,'执行记录');
-  if(!arr(run.evidence).length)receipts.append(el('p','ci-muted','没有已发布的命令执行记录。'));
-  const receiptGroups=new Map();for(const receipt of arr(run.evidence)){const group=receiptGroups.get(receipt.tool)||[];group.push(receipt);receiptGroups.set(receipt.tool,group);}
-  for(const [tool,group] of receiptGroups){const failed=group.some(item=>item.returncode!==0);const duration=group.reduce((sum,item)=>sum+(Number(item.elapsed_seconds)||0),0);const card=el('details','ci-receipt');const summary=el('summary','ci-receipt-row');summary.append(el('strong','',names[tool]||'补充检查'),badge(failed?'error':'passed'),el('span','ci-muted',group.length+' 条记录 · '+duration.toFixed(1)+' 秒'));card.append(summary);const logs=el('ul','ci-evidence');for(const [index,item] of group.entries()){const a=link('日志 '+(index+1),item.log_url);if(a){const li=el('li');li.append(a);logs.append(li);}}if(logs.children.length)card.append(logs);for(const item of group)card.append(el('p','ci-muted',(item.execution_id||'')+' · '+(item.execution_kind||'builtin')+' · exit '+item.returncode));receipts.append(card);}
+  files.append(list);
   const context=el('details','ci-receipt');const commitBox=el('div','ci-evidence');commitBox.append(el('p','',run.pr_number?'PR 提交：'+run.head_sha:'被测提交：'+run.tested_sha));if(run.pr_number&&run.tested_sha!==run.head_sha)commitBox.append(el('p','',`与 ${run.target_branch} 合并后的验证提交：${run.tested_sha}`));if(arr(policy.changed_paths).length){commitBox.append(el('p','','影响文件：'));evidenceList(commitBox,policy.changed_paths);}context.append(el('summary','','被测提交与影响文件'),commitBox);root.append(context);
 }
 
@@ -96,7 +98,7 @@ async function load() {
   const notice=$('dataNotice'); const refresh=$('refresh'); refresh.disabled=true;refresh.textContent='读取中…';
   try {
     const requested=new URLSearchParams(location.search).get('data');
-    const source=requested&&/^data\/[A-Za-z0-9_.-]+\.json$/.test(requested)?requested:'data/v4-tasks.json';
+    const source=requested&&/^data\/[A-Za-z0-9_.-]+\.json$/.test(requested)?requested:'data/tasks.json';
     const response=await fetch(source+(source.includes('?')?'&':'?')+'refresh='+Date.now(),{cache:'no-store'});if(!response.ok)throw new Error('HTTP '+response.status);
     const data=LocalCIData.normalize(await response.json());
     model.data=data;notice.hidden=data.data_mode!=='fixture';notice.textContent='本机界面样例 · 以下数据用于验证展示，不构成编译、硬件或部署验收证据。';

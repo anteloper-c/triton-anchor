@@ -286,13 +286,8 @@ uv pip install -e ".[dev]"
 # 运行单元测试
 pytest python/triton_anchor/tests/ -v
 
-# 运行轻量 GitHub 网关契约测试
-pytest scripts/ci/tests -q
-
-# 按需运行 Local CI 实现测试（普通 GitHub Basic CI 不执行）
-PYTHONPATH=scripts/local_ci pytest \
-  scripts/local_ci/agent_ci/tests scripts/local_ci/tools/tests \
-  scripts/local_ci/ops_maint/tests -q --import-mode=importlib
+# 按需运行 Local CI 与 GitHub 网关行为回归
+pytest scripts/local_ci/tests -q --import-mode=importlib
 ```
 
 > 更详细的 Local CI 使用、维护和故障排查说明见 `scripts/local_ci/README.md`。
@@ -316,13 +311,14 @@ triton-anchor/
 │   └── custom_backend.md        #   自定义硬件后端接入指南
 ├── tests/                       # 产品级和端到端测试
 │   └── test_smoke.py            #   安装后 smoke、binding 和编译链路测试
-├── scripts/ci/                  # GitHub 网关、安全扫描与轻量契约测试
-├── scripts/local_ci/            # 服务器 Local CI 实现及模块内开发测试
+├── scripts/ci/                  # GitHub 网关与安全扫描
+├── scripts/local_ci/            # 服务器 Local CI 实现与统一测试
 │   ├── README.md                #   Local CI 使用说明
-│   ├── agent_ci/                #   Worker、Codex、MCP、任务状态与单向发布
-│   ├── ops_maint/               #   Rootless 环境、部署、健康与证据保留
+│   ├── agent_ci/                #   Worker、原生 Codex CLI、任务状态与 Git 发布
+│   ├── prepare/                 #   Rootless 环境与部署
+│   ├── maintenance/             #   健康、watchdog 与本地保留
 │   ├── tools/                   #   构建、安装、测试与性能工具入口
-│   └── schemas/                 #   任务、结果与交付协议
+│   └── tests/                   #   必要的 CI 行为回归
 ├── .github/                     # GitHub 配置
 │   ├── workflows/ci_basic.yml   #   基础 CI（lint + 单元测试）
 │   └── ISSUE_TEMPLATE/          #   Issue 模板（Feature Request / Bug Report）

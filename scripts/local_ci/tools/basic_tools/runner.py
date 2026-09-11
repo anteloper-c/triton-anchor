@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
-"""Plan real commands for the evidence broker, or execute them locally for diagnosis.
+"""Reusable local build and test commands, callable from a shell or Python.
 
-The execution service records both these plans and native commands. Context and
-profile are supplied by the controller; the agent supplies selection parameters.
-
-frontend_* uses the tested source checkout; backend_* uses profile.tools.backend_dir.
-Build creates a wheel, install verifies/installs that wheel, tests runs pytest,
-and smoke checks import/JIT. Each stage is independently callable; shared stages
-use the same implementation, with dependencies declared below.
+Build, install, tests and smoke are independent stages. Dependencies describe
+preparation; callers choose the order and may use their own equivalent commands.
 """
 
 from __future__ import annotations
@@ -16,7 +11,9 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
+import sys
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -71,6 +68,8 @@ def dependencies(tool_id: str, config: dict[str, Any] | None = None) -> list[str
 def parameter_names(tool_id: str) -> set[str]:
     if tool_id in {"frontend_build", "backend_build"}:
         return {"jobs", "build_mode"}
+    if tool_id in {"frontend_install", "backend_install"}:
+        return {"wheel"}
     if tool_id in {"frontend_tests", "backend_tests", "control_plane"}:
         return {"paths", "keyword"}
     if tool_id == "flaggems":
@@ -167,25 +166,27 @@ def test_selection(
     return list(dict.fromkeys(selected))
 
 
+def normalize_context(context: dict[str, Any]) -> dict[str, Any]:
+    value = dict(context)
+    for key in ("source_dir", "artifact_dir"):
+        if not isinstance(value.get(key), str) or not value[key]:
+            raise ValueError(f"context.{key} is required")
+    if not value.get("target_sha"):
+        value["target_sha"] = subprocess.check_output(
+            ["git", "-C", value["source_dir"], "rev-parse", "HEAD"], text=True
+        ).strip()
+    value.setdefault("task_id", "local")
+    value.setdefault("triton_version", value.get("profile", {}).get("triton_version", ""))
+    return value
+
+
 def plan(
     tool_id: str, context: dict[str, Any], parameters: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     if tool_id not in DEPENDENCIES:
         raise ValueError(f"Unknown basic tool: {tool_id}")
     params = dict(parameters or {})
-    for key in (
-        "source_dir",
-        "artifact_dir",
-        "task_id",
-        "target_sha",
-        "triton_version",
-    ):
-        if not isinstance(context.get(key), str) or not context[key]:
-            raise ValueError(f"context.{key} is required")
-    if not re.fullmatch(r"[0-9a-f]{40}", context["target_sha"]):
-        raise ValueError("target_sha must identify the exact tested commit")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", context["task_id"]):
-        raise ValueError("Invalid task_id")
+    context = normalize_context(context)
     result: dict[str, Any] = {
         "tool_id": tool_id,
         "status": "ready",
@@ -207,13 +208,6 @@ def plan(
     allowed = parameter_names(tool_id)
     if set(params) - allowed:
         raise ValueError(f"Unsupported parameters: {sorted(set(params) - allowed)}")
-    completed = context.get("completed_tools")
-    if completed is not None:
-        missing = set(result["dependencies"]) - set(completed)
-        if missing:
-            raise ValueError(
-                f"Current-task successful tool receipts required: {sorted(missing)}"
-            )
     profile = context.get("profile", {})
     config = profile.get("tools", {})
     py = context.get("python_bin", config.get("python_bin", "python3"))
@@ -272,8 +266,7 @@ def plan(
         timeout: int = 300,
         cwd: str | None = None,
     ) -> None:
-        # Keep unrelated PR prose, service credentials and container settings out
-        # of command-line evidence. Helpers receive only the tool context.
+        # Pass only the paths and environment settings used by the tool.
         action_context = {
             key: context[key]
             for key in (
@@ -288,7 +281,6 @@ def plan(
                 "environment_fingerprint",
                 "dependency_artifacts",
                 "task_root",
-                "control_revision",
             )
             if key in context
         }
@@ -308,7 +300,6 @@ def plan(
             [
                 trusted_py,
                 "-I",
-                "-S",
                 helper,
                 name,
                 json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
@@ -368,19 +359,12 @@ def plan(
                 "keyword must be a pytest expression of at most 300 characters"
             )
         action("prepare_tests", {"test_source": test_source, "test_paths": selected})
-        # Python capture avoids anonymous-file truncation on Windows bind mounts.
-        # Native stdout/stderr still reach the broker's outer command log.
-        installation_root = context.get("dependency_artifacts", {}).get(
-            "frontend_install", path_join(context["artifact_dir"], "frontend_install")
-        )
         argv = [
             py,
             "-I",
             path_join(root, "basic_tools", "pytest_exec.py"),
-            "--installation",
-            path_join(installation_root, "installation.json"),
-            "--import-report",
-            path_join(out, "import-origin.json"),
+            "--output",
+            path_join(out, "tests.json"),
             "--",
             "-q",
             "-o",
@@ -389,19 +373,12 @@ def plan(
             "--import-mode=importlib",
             "--rootdir",
             test_source,
-            "--junitxml",
-            path_join(out, "tests.xml"),
         ]
         if keyword:
             argv += ["-k", keyword]
         argv += [path_join(test_source, value) for value in selected]
         env["PYTEST_ADDOPTS"] = ""
         add(argv, out, 3600)
-        action(
-            "test_results",
-            {"test_source": test_source, "test_paths": selected},
-            cwd=out,
-        )
     elif tool_id == "frontend_smoke":
         add([py, "-I", path_join(source, "tests", "test_smoke.py")], out, 900)
         action("smoke_success")
@@ -539,47 +516,99 @@ def plan(
 def execute(
     tool_id: str, context: dict[str, Any], parameters: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    """CLI execution uses the same plan; host execution records establish provenance."""
+    """Run a tool and save its ordinary result and command log."""
+    context = normalize_context(context)
     spec = plan(tool_id, context, parameters)
-    if spec["status"] != "ready":
-        return spec
-    records = []
-    for command in spec["commands"]:
-        start = time.monotonic()
-        try:
-            completed = subprocess.run(
-                command["argv"],
-                cwd=command["cwd"],
-                env={**os.environ, **command["env"]},
-                timeout=command["timeout"],
-                check=False,
-            )
-            code = completed.returncode
-        except subprocess.TimeoutExpired:
-            code = 124
-        records.append(
-            {
-                "argv": command["argv"],
-                "returncode": code,
-                "duration_seconds": time.monotonic() - start,
-            }
-        )
-        if code:
-            break
-    return {
-        **spec,
-        "status": "pass" if records and records[-1]["returncode"] == 0 else "fail",
-        "execution": records,
-        "trusted_receipt": False,
+    out = Path(context["artifact_dir"]) / tool_id
+    out.mkdir(parents=True, exist_ok=True)
+    reports = ("environment", "wheel", "installation", "backend_discovery", "tests",
+               "control_plane", "flaggems-summary", "comparison", "smoke_success", "candidate")
+    for name in (*reports, "result"):
+        (out / (name + ".json")).unlink(missing_ok=True)
+    started = time.monotonic()
+    result = {
+        "tool_id": tool_id,
+        "status": spec["status"],
+        "parameters": parameters or {},
+        "target_sha": context["target_sha"],
+        "exit_code": None,
+        "artifacts": [],
     }
+    if spec["reason"]:
+        result["reason"] = spec["reason"]
+    if spec["status"] == "ready":
+        print(
+            f"{tool_id}: running; log: {out / 'command.log'}",
+            file=sys.stderr, flush=True,
+        )
+        with (out / "command.log").open("w") as log:
+            result["status"] = "pass"
+            for command in spec["commands"]:
+                log.write("$ " + repr(command["argv"]) + "\n")
+                log.flush()
+                try:
+                    child = subprocess.Popen(
+                        command["argv"], cwd=command["cwd"],
+                        env={**os.environ, **command["env"]},
+                        stdout=log, stderr=subprocess.STDOUT,
+                        start_new_session=os.name == "posix",
+                    )
+                    try:
+                        code = child.wait(timeout=command["timeout"])
+                    except (subprocess.TimeoutExpired, KeyboardInterrupt):
+                        if os.name == "posix":
+                            os.killpg(child.pid, signal.SIGKILL)
+                        else:
+                            child.kill()
+                        child.wait()
+                        raise
+                except subprocess.TimeoutExpired:
+                    code = 124
+                    result["reason"] = "Command timed out"
+                except KeyboardInterrupt:
+                    code = 130
+                    result["reason"] = "Interrupted"
+                except OSError as exc:
+                    code = 127
+                    result["reason"] = str(exc)
+                result["exit_code"] = code
+                if code:
+                    result["status"] = (
+                        "cancelled" if code in {130, 143, -2, -15}
+                        else "infra_error" if code in {124, 126, 127} else "fail"
+                    )
+                    break
+    details = {}
+    for name in reports:
+        path = out / (name + ".json")
+        if path.is_file():
+            try:
+                value = json.loads(path.read_text())
+                if name == "candidate":
+                    value = {key: value[key] for key in ("metadata", "summary") if key in value}
+                details[name] = value
+            except (OSError, ValueError):
+                pass  # The command failure and raw log remain available.
+    if details:
+        result["details"] = details
+    result["duration_seconds"] = round(time.monotonic() - started, 3)
+    result["artifacts"] = [
+        str(path.relative_to(out)) for path in sorted(out.iterdir())
+        if path.is_file() and path.name != "result.json"
+    ]
+    (out / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+    return result
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tool_id", choices=TOOL_IDS)
-    parser.add_argument("--context", required=True, help="Controller context JSON file")
     parser.add_argument(
-        "--parameters", default="{}", help="Agent parameter JSON object"
+        "--context", required=True,
+        help="Source, output paths and environment configuration JSON",
+    )
+    parser.add_argument(
+        "--parameters", default="{}", help="Tool parameter JSON object"
     )
     parser.add_argument(
         "--execute",
@@ -592,7 +621,7 @@ def main() -> int:
         args.tool_id, context, json.loads(args.parameters)
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 1 if result["status"] == "fail" else 0
+    return 0 if result["status"] in {"pass", "ready", "not_applicable"} else 1
 
 
 if __name__ == "__main__":

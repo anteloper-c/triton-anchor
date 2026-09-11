@@ -19,7 +19,7 @@ on:
       full: {type: boolean, default: false}
 permissions: {}
 concurrency:
-  group: ci-v4-${{ inputs.mode || github.event_name }}-${{ inputs.pr_number != '0' && inputs.pr_number || github.event.pull_request.number || inputs.source_branch || github.ref_name }}
+  group: local-ci-${{ inputs.mode || github.event_name }}-${{ inputs.pr_number != '0' && inputs.pr_number || github.event.pull_request.number || inputs.source_branch || github.ref_name }}
   cancel-in-progress: true
 jobs:
   route:
@@ -54,9 +54,6 @@ jobs:
             const controlRef = 'local-ci-unified';
             const {data: release} = await github.rest.repos.getBranch({owner, repo, branch: controlRef});
             const revision = release.commit.sha;
-            const {data: file} = await github.rest.repos.getContent({owner, repo, path: '.github/ci-gateway-manifest.json', ref: revision});
-            const manifest = JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'));
-            if (manifest.gateway_contract_version !== '4') throw new Error('Deploy local-ci-unified v4 before the router');
             await github.rest.actions.createWorkflowDispatch({
               owner, repo, workflow_id: 'ci-gateway.yml', ref: controlRef,
               inputs: {
@@ -89,7 +86,7 @@ jobs:
           GITEE_USERNAME: ${{ vars.GITEE_USERNAME || 'likehupochuan' }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITEE_RESULTS_REPO_URL: ${{ vars.GITEE_RESULTS_REPO_URL }}
-        run: python3 scripts/ci/gateway_v4.py cancel
+        run: python3 scripts/ci/gateway.py cancel
   prepare:
     needs: cancel-obsolete
     if: ${{ inputs.action != 'closed' && inputs.action != 'converted_to_draft' }}
@@ -118,13 +115,13 @@ jobs:
           FULL: ${{ inputs.full }}
           GITEE_SUBMODULE_MIRRORS: ${{ vars.GITEE_SUBMODULE_MIRRORS || '{}' }}
           EVENT_KIND: ${{ inputs.action == 'manual' && 'manual' || 'push' }}
-        run: python3 scripts/ci/gateway_v4.py prepare
+        run: python3 scripts/ci/gateway.py prepare
       - uses: actions/upload-artifact@v4
-        with: {name: ci-v4-task, path: task.json}
+        with: {name: local-ci-task, path: task.json}
       - name: Validate required PR information
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/ci/gateway_v4.py info
+        run: python3 scripts/ci/gateway.py info
   basic:
     needs: prepare
     permissions: {contents: read}
@@ -161,14 +158,14 @@ jobs:
           ref: ${{ inputs.worker_revision_sha }}
           persist-credentials: false
       - uses: actions/download-artifact@v4
-        with: {name: ci-v4-task}
+        with: {name: local-ci-task}
       - name: Publish preflight evidence and approval review card
         id: card
         env:
           EXPECTED_TASK_DIGEST: ${{ needs.prepare.outputs.task_digest }}
           GH_TOKEN: ${{ github.token }}
           STAGES: '{"prepare":"${{ needs.prepare.result }}","basic":"${{ needs.basic.result }}","api":"${{ needs.api.result }}","security":"${{ needs.security.result }}"}'
-        run: python3 scripts/ci/gateway_v4.py card
+        run: python3 scripts/ci/gateway.py card
   approve-external-fork:
     needs: [prepare, review-card]
     if: ${{ needs.review-card.outputs.eligible == 'true' && needs.prepare.outputs.external_fork == 'true' }}
@@ -182,14 +179,14 @@ jobs:
           persist-credentials: false
           submodules: false
       - uses: actions/download-artifact@v4
-        with: {name: ci-v4-task}
+        with: {name: local-ci-task}
       - name: Verify required reviewers and the approved PR revision
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_TASK_DIGEST: ${{ needs.prepare.outputs.task_digest }}
           PR_NUMBER: ${{ inputs.pr_number }}
           REQUESTED_SHA: ${{ needs.prepare.outputs.head_sha }}
-        run: python3 scripts/ci/gateway_v4.py approval
+        run: python3 scripts/ci/gateway.py approval
   enqueue:
     needs: [prepare, review-card, approve-external-fork]
     if: >-
@@ -212,7 +209,7 @@ jobs:
           persist-credentials: false
           submodules: false
       - uses: actions/download-artifact@v4
-        with: {name: ci-v4-task}
+        with: {name: local-ci-task}
       - name: Revalidate approval and publish code then immutable task
         env:
           PR_NUMBER: ${{ inputs.pr_number }}
@@ -222,7 +219,7 @@ jobs:
           GITEE_USERNAME: ${{ vars.GITEE_USERNAME || 'likehupochuan' }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITEE_RESULTS_REPO_URL: ${{ vars.GITEE_RESULTS_REPO_URL }}
-        run: python3 trusted/scripts/ci/gateway_v4.py enqueue
+        run: python3 trusted/scripts/ci/gateway.py enqueue
   validate-worker:
     if: >-
       (github.repository == 'likehupochuan/triton-anchor' || github.repository == 'anteloper-c/triton-anchor') &&

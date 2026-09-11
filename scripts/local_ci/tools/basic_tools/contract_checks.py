@@ -112,7 +112,7 @@ def check(root: Path, base: str, tested: str) -> dict:
             continue
         suffix = path.suffix.lower()
         control = relative.startswith(
-            (".github/", "scripts/", "api_contract/")
+            (".github/", "scripts/", "api_contract/", "dashboard/")
         ) or path.name in {"pyproject.toml", "setup.py", "setup.cfg", ".gitmodules"}
         if (
             suffix
@@ -128,6 +128,11 @@ def check(root: Path, base: str, tested: str) -> dict:
                 ".bash",
                 ".toml",
                 ".cfg",
+                ".js",
+                ".mjs",
+                ".cjs",
+                ".css",
+                ".html",
             }
             and not control
         ):

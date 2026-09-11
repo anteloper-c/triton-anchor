@@ -55,4 +55,6 @@ jobs:
       - name: GitHub gateway contracts when present in this version
         env: {PYTHONPATH: python}
         run: |
-          if [ -d scripts/ci/tests ]; then python -m pytest scripts/ci/tests -q; fi
+          if [ -f scripts/local_ci/tests/test_gateway.py ]; then
+            python -m pytest scripts/local_ci/tests/test_gateway.py scripts/local_ci/tests/test_delivery.py scripts/local_ci/tests/test_security.py -q
+          fi
