@@ -23,10 +23,12 @@ from agent_ci.protocol import (
     task_id,
     validate_delivery,
     validate_execution_summary,
+    validate_task,
 )
 from agent_ci.relay import GitRelay
 from agent_ci.worker import Worker
 from agent_ci.tests.support import ReleaseBoundary, git
+from ops_maint.container_fs import source_manifest
 
 
 class ContainerBoundary:
@@ -284,6 +286,150 @@ class UnifiedWorkerTests(unittest.TestCase):
     def sealed(self, worker):
         directory = worker.journal.run_dir(self.task["task_id"]) / "sealed"
         return directory, json.loads((directory / "result.json").read_bytes())
+
+    def test_legacy_current_is_skipped_while_current_task_publishes(self):
+        legacy = {
+            "schema": TASK_SCHEMA,
+            "task_id": "0" * 64,
+            "repository": self.task["repository"],
+            "pr_number": 8,
+            "task_ref": "ci/pr-8/old-head",
+            "base_task_ref": "ci/base/pr-8/old-head",
+            "head_task_ref": "ci/head/pr-8/old-head",
+        }
+        self.relay.write(
+            self.relay.control_branch,
+            {
+                f"tasks/{legacy['task_id']}.json": canonical(legacy),
+                f"current/{current_key(legacy)}.json": canonical(
+                    {"task_id": legacy["task_id"]}
+                ),
+            },
+        )
+        worker = self.worker()
+        with (
+            patch.object(worker.workspaces, "recover") as recover,
+            patch("agent_ci.worker.validate_task") as validate,
+        ):
+            worker.process(legacy)
+            recover.assert_not_called()
+            validate.assert_not_called()
+        with (
+            patch.object(worker, "process", wraps=worker.process) as process,
+            patch.object(worker.journal, "event", wraps=worker.journal.event) as event,
+        ):
+            worker.scan()
+            worker.scan()
+        self.assertTrue(process.call_args_list)
+        self.assertTrue(
+            all(call.args[0] == self.task for call in process.call_args_list)
+        )
+        self.assertFalse(
+            any(call.args[1] == "task_error" for call in event.call_args_list)
+        )
+        self.assertEqual(
+            worker.journal.task(self.task["task_id"])["phase"], "published"
+        )
+        self.assertEqual(self.driver.calls, 1)
+        self.assertFalse(
+            (Path(self.config["state_dir"]) / "runs" / legacy["task_id"]).exists()
+        )
+
+    def test_preinstalled_flaggems_does_not_relax_other_frozen_gitlinks(self):
+        dependency_sha = self.task["base_sha"]
+        for path, sha in (
+            ("FlagGems", "f" * 40),
+            ("vendor/FlagGems", dependency_sha),
+        ):
+            git(
+                self.source, "update-index", "--add", "--cacheinfo", "160000", sha, path
+            )
+        tree = git(self.source, "write-tree")
+        revision = git(
+            self.source,
+            "commit-tree",
+            tree,
+            "-p",
+            self.task["head_sha"],
+            input_data=b"gitlink fixture\n",
+        )
+        task = {
+            **self.task,
+            "event_kind": "manual",
+            "pr_number": 0,
+            "tested_sha": revision,
+            "base_sha": revision,
+            "head_sha": revision,
+        }
+        task["task_id"] = task_id(task)
+        prefix = f"ci/branch/{task['task_id']}"
+        task.update(
+            task_ref=prefix + "/tested",
+            base_task_ref=prefix + "/base",
+            head_task_ref=prefix + "/head",
+        )
+        for field in ("task_ref", "base_task_ref", "head_task_ref"):
+            git(
+                self.source,
+                "push",
+                str(self.remote),
+                f"{revision}:refs/heads/{task[field]}",
+            )
+        self.relay.write(
+            self.relay.control_branch,
+            {f"current/{current_key(task)}.json": canonical({"task_id": task["task_id"]})},
+        )
+        self.relay.refresh()
+        self.assertEqual(
+            self.relay.validity(task),
+            (False, "Submodule manifest does not cover the frozen gitlinks"),
+        )
+        task["submodules"] = []
+        for variant in ("candidate", "base"):
+            ref = f"{prefix}/submodules/{variant}/vendor-flaggems"
+            git(
+                self.source, "push", str(self.remote), f"{dependency_sha}:refs/heads/{ref}"
+            )
+            task["submodules"].append(
+                {
+                    "variant": variant,
+                    "path": "vendor/FlagGems",
+                    "sha": dependency_sha,
+                    "repository_url": "https://gitee.com/test/dependency",
+                    "task_ref": ref,
+                }
+            )
+        # Earlier unified manifests may still name the preinstalled dependency.
+        # These refs deliberately do not exist in the relay.
+        task["submodules"].extend(
+            {
+                "variant": variant,
+                "path": "FlagGems",
+                "sha": "f" * 40,
+                "repository_url": "https://gitee.com/test/flaggems",
+                "task_ref": f"{prefix}/submodules/{variant}/flaggems",
+            }
+            for variant in ("candidate", "base")
+        )
+        self.relay.refresh()
+        validate_task(task)
+        self.assertEqual(self.relay.validity(task), (True, "current"))
+        task["submodules"][0]["sha"] = "e" * 40
+        self.assertEqual(
+            self.relay.validity(task), (False, "Pinned Gitee submodule snapshot changed")
+        )
+        task["submodules"][0]["sha"] = dependency_sha
+        destination = self.root / "materialized"
+        self.relay.checkout(revision, destination)
+        self.relay.checkout_submodules(task, revision, destination)
+        self.assertTrue((destination / "FlagGems").is_dir())
+        self.assertFalse((destination / "FlagGems/.git").exists())
+        self.assertEqual(
+            git(destination / "vendor/FlagGems", "rev-parse", "HEAD"), dependency_sha
+        )
+        manifest = source_manifest(destination)
+        self.assertEqual(manifest["FlagGems"], {"type": "directory"})
+        self.assertIn("vendor/FlagGems/README.md", manifest)
 
     def test_sealed_restart_retries_publication_without_new_container_or_model(self):
         self.attachments.offline = True

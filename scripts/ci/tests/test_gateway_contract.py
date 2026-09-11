@@ -307,28 +307,47 @@ class GatewayBehaviorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Merge parents do not match"):
             g.prepare_task(self.gh, self.base, 7)
 
-    def test_submodules_require_explicit_gitee_mirrors_and_task_specific_refs(self):
+    def test_preinstalled_flaggems_and_other_submodule_mirrors(self):
         links = [{"path": "FlagGems", "sha": "c" * 40}]
         with patch.object(self.gh, "gitlinks", return_value=links):
             with patch.dict(g.os.environ, {"GITEE_SUBMODULE_MIRRORS": "{}"}):
-                with self.assertRaisesRegex(ValueError, "Gitee submodule mirror"):
-                    g.prepare_task(self.gh, self.base, 7)
-            with patch.dict(
-                g.os.environ,
-                {
-                    "GITEE_SUBMODULE_MIRRORS": '{"FlagGems":"https://gitee.com/test/FlagGems.git"}'
-                },
-            ):
                 task = g.prepare_task(self.gh, self.base, 7)
-                self.assertEqual(
-                    {row["variant"] for row in task["submodules"]},
-                    {"candidate", "base"},
-                )
-                self.assertTrue(
-                    all(
-                        task["task_id"] in row["task_ref"] for row in task["submodules"]
+                self.assertEqual(task["submodules"], [])
+            for path in ("OtherDependency", "vendor/FlagGems"):
+                with self.subTest(path=path):
+                    links[:] = [
+                        {"path": "FlagGems", "sha": "c" * 40},
+                        {"path": path, "sha": "d" * 40},
+                    ]
+                    with patch.dict(
+                        g.os.environ, {"GITEE_SUBMODULE_MIRRORS": "{}"}
+                    ):
+                        with self.assertRaisesRegex(
+                            ValueError, "Gitee submodule mirror"
+                        ):
+                            g.prepare_task(self.gh, self.base, 7)
+                    with patch.dict(
+                        g.os.environ,
+                        {
+                            "GITEE_SUBMODULE_MIRRORS": json.dumps(
+                                {path: "https://gitee.com/test/dependency.git"}
+                            )
+                        },
+                    ):
+                        task = g.prepare_task(self.gh, self.base, 7)
+                    self.assertEqual(
+                        {row["path"] for row in task["submodules"]}, {path}
                     )
-                )
+                    self.assertEqual(
+                        {row["variant"] for row in task["submodules"]},
+                        {"candidate", "base"},
+                    )
+                    self.assertTrue(
+                        all(
+                            task["task_id"] in row["task_ref"]
+                            for row in task["submodules"]
+                        )
+                    )
 
     def test_three_required_pr_sections_without_type_specific_fields(self):
         self.assertEqual(g.validate_pr_info(self.task), [])
@@ -404,6 +423,79 @@ README only
         self.assertEqual(minimum["version"], "impact/v5")
         self.assertEqual(minimum["required_checks"], ["control_plane"])
         self.assertEqual(minimum["impact"]["level"], "non_executable")
+
+    def test_legacy_current_does_not_block_new_dispatch_or_collection(self):
+        control = self.store(g.CONTROL_BRANCH)
+        legacy = {
+            **self.task,
+            "pr_number": 8,
+            "worker_revision_sha": "f" * 40,
+            "task_ref": "ci/pr-8/docs-topic",
+            "base_task_ref": "ci/base/pr-8/docs-topic",
+            "head_task_ref": "ci/head/pr-8/docs-topic",
+        }
+        legacy["task_id"] = g.digest({key: legacy[key] for key in g.IDENTITY_FIELDS})
+        control.put(
+            {
+                f"tasks/{legacy['task_id']}.json": legacy,
+                f"current/{g.current_key(legacy)}.json": {
+                    "task_id": legacy["task_id"]
+                },
+            }
+        )
+        results = self.store(g.RESULTS_BRANCH)
+        before = git(control.root, "rev-parse", "HEAD")
+        self.assertEqual(g.cancel_obsolete(self.gh, control, 8), 0)
+        self.assertEqual(
+            g.collect_results(self.gh, control, results, self.root / "dashboard"), []
+        )
+        self.assertEqual(git(control.root, "rev-parse", "HEAD"), before)
+        self.assertEqual(self.gh.writes, [])
+
+        g.enqueue(self.task, self.gh, control, self.source)
+        result = self.result()
+        results.put(
+            {f"runs/v4/{self.task['task_id']}/{result['run_id']}/result.json": result}
+        )
+        self.assertEqual(g.cancel_obsolete(self.gh, control), 0)
+        published = g.collect_results(
+            self.gh, control, results, self.root / "dashboard"
+        )
+        self.assertEqual([row["task_id"] for row in published], [self.task["task_id"]])
+        self.assertEqual(self.gh.statuses[-1][1], "success")
+        snapshot = json.loads((self.root / "dashboard/v4-tasks.json").read_text())
+        self.assertEqual(
+            [row["task"]["task_id"] for row in snapshot["tasks"]],
+            [self.task["task_id"]],
+        )
+        self.assertEqual(control.get(f"tasks/{legacy['task_id']}.json"), legacy)
+        self.assertIsNone(control.get(f"cancel/{legacy['task_id']}.json"))
+
+    def test_damaged_current_is_not_ignored_as_legacy(self):
+        control = self.store(g.CONTROL_BRANCH)
+        results = self.store(g.RESULTS_BRANCH)
+        for mutation in (
+            {"task_ref": self.task["task_ref"] + "-damaged"},
+            {"task_ref": "ci/pr-7/docs-topic"},
+            {"title": "Metadata changed without updating its identity"},
+        ):
+            with self.subTest(mutation=mutation):
+                damaged = {**self.task, **mutation}
+                control.put(
+                    {
+                        f"tasks/{self.task['task_id']}.json": damaged,
+                        f"current/{g.current_key(self.task)}.json": {
+                            "task_id": self.task["task_id"]
+                        },
+                    }
+                )
+                with self.assertRaises(ValueError):
+                    g.cancel_obsolete(self.gh, control, 7)
+                with self.assertRaises(ValueError):
+                    g.collect_results(
+                        self.gh, control, results, self.root / "dashboard"
+                    )
+        self.assertEqual(self.gh.writes, [])
 
     def test_lifecycle_cancellation_reaches_gitee(self):
         control = self.store(g.CONTROL_BRANCH)

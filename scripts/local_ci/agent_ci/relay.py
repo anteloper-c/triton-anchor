@@ -13,6 +13,7 @@ import urllib.parse
 from pathlib import Path
 
 from .protocol import (
+    PREINSTALLED_SUBMODULES,
     RESULT_SCHEMA,
     ContractError,
     atomic_json,
@@ -208,11 +209,13 @@ class GitRelay:
                 row.split("\t", 1)[1]: row.split()[2]
                 for row in tree
                 if row.startswith("160000 ")
+                and row.split("\t", 1)[1] not in PREINSTALLED_SUBMODULES
             }
             modules = {
                 row["path"]: row
                 for row in task.get("submodules", [])
                 if row["variant"] == variant
+                and row["path"] not in PREINSTALLED_SUBMODULES
             }
             if set(links) != set(modules):
                 return False, "Submodule manifest does not cover the frozen gitlinks"
@@ -259,7 +262,10 @@ class GitRelay:
         """Populate gitlinks from already fetched Gitee refs, ignoring candidate URLs."""
         variant = "candidate" if sha == task["tested_sha"] else "base"
         for module in task.get("submodules", []):
-            if module["variant"] != variant:
+            if (
+                module["variant"] != variant
+                or module["path"] in PREINSTALLED_SUBMODULES
+            ):
                 continue
             location = within(destination, module["path"])
             if location.exists() and not any(location.iterdir()):

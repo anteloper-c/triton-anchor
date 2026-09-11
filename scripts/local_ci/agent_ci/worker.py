@@ -21,7 +21,13 @@ from agent_ci.codex import CodexDriver
 from agent_ci.control import validate_control_revision
 from agent_ci.executor import DockerExecutor, resource_lock
 from agent_ci.policy import changed_files, minimum_checks
-from agent_ci.protocol import ContractError, RESULT_SCHEMA, atomic_json, validate_task
+from agent_ci.protocol import (
+    ContractError,
+    RESULT_SCHEMA,
+    atomic_json,
+    is_legacy_task,
+    validate_task,
+)
 from agent_ci.relay import GitRelay
 from agent_ci.state import Journal
 from agent_ci.supervisor import Supervisor, ToolService
@@ -109,6 +115,8 @@ class Worker:
                 self.heartbeat(control_channel="unreachable")
 
     def process(self, task):
+        if is_legacy_task(task):
+            return
         self.workspaces.recover()
         maintenance = self.workspaces.collect()
         if maintenance["status"] != "healthy":
@@ -467,6 +475,8 @@ class Worker:
         for task in self.relay.tasks():
             if self.stop_event.is_set():
                 break
+            if is_legacy_task(task):
+                continue
             try:
                 self.process(task)
                 row = self.journal.task(task["task_id"])

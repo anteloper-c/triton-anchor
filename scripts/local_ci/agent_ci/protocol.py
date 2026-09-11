@@ -11,6 +11,7 @@ from typing import Any
 TASK_SCHEMA = "triton-anchor-local-ci-task/v4"
 RESULT_SCHEMA = "triton-anchor-local-ci/v4"
 POLICY_VERSION = "impact/v5"
+PREINSTALLED_SUBMODULES = frozenset({"FlagGems"})
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 ID = re.compile(r"[0-9a-f]{64}\Z")
 IDENTITY_FIELDS = (
@@ -61,6 +62,30 @@ def current_key(task: dict) -> str:
         else f"branch:{task['target_branch']}"
     )
     return hashlib.sha256(f"{task['repository']}:{subject}".encode()).hexdigest()
+
+
+def is_legacy_task(task: dict) -> bool:
+    """Recognize CI_dev's branch-based refs so old records stay historical."""
+    if not isinstance(task, dict) or task.get("schema") != TASK_SCHEMA:
+        return False
+    pr = task.get("pr_number")
+    ref = task.get("task_ref")
+    if type(pr) is not int or pr < 0 or not isinstance(ref, str):
+        return False
+    if pr:
+        prefix = f"ci/pr-{pr}/"
+        if not ref.startswith(prefix) or ref == prefix:
+            return False
+        subject = f"pr-{pr}/{ref[len(prefix):]}"
+    else:
+        branch = task.get("target_branch")
+        if not branch or ref != f"ci/{'full' if task.get('full') else 'push'}/{branch}":
+            return False
+        subject = f"push/{branch}"
+    return (
+        task.get("base_task_ref") == f"ci/base/{subject}"
+        and task.get("head_task_ref") == f"ci/head/{subject}"
+    )
 
 
 def validate_task(

@@ -26,6 +26,8 @@ from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "local_ci"))
 from agent_ci.protocol import (
+    PREINSTALLED_SUBMODULES,
+    is_legacy_task,
     scope_covers,
     validate_artifacts,
     validate_delivery,
@@ -525,6 +527,8 @@ def prepare_task(
     # Mirror both variants so an optional base comparison cannot escape to GitHub.
     for variant, sha in (("candidate", merge), ("base", base)):
         for link in gh.gitlinks(sha):
+            if link["path"] in PREINSTALLED_SUBMODULES:
+                continue
             url = mirrors.get(link["path"], "")
             parsed = urlparse(url)
             if (
@@ -797,6 +801,8 @@ def cancel_obsolete(gh: GitHub, control: GitStore, pr_number: int = 0) -> int:
         row = json.loads(path.read_text())
         task = control.get(f"tasks/{row['task_id']}.json")
         if not task or (pr_number and task["pr_number"] != pr_number):
+            continue
+        if is_legacy_task(task):
             continue
         validate_task(task)
         if not is_current(gh, task):
@@ -1110,6 +1116,8 @@ def collect_results(
     for current in sorted((control.root / "current").glob("*.json")):
         pointer = json.loads(current.read_text())
         task = control.get(f"tasks/{pointer['task_id']}.json")
+        if is_legacy_task(task):
+            continue
         validate_task(task)
         active = current_task(gh, control, task)
         row = {

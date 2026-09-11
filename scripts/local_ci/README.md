@@ -4,7 +4,9 @@
 
 ## 运行模型
 
-Gateway 顺序执行 Basic/API/Security、按需审批，冻结 PR 合并结果与 base/head，并在源码及子模块对象到达 Gitee 后发布 task manifest。Worker 使用相同固定控制版本，按受信 diff policy 计算最低范围。纯文档走轻量 control_plane；仅改测试必须执行对应测试；AST 等价不自动免测；full 在支持的环境包含全量 FlagGems。
+Gateway 顺序执行 Basic/API/Security、按需审批，冻结 PR 合并结果与 base/head，并在源码及需要随任务检出的子模块对象到达 Gitee 后发布 task manifest。Worker 使用相同固定控制版本，按受信 diff policy 计算最低范围。纯文档走轻量 control_plane；仅改测试必须执行对应测试；AST 等价不自动免测；full 在支持的环境包含全量 FlagGems。
+
+根目录 `FlagGems` 使用服务器 profile 预置依赖，不参与网关子模块镜像与任务检出；PR 修改 `FlagGems` 指针不会切换服务器固定依赖。其他子模块仍经 Gitee 固定到对应 Git 对象。旧 `CI_dev` 分支式 refs 的活动记录会被识别并跳过，不执行、不回写通过，也不阻断新版任务；旧记录不列入新版看板当前任务列表，历史文件无需清理。
 
 Worker 从 [AI_CI_PROGRAM.md](AI_CI_PROGRAM.md) 直接启动一个 Agent，每任务一个 Rootless 容器、一个非 root 执行用户。Agent、构建、安装和测试使用同一任务环境。base 与 experiment 按需准备，表示数据版本。生产配置、状态文件、命令日志与封存包由宿主管理。
 
