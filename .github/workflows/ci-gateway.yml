@@ -4,8 +4,6 @@ run-name: "${{ inputs.run_title || (github.event_name == 'pull_request_target' &
 on:
   push:
     branches: [main]
-  schedule:
-    - cron: "17,47 * * * *"
   pull_request_target:
     types:
       - opened
