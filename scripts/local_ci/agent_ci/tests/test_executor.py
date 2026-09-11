@@ -138,6 +138,35 @@ def test_one_group_cancel_preserves_same_uid_agent(tmp_path):
             process.wait(timeout=5)
 
 
+def test_launcher_forks_before_setsid_when_parent_is_group_leader(tmp_path):
+    processes = tmp_path / "processes"
+    launcher = LAUNCH_PROGRAM.replace("/task/.processes", str(processes))
+    command_script = (
+        "import json,os,pathlib;"
+        f"record=json.loads((pathlib.Path({str(processes)!r})/'check.json').read_text());"
+        "print(json.dumps({"
+        "'pid':os.getpid(),"
+        "'pgrp':os.getpgrp(),"
+        "'sid':os.getsid(0),"
+        "'record_pid':record['pid'],"
+        "'record_has_started_at':'started_at' in record"
+        "}))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", launcher, sys.executable, "-c", command_script],
+        env={**os.environ, "LOCAL_CI_EXECUTION_ID": "check"},
+        capture_output=True,
+        text=True,
+        timeout=5,
+        start_new_session=True,
+        check=True,
+    )
+    identity = json.loads(result.stdout)
+    assert identity["pid"] == identity["pgrp"] == identity["sid"]
+    assert identity["record_pid"] == identity["pid"]
+    assert identity["record_has_started_at"]
+
+
 def test_process_identity_mismatch_refuses_to_signal(tmp_path):
     processes = tmp_path / "processes"
     processes.mkdir()

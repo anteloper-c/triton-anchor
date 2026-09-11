@@ -33,12 +33,36 @@ SECRET_NAMES = (
 
 # Each invocation owns one process group. Cancelling it never sweeps the shared UID.
 LAUNCH_PROGRAM = r"""
-import json,os,pathlib,sys
-os.setsid()
-root=pathlib.Path('/task/.processes'); root.mkdir(exist_ok=True)
-pid=os.getpid(); start=pathlib.Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()[19]
-(root/(os.environ['LOCAL_CI_EXECUTION_ID']+'.json')).write_text(json.dumps({'pid':pid,'start':start}))
-os.execvpe(sys.argv[1],sys.argv[1:],os.environ)
+import json,os,pathlib,signal,sys,time
+child=os.fork()
+if child==0:
+    try:
+        os.setsid()
+        root=pathlib.Path('/task/.processes'); root.mkdir(exist_ok=True)
+        pid=os.getpid()
+        start=pathlib.Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()[19]
+        path=root/(os.environ['LOCAL_CI_EXECUTION_ID']+'.json')
+        tmp=root/(path.name+'.tmp.'+str(pid))
+        tmp.write_text(json.dumps({'pid':pid,'start':start,'started_at':time.time()}))
+        os.replace(tmp,path)
+        os.execvpe(sys.argv[1],sys.argv[1:],os.environ)
+    except BaseException as exc:
+        print('Local CI launcher failed: '+str(exc),file=sys.stderr)
+        os._exit(125)
+def forward(signum,frame):
+    try: os.killpg(child,signum)
+    except ProcessLookupError: pass
+for signum in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP):
+    signal.signal(signum,forward)
+while True:
+    try:
+        _,status=os.waitpid(child,0)
+        break
+    except InterruptedError:
+        pass
+if os.WIFEXITED(status): sys.exit(os.WEXITSTATUS(status))
+if os.WIFSIGNALED(status): sys.exit(128+os.WTERMSIG(status))
+sys.exit(125)
 """
 STOP_PROGRAM = r"""
 import json,os,pathlib,signal,sys,time
@@ -49,7 +73,7 @@ try:
     start=pathlib.Path('/proc/'+str(pid)+'/stat').read_text().rsplit(')',1)[1].split()[19]
     if start!=r['start']: raise RuntimeError('Process identity changed')
 except FileNotFoundError:
-    pass
+    p.unlink(missing_ok=True);print(json.dumps({'verified':True,'remaining':[]}));sys.exit()
 for sig in (signal.SIGTERM,signal.SIGKILL):
     try: os.killpg(pid,sig)
     except ProcessLookupError: break
