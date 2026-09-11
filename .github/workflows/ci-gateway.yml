@@ -141,15 +141,6 @@ env:
   FALLBACK_PUSH_ENABLED: ${{ vars.LOCAL_CI_FALLBACK_PUSH_ENABLED || 'true' }}
 
 jobs:
-  watchdog:
-    name: Check Local CI service health
-    if: ${{ github.event_name == 'schedule' && github.repository == 'anteloper-c/triton-anchor' && vars.LOCAL_CI_WATCHDOG_ENABLED == 'true' }}
-    permissions:
-      contents: read
-      issues: write
-    uses: anteloper-c/triton-anchor/.github/workflows/local-ci-watchdog.yml@ci_repo
-    secrets:
-      LOCAL_CI_HEARTBEAT_READ_TOKEN: ${{ secrets.LOCAL_CI_HEARTBEAT_READ_TOKEN }}
 
   route-cancellation:
     name: Route PR lifecycle cancellation
