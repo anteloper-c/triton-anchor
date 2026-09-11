@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 LOCAL_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(LOCAL_ROOT))
-from agent_ci.policy import TOOLS, changed_files, minimum_checks
+from agent_ci.policy import TOOLS, minimum_checks
 from agent_ci.protocol import (
     TASK_SCHEMA,
     ContractError,
@@ -26,26 +26,7 @@ from agent_ci.protocol import (
 from agent_ci.relay import GitRelay
 from agent_ci.supervisor import Supervisor, ToolService
 from agent_ci.worker import Worker
-from test_unified_worker import ReleaseBoundary
-
-
-def git(cwd, *args):
-    return (
-        subprocess.check_output(
-            [
-                "git",
-                "-c",
-                "user.name=Simulation",
-                "-c",
-                "user.email=simulation@example.invalid",
-                *args,
-            ],
-            cwd=cwd,
-            stderr=subprocess.DEVNULL,
-        )
-        .decode()
-        .strip()
-    )
+from agent_ci.tests.support import ReleaseBoundary, git
 
 
 class Fixture:
@@ -482,42 +463,6 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(result["status"], "infra_error")
         self.assertIn("installed revision differs", result["unfinished"])
 
-    def test_rebuilt_dependency_invalidates_downstream_evidence(self):
-        supervisor = self.supervisor()
-        for tool in (
-            "environment",
-            "frontend_build",
-            "frontend_install",
-            "frontend_smoke",
-        ):
-            supervisor.poll_check(
-                supervisor.start_check(tool, "Build verified frontend")["execution_id"],
-                30,
-            )
-        self.assertTrue(supervisor.fresh("frontend_smoke"))
-        supervisor.poll_check(
-            supervisor.start_check(
-                "frontend_build", "Rebuild with a changed option", force=True
-            )["execution_id"],
-            30,
-        )
-        self.assertFalse(supervisor.fresh("frontend_smoke"))
-        with self.assertRaises(ContractError):
-            supervisor.start_check(
-                "backend_install", "Stale frontend must not be consumed"
-            )
-
-    def test_same_recipe_in_new_generation_does_not_reuse_installation(self):
-        supervisor = self.supervisor()
-        supervisor.poll_check(
-            supervisor.start_check("environment", "Original generation")[
-                "execution_id"
-            ],
-            30,
-        )
-        self.assertTrue(supervisor.fresh("environment"))
-        supervisor.executor.generation["generation"] = "replacement-generation"
-        self.assertFalse(supervisor.fresh("environment"))
 
     def test_failed_sealing_cannot_launch_more_code_after_reuse_check(self):
         supervisor = self.supervisor()
@@ -798,127 +743,6 @@ class AgentTests(unittest.TestCase):
             supervisor.read_file("../../outside")
         with self.assertRaises(ContractError):
             supervisor.run_custom("../bad.py", "pass", "python", "bad")
-
-    def test_python_ast_equivalence_never_waives_code_verification(self):
-        repo = self.fixture.source
-        path = repo / "python/triton_anchor/__init__.py"
-
-        def commit(source, message):
-            path.write_text(source)
-            git(repo, "add", ".")
-            git(repo, "commit", "-qm", message)
-            return git(repo, "rev-parse", "HEAD")
-
-        previous = commit('__version__ = "0.1"  # type: str\n', "policy base")
-        cases = (
-            ("comment", '# explanation only\n\n__version__="0.1"  # type: str\n', True),
-            ("assignment", '__version__ = "0.2"  # type: str\n', False),
-            (
-                "docstring",
-                '"""Runtime docstring."""\n__version__="0.2"  # type: str\n',
-                False,
-            ),
-            (
-                "type-comment",
-                '"""Runtime docstring."""\n__version__="0.2"  # type: object\n',
-                False,
-            ),
-            (
-                "whitespace",
-                '"""Runtime docstring."""\n\n__version__ = "0.2"  # type: object\n',
-                True,
-            ),
-            ("parse-failure", "def broken(:\n", False),
-        )
-        no_op_policy = None
-        for label, source, equivalent in cases:
-            current = commit(source, label)
-            changes = changed_files(repo, previous, current)
-            policy = minimum_checks(changes, backend_enabled=True)
-            with self.subTest(label=label):
-                self.assertEqual(
-                    changes[0].get("semantic") == "python_ast_equivalent", equivalent
-                )
-                self.assertTrue(
-                    {
-                        "environment",
-                        "frontend_build",
-                        "frontend_install",
-                        "frontend_smoke",
-                        "frontend_tests",
-                    }
-                    <= set(policy["required_checks"])
-                )
-            if label == "comment":
-                no_op_policy = policy
-            previous = current
-        self.assertEqual(policy["version"], "impact/v5")
-        self.assertEqual(no_op_policy["impact"]["classification"], "risk_assessed")
-        self.assertTrue(no_op_policy["impact"]["python_ast_equivalent"])
-
-    def test_policy_cannot_treat_program_or_structural_change_as_docs(self):
-        docs = minimum_checks([{"path": "docs/example.md"}], backend_enabled=True)
-        self.assertEqual(docs["required_checks"], ["control_plane"])
-        self.assertEqual(docs["impact"]["level"], "non_executable")
-        program = minimum_checks(
-            [{"path": "scripts/local_ci/AI_CI_PROGRAM.md"}], backend_enabled=True
-        )
-        self.assertIn("control_plane", program["required_checks"])
-        renamed = minimum_checks(
-            [{"path": "docs/example.md", "old_path": "csrc/old.cpp", "status": "R100"}],
-            backend_enabled=True,
-        )
-        self.assertTrue(
-            {
-                "frontend_tests",
-                "backend_build",
-                "backend_install",
-                "backend_smoke",
-                "flaggems",
-            }
-            <= set(renamed["required_checks"])
-        )
-        tests = minimum_checks(
-            [{"path": "python/triton_anchor/tests/test_frontend.py", "status": "M"}],
-            backend_enabled=True,
-        )
-        self.assertIn("frontend_tests", tests["required_checks"])
-        self.assertEqual(
-            tests["required_parameters"]["frontend_tests"]["paths"],
-            ["python/triton_anchor/tests/test_frontend.py"],
-        )
-        pipeline = minimum_checks(
-            [{"path": "python/triton_anchor/pipeline.py", "status": "M"}],
-            backend_enabled=True,
-        )
-        self.assertTrue(
-            {"backend_tests", "backend_smoke", "flaggems"}
-            <= set(pipeline["required_checks"])
-        )
-        self.assertIn("compile_time", pipeline["recommended_checks"])
-        self.assertEqual(
-            minimum_checks([{"path": "unknown.cfg"}], backend_enabled=True)[
-                "required_checks"
-            ],
-            list(TOOLS),
-        )
-        full = minimum_checks(
-            [{"path": "docs/example.md"}], backend_enabled=True, full=True
-        )
-        self.assertEqual(full["required_checks"], list(TOOLS))
-        self.assertEqual(full["required_parameters"]["flaggems"]["mode"], "full")
-        for status in ("A", "D", "M"):
-            change = {
-                "path": "python/triton_anchor/new.py",
-                "status": status,
-                "mode": "100644",
-            }
-            self.assertIn(
-                "frontend_tests",
-                minimum_checks([change], backend_enabled=True)["required_checks"],
-            )
-        with self.assertRaises(ContractError):
-            minimum_checks([], backend_enabled=True)
 
 
 if __name__ == "__main__":

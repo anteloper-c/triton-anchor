@@ -425,10 +425,13 @@ requires_openai_auth = true
             ),
             mock.patch("agent_ci.codex.subprocess.Popen", side_effect=started_command),
             mock.patch.object(FakeProcess, "poll", lambda process: process.returncode),
-            mock.patch("agent_ci.codex.os.killpg"),
+            mock.patch("agent_ci.codex.os.killpg") as kill,
         ):
             outcome = self.driver.run(self.supervisor, self.service)
         self.assertEqual("cancelled", outcome["reason"])
+        self.assertEqual(-15, outcome["exit_code"])
+        self.assertEqual(SESSION_ID, outcome["session_id"])
+        kill.assert_called_once()
         self.assertEqual(["cancelled"], self.interruptions)
         self.assertTrue(
             any(
@@ -649,24 +652,6 @@ requires_openai_auth = true
         self.assertEqual("timeout", result["reason"])
         self.assertEqual(1, self.supervisor.cancelled.wait.call_count)
 
-    def test_cancel_stops_process_and_retains_session(self):
-        self.supervisor.cancelled = mock.Mock(
-            is_set=mock.Mock(return_value=False), wait=mock.Mock(return_value=True)
-        )
-
-        # Keep the process alive until the driver's cancellation path waits it out.
-        def alive(process):
-            return process.returncode
-
-        with (
-            mock.patch.object(FakeProcess, "poll", alive),
-            mock.patch("agent_ci.codex.os.killpg") as kill,
-        ):
-            result = self.run_driver()
-        self.assertEqual("cancelled", result["reason"])
-        self.assertEqual(-15, result["exit_code"])
-        self.assertEqual(SESSION_ID, result["session_id"])
-        kill.assert_called_once()
 
     def test_nonroot_execution_uid_and_symlinked_credentials(self):
         self.executor.uid = 0

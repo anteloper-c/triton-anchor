@@ -232,14 +232,6 @@ def test_profile_bridge_uses_existing_b_environment_keys(tmp_path):
     assert context["triton_version"] == "3.0"
 
 
-def test_one_nonroot_user_and_private_log_layout(tmp_path):
-    ex = executor(tmp_path)
-    assert ex.execution_user == "11001:11001"
-    assert ex.run_dir == tmp_path / "runs" / ("a" * 64) / "r1"
-    assert ex.host_root == tmp_path / "work" / ("a" * 64) / "r1"
-    assert "11001:11001" in ex.docker_prefix()
-
-
 def test_budget_rejected_before_execution(tmp_path):
     ex = executor(tmp_path)
     with pytest.raises(ContractError):

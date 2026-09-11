@@ -8,46 +8,18 @@ import json
 import os
 import re
 import shutil
-import stat
 import tarfile
 import tempfile
-import time
 import urllib.parse
-import urllib.request
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
-SCHEMA = "triton-anchor-local-ci-environments/v1"
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,100}")
-REUSABLE = {"ready", "active", "previous"}
-PUBLIC_PATHS = ("/tmp", "/var/tmp", "/dev/shm")
-
-# Trusted read-only probe: never deletes unfamiliar files or prints their contents.
-HYGIENE_SNAPSHOT = r"""
-import hashlib,json,os,pathlib,stat,sys
-def scan(root):
-    entries=[]
-    def visit(path):
-        info=path.lstat()
-        entry=[str(path.relative_to(root)),stat.S_IFMT(info.st_mode),stat.S_IMODE(info.st_mode),info.st_uid,info.st_gid]
-        if path.is_symlink(): entry.append(os.readlink(path))
-        elif stat.S_ISREG(info.st_mode):
-            digest=hashlib.sha256()
-            with path.open('rb') as source:
-                for block in iter(lambda:source.read(1048576),b''): digest.update(block)
-            entry.append(digest.hexdigest())
-        entries.append(entry)
-        if stat.S_ISDIR(info.st_mode):
-            for child in sorted(path.iterdir()): visit(child)
-    visit(root)
-    return hashlib.sha256(json.dumps(entries,separators=(',',':')).encode()).hexdigest()
-print(json.dumps({path:scan(pathlib.Path(path)) for path in json.loads(sys.argv[1])},sort_keys=True))
-"""
 
 
 class EnvironmentError(RuntimeError):
@@ -112,66 +84,6 @@ def tree_digest(root: Path) -> str:
         else:
             raise EnvironmentError("Prepared dependency contains a special file")
     return fingerprint(entries)
-
-
-def shared_workspace_digest(root: Path, *, timeout_seconds: int = 600) -> str:
-    """Content, type, ownership and mode of prepared shared files, not task data."""
-    deadline = time.monotonic() + timeout_seconds
-    entries = []
-
-    def check_deadline():
-        if time.monotonic() >= deadline:
-            raise EnvironmentError("Shared dependency fingerprint timed out")
-
-    def visit(path: Path):
-        check_deadline()
-        info = path.lstat()
-        entry = [
-            path.relative_to(root).as_posix(),
-            stat.S_IFMT(info.st_mode),
-            stat.S_IMODE(info.st_mode),
-            info.st_uid,
-            info.st_gid,
-        ]
-        if path.is_symlink():
-            entry.append(os.readlink(path))
-        elif stat.S_ISREG(info.st_mode):
-            digest = hashlib.sha256()
-            with path.open("rb") as source:
-                while True:
-                    check_deadline()
-                    block = source.read(1024 * 1024)
-                    check_deadline()
-                    if not block:
-                        break
-                    digest.update(block)
-            entry.append(digest.hexdigest())
-        elif not stat.S_ISDIR(info.st_mode):
-            raise EnvironmentError(
-                "Shared dependency contains an unexpected special file"
-            )
-        entries.append(entry)
-        if stat.S_ISDIR(info.st_mode):
-            children = []
-            for child in path.iterdir():
-                check_deadline()
-                children.append(child)
-            for child in sorted(children):
-                check_deadline()
-                if path == root and child.name in {"tasks", "environment.json"}:
-                    continue
-                visit(child)
-
-    visit(root)
-    result = fingerprint(entries)
-    check_deadline()
-    return result
-
-
-def absolute_path(value: Any, label: str) -> Path:
-    if not isinstance(value, str) or not value or not Path(value).is_absolute():
-        raise EnvironmentError(f"{label} must be an absolute server path")
-    return Path(value)
 
 
 def safe_source(value: Any, label: str) -> str:

@@ -22,15 +22,6 @@ def load(name: str, path: Path):
     return module
 
 
-selector = load(
-    "local_ci_tool_flaggems_selector",
-    ROOT / "tools/basic_tools/flaggems/select_flaggems_tests.py",
-)
-sys.modules["select_flaggems_tests"] = selector
-batch = load(
-    "local_ci_tool_flaggems_batch",
-    ROOT / "tools/basic_tools/flaggems/batch_test_flaggems.py",
-)
 ir_benchmark = load(
     "local_ci_tool_ir_benchmark",
     ROOT / "tools/basic_tools/performance/ir_serialization_benchmark.py",

@@ -793,7 +793,6 @@ def enqueue(task: dict, gh: GitHub, control: GitStore, source: Path) -> None:
         documents[f"tasks/{task['task_id']}.json"] = old
     control.put(documents, (f"tasks/{task['task_id']}.json",))
     gh.status(task, "pending", "Local CI: task published to Gitee")
-    publish_enqueued_checks(gh, task)
 
 
 def cancel_obsolete(gh: GitHub, control: GitStore, pr_number: int = 0) -> int:
@@ -1011,16 +1010,6 @@ def publish_preflight_checks(
     return changed
 
 
-def publish_enqueued_checks(gh: GitHub, task: dict) -> bool:
-    # The summary status is already pending; details live in one PR comment.
-    return False
-
-
-def publish_result_checks(gh: GitHub, task: dict, result: dict) -> bool:
-    # Reviews, minimum verification and delivery share the summary status.
-    return False
-
-
 def current_task(gh: GitHub, control: GitStore, task: dict) -> bool:
     pointer = control.get(f"current/{current_key(task)}.json")
     return bool(
@@ -1187,8 +1176,7 @@ def collect_results(
                             else "测试结论已封存，必要证据交付完成前 summary 不通过。"
                         ),
                     )
-                    checks_changed = publish_result_checks(gh, task, result)
-                    if not unchanged or comment_changed or checks_changed:
+                    if not unchanged or comment_changed:
                         published.append(
                             {
                                 "task_id": task["task_id"],

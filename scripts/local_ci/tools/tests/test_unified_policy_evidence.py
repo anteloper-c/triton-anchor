@@ -77,6 +77,27 @@ class PolicyTests(unittest.TestCase):
         for tool in ("control_plane", "frontend_tests", "backend_tests", "flaggems"):
             self.assertIn(tool, selected["required_checks"])
 
+    def test_renamed_code_and_unknown_paths_keep_code_checks(self):
+        renamed = policy.minimum_checks(
+            [{"path": "docs/example.md", "old_path": "csrc/old.cpp", "status": "R100"}],
+            backend_enabled=True,
+        )
+        self.assertTrue(
+            {
+                "frontend_tests",
+                "backend_build",
+                "backend_install",
+                "backend_smoke",
+                "flaggems",
+            }
+            <= set(renamed["required_checks"])
+        )
+        self.assertEqual(
+            self.classify("unknown.cfg")["required_checks"], list(runner.TOOL_IDS)
+        )
+        with self.assertRaises(policy.ContractError):
+            policy.minimum_checks([], backend_enabled=True)
+
 
 class EvidenceTests(unittest.TestCase):
     def setUp(self):

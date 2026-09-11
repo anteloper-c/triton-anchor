@@ -3,21 +3,13 @@
 from __future__ import annotations
 
 import argparse
-
 import json
-
 import os
-
 import subprocess
-
 import sys
-
 import tempfile
-
 import unittest
-
 import venv
-
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -63,7 +55,8 @@ class ToolPlanningTests(unittest.TestCase):
     def test_all_tools_plan_without_local_container_paths(self):
         for name in runner.TOOL_IDS:
             with self.subTest(name=name):
-                result = runner.plan(name, context())
+                parameters = {"mode": "full"} if name == "flaggems" else {}
+                result = runner.plan(name, context(), parameters)
                 self.assertEqual(result["status"], "ready")
                 self.assertTrue(result["commands"])
                 self.assertTrue(
@@ -180,15 +173,6 @@ class ToolPlanningTests(unittest.TestCase):
             self.assertEqual(result["status"], "not_applicable")
             self.assertEqual(result["commands"], [])
 
-    def test_full_operator_selection_is_available_to_policy(self):
-        self.assertEqual(
-            runner.plan("flaggems", context(), {"mode": "full"})["status"], "ready"
-        )
-        ctx = context()
-        ctx["manual_full"] = True
-        self.assertEqual(
-            runner.plan("flaggems", ctx, {"mode": "full"})["status"], "ready"
-        )
 
     def test_agent_cannot_override_commands_profile_or_dependencies(self):
         for params in (

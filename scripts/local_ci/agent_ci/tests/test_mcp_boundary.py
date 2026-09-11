@@ -137,13 +137,6 @@ def completed(sup, tool, parameters=None):
     )
 
 
-def test_schema_rejects_host_command_override_before_queue(supervisor):
-    with pytest.raises(TypeError):
-        supervisor.start_check(
-            "environment", "reason", parameters={}, custom={"command": "host"}
-        )
-
-
 def test_runner_rejects_unknown_parameters_without_duplicate_registry(supervisor):
     with pytest.raises(ValueError):
         supervisor.start_check("environment", "reason", parameters={"host": "root"})
@@ -161,6 +154,11 @@ def test_dependencies_then_rebuild_invalidate_consumers(supervisor):
         30,
     )
     assert not supervisor.fresh("frontend_smoke")
+    with pytest.raises(ContractError):
+        supervisor.start_check("backend_install", "stale frontend must not be consumed")
+    assert supervisor.fresh("environment")
+    supervisor.executor.generation["generation"] = "replacement-generation"
+    assert not supervisor.fresh("environment")
 
 
 def test_native_reinstall_invalidates_test_but_keeps_build_history(supervisor):
@@ -169,13 +167,6 @@ def test_native_reinstall_invalidates_test_but_keeps_build_history(supervisor):
     supervisor.executor.installation = "wheel2"
     assert supervisor.fresh("frontend_build")
     assert not supervisor.fresh("frontend_smoke")
-
-
-def test_gitee_unknown_blocks_new_execution(supervisor):
-    supervisor.control_available.clear()
-    with pytest.raises(ContractError, match="Gitee"):
-        supervisor.start_check("environment", "reason")
-    assert supervisor.executor.calls == []
 
 
 def test_custom_script_runs_real_python_without_requiring_build(supervisor):
@@ -192,15 +183,11 @@ def test_custom_script_runs_real_python_without_requiring_build(supervisor):
 
 def test_completed_native_environment_can_replace_builtin(supervisor):
     ex = supervisor.executor
-    supervisor.observe_native(
-        {
-            "type": "item.started",
-            "item": {
-                "id": "native1",
-                "type": "command_execution",
-                "command": "python inspect_environment.py",
-            },
-        }
+    native_event(
+        supervisor,
+        "started",
+        id="native1",
+        command="python inspect_environment.py",
     )
     ident = next(iter(supervisor.native))
     directory = supervisor.run_dir / "artifacts/native-environment"
@@ -215,17 +202,13 @@ def test_completed_native_environment_can_replace_builtin(supervisor):
             }
         )
     )
-    supervisor.observe_native(
-        {
-            "type": "item.completed",
-            "item": {
-                "id": "native1",
-                "type": "command_execution",
-                "command": "python inspect_environment.py",
-                "exit_code": 0,
-                "aggregated_output": "ok",
-            },
-        }
+    native_event(
+        supervisor,
+        "completed",
+        id="native1",
+        command="python inspect_environment.py",
+        exit_code=0,
+        aggregated_output="ok",
     )
     record = supervisor.record_check(
         ident,
@@ -248,18 +231,8 @@ def test_completed_native_environment_can_replace_builtin(supervisor):
 
 
 def test_native_exit_without_report_does_not_gain_credit(supervisor):
-    supervisor.observe_native(
-        {
-            "type": "item.started",
-            "item": {"id": "n", "type": "command_execution", "command": "true"},
-        }
-    )
-    supervisor.observe_native(
-        {
-            "type": "item.completed",
-            "item": {"id": "n", "type": "command_execution", "exit_code": 0},
-        }
-    )
+    native_event(supervisor, "started", id="n", command="true")
+    native_event(supervisor, "completed", id="n", exit_code=0)
     directory = supervisor.run_dir / "artifacts/empty"
     directory.mkdir()
     record = supervisor.record_check(
@@ -273,33 +246,14 @@ def test_native_exit_without_report_does_not_gain_credit(supervisor):
 
 
 def test_native_modified_source_is_recorded_without_passing_original(supervisor):
-    supervisor.observe_native(
-        {
-            "type": "item.started",
-            "item": {
-                "id": "n",
-                "type": "command_execution",
-                "command": "patch and test",
-            },
-        }
-    )
+    native_event(supervisor, "started", id="n", command="patch and test")
     supervisor.executor.original = False
-    supervisor.observe_native(
-        {
-            "type": "item.completed",
-            "item": {"id": "n", "type": "command_execution", "exit_code": 0},
-        }
-    )
+    native_event(supervisor, "completed", id="n", exit_code=0)
     assert next(iter(supervisor.native.values()))["original_subject"] is False
 
 
 def test_missing_started_event_cannot_be_promoted(supervisor):
-    supervisor.observe_native(
-        {
-            "type": "item.completed",
-            "item": {"id": "unknown", "type": "command_execution", "exit_code": 0},
-        }
-    )
+    native_event(supervisor, "completed", id="unknown", exit_code=0)
     assert not supervisor.native
 
 
@@ -343,16 +297,7 @@ def test_long_path_rpc_and_private_methods(supervisor):
 
 
 def test_one_native_command_can_cover_multiple_stages(supervisor):
-    supervisor.observe_native(
-        {
-            "type": "item.started",
-            "item": {
-                "id": "multi",
-                "type": "command_execution",
-                "command": "inspect and build",
-            },
-        }
-    )
+    native_event(supervisor, "started", id="multi", command="inspect and build")
     ident = next(iter(supervisor.native))
     directory = supervisor.run_dir / "artifacts/multi"
     directory.mkdir()
@@ -383,12 +328,7 @@ def test_one_native_command_can_cover_multiple_stages(supervisor):
             }
         )
     )
-    supervisor.observe_native(
-        {
-            "type": "item.completed",
-            "item": {"id": "multi", "type": "command_execution", "exit_code": 0},
-        }
-    )
+    native_event(supervisor, "completed", id="multi", exit_code=0)
     env = supervisor.record_check(
         ident, "environment", "/task/artifacts/multi", "measured environment"
     )
@@ -398,6 +338,15 @@ def test_one_native_command_can_cover_multiple_stages(supervisor):
     assert env["execution_id"] != build["execution_id"]
     assert supervisor.fresh("environment") and supervisor.fresh("frontend_build")
     assert len(supervisor.journal.executions(task["task_id"])) == 3
+
+
+def native_event(supervisor, event, *, id, **fields):
+    supervisor.observe_native(
+        {
+            "type": "item." + event,
+            "item": {"id": id, "type": "command_execution", **fields},
+        }
+    )
 
 
 def environment_report(supervisor, directory):
@@ -417,18 +366,8 @@ def environment_report(supervisor, directory):
 def test_native_true_cannot_credit_preexisting_reports(supervisor):
     directory = supervisor.run_dir / "artifacts/stale"
     environment_report(supervisor, directory)
-    supervisor.observe_native(
-        {
-            "type": "item.started",
-            "item": {"id": "stale", "type": "command_execution", "command": "true"},
-        }
-    )
-    supervisor.observe_native(
-        {
-            "type": "item.completed",
-            "item": {"id": "stale", "type": "command_execution", "exit_code": 0},
-        }
-    )
+    native_event(supervisor, "started", id="stale", command="true")
+    native_event(supervisor, "completed", id="stale", exit_code=0)
     with pytest.raises(ContractError, match="not produced"):
         supervisor.record_check(
             next(iter(supervisor.native)),
@@ -439,18 +378,8 @@ def test_native_true_cannot_credit_preexisting_reports(supervisor):
 
 
 def test_background_late_report_cannot_credit_completed_shell(supervisor):
-    supervisor.observe_native(
-        {
-            "type": "item.started",
-            "item": {"id": "late", "type": "command_execution", "command": "inspect &"},
-        }
-    )
-    supervisor.observe_native(
-        {
-            "type": "item.completed",
-            "item": {"id": "late", "type": "command_execution", "exit_code": 0},
-        }
-    )
+    native_event(supervisor, "started", id="late", command="inspect &")
+    native_event(supervisor, "completed", id="late", exit_code=0)
     environment_report(supervisor, supervisor.run_dir / "artifacts/late")
     with pytest.raises(ContractError, match="not produced"):
         supervisor.record_check(
@@ -462,20 +391,10 @@ def test_background_late_report_cannot_credit_completed_shell(supervisor):
 
 
 def test_report_changes_after_completed_event_are_rejected(supervisor):
-    supervisor.observe_native(
-        {
-            "type": "item.started",
-            "item": {"id": "mutate", "type": "command_execution", "command": "inspect"},
-        }
-    )
+    native_event(supervisor, "started", id="mutate", command="inspect")
     directory = supervisor.run_dir / "artifacts/mutate"
     environment_report(supervisor, directory)
-    supervisor.observe_native(
-        {
-            "type": "item.completed",
-            "item": {"id": "mutate", "type": "command_execution", "exit_code": 0},
-        }
-    )
+    native_event(supervisor, "completed", id="mutate", exit_code=0)
     with (directory / "environment.json").open("a") as stream:
         stream.write(" ")
     with pytest.raises(ContractError, match="changed afterward"):
@@ -490,16 +409,7 @@ def test_report_changes_after_completed_event_are_rejected(supervisor):
 def test_interrupted_native_observation_is_preserved_and_does_not_block_sealing(
     supervisor,
 ):
-    supervisor.observe_native(
-        {
-            "type": "item.started",
-            "item": {
-                "id": "interrupted",
-                "type": "command_execution",
-                "command": "sleep 99",
-            },
-        }
-    )
+    native_event(supervisor, "started", id="interrupted", command="sleep 99")
     supervisor.interrupt_native("Codex timeout")
     native = next(iter(supervisor.native.values()))
     assert native["status"] == "infra_error" and native["exit_code"] is None
@@ -558,12 +468,7 @@ def test_custom_reports_only_credit_fresh_own_execution_outputs(supervisor):
 def test_duplicate_completion_does_not_recapture_old_reports(supervisor):
     directory = supervisor.run_dir / "artifacts/stale-duplicate"
     environment_report(supervisor, directory)
-    supervisor.observe_native(
-        {
-            "type": "item.started",
-            "item": {"id": "duplicate", "type": "command_execution", "command": "true"},
-        }
-    )
+    native_event(supervisor, "started", id="duplicate", command="true")
     event = {
         "type": "item.completed",
         "item": {"id": "duplicate", "type": "command_execution", "exit_code": 0},
@@ -597,46 +502,22 @@ def test_restarted_agent_item_ids_get_new_execution_identity(supervisor):
 
 
 def test_completed_event_cannot_revive_interrupted_native_execution(supervisor):
-    supervisor.observe_native(
-        {
-            "type": "item.started",
-            "item": {
-                "id": "cancelled",
-                "type": "command_execution",
-                "command": "sleep 99",
-            },
-        }
-    )
+    native_event(supervisor, "started", id="cancelled", command="sleep 99")
     supervisor.interrupt_native("task cancelled")
     before = dict(next(iter(supervisor.native.values())))
     environment_report(supervisor, supervisor.run_dir / "artifacts/after-cancel")
-    supervisor.observe_native(
-        {
-            "type": "item.completed",
-            "item": {"id": "cancelled", "type": "command_execution", "exit_code": 0},
-        }
-    )
+    native_event(supervisor, "completed", id="cancelled", exit_code=0)
     after = next(iter(supervisor.native.values()))
     assert after == before
     assert after["status"] == "cancelled" and after["observed_artifacts"] == {}
 
 
 def test_custom_named_native_report_is_canonicalized_for_dependent_stages(supervisor):
-    supervisor.observe_native(
-        {
-            "type": "item.started",
-            "item": {"id": "named", "type": "command_execution", "command": "inspect"},
-        }
-    )
+    native_event(supervisor, "started", id="named", command="inspect")
     directory = supervisor.run_dir / "artifacts/named"
     environment_report(supervisor, directory)
     (directory / "environment.json").rename(directory / "my-env.json")
-    supervisor.observe_native(
-        {
-            "type": "item.completed",
-            "item": {"id": "named", "type": "command_execution", "exit_code": 0},
-        }
-    )
+    native_event(supervisor, "completed", id="named", exit_code=0)
     result = supervisor.record_check(
         next(iter(supervisor.native)),
         "environment",

@@ -34,11 +34,13 @@ Dashboard 保留任务与证据、全量算子、后端与性能三个业务模�
 
 ```bash
 python3 -m pytest scripts/ci/tests scripts/local_ci/agent_ci/tests \
-  scripts/local_ci/tools/tests scripts/local_ci/ops_maint/tests -q
+  scripts/local_ci/tools/tests scripts/local_ci/ops_maint/tests -q --import-mode=importlib
 ```
 
 运行测试需 Python 3.10+、pytest、PyYAML、Git；编译测试还需要相应 LLVM、Python 构建依赖、后端及设备/仿真环境。控制程序测试不代替真实工具链验收。
 
 部署先填写 [配置模板](ops_maint/config.example.json)，完成 Gitee 源/子模块镜像、模型凭据、精确镜像与 profile 实测，再按 [部署说明](ops_maint/README.md) 安装。Gateway 的固定控制 ref/SHA、接收工作流和 required checks 配置见 [GitHub 侧配置](../ci/README.md)。实际切换前暂停旧版接单并排空在途任务。
 
-合并来源、取舍和验证边界见 [合并记录](../../docs/local_ci_merge.md)。
+开发时以 `runner.py` 作为工具、参数和依赖的唯一入口，`state.py` 作为文件进度的唯一写入入口；CLI 与 MCP 共用工具计划，正式结论共用 `evidence.py` 的报告判据。修改选测、取消、重启、发布或证据行为时验证相应边界，避免只断言实现细节。
+
+原生命令的 pytest 检查使用 `tools/basic_tools/pytest_exec.py --installation <installation.json> --import-report <产物目录>/import-origin.json -- <pytest 参数>`，同时输出 JUnit，再通过 `record_check` 关联实际执行；测试进程的 import 记录用于确认验证的是已安装 wheel。

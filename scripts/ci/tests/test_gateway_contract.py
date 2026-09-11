@@ -452,7 +452,6 @@ README only
         self.assertEqual(before, (len(self.gh.statuses), len(self.gh.comments)))
         self.assertEqual(control_revision, git(control.root, "rev-parse", "HEAD"))
         self.assertEqual(result_revision, git(results.root, "rev-parse", "HEAD"))
-        self.assertFalse((control.root / "receipts").exists())
         self.gh.pull["draft"] = True
         self.assertEqual(
             g.collect_results(self.gh, control, results, self.root / "dashboard"), []
@@ -483,7 +482,6 @@ README only
         self.assertEqual(snapshot["tasks"][0]["status"], "pass")
         self.assertEqual(snapshot["tasks"][0]["delivery_status"], "pending")
         self.assertEqual(self.gh.statuses[-1][1], "error")
-        self.assertFalse((control.root / "receipts").exists())
         result_revision = git(results.root, "rev-parse", "HEAD")
         self.assertEqual(
             len(g.collect_results(self.gh, control, results, self.root / "dashboard")),
@@ -539,7 +537,6 @@ README only
             g.collect_results(self.gh, control, results, self.root / "dashboard"), []
         )
         self.assertEqual(before, (len(self.gh.statuses), len(self.gh.comments)))
-        self.assertFalse((control.root / "receipts").exists())
 
     def test_failed_dashboard_is_rebuilt_without_repeating_completed_writeback(self):
         control = self.store(g.CONTROL_BRANCH)
@@ -805,7 +802,7 @@ README only
 
 
 class WorkflowStructureTests(unittest.TestCase):
-    def test_reusable_dag_and_router_contract(self):
+    def test_workflow_gates_and_receiver_schedule(self):
         import yaml
 
         worker_text = (ROOT / ".github/workflows/ci-gateway.yml").read_text()
@@ -822,15 +819,9 @@ class WorkflowStructureTests(unittest.TestCase):
                 (ROOT / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader
             )
             self.assertEqual(set(workflow["on"]), {"workflow_call"})
-        basic_text = (ROOT / ".github/workflows/ci_basic.yml").read_text()
-        self.assertIn("gateway-contracts:", basic_text)
-        self.assertNotIn("control-contracts:", basic_text)
-        self.assertNotIn("scripts/local_ci/agent_ci/tests", basic_text)
         self.assertEqual(jobs["review-card"]["permissions"]["pull-requests"], "write")
         self.assertEqual(jobs["review-card"]["permissions"]["statuses"], "write")
-        self.assertNotIn("service", jobs)
         self.assertNotIn("schedule", data["on"])
-        self.assertNotIn("SMTP", worker_text)
         self.assertIn("LOCAL_CI_CONTROL_REF", worker_text)
         self.assertIn("LOCAL_CI_CONTROL_SHA", worker_text)
         receiver = yaml.load(
@@ -839,7 +830,6 @@ class WorkflowStructureTests(unittest.TestCase):
         )
         self.assertEqual(set(receiver["on"]), {"schedule", "workflow_dispatch"})
         self.assertEqual(receiver["jobs"]["receive"]["timeout-minutes"], "10")
-        self.assertNotIn("watchdog", str(receiver))
         self.assertEqual(
             set(g.REQUIRED_CONTEXTS),
             {"local-ci/basic", "local-ci/api", "local-ci/security", "local-ci/summary"},

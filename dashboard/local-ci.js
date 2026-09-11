@@ -17,7 +17,6 @@ function title(run) { return run.pr_number?'PR #'+run.pr_number+' · '+run.targe
 function reason(value) { return friendlyReasons[value]||txt(value)||'没有记录原因'; }
 function publicText(value) { let text=txt(value);for(const [id,label] of Object.entries(names))text=text.replaceAll(id+':',label+'：');for(const [message,label] of Object.entries(friendlyReasons))text=text.replaceAll(message,label);return text.replaceAll('Codex cancelled','AI 验证已取消').replaceAll('base..merge','基准提交与合并验证提交之间').replace(/\bhead\(([^)]+)\)/g,'PR 提交 $1').replace(/\bmerge\(([^)]+)\)/g,'合并验证提交 $1').replaceAll('changed_paths','影响文件列表').replaceAll('Frontend','前端').replaceAll('Backend','后端').replaceAll(' smoke','基本功能验证').replaceAll(' wheel',' wheel 包'); }
 
-function elapsed(value) { const ms=typeof value==='number'?value*1000:Date.parse(value);return Number.isFinite(ms)?(Date.now()-ms<60000?Math.max(0,Math.floor((Date.now()-ms)/1000))+' 秒':Math.max(0,Math.floor((Date.now()-ms)/60000))+' 分钟'):'未采集'; }
 function facts(parent,rows) {const list=el('dl','ci-facts');for(const [name,value] of rows){list.append(el('dt','',name),el('dd','',value??'未采集'));}parent.append(list);}
 
 function filteredRuns() {

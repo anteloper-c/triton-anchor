@@ -177,6 +177,7 @@ htmlcov/
 .coverage
 .coverage.*
 .pytest_cache/
+.ruff_cache/
 
 # Type checkers
 .mypy_cache/

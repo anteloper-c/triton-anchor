@@ -11,12 +11,10 @@ from ops_maint.artifacts import (
     DIGEST_RE,
     NAME_RE,
     safe_source,
-    absolute_path,
     atomic_json,
     fingerprint,
     file_digest,
     tree_digest,
-    shared_workspace_digest,
     extract_verified_archive,
 )
 from ops_maint.runtime import EnvironmentManager, docker_command, identities, main
@@ -30,12 +28,10 @@ __all__ = [
     "DIGEST_RE",
     "NAME_RE",
     "safe_source",
-    "absolute_path",
     "atomic_json",
     "fingerprint",
     "file_digest",
     "tree_digest",
-    "shared_workspace_digest",
     "extract_verified_archive",
 ]
 if __name__ == "__main__":

@@ -36,7 +36,7 @@ Example profile fragment (replace paths, commits and digests with actual values)
 ```
 
 Calculate each checksum using
-`environments.artifacts.tree_digest(Path(source))` from the trusted control code,
+`ops_maint.artifacts.tree_digest(Path(source))` from the trusted control code,
 after finalizing permissions and internal links. This is a directory-content
 digest, not an archive checksum. Image preparation, task acquisition/resumption
 and deployment preflight reject mismatches. Record vendor package provenance

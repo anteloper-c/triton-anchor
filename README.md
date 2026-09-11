@@ -292,10 +292,10 @@ pytest scripts/ci/tests -q
 # 按需运行 Local CI 实现测试（普通 GitHub Basic CI 不执行）
 PYTHONPATH=scripts/local_ci pytest \
   scripts/local_ci/agent_ci/tests scripts/local_ci/tools/tests \
-  scripts/local_ci/ops_maint/tests -q
+  scripts/local_ci/ops_maint/tests -q --import-mode=importlib
 ```
 
-> 更详细的 Local CI 使用、维护和故障排查说明见 `scripts/local_ci/README.md` 和 `scripts/local_ci/DEVELOPMENT_GUIDE.md`。
+> 更详细的 Local CI 使用、维护和故障排查说明见 `scripts/local_ci/README.md`。
 
 ```bash
 # 代码风格检查
@@ -319,11 +319,10 @@ triton-anchor/
 ├── scripts/ci/                  # GitHub 网关、安全扫描与轻量契约测试
 ├── scripts/local_ci/            # 服务器 Local CI 实现及模块内开发测试
 │   ├── README.md                #   Local CI 使用说明
-│   ├── DEVELOPMENT_GUIDE.md     #   Local CI 长期开发指南
 │   ├── agent_ci/                #   Worker、Codex、MCP、任务状态与单向发布
 │   ├── ops_maint/               #   Rootless 环境、部署、健康与证据保留
-│   ├── tools/                   #   十项基础检查的确定性工具入口
-│   └── deploy/                  #   部署、预检与用户级 systemd 配置
+│   ├── tools/                   #   构建、安装、测试与性能工具入口
+│   └── schemas/                 #   任务、结果与交付协议
 ├── .github/                     # GitHub 配置
 │   ├── workflows/ci_basic.yml   #   基础 CI（lint + 单元测试）
 │   └── ISSUE_TEMPLATE/          #   Issue 模板（Feature Request / Bug Report）
