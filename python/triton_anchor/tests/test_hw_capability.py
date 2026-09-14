@@ -85,3 +85,45 @@ class TestHWCapability:
                 ptr_model="structured",
                 # Missing matrix_cap!
             )
+
+    @pytest.mark.parametrize(
+        (
+            "paradigm",
+            "required_capability",
+            "unexpected_capability",
+            "unexpected_name",
+        ),
+        [
+            (
+                ComputeParadigm.AME_MATRIX,
+                {"matrix_cap": MatrixCapability()},
+                {"tensor_cap": TensorCapability()},
+                "tensor_cap",
+            ),
+            (
+                ComputeParadigm.TENSOR_PROCESSOR,
+                {"tensor_cap": TensorCapability()},
+                {"gpgpu_cap": GPGPUCapability()},
+                "gpgpu_cap",
+            ),
+            (
+                ComputeParadigm.GPGPU,
+                {"gpgpu_cap": GPGPUCapability()},
+                {"matrix_cap": MatrixCapability()},
+                "matrix_cap",
+            ),
+        ],
+    )
+    def test_validation_rejects_capability_from_another_paradigm(
+        self, paradigm, required_capability, unexpected_capability, unexpected_name
+    ):
+        with pytest.raises(ValueError, match=unexpected_name):
+            HWCapability(
+                name="mixed-capabilities",
+                arch_family="test",
+                compute_paradigm=paradigm,
+                anchor_ir_track=AnchorIRTrack.LINALG,
+                ptr_model="structured",
+                **required_capability,
+                **unexpected_capability,
+            )

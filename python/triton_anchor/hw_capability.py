@@ -216,6 +216,27 @@ class HWCapability:
             ValueError: If paradigm-specific cap doesn't match compute_paradigm,
                 or if lowering_path is inconsistent.
         """
+        capability_fields = {
+            "matrix_cap": self.matrix_cap,
+            "tensor_cap": self.tensor_cap,
+            "gpgpu_cap": self.gpgpu_cap,
+        }
+        expected_field = {
+            ComputeParadigm.AME_MATRIX: "matrix_cap",
+            ComputeParadigm.TENSOR_PROCESSOR: "tensor_cap",
+            ComputeParadigm.GPGPU: "gpgpu_cap",
+        }[self.compute_paradigm]
+        unexpected_fields = [
+            name
+            for name, capability in capability_fields.items()
+            if capability is not None and name != expected_field
+        ]
+        if unexpected_fields:
+            raise ValueError(
+                f"{self.compute_paradigm.name} paradigm does not allow "
+                f"{', '.join(unexpected_fields)} (hw: {self.name})"
+            )
+
         if self.compute_paradigm == ComputeParadigm.AME_MATRIX:
             if self.matrix_cap is None:
                 raise ValueError(
