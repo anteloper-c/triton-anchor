@@ -106,6 +106,31 @@ class GPGPUCapability:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Module-level lookup tables
+# Hoisted out of the hot validation/compat paths to avoid re-allocating
+# them on every call.
+# ═══════════════════════════════════════════════════════════════════════
+
+# arch_family → backend name for GPUTarget compatibility
+_FAMILY_TO_BACKEND = {
+    "tpu": "sophgo",
+    "riscv": "spacemit",
+    "gpu": "usc",
+}
+
+# paradigm → capability field name; used by _check_required_capability
+_PARADIGM_CAP_FIELDS = {
+    ComputeParadigm.AME_MATRIX: "matrix_cap",
+    ComputeParadigm.TENSOR_PROCESSOR: "tensor_cap",
+    ComputeParadigm.GPGPU: "gpgpu_cap",
+}
+
+# dialect sets used to infer an adapter's output track
+_LINALG_DIALECTS = frozenset({"linalg", "linalg_ext", "tensor", "memref"})
+_GPU_DIALECTS = frozenset({"triton_gpu", "ttg", "gpu", "nvgpu"})
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # HWCapability — the unified hardware descriptor
 # ═══════════════════════════════════════════════════════════════════════
 @dataclass(frozen=True)
@@ -195,13 +220,7 @@ class HWCapability:
 
     def _infer_backend_name(self) -> str:
         """Infer the backend name string for GPUTarget compatibility."""
-        # Map known hardware families to backend names
-        _family_to_backend = {
-            "tpu": "sophgo",
-            "riscv": "spacemit",
-            "gpu": "usc",
-        }
-        return _family_to_backend.get(self.arch_family, self.name.split("-")[0])
+        return _FAMILY_TO_BACKEND.get(self.arch_family, self.name.split("-", 1)[0])
 
     def _infer_arch(self):
         """Infer architecture identifier for GPUTarget compatibility."""
@@ -314,18 +333,12 @@ class HWCapability:
         return diagnostics
 
     def _check_required_capability(self, add) -> None:
-        required_caps = {
-            ComputeParadigm.AME_MATRIX: ("matrix_cap", self.matrix_cap),
-            ComputeParadigm.TENSOR_PROCESSOR: ("tensor_cap", self.tensor_cap),
-            ComputeParadigm.GPGPU: ("gpgpu_cap", self.gpgpu_cap),
-        }
-
-        if self.compute_paradigm not in required_caps:
+        cap_name = _PARADIGM_CAP_FIELDS.get(self.compute_paradigm)
+        if cap_name is None:
             add("error", "compute_paradigm", f"unsupported compute paradigm: {self.compute_paradigm!r}")
             return
 
-        cap_name, cap_value = required_caps[self.compute_paradigm]
-        if cap_value is None:
+        if getattr(self, cap_name) is None:
             add("error", "paradigm_capability", f"{self.compute_paradigm.name} requires {cap_name}")
             return
 
@@ -426,10 +439,8 @@ class HWCapability:
             return None
 
         dialects = set(get_output_dialects() or [])
-        linalg_dialects = {"linalg", "linalg_ext", "tensor", "memref"}
-        gpu_dialects = {"triton_gpu", "ttg", "gpu", "nvgpu"}
-        has_linalg = bool(dialects & linalg_dialects)
-        has_gpu = bool(dialects & gpu_dialects)
+        has_linalg = bool(dialects & _LINALG_DIALECTS)
+        has_gpu = bool(dialects & _GPU_DIALECTS)
 
         if has_linalg and not has_gpu:
             return AnchorIRTrack.LINALG
