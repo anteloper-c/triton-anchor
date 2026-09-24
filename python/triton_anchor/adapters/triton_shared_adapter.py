@@ -28,6 +28,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, List, Optional
 
+from ..ir_text import serialize_module
 from .base import ILinalgOptAdapter, AdapterConversionError
 
 logger = logging.getLogger(__name__)
@@ -98,9 +99,7 @@ class TritonSharedAdapter(ILinalgOptAdapter):
             )
 
         # ── Out-of-process conversion ────────────────────────────────
-        ttir_text = (
-            str(ttir_module) if not isinstance(ttir_module, str) else ttir_module
-        )
+        ttir_text = serialize_module(ttir_module)
 
         flags = self._get_pipeline_flags()
 

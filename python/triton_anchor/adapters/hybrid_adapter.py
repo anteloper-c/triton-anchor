@@ -30,6 +30,11 @@ class HybridAdapter(ILinalgOptAdapter):
     to be fully functional.
     """
 
+    def __init__(self):
+        # Delegate adapter is constructed once and reused — per-conversion
+        # instantiation showed up on the compile-path profile.
+        self._delegate = None
+
     def name(self) -> str:
         return "hybrid"
 
@@ -46,9 +51,12 @@ class HybridAdapter(ILinalgOptAdapter):
         # except AdapterConversionError:
         #     logger.info("Structured analysis failed, falling back to AxisInfo")
 
-        from .triton_linalg_adapter import TritonLinalgAdapter
+        if self._delegate is None:
+            from .triton_linalg_adapter import TritonLinalgAdapter
 
-        return TritonLinalgAdapter().convert(ttir_module, metadata, context)
+            self._delegate = TritonLinalgAdapter()
+
+        return self._delegate.convert(ttir_module, metadata, context)
 
     def get_output_dialects(self) -> List[str]:
         return [

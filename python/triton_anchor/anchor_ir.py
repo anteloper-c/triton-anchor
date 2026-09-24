@@ -27,10 +27,11 @@ Stability guarantee: the allowed dialect whitelist is append-only.
 
 from __future__ import annotations
 
+import bisect
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Set, Optional, Tuple, TYPE_CHECKING
+from typing import FrozenSet, List, Set, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     pass
@@ -115,8 +116,11 @@ TRITON_GPU_TRACK_FORBIDDEN: Set[str] = {
 }
 
 
-def _get_track_config(track: AnchorIRTrack) -> Tuple[Set[str], Set[str]]:
+def _get_track_config(track: AnchorIRTrack) -> Tuple[FrozenSet[str], FrozenSet[str]]:
     """Get base whitelist and forbidden set for a given Track.
+
+    Configs are precomputed once at module level (validation used to copy
+    both sets on every call — two set allocations per validated module).
 
     Args:
         track: The AnchorIR track.
@@ -124,12 +128,23 @@ def _get_track_config(track: AnchorIRTrack) -> Tuple[Set[str], Set[str]]:
     Returns:
         Tuple of (base_allowed, forbidden) dialect sets.
     """
-    if track == AnchorIRTrack.LINALG:
-        return LINALG_TRACK_ALLOWED.copy(), LINALG_TRACK_FORBIDDEN.copy()
-    elif track == AnchorIRTrack.TRITON_GPU:
-        return TRITON_GPU_TRACK_ALLOWED.copy(), TRITON_GPU_TRACK_FORBIDDEN.copy()
-    else:
-        raise ValueError(f"Unknown AnchorIR track: {track}")
+    try:
+        return _TRACK_CONFIGS[track]
+    except KeyError:
+        raise ValueError(f"Unknown AnchorIR track: {track}") from None
+
+
+# Precomputed per-track configs — validation hot path reads these directly.
+_TRACK_CONFIGS: dict = {
+    AnchorIRTrack.LINALG: (
+        frozenset(LINALG_TRACK_ALLOWED),
+        frozenset(LINALG_TRACK_FORBIDDEN),
+    ),
+    AnchorIRTrack.TRITON_GPU: (
+        frozenset(TRITON_GPU_TRACK_ALLOWED),
+        frozenset(TRITON_GPU_TRACK_FORBIDDEN),
+    ),
+}
 
 
 # Legacy combined sets for backward compatibility
@@ -185,15 +200,19 @@ class AnchorIRValidator:
         violations = validator.validate(ir_text)
     """
 
-    # Pattern to match MLIR operations: "dialect.op_name"
+    # Pattern to match MLIR operations: "dialect.op_name".
+    # Anchored per line (``re.MULTILINE`` + explicit ``[ \t]`` so matches
+    # never cross line boundaries), enabling a single whole-text sweep.
     _OP_PATTERN = re.compile(
-        r"^\s*"  # leading whitespace
-        r"(?:%\w+\s*(?:,\s*%\w+\s*)*=\s*)?"  # optional results: %foo, %bar =
+        r"^[ \t]*"  # leading horizontal whitespace
+        r"(?:%\w+[ \t]*(?:,[ \t]*%\w+[ \t]*)*=[ \t]*)?"  # optional results: %foo, %bar =
         r'"?'  # optional quote
         r"(\w+)\.(\w[\w.]*)"  # dialect.op_name
         r'"?',  # optional quote
         re.MULTILINE,
     )
+
+    _NEWLINE_PATTERN = re.compile(r"\n")
 
     def __init__(
         self,
@@ -211,8 +230,10 @@ class AnchorIRValidator:
         self.track = track or AnchorIRTrack.LINALG
         base_allowed, base_forbidden = _get_track_config(self.track)
 
-        self.allowed = base_allowed
-        self.forbidden = base_forbidden
+        # Copy once at construction — _get_track_config hands out shared
+        # frozensets that must not be mutated by per-validator extras.
+        self.allowed = set(base_allowed)
+        self.forbidden = set(base_forbidden)
         if extra_allowed:
             self.allowed |= extra_allowed
         if extra_forbidden:
@@ -221,41 +242,59 @@ class AnchorIRValidator:
     def _scan_ops(
         self, ir_text: str, allowed: Set[str], forbidden: Set[str]
     ) -> List[AnchorIRViolation]:
-        """Scan IR text and report violations against given whitelist/forbidden sets."""
-        violations: List[AnchorIRViolation] = []
-        lines = ir_text.splitlines()
+        """Scan IR text and report violations against given whitelist/forbidden sets.
 
-        for line_no, line in enumerate(lines, start=1):
-            # Skip comments
-            stripped = line.strip()
+        Single whole-text regex sweep (one C-level ``finditer`` pass over
+        the serialized IR) instead of a Python-level per-line loop with a
+        regex restart on every line.  Comment lines are resolved lazily via
+        a line-start offset table and ``bisect``.
+        """
+        violations: List[AnchorIRViolation] = []
+        if not ir_text:
+            return violations
+
+        # Line-start offsets for O(log n) offset → line-number mapping
+        line_starts = [0]
+        line_starts.extend(m.end() for m in self._NEWLINE_PATTERN.finditer(ir_text))
+
+        for match in self._OP_PATTERN.finditer(ir_text):
+            line_idx = bisect.bisect_right(line_starts, match.start()) - 1
+            line_start = line_starts[line_idx]
+            line_end = (
+                line_starts[line_idx + 1]
+                if line_idx + 1 < len(line_starts)
+                else len(ir_text)
+            )
+
+            # Skip comments (only materialized for lines that matched an op)
+            stripped = ir_text[line_start:line_end].strip()
             if stripped.startswith("//") or stripped.startswith("#"):
                 continue
 
-            for match in self._OP_PATTERN.finditer(line):
-                dialect = match.group(1)
-                op_name = f"{dialect}.{match.group(2)}"
+            dialect = match.group(1)
+            op_name = f"{dialect}.{match.group(2)}"
 
-                if dialect in forbidden:
-                    violations.append(
-                        AnchorIRViolation(
-                            line_number=line_no,
-                            dialect=dialect,
-                            op_name=op_name,
-                            message=f"Forbidden dialect '{dialect}' must be fully lowered before AnchorIR",
-                        )
+            if dialect in forbidden:
+                violations.append(
+                    AnchorIRViolation(
+                        line_number=line_idx + 1,
+                        dialect=dialect,
+                        op_name=op_name,
+                        message=f"Forbidden dialect '{dialect}' must be fully lowered before AnchorIR",
                     )
-                elif dialect not in allowed:
-                    violations.append(
-                        AnchorIRViolation(
-                            line_number=line_no,
-                            dialect=dialect,
-                            op_name=op_name,
-                            message=(
-                                f"Unknown dialect '{dialect}'. "
-                                f"Register it via backend's get_allowed_dialects()."
-                            ),
-                        )
+                )
+            elif dialect not in allowed:
+                violations.append(
+                    AnchorIRViolation(
+                        line_number=line_idx + 1,
+                        dialect=dialect,
+                        op_name=op_name,
+                        message=(
+                            f"Unknown dialect '{dialect}'. "
+                            f"Register it via backend's get_allowed_dialects()."
+                        ),
                     )
+                )
 
         return violations
 

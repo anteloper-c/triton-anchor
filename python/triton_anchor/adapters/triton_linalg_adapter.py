@@ -19,13 +19,54 @@ Output dialects:
 from __future__ import annotations
 
 import logging
-import re
 import traceback
 from typing import Any, List
 
+from ..ir_text import extract_kernel_name, serialize_module
 from .base import ILinalgPybindAdapter, AdapterConversionError
 
 logger = logging.getLogger(__name__)
+
+# ── Pass pipeline resolution cache ─────────────────────────────────────
+# Bound pass functions live for the whole process, so resolving them once
+# and replaying removes the per-conversion import + attribute-lookup cost
+# from the pass-registration hot path.  ``None`` until first resolved.
+
+_pipeline_cache = None
+
+
+def _resolve_pipeline():
+    """Resolve (once per process) the bound pass functions of the pipeline.
+
+    Returns:
+        A tuple of callables, each taking a pass manager and registering
+        one pipeline step, in execution order.
+    """
+    global _pipeline_cache
+    if _pipeline_cache is not None:
+        return _pipeline_cache
+
+    from triton._C.libtriton.anchor.anchor_passes import triton_to_linalg as tl
+    from triton._C.libtriton.passes import common
+
+    # Note: triton_to_ppl has been stripped. The backend should handle it if needed.
+    _pipeline_cache = (
+        tl.add_wrap_func_body_with_single_block,
+        common.add_inliner,
+        common.add_canonicalizer,
+        tl.add_canonicalize_triton,
+        tl.add_pointer_strength_reduction,
+        common.add_canonicalizer,
+        tl.add_triton_to_linalg,
+        tl.add_extract_like_move_backward,
+        common.add_canonicalizer,
+        tl.add_arith_to_linalg,
+        tl.add_math_to_linalg,
+        common.add_cse,
+        common.add_licm,
+        tl.add_wrap_func_body_with_single_block,
+    )
+    return _pipeline_cache
 
 
 class TritonLinalgAdapter(ILinalgPybindAdapter):
@@ -89,14 +130,16 @@ class TritonLinalgAdapter(ILinalgPybindAdapter):
                 self.name(), detail="anchor_passes.triton_to_linalg not available."
             )
 
-        # Pre-process: fix allow_reorder attribute format
-        ttir_code = str(ttir_module)
+        # ── Single IR serialization snapshot ─────────────────────────
+        # One str(module) walk is shared by the allow_reorder fixup check
+        # and kernel-name extraction (previously two full serializations).
+        ttir_code = serialize_module(ttir_module)
         if "allow_reorder" in ttir_code and "allow_reorder = true" not in ttir_code:
             # This is a known quirk in triton_race
             logger.debug("Applying allow_reorder attribute fixup")
 
-        # Extract kernel name for diagnostics
-        kernel_name = self._extract_kernel_name(ttir_module)
+        # Extract kernel name for diagnostics (reuses the same snapshot)
+        kernel_name = extract_kernel_name(ttir_code)
         if kernel_name:
             metadata.setdefault("name", kernel_name)
 
@@ -121,36 +164,22 @@ class TritonLinalgAdapter(ILinalgPybindAdapter):
         return ttir_module
 
     def _add_passes(self, pm, passes) -> None:
-        """Add the triton-linalg conversion pass pipeline."""
-        tl = passes.triton_to_linalg
+        """Add the triton-linalg conversion pass pipeline.
 
-        # Note: triton_to_ppl has been stripped. The backend should handle it if needed.
-        tl.add_wrap_func_body_with_single_block(pm)
-
-        # We need common passes from libtriton
-        from triton._C.libtriton.passes import common
-
-        common.add_inliner(pm)
-        common.add_canonicalizer(pm)
-        tl.add_canonicalize_triton(pm)
-        tl.add_pointer_strength_reduction(pm)
-        common.add_canonicalizer(pm)
-        tl.add_triton_to_linalg(pm)
-        tl.add_extract_like_move_backward(pm)
-        common.add_canonicalizer(pm)
-        tl.add_arith_to_linalg(pm)
-        tl.add_math_to_linalg(pm)
-        common.add_cse(pm)
-        common.add_licm(pm)
-        tl.add_wrap_func_body_with_single_block(pm)
+        The pass functions are resolved once per process (``_resolve_pipeline``)
+        and replayed here — repeated conversions skip the per-call import
+        machinery and attribute lookups on the pass-registration hot path.
+        """
+        for fn in _resolve_pipeline():
+            fn(pm)
 
     def _extract_kernel_name(self, mod) -> str:
-        """Extract the Triton kernel function name from the module."""
-        pattern = r"tt\.func\s+(?:public\s+)?@(\w+)\("
-        matches = re.findall(pattern, str(mod))
-        if len(matches) == 1:
-            return matches[0]
-        return ""
+        """Extract the Triton kernel function name from the module.
+
+        Kept for backward compatibility — operates on a fresh serialization
+        only when the caller cannot provide one.
+        """
+        return extract_kernel_name(str(mod))
 
     def get_required_passes(self) -> List[str]:
         return [

@@ -31,6 +31,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, List
 
+from ..ir_text import serialize_module
+
 
 class ITritonToLinalgAdapter(ABC):
     """Abstract interface for TTIR → Linalg conversion adapters.
@@ -86,7 +88,7 @@ class ITritonToLinalgAdapter(ABC):
         from ..anchor_ir import AnchorIRValidator
 
         validator = AnchorIRValidator()
-        ir_text = str(linalg_ir) if not isinstance(linalg_ir, str) else linalg_ir
+        ir_text = serialize_module(linalg_ir)
         return validator.is_valid(ir_text)
 
     def get_required_passes(self) -> List[str]:

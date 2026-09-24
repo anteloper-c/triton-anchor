@@ -21,4 +21,8 @@ from .anchor_ir import (
     AnchorIRTrack as AnchorIRTrack,
     AnchorIRValidator as AnchorIRValidator,
 )
+from .ir_text import (
+    serialize_module as serialize_module,
+    extract_kernel_name as extract_kernel_name,
+)
 from .pipeline import build_ttir_pipeline as build_ttir_pipeline

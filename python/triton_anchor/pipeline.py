@@ -13,10 +13,48 @@ The pipeline also supports conditional passes controlled by ``HWCapability``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from .hw_capability import HWCapability
+
+
+# ── Pass-module loading & probing caches ───────────────────────────────
+# libtriton's pass modules and the availability of a given pass never change
+# within a process, so the per-compile ``import`` + ``getattr`` probes are
+# pure overhead on the pipeline-construction hot path.  Both are resolved
+# once here and replayed for every subsequent kernel compilation.
+
+_pass_modules: Dict[str, object] = {}
+_pass_probe_cache: Dict[Tuple[str, str], Optional[Callable]] = {}
+
+# Resolved pass plans — mandatory plan is process-wide; conditional plans
+# are keyed by (is_gpgpu, enable_loop_unroll).
+_mandatory_plan_cache: Optional[Tuple[Callable, ...]] = None
+_conditional_plan_cache: Dict[Tuple[bool, bool], Tuple[Optional[Callable], ...]] = {}
+
+
+def _load_pass_module():
+    """Load (and cache) ``triton._C.libtriton.passes``."""
+    mod = _pass_modules.get("passes")
+    if mod is None:
+        from triton._C.libtriton import passes as mod
+
+        _pass_modules["passes"] = mod
+    return mod
+
+
+def _probe_pass(module, pass_name: str) -> Optional[Callable]:
+    """Probe (and cache) whether ``module`` exposes ``pass_name``.
+
+    Returns:
+        The bound pass function, or ``None`` if unavailable.
+    """
+    mod_name = getattr(module, "__name__", str(module))
+    key = (mod_name, pass_name)
+    if key not in _pass_probe_cache:
+        _pass_probe_cache[key] = getattr(module, pass_name, None)
+    return _pass_probe_cache[key]
 
 
 def build_ttir_pipeline(pm, hw: Optional[HWCapability] = None):
@@ -43,36 +81,95 @@ def build_ttir_pipeline(pm, hw: Optional[HWCapability] = None):
         This function requires ``triton._C.libtriton`` to be available.
         It will raise ``ImportError`` if Triton is not installed.
     """
-    from triton._C.libtriton import passes
-
     # ═══════════════════════════════════════════════════════════════════
     # Mandatory Passes (7) — shared 100% across all projects
     # Order matters: inliner → combine → canonicalize → reorder → cse → licm → dce
     # ═══════════════════════════════════════════════════════════════════
-    passes.common.add_inliner(pm)
-    passes.ttir.add_combine(pm)
-    passes.common.add_canonicalizer(pm)
-    passes.ttir.add_reorder_broadcast(pm)
-    passes.common.add_cse(pm)
-    passes.common.add_licm(pm)
-    passes.common.add_symbol_dce(pm)
+    for fn in _mandatory_pass_plan():
+        fn(pm)
 
     # ═══════════════════════════════════════════════════════════════════
     # Conditional Passes — controlled by HWCapability
     # ═══════════════════════════════════════════════════════════════════
     if hw is not None:
-        from .hw_capability import ComputeParadigm
+        for fn in _conditional_pass_plan(hw):
+            if fn is not None:
+                fn(pm)
 
+
+def _mandatory_pass_plan() -> Tuple[Callable, ...]:
+    """Resolve (once per process) the 7 mandatory pass functions.
+
+    Returns:
+        Bound pass functions in execution order:
+        inliner → combine → canonicalize → reorder → cse → licm → dce.
+    """
+    global _mandatory_plan_cache
+    if _mandatory_plan_cache is None:
+        passes = _load_pass_module()
+        _mandatory_plan_cache = (
+            passes.common.add_inliner,
+            passes.ttir.add_combine,
+            passes.common.add_canonicalizer,
+            passes.ttir.add_reorder_broadcast,
+            passes.common.add_cse,
+            passes.common.add_licm,
+            passes.common.add_symbol_dce,
+        )
+    return _mandatory_plan_cache
+
+
+def _conditional_pass_plan(hw: HWCapability) -> Tuple[Optional[Callable], ...]:
+    """Resolve (cached per HW config) the conditional pass functions.
+
+    The plan depends only on (compute_paradigm, enable_loop_unroll), so it
+    is cached per configuration — subsequent kernel compilations replay the
+    resolved pass list without re-probing the pass modules.
+
+    A ``None`` entry marks an optional pass that is unavailable in this
+    build; required passes raise here on first resolution instead.
+
+    Returns:
+        Bound pass functions (or ``None`` for unavailable optional passes).
+    """
+    from .hw_capability import ComputeParadigm
+
+    key = (hw.compute_paradigm == ComputeParadigm.GPGPU, bool(hw.enable_loop_unroll))
+    plan = _conditional_plan_cache.get(key)
+    if plan is None:
+        passes = _load_pass_module()
+
+        steps: List[Optional[Callable]] = []
         # GPU path needs tensor pointer rewriting (CRITICAL — must not silently skip)
-        if hw.compute_paradigm == ComputeParadigm.GPGPU:
-            _require_pass(passes.ttir, "add_rewrite_tensor_pointer", pm)
-
+        if key[0]:
+            steps.append(_require_resolve(passes.ttir, "add_rewrite_tensor_pointer"))
         # Optional loop unrolling (safe to skip if unavailable)
-        if hw.enable_loop_unroll:
-            _try_add_pass(passes.ttir, "add_loop_unroll", pm)
-
+        if key[1]:
+            steps.append(_probe_pass(passes.ttir, "add_loop_unroll"))
         # FlagTree extra optimization (optional, auto-probe)
-        _try_add_pass(passes.ttir, "add_expression_restructing", pm)
+        steps.append(_probe_pass(passes.ttir, "add_expression_restructing"))
+
+        plan = tuple(steps)
+        _conditional_plan_cache[key] = plan
+    return plan
+
+
+def _require_resolve(module, pass_name: str) -> Callable:
+    """Resolve a critical-path pass. Raise if not available.
+
+    For passes on the critical compilation path (e.g., GPU's
+    add_rewrite_tensor_pointer) whose absence would cause incorrect
+    compilation results.
+    """
+    fn = _probe_pass(module, pass_name)
+    if fn is None:
+        mod_name = getattr(module, "__name__", str(module))
+        raise RuntimeError(
+            f"Required pass '{pass_name}' not found in module '{mod_name}'. "
+            f"This pass is critical for the current compilation path. "
+            f"Check your Triton version and backend installation."
+        )
+    return fn
 
 
 def _try_add_pass(module, pass_name, pm, **kwargs):
@@ -81,7 +178,7 @@ def _try_add_pass(module, pass_name, pm, **kwargs):
     For optional passes (e.g., add_expression_restructing, add_loop_unroll)
     whose absence does not affect compilation correctness.
     """
-    fn = getattr(module, pass_name, None)
+    fn = _probe_pass(module, pass_name)
     if fn is not None:
         fn(pm, **kwargs) if kwargs else fn(pm)
         return True
@@ -95,14 +192,7 @@ def _require_pass(module, pass_name, pm, **kwargs):
     add_rewrite_tensor_pointer, add_convert_to_ttgpuir) whose
     absence would cause incorrect compilation results.
     """
-    fn = getattr(module, pass_name, None)
-    if fn is None:
-        mod_name = getattr(module, "__name__", str(module))
-        raise RuntimeError(
-            f"Required pass '{pass_name}' not found in module '{mod_name}'. "
-            f"This pass is critical for the current compilation path. "
-            f"Check your Triton version and backend installation."
-        )
+    fn = _require_resolve(module, pass_name)
     fn(pm, **kwargs) if kwargs else fn(pm)
     return True
 

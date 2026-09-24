@@ -23,6 +23,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# ptr_model → adapter name, hoisted out of get_adapter() so repeated
+# compilations stop re-allocating the lookup table.
+_MODEL_TO_ADAPTER = {
+    "structured": "triton-shared",
+    "axis_info": "triton-linalg",
+    "hybrid": "hybrid",
+}
+
 
 class AdapterRegistry:
     """Registry for TTIR → Linalg conversion adapters.
@@ -113,12 +121,7 @@ class AdapterRegistry:
             )
 
         # 2. Automatic selection by ptr_model
-        _model_to_adapter = {
-            "structured": "triton-shared",
-            "axis_info": "triton-linalg",
-            "hybrid": "hybrid",
-        }
-        adapter_name = _model_to_adapter.get(hw.ptr_model)
+        adapter_name = _MODEL_TO_ADAPTER.get(hw.ptr_model)
         if adapter_name and adapter_name in cls._adapters:
             return cls._adapters[adapter_name]
 
