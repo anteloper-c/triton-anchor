@@ -115,10 +115,28 @@ struct ScalarLoadConverter : public OpConversionPattern<tts::GatherOp> {
 
     auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
 
-    auto scalarLoadOp = affine::AffineLoadOp::create(rewriter, loc, memref,
-                                                     zeroMap, ValueRange{});
-
-    rewriter.replaceOp(gatherOp, scalarLoadOp.getResult());
+    auto loadScalar = [memref, zeroMap](OpBuilder &b, Location loc) -> Value {
+      return affine::AffineLoadOp::create(b, loc, memref, zeroMap, ValueRange{})
+          .getResult();
+    };
+    if (!adaptor.getMask()) {
+      rewriter.replaceOp(gatherOp, loadScalar(rewriter, loc));
+      return success();
+    }
+    auto ifOp = scf::IfOp::create(
+        rewriter, loc, adaptor.getMask(),
+        [loadScalar](OpBuilder &b, Location loc) {
+          scf::YieldOp::create(b, loc, loadScalar(b, loc));
+        },
+        [other = adaptor.getOther(),
+         elementType = gatherOp.getType()](OpBuilder &b, Location loc) {
+          Value fallback = other;
+          if (!fallback)
+            fallback = arith::ConstantOp::create(b, loc, elementType,
+                                                 b.getZeroAttr(elementType));
+          scf::YieldOp::create(b, loc, fallback);
+        });
+    rewriter.replaceOp(gatherOp, ifOp.getResults());
 
     return success();
   }
@@ -158,11 +176,21 @@ struct ScalarStoreConverter : public OpConversionPattern<tts::ScatterOp> {
         ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)} /*sizes*/,
         ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)} /*strides*/);
 
-    auto storeVal = scatterOp.getValue();
+    auto storeVal = adaptor.getValue();
     auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
-
-    affine::AffineStoreOp::create(rewriter, loc, storeVal, memref, zeroMap,
-                                  ValueRange{});
+    auto storeScalar = [storeVal, memref, zeroMap](OpBuilder &b, Location loc) {
+      affine::AffineStoreOp::create(b, loc, storeVal, memref, zeroMap,
+                                    ValueRange{});
+    };
+    if (adaptor.getMask()) {
+      scf::IfOp::create(rewriter, loc, adaptor.getMask(),
+                        [storeScalar](OpBuilder &b, Location loc) {
+                          storeScalar(b, loc);
+                          scf::YieldOp::create(b, loc);
+                        });
+    } else {
+      storeScalar(rewriter, loc);
+    }
     rewriter.eraseOp(scatterOp);
 
     return success();
