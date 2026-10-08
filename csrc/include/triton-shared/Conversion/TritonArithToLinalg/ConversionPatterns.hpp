@@ -354,9 +354,30 @@ public:
       auto sMemRef = PtrAnalysis::getScalarMemRef(op.getPtr(), adaptor.getPtr(),
                                                   loc, rewriter);
       auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
-      auto loadOp = rewriter.create<affine::AffineLoadOp>(
-          op.getLoc(), sMemRef, zeroMap, std::nullopt);
-      rewriter.replaceOp(op, loadOp.getResult());
+      auto loadScalar = [sMemRef, zeroMap](OpBuilder &b,
+                                           Location loc) -> Value {
+        return b
+            .create<affine::AffineLoadOp>(loc, sMemRef, zeroMap, std::nullopt)
+            .getResult();
+      };
+      if (!mask) {
+        rewriter.replaceOp(op, loadScalar(rewriter, loc));
+        return success();
+      }
+      auto ifOp = rewriter.create<scf::IfOp>(
+          loc, adaptor.getMask(),
+          [loadScalar](OpBuilder &b, Location loc) {
+            b.create<scf::YieldOp>(loc, loadScalar(b, loc));
+          },
+          [other = adaptor.getOther(),
+           elementType = op.getType()](OpBuilder &b, Location loc) {
+            Value fallback = other;
+            if (!fallback)
+              fallback = b.create<arith::ConstantOp>(
+                  loc, elementType, b.getZeroAttr(elementType));
+            b.create<scf::YieldOp>(loc, fallback);
+          });
+      rewriter.replaceOp(op, ifOp.getResults());
       return success();
     }
 
@@ -514,8 +535,19 @@ struct StoreConverter : public OpConversionPattern<triton::StoreOp> {
       auto sMemRef =
           PtrAnalysis::getScalarMemRef(op.getPtr(), ptr, loc, rewriter);
       auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
-      rewriter.create<affine::AffineStoreOp>(loc, val, sMemRef, zeroMap,
-                                             std::nullopt);
+      auto storeScalar = [val, sMemRef, zeroMap](OpBuilder &b, Location loc) {
+        b.create<affine::AffineStoreOp>(loc, val, sMemRef, zeroMap,
+                                        std::nullopt);
+      };
+      if (mask) {
+        rewriter.create<scf::IfOp>(loc, adaptor.getMask(),
+                                   [storeScalar](OpBuilder &b, Location loc) {
+                                     storeScalar(b, loc);
+                                     b.create<scf::YieldOp>(loc);
+                                   });
+      } else {
+        storeScalar(rewriter, loc);
+      }
       rewriter.eraseOp(op);
       return success();
     }

@@ -103,10 +103,28 @@ struct ScalarLoadConverter : public OpConversionPattern<tts::GatherOp> {
 
     auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
 
-    auto scalarLoadOp = rewriter.create<affine::AffineLoadOp>(
-        loc, memref, zeroMap, std::nullopt);
-
-    rewriter.replaceOp(gatherOp, scalarLoadOp.getResult());
+    auto loadScalar = [memref, zeroMap](OpBuilder &b, Location loc) -> Value {
+      return b.create<affine::AffineLoadOp>(loc, memref, zeroMap, std::nullopt)
+          .getResult();
+    };
+    if (!adaptor.getMask()) {
+      rewriter.replaceOp(gatherOp, loadScalar(rewriter, loc));
+      return success();
+    }
+    auto ifOp = rewriter.create<scf::IfOp>(
+        loc, adaptor.getMask(),
+        [loadScalar](OpBuilder &b, Location loc) {
+          b.create<scf::YieldOp>(loc, loadScalar(b, loc));
+        },
+        [other = adaptor.getOther(),
+         elementType = gatherOp.getType()](OpBuilder &b, Location loc) {
+          Value fallback = other;
+          if (!fallback)
+            fallback = b.create<arith::ConstantOp>(loc, elementType,
+                                                   b.getZeroAttr(elementType));
+          b.create<scf::YieldOp>(loc, fallback);
+        });
+    rewriter.replaceOp(gatherOp, ifOp.getResults());
 
     return success();
   }
@@ -146,18 +164,27 @@ struct ScalarStoreConverter : public OpConversionPattern<tts::ScatterOp> {
         ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)} /*sizes*/,
         ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)} /*strides*/);
 
-    auto storeVal = scatterOp.getValue();
-
+    auto storeVal = adaptor.getValue();
+    auto storeScalar = [storeVal, memref](OpBuilder &b, Location loc) {
 #ifdef ANCHOR_BACKEND_TSINGMICRO
-    rewriter.create<memref::StoreOp>(
-        loc, storeVal, memref,
-        ValueRange{rewriter.create<arith::ConstantIndexOp>(loc, 0)});
+      b.create<memref::StoreOp>(
+          loc, storeVal, memref,
+          ValueRange{b.create<arith::ConstantIndexOp>(loc, 0)});
 #else
-    auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
-
-    rewriter.create<affine::AffineStoreOp>(loc, storeVal, memref, zeroMap,
-                                           std::nullopt);
+      auto zeroMap = AffineMap::getConstantMap(0, b.getContext());
+      b.create<affine::AffineStoreOp>(loc, storeVal, memref, zeroMap,
+                                      std::nullopt);
 #endif
+    };
+    if (adaptor.getMask()) {
+      rewriter.create<scf::IfOp>(loc, adaptor.getMask(),
+                                 [storeScalar](OpBuilder &b, Location loc) {
+                                   storeScalar(b, loc);
+                                   b.create<scf::YieldOp>(loc);
+                                 });
+    } else {
+      storeScalar(rewriter, loc);
+    }
     rewriter.eraseOp(scatterOp);
 
     return success();
