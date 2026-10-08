@@ -10,6 +10,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/TypeRange.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Visitors.h"
 #include "mlir/Support/LLVM.h"
@@ -1843,6 +1844,7 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
 
   auto ptrType = dyn_cast<triton::PointerType>(ptr.getType());
   bool isScalarPtr = ptrType && !isa<ShapedType>(ptrType.getPointeeType());
+  bool hasScalarMask = isScalarPtr && mask && mask.getType().isInteger(1);
 
   ArrayRef<OpFoldResult> dims;
   mlir::triton::MaskState mstate(useUnsafeMask);
@@ -1862,7 +1864,7 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
 
   Operation *newOp = nullptr;
 
-  if (mask) {
+  if (mask && !hasScalarMask) {
     if (mstate.parse(mask, loc, builder).failed()) {
       op->emitRemark("MaskAnalysis failed");
       return failure();
@@ -1899,6 +1901,15 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
         utils::castScalarToType(scalarOther, targetType, loc, builder);
   }
   auto paddingOpt = op.getPadding();
+
+  // Scalar masks control whether memory is accessed, not the tensor extent.
+  // Keep the load and its scalar extraction inside the true branch.
+  scf::IfOp scalarIf;
+  if (hasScalarMask) {
+    scalarIf = scf::IfOp::create(
+        builder, loc, TypeRange{op.getType()}, mask, /*withElseRegion=*/true);
+    builder.setInsertionPointToStart(&scalarIf.getThenRegion().front());
+  }
 
   if (isScalarPtr) {
     SmallVector<OpFoldResult> scalarDims{builder.getIndexAttr(1)};
@@ -2044,6 +2055,17 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
     }
   }
 
+  if (scalarIf) {
+    scf::YieldOp::create(builder, loc, loadResult);
+    builder.setInsertionPointToStart(&scalarIf.getElseRegion().front());
+    Value fallback = scalarOther;
+    if (!fallback)
+      fallback = arith::ConstantOp::create(
+          builder, loc, op.getType(), builder.getZeroAttr(op.getType()));
+    scf::YieldOp::create(builder, loc, fallback);
+    loadResult = scalarIf.getResult(0);
+  }
+
   op.replaceAllUsesWith(loadResult);
   op->erase();
   return success();
@@ -2142,6 +2164,7 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
 
   auto ptrType = dyn_cast<triton::PointerType>(ptr.getType());
   bool isScalarPtr = ptrType && !isa<ShapedType>(ptrType.getPointeeType());
+  bool hasScalarMask = isScalarPtr && mask && mask.getType().isInteger(1);
 
   ArrayRef<OpFoldResult> dims;
   mlir::triton::MaskState mstate(useUnsafeMask);
@@ -2160,7 +2183,7 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
 
   // Analyze the mask operand to determine at runtime the size of the data
   // are moving.
-  if (mask) {
+  if (mask && !hasScalarMask) {
     if (mstate.parse(mask, loc, builder).failed()) {
       op->emitRemark("MaskAnalysis failed");
       return failure();
@@ -2194,6 +2217,13 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
     scalarVal = tensor::FromElementsOp::create(builder, loc, tensorTy,
                                                ValueRange{scalarVal})
                     .getResult();
+
+    // MaskState::dims is empty for an i1 scalar, so guard the store directly.
+    if (hasScalarMask) {
+      auto scalarIf = scf::IfOp::create(
+          builder, loc, TypeRange{}, mask, /*withElseRegion=*/false);
+      builder.setInsertionPointToStart(&scalarIf.getThenRegion().front());
+    }
 
     newOp =
         tts::StoreOp::create(builder, loc, ptr, scalarVal, dims, boundaryCheck);
